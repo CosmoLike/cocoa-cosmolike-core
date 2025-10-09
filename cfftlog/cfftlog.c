@@ -346,3 +346,175 @@ void cfftlog_ells_increment(double *x, double *fx, long N, config *config, int* 
 	fftw_free(out);
 	free(fb);
 }
+
+
+
+void cfftlog_ells_batch(double *x, double **fx, int Nbatch, long *N, config **config, int* ell, long Nell, double ***y, double ***Fy) {
+	long N_original[Nbatch], N_pad[Nbatch], N_extrap_low[Nbatch], N_extrap_high[Nbatch]
+	long halfN[Nbatch];
+
+	for(int ibatch=0; ibatch<Nbatch; ibatch++) {
+		N_original[ibatch] 		= N[ibatch];
+		N_pad[ibatch] 			= config[ibatch]->N_pad;
+		N_extrap_low[ibatch] 	= config[ibatch]->N_extrap_low;
+		N_extrap_high[ibatch] 	= config[ibatch]->N_extrap_high;
+		N[ibatch] 			   += 2*N_pad[ibatch] + N_extrap_low[ibatch] + N_extrap_high[ibatch];
+
+		if(N[ibatch] % 2) {
+			printf("Please use even number of x !\n");
+			exit(0);
+		}
+		halfN[ibatch] = N[ibatch]/2;
+	}
+
+	const double x0 = x[0];
+	const double dlnx = log(x[1]/x0);
+
+	// Only calculate the m>=0 part
+	double **eta_m = malloc(sizeof(double*) * Nbatch);
+	for(int ibatch=0; ibatch<Nbatch; ibatch++) {
+		eta_m = malloc(sizeof(double) * (halfN[ibatch]+1));
+		for(int i=0; i<=halfN[ibatch]; i++) {
+			eta_m[ibatch][i] = 2*M_PI / dlnx / N[ibatch] * i;
+		}
+	}
+
+	double xi;
+	int sign;
+	double dlnf_low, dlnf_high;
+
+	// biased input func
+	double **fb = malloc(Nbatch * sizeof(double*));
+	for(int ibatch=0; ibatch<Nbatch; ibatch++) {
+		fb[ibatch] = malloc(N * sizeof(double));
+		for(int i=0; i<N_pad; i++) {
+			fb[ibatch][i] = 0.;
+			fb[ibatch][N-1-i] = 0.;
+		}
+
+		if(N_extrap_low[ibatch]) {
+			if(fx[ibatch][0]==0) {
+				printf("Can't log-extrapolate zero on the low side!\n");
+				exit(1);
+			}
+			else if(fx[ibatch][0]>0) {
+				sign = 1;
+			}
+			else {
+				sign=-1;
+			}
+			if(fx[ibatch][1]/fx[ibatch][0]<=0) {
+				printf("Log-extrapolation on the low side fails due to sign change!\n");
+				exit(1);
+			}
+			dlnf_low = log(fx[ibatch][1]/fx[ibatch][0]);
+			for(int i=N_pad[ibatch]; i<N_pad[ibatch]+N_extrap_low[ibatch]; i++) {
+				xi            = exp(log(x0) + (i-N_pad[ibatch] - N_extrap_low[ibatch])*dlnx);
+				fb[ibatch][i] = sign * exp(log(fx[ibatch][0]*sign) + (i- N_pad[ibatch] - N_extrap_low[ibatch])*dlnf_low) / pow(xi, config[ibatch]->nu);
+			}
+		}
+		for(int i=N_pad[ibatch]+N_extrap_low[ibatch]; i<N_pad[ibatch]+N_extrap_low[ibatch]+N_original[ibatch]; i++) {
+			fb[ibatch][i] = fx[ibatch][i-N_pad[ibatch]-N_extrap_low[ibatch]] / pow(x[i-N_pad[ibatch]-N_extrap_low[ibatch]], config[ibatch]->nu) ;
+		}
+		if(N_extrap_high[ibatch]) {
+			if(fx[ibatch][N_original[ibatch]-1]==0) {
+				printf("Can't log-extrapolate zero on the high side!\n");
+				exit(1);
+			}
+			else if(fx[ibatch][N_original[ibatch]-1]>0) {
+				sign = 1;
+			}
+			else {
+				sign=-1;
+			}
+			if(fx[ibatch][N_original[ibatch]-1]/fx[ibatch][N_original[ibatch]-2]<=0) {
+				printf("Log-extrapolation on the high side fails due to sign change!\n");
+				exit(1);
+			}
+			dlnf_high = log(fx[ibatch][N_original[ibatch]-1]/fx[ibatch][N_original[ibatch]-2]);
+			for(int i=N[ibatch]-N_pad[ibatch]-N_extrap_high[ibatch]; i<N[ibatch]-N_pad[ibatch]; i++) {
+				xi = exp(log(x[N_original[ibatch]-1]) + (i-N_pad[ibatch] - N_extrap_low[ibatch] - N_original[ibatch])*dlnx);
+				fb[ibatch][i] = sign * exp(log(fx[ibatch][N_original[ibatch]-1]*sign) + (i- N_pad[ibatch] - N_extrap_low[ibatch] - N_original[ibatch])*dlnf_high)/pow(xi, config[ibatch]->nu);
+			}
+		}
+	}
+
+	fftw_complex **out = (fftw_complex**) fftw_malloc(sizeof(fftw_complex*) * Nbatch);
+	for(int ibatch=0; ibatch<Nbatch; ibatch++) {
+		out[ibatch] = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * (halfN[ibatch]+1) );
+	}
+	fftw_plan plan_forward[Nbatch];
+
+	for(int ibatch=0; ibatch<Nbatch; ibatch++) {
+		plan_forward[ibatch] = fftw_plan_dft_r2c_1d(N[ibatch], fb[ibatch], out[ibatch], FFTW_ESTIMATE);
+		fftw_execute(plan_forward[ibatch]);
+		c_window_cfft(out[ibatch], config[ibatch]->c_window_width, halfN[ibatch]);
+	}
+
+	double ***out_ifft 		  = malloc(sizeof(double**) * Nbatch);
+	fftw_complex ***out_vary  = malloc(sizeof(fftw_complex**) * Nbatch);
+	fftw_plan **plan_backward = malloc(sizeof(fftw_plan**) * Nbatch);
+	double complex **gl       = malloc(sizeof(double complex*) * Nbatch);
+
+	#pragma omp parallel for
+	for(int ibatch=0; ibatch<Nbatch; i++) {
+		out_ifft[ibatch]             = malloc(sizeof(double*) * Nell);
+		out_vary[ibatch]             = malloc(sizeof(fftw_complex*) * Nell);
+		plan_backward[ibatch]        = malloc(sizeof(fftw_plan*) * Nell);
+		for(int j=0; j<Nell; j++) {
+			out_ifft[ibatch][j]      = malloc(sizeof(double) * N[ibatch]);
+			out_vary[ibatch][j]      = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * (halfN[ibatch]+1) );
+			plan_backward[ibatch][j] = fftw_plan_dft_c2r_1d(N[ibatch], out_vary[ibatch][j], out_ifft[ibatch][j], FFTW_ESTIMATE);
+		}
+		gl[ibatch]                   = malloc(sizeof(double) * (halfN[ibatch]+1));
+
+		for (int j=0; j<Nell; j++) {
+			switch(config[ibatch]->derivative) {
+				case 0: g_l_cfft((double)ell[j], config[ibatch]->nu, eta_m[ibatch], gl[ibatch], halfN[ibatch]+1); break;
+				case 1: g_l_1_cfft((double)ell[j], config[ibatch]->nu, eta_m[ibatch], gl[ibatch], halfN[ibatch]+1); break;
+				case 2: g_l_2_cfft((double)ell[j], config[ibatch]->nu, eta_m[ibatch], gl[ibatch], halfN[ibatch]+1); break;
+				default: printf("Integral Not Supported! Please choose config->derivative from [0,1,2].\n");
+			}
+
+			// calculate y arrays
+			for(int i=0; i<N_original[ibatch]; i++) {
+				y[ibatch][j][i] = (ell[j]+1.) / x[N_original[ibatch]-1-i];
+			}
+			const double y0 = y[ibatch][j][0];
+
+			for(int i=0; i<=halfN[ibatch]; i++) {
+				out_vary[ibatch][j][i] = conj(out[ibatch][i] * cpow(x0*y0/exp((N[ibatch]-N_original[ibatch])*dlnx), -I*eta_m[ibatch][i]) * gl[ibatch][i]);
+			}
+
+			fftw_execute(plan_backward[ibatch][j]);
+
+			for(int i=0; i<N_original[ibatch]; i++) {
+				Fy[ibatch][j][i] = out_ifft[ibatch][j][i+N_pad[ibatch]+N_extrap_hig[ibatch]] * sqrt(M_PI) / (4.*N[ibatch] * pow(y[ibatch][j][i], config[ibatch]->nu));
+			}
+		}
+	}
+
+	for (int ibatch; ibatch<Nbatch; ibatch++) {
+		for (int j=0; j<Nell; j++) {
+			fftw_destroy_plan(plan_backward[ibatch][j]);
+			fftw_free(out_vary[ibatch][j]);
+			free(out_ifft[ibatch][j]);
+		}
+		free(plan_backward[ibatch]);
+		free(out_vary[ibatch]);
+		free(out_ifft[ibatch]);
+		fftw_destroy_plan(plan_forward[ibatch]);
+		fftw_free(out[ibatch]);
+		free(fb[ibatch]);
+		free(gl[ibatch]);
+		free(eta_m[ibatch]);
+	}
+	free(plan_backward);
+	free(out_vary);
+	free(out_ifft);
+	free(plan_forward);
+	free(out);
+	free(fb);
+	free(gl);
+	free(eta_m);
+}
