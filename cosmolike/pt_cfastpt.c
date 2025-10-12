@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "cfastpt/cfastpt.h"
+#include "cfastpt/fpt_gbias.h"
+#include "cfastpt/fpt_ia.h"
 #include "basics.h"
 #include "cosmo3D.h"
 #include "pt_cfastpt.h"
