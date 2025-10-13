@@ -387,7 +387,7 @@ void cfftlog_ells_batch(double *x, double **fx, int Nbatch, long *N, config **co
 	double **fb = malloc(Nbatch * sizeof(double*));
 	for(int ibatch=0; ibatch<Nbatch; ibatch++) {
 		fb[ibatch] = malloc(N * sizeof(double));
-		for(int i=0; i<N_pad; i++) {
+		for(int i=0; i<N_pad[ibatch]; i++) {
 			fb[ibatch][i] = 0.;
 			fb[ibatch][N-1-i] = 0.;
 		}
@@ -494,7 +494,7 @@ void cfftlog_ells_batch(double *x, double **fx, int Nbatch, long *N, config **co
 		}
 	}
 
-	for (int ibatch; ibatch<Nbatch; ibatch++) {
+	for (int ibatch=0; ibatch<Nbatch; ibatch++) {
 		for (int j=0; j<Nell; j++) {
 			fftw_destroy_plan(plan_backward[ibatch][j]);
 			fftw_free(out_vary[ibatch][j]);
