@@ -1,4 +1,7 @@
 #include "cosmolike/generic_interface.hpp"
+#include <cerrno>
+#include <cstdlib>
+#include <cmath>
 #include <string_view>
 using namespace std::literals; // enables "sv" literal
 
@@ -40,6 +43,40 @@ using spdlog::critical;
 
 namespace cosmolike_interface
 {
+namespace
+{
+double parse_table_token(
+  const std::string& token,
+  const std::string& file_name,
+  const size_t line,
+  const size_t column)
+{
+  static constexpr std::string_view fname = "read_table"sv;
+  errno = 0;
+  char* end = nullptr;
+  const double value = std::strtod(token.c_str(), &end);
+
+  if (end == token.c_str() || (end != nullptr && *end != '\0')) {
+    critical("{}: failed to parse file {} at data line {}, column {}: token='{}' (invalid numeric token)",
+      fname, file_name, line, column, token);
+    exit(1);
+  }
+
+  if (errno == ERANGE) {
+    // Accept underflowed finite values, including denormals and flush-to-zero,
+    // which are harmless for these covariance tables.
+    if (std::isfinite(value)) {
+      return value;
+    }
+    critical("{}: failed to parse file {} at data line {}, column {}: token='{}' (out of range)",
+      fname, file_name, line, column, token);
+    exit(1);
+  }
+
+  return value;
+}
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -50,9 +87,10 @@ namespace cosmolike_interface
 
 arma::Mat<double> read_table(const std::string file_name)
 {
+  static constexpr std::string_view fname = "read_table"sv;
   std::ifstream input_file(file_name);
   if (!input_file.is_open()) {
-    critical("{}: file {} cannot be opened", "read_table", file_name);
+    critical("{}: file {} cannot be opened", fname, file_name);
     exit(1);
   }
 
@@ -74,7 +112,7 @@ arma::Mat<double> read_table(const std::string file_name)
   
   if (tmp.empty())
   {
-    critical("{}: file {} is empty", "read_table", file_name);
+    critical("{}: file {} is empty", fname, file_name);
     exit(1);
   }
   
@@ -109,9 +147,6 @@ arma::Mat<double> read_table(const std::string file_name)
     std::vector<std::string> words;
     words.reserve(100);
     
-    boost::trim_left(lines[0]);
-    boost::trim_right(lines[0]);
-
     boost::split(
       words,lines[0], 
       boost::is_any_of(" \t"),
@@ -123,7 +158,7 @@ arma::Mat<double> read_table(const std::string file_name)
     result.set_size(lines.size(), ncols);
     
     for (size_t j=0; j<ncols; j++)
-      result(0,j) = std::stod(words[j]);
+      result(0,j) = parse_table_token(words[j], file_name, 1, j + 1);
   }
 
   #pragma omp parallel for
@@ -131,9 +166,6 @@ arma::Mat<double> read_table(const std::string file_name)
   {
     std::vector<std::string> words;
     
-    boost::trim_left(lines[i]);
-    boost::trim_right(lines[i]);
-
     boost::split(
       words, 
       lines[i], 
@@ -142,17 +174,17 @@ arma::Mat<double> read_table(const std::string file_name)
     );
     
     if (words.size() != ncols)
-    {
+      {
       critical("{}: file {} is not well formatted"
                        " (regular table required)", 
-                       "read_table", 
+                       fname, 
                        file_name
                       );
       exit(1);
     }
     
     for (size_t j=0; j<ncols; j++)
-      result(i,j) = std::stod(words[j]);
+      result(i,j) = parse_table_token(words[j], file_name, i + 1, j + 1);
   };
   
   return result;
