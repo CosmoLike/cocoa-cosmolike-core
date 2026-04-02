@@ -61,15 +61,17 @@ double hb1nu(const double nu, const double a)
   return ans;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double fnu(const double nu, const double a)
 { // Halo bias based on peak-background split 
-  if (!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+  if (!(a>0) || !(a<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
-
-  int ans;
+  double ans;
   switch(like.halo_model[0])
   {
     case HMF_TINKER_2010:
@@ -94,9 +96,14 @@ double fnu(const double nu, const double a)
   return ans;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double conc(const double m, const double growfac_a) 
 {
-  int ans;
+  double ans;
   switch(like.halo_model[2])
   {
     case CONCENTRATION_BHATTACHARYA_2013:
@@ -114,6 +121,11 @@ double conc(const double m, const double growfac_a)
   return ans;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_for_bias_norm(double nu, void* params) 
 { // correction for halo mass cuts so large-scale 2h matches PT at all redshifts 
   double* ar = (double*) params;
@@ -121,22 +133,17 @@ double int_for_bias_norm(double nu, void* params)
   return hb1nu(nu, a) * fnu(nu, a);
 }
 
-double bias_norm_nointerp(
-    const double a, 
-    const int init
-  )
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double bias_norm_nointerp(const double a, const int init)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
-
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -144,16 +151,16 @@ double bias_norm_nointerp(
   }
 
   const double growfac_a = growfac(a);
-  const double nu_min = delta_c/(sqrt(sigma2(limits.M_min))*growfac_a);
-  const double nu_max = delta_c/(sqrt(sigma2(limits.M_max))*growfac_a);
+  const double nu_min = delta_c/(sqrt(sigma2(limits.halo_m_min))*growfac_a);
+  const double nu_max = delta_c/(sqrt(sigma2(limits.halo_m_max))*growfac_a);
 
   double ar[2] = {a, growfac_a};
 
   double res;
-  if (init == 1)
-    res = int_for_bias_norm((nu_min+nu_max)/2.0, (void*) ar);
-  else
-  {
+  if (init == 1) {
+    res = int_for_bias_norm(0.5*(nu_min+nu_max), (void*) ar);
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_for_bias_norm;
@@ -162,58 +169,64 @@ double bias_norm_nointerp(
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double bias_norm(const double a) 
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
   static double lim[3];
   
-  if (table == NULL || fdiff(cache[1], Ntable.random)) 
-  {
+  if (NULL == table  || fdiff(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double)*Ntable.N_a);
     lim[0] = limits.a_min; 
     lim[1] = 0.9999999;
     lim[2] = (lim[1] - lim[0]) / ((double) Ntable.N_a - 1.0);
   }
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = bias_norm_nointerp(lim[0], 1); 
-    }
-    #pragma GCC diagnostic pop
-
-    #pragma omp parallel for
-    for (int i=0; i<Ntable.N_a; i++) 
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+    (void) bias_norm_nointerp(lim[0], 1); // init static vars
+    #pragma omp parallel for schedule(static,1)
+    for (int i=0; i<Ntable.N_a; i++) {
       table[i] = bias_norm_nointerp(lim[0] + i*lim[2], 0);
+    }
     table[Ntable.N_a-1] = 1.0;
-    
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
-  return interpol1d(table, Ntable.N_a, lim[0], lim[1], lim[2], fmin(a,lim[1]-lim[2]));
+  return interpol1d(table, Ntable.N_a, lim[0], lim[1], lim[2], a);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double lognu0_gsl(double lnM, void* params __attribute__((unused))) 
 { 
   return log(delta_c/sqrt(sigma2(exp(lnM)))); 
 }
 
-double dlognudlogm(const double m) 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double dlognudlogm(const double M) 
 { // if sigma(z) \propto to D(z), then d\ln \nu/dlnM independent of z
   static double cache[MAX_SIZE_ARRAYS];
-  static double* table;
+  static double* table = NULL;
   static double lim[3];
 
-  if (table == 0 || fdiff(cache[1], Ntable.random))
+  if (NULL == table || fdiff(cache[1], Ntable.random))
   {
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double) * Ntable.N_M);
-    lim[0] = log(limits.M_min);
-    lim[1] = log(limits.M_max);
+    lim[0] = log(limits.halo_m_min);
+    lim[1] = log(limits.halo_m_max);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
   }
 
@@ -228,17 +241,12 @@ double dlognudlogm(const double m)
       F.function = &lognu0_gsl;
       F.params = (void*) ar;
 
-      int status = gsl_deriv_central(&F, lim[0] + i*lim[2], 
-        0.1*(lim[0] + i*lim[2]), &result, &abserr);
-      if (status) 
-      {
-        log_fatal(gsl_strerror(status));
-        exit(1);
-      }
+      int status = gsl_deriv_central(&F, lim[0]+i*lim[2], 
+                                    0.1*(lim[0]+i*lim[2]), &result, &abserr);
+      if (status) { log_fatal(gsl_strerror(status)); exit(1); }
       table[i] = result;
     }
-
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static,1)
     for (int i=1; i <Ntable.N_M; i++) 
     {
       double result, abserr;
@@ -248,20 +256,15 @@ double dlognudlogm(const double m)
       F.function = &lognu0_gsl;
       F.params = (void*) ar;
 
-      int status = gsl_deriv_central(&F, lim[0] + i*lim[2], 
-        0.1*(lim[0] + i*lim[2]), &result, &abserr);
-      if (status) 
-      {
-        log_fatal(gsl_strerror(status));
-        exit(1);
-      }
+      int status = gsl_deriv_central(&F, lim[0]+i*lim[2], 
+                                    0.1*(lim[0]+i*lim[2]), &result, &abserr);
+      if (status) { log_fatal(gsl_strerror(status)); exit(1); }
       table[i] = result;
     }
-
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }  
-  return interpol1d(table, Ntable.N_M, lim[0], lim[1], lim[2], log(m));
+  return interpol1d(table, Ntable.N_M, lim[0], lim[1], lim[2], log(M));
 }
 
 // ---------------------------------------------------------------------------
@@ -288,46 +291,42 @@ double u_nfw_c(
 
   gsl_sf_result SI_XU;
   int status = gsl_sf_Si_e(xu, &SI_XU);
-  if (status) 
-  {
-    log_fatal(gsl_strerror(status));
-    exit(1);
+  if (status) {
+    log_fatal(gsl_strerror(status)); exit(1);
   }
 
   gsl_sf_result SI_X;
   {
     int status = gsl_sf_Si_e(x, &SI_X);
-    if (status) 
-    {
-      log_fatal(gsl_strerror(status));
-      exit(1);
+    if (status) {
+      log_fatal(gsl_strerror(status)); exit(1);
     }
   }
 
   gsl_sf_result CI_XU;
   {
     int status = gsl_sf_Ci_e(xu, &CI_XU);
-    if (status) 
-    {
-      log_fatal(gsl_strerror(status));
-      exit(1);
+    if (status) {
+      log_fatal(gsl_strerror(status)); exit(1);
     }
   }
 
   gsl_sf_result CI_X;
   {
     int status = gsl_sf_Ci_e(x, &CI_X);
-    if (status) 
-    {
-      log_fatal(gsl_strerror(status));
-      exit(1);
+    if (status) {
+      log_fatal(gsl_strerror(status)); exit(1);
     }
   }
-
   return (sin(x)*(SI_XU.val - SI_X.val) 
           - sinl(c*x)/xu 
           + cos(x)*(CI_XU.val - CI_X.val))/(log(1. + c) - c/(1. + c));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double u_c(
     const double c, 
@@ -376,23 +375,21 @@ double u_g(
 
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double HOD_nc(const double m, const double a, const int ni)
 {
-  if (!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+  if (!(a>0) || !(a<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  { 
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) { 
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  if (nuisance.hod[ni][0] < 10 || nuisance.hod[ni][0] > 16)
-  {
-    log_fatal("HOD parameters in redshift bin %d not set", ni);
-    exit(1);
+  if (nuisance.hod[ni][0] < 10 || nuisance.hod[ni][0] > 16) {
+    log_fatal("HOD parameters in redshift bin %d not set", ni); exit(1);
   }
 
   const double x = (log10(m) - nuisance.hod[ni][0])/nuisance.hod[ni][1];
@@ -400,13 +397,10 @@ double HOD_nc(const double m, const double a, const int ni)
   gsl_sf_result ERF;
   {
     int status = gsl_sf_erf_e(x, &ERF);
-    if (status) 
-    {
-      log_fatal(gsl_strerror(status));
-      exit(1);
+    if (status) {
+      log_fatal(gsl_strerror(status)); exit(1);
     }
   }
-  
   return 0.5*(1.0 + ERF.val);
 }
 
@@ -416,23 +410,18 @@ double HOD_ns(
     const int ni
   )
 {
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  { 
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) { 
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  
-  const double x = (m - pow(10.0,nuisance.hod[ni][3]))/pow(10.0, nuisance.hod[ni][2]);
+  const double x = (m - pow(10.,nuisance.hod[ni][3]))/pow(10., nuisance.hod[ni][2]);
   const double ns = HOD_nc(m, a, ni)*pow(x, nuisance.hod[ni][4]);
   return (ns > 0) ? ns : 1.e-15;
 }
 
 double HOD_fc(const int ni)
 {
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   return (nuisance.hod[ni][5]) ? nuisance.hod[ni][5] : 1.0;
 }
@@ -452,13 +441,17 @@ double int_F0_KS(double x, void* params __attribute__((unused)))
   return x*x*pow(log(1.0 + x)/x, 1.0/(nuisance.gas[0] - 1.0));
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double F0_KS_nointerp(double c, const int init)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -470,9 +463,9 @@ double F0_KS_nointerp(double c, const int init)
   const double xmax = c;
   
   double res = 0.0;
-  
-  if (init == 1)
+  if (1 == init) {
     res = int_F0_KS((xmin + xmax)/2.0, (void*) ar);
+  }
   else
   {
     gsl_function F;
@@ -480,26 +473,33 @@ double F0_KS_nointerp(double c, const int init)
     F.function = int_F0_KS;
     res = gsl_integration_glfixed(&F, xmin, xmax, w);
   }
-
   return res;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double int_F_KS(double x, void* params)
 {
   double* ar = (double*) params;
-  const double y = ar[0];
-  
-  return (x*sinl(y*x)/y)*pow(log(1.0 + x)/x, 
-      nuisance.gas[0]/(nuisance.gas[0] - 1.0));
+  const double y = ar[0];  
+  return (x*sinl(y*x)/y)*
+         pow(log(1.0 + x)/x, nuisance.gas[0]/(nuisance.gas[0] - 1.0));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double F_KS_nointerp(double c, double krs, const int init) 
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -511,19 +511,22 @@ double F_KS_nointerp(double c, double krs, const int init)
   const double cmax = c;
 
   double res = 0.0;
-  
-  if (init == 1)
+  if (1 == init) {
     res = int_F_KS((cmin + cmax)/2.0, (void*) ar);
-  else
-  {
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_F_KS;
     res = gsl_integration_glfixed(&F, cmin, cmax, w);
   }
-
   return res;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double u_KS(double c, double k, const double rv)
 {
@@ -534,54 +537,58 @@ double u_KS(double c, double k, const double rv)
                             // lim[0][1] = cmax;  lim[1][1] = lnxmax;
                             // lim[0][2] = dc;    lim[1][2] = dlnx; 
  
-  if (table == NULL || fdiff(cache[1], Ntable.random))
-  {   
+  if (NULL == table || fdiff(cache[1], Ntable.random)) {   
     if (table != NULL) free(table); 
-    table = (double**) malloc2d(Ntable.halo_uKS_nc, Ntable.halo_uks_nx);
+    table = (double**) malloc2d(Ntable.halo_uks_nc, Ntable.halo_uks_nx);
     if (norm != NULL) free(norm); 
-    norm = (double*) malloc(sizeof(double)*Ntable.halo_uKS_nc);
+    norm = (double*) malloc1d(Ntable.halo_uks_nc);
 
-    lim[0][0] = limits.halo_uKS_cmin; 
-    lim[0][1] = limits.halo_uKS_cmax;
-    lim[0][2] = (lim[0][1] - lim[0][0])/((double) Ntable.halo_uKS_nc - 1.0);
-    lim[1][0] = log(limits.halo_uKS_xmin); // full range of possible k*R_200/c in the code
-    lim[1][1] = log(limits.halo_uKS_xmax); 
-    lim[1][2] = (lim[1][1] - lim[1][0])/((double) Ntable.halo_uks_nx - 1.0); 
+    lim[0][0] = limits.halo_uks_cmin; 
+    lim[0][1] = limits.halo_uks_cmax;
+    lim[0][2] = (lim[0][1] - lim[0][0])/((double) Ntable.halo_uks_nc - 1.);
+    lim[1][0] = log(limits.halo_uks_xmin); // full range of possible k*R_200/c in the code
+    lim[1][1] = log(limits.halo_uks_xmax); 
+    lim[1][2] = (lim[1][1] - lim[1][0])/((double) Ntable.halo_uks_nx - 1.); 
   }
 
-  if (fdiff(cache[0], nuisance.random_gas) || fdiff(cache[1], Ntable.random))
+  if (fdiff(cache[0], nuisance.random_gas) || fdiff(cache[1], Ntable.random)) 
   { 
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init  = F0_KS_nointerp(lim[0][0], 1);
-      init = F_KS_nointerp(lim[0][0], exp(lim[1][0]), 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for
-    for (int i=0; i<Ntable.halo_uKS_nc; i++) 
+    (void) F0_KS_nointerp(lim[0][0], 1);                 // init static vars
+    (void) F_KS_nointerp(lim[0][0],exp(lim[1][0]), 1);   // init static vars
+    #pragma omp parallel for schedule(static,1)
+    for (int i=0; i<Ntable.halo_uks_nc; i++) {
       norm[i] = F0_KS_nointerp(lim[0][0] + i*lim[0][2], 0);
-
-    #pragma omp parallel for collapse(2)
-    for (int i=0; i<Ntable.halo_uKS_nc; i++)
-      for (int j=0; j<Ntable.halo_uks_nx; j++) 
-        table[i][j] = F_KS_nointerp(lim[0][0] + i*lim[0][2], 
-                                    exp(lim[1][0] + j*lim[1][2]), 0)/norm[i];
-
+    }
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<Ntable.halo_uks_nc; i++) {
+      for (int j=0; j<Ntable.halo_uks_nx; j++) {
+        table[i][j] = F_KS_nointerp(lim[0][0]+i*lim[0][2], 
+                                    exp(lim[1][0]+j*lim[1][2]), 0)/norm[i];
+      }
+    }
     cache[0] = nuisance.random_gas; 
     cache[1] = Ntable.random;
   }
   return interpol2d(table, 
-    Ntable.halo_uKS_nc, lim[0][0], lim[0][1], lim[0][2], c, 
+    Ntable.halo_uks_nc, lim[0][0], lim[0][1], lim[0][2], c, 
     Ntable.halo_uks_nx, lim[1][0], lim[1][1], lim[1][2], log(k * rv/c));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double frac_bnd(double M)
 {
   const double M0 = pow(10.0, nuisance.gas[2]);
   return cosmology.Omega_b/(cosmology.Omega_m*(1.0+ pow(M0/M, nuisance.gas[1])));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double frac_ejc(double M)
 {
@@ -594,6 +601,11 @@ double frac_ejc(double M)
   
   return frac_bnd(M) - frac_star;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double u_y_bnd(double c, double k, double m, double a)
 { //unit: [G(M_solar/h)^2 / (c/H0)]
@@ -608,6 +620,11 @@ double u_y_bnd(double c, double k, double m, double a)
   return (2.0*nuisance.gas[5]/(3.0*a))*(mu_p/mu_e)*frac_bnd(m)*m*(m/rv)*u_KS(c, k, rv);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double u_y_ejc(double m)
 { // [m] = [Msun/h]
   const double num_p = 1.1892e57; // proton number in 1 solar mass, unit [1/Msun]
@@ -618,6 +635,11 @@ double u_y_ejc(double m)
   
   return (num_p * m * frac_ejc(m) / mu_e) * E_w; // final unit in [G(Msun/h)^2 / (c/H0)]
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double n_s_cmv(double a) 
 { 
@@ -641,20 +663,12 @@ double int_hm_funcs(double lnM, void* params)
   double* ar = (double*) params;
   
   const double a = ar[0];
-  if (!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
   const int ni = (int) ar[1];
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   const int func = (int) ar[2];
   const double growfac_a = (double) ar[3];
-
   const double m = exp(lnM);
   
   const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
@@ -697,6 +711,11 @@ double int_hm_funcs(double lnM, void* params)
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double ngal_nointerp(
     const int ni, 
     const double a, 
@@ -706,14 +725,10 @@ double ngal_nointerp(
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -722,13 +737,13 @@ double ngal_nointerp(
 
   double ar[4] = {a, (double) ni, (double) 0, growfac(a)};
   const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
-  const double lnMmax = log(limits.M_max);
+  const double lnMmax = log(limits.halo_m_max);
 
   double res = 0.0;
-  if (init == 1)
+  if (1 == init) {
     res = int_hm_funcs((lnMmin + lnMmax)/2.0, (void*) ar);
-  else
-  {
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_hm_funcs;
@@ -736,6 +751,11 @@ double ngal_nointerp(
   }
   return res;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double ngal(const int ni, const double a)
 {
@@ -760,28 +780,26 @@ double ngal(const int ni, const double a)
       fdiff(cache[2], nuisance.random_galaxy_bias) ||
       fdiff(cache[3], redshift.random_clustering))
   {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = ngal_nointerp(0, lim[0], 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for collapse(2)
-    for (int i=0; i<redshift.clustering_nbin; i++) 
-      for (int j=0; j<Ntable.N_a; j++) 
+    (void) ngal_nointerp(0, lim[0], 1);    
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<redshift.clustering_nbin; i++) {
+      for (int j=0; j<Ntable.N_a; j++) {
         table[j][i] = ngal_nointerp(i, lim[0] + j*lim[2], 0);
-
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
   }
-
-  if ((a < lim[0]) || (a > lim[1]))
-    return 0.0;
-  return interpol1d(table[ni], Ntable.N_a, lim[0], lim[1], lim[2], a);
+  return ((a < lim[0]) || (a > lim[1]))? 0.0 :
+    interpol1d(table[ni], Ntable.N_a, lim[0], lim[1], lim[2], a);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double hm_funcs_nointerp(
     const int ni, 
@@ -793,10 +811,8 @@ double hm_funcs_nointerp(
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
 
   if (w == NULL || fdiff(cache[0], Ntable.random))
@@ -809,7 +825,7 @@ double hm_funcs_nointerp(
 
   double ar[4] = {a, (double) ni, (double) func, growfac(a)}; 
   const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
-  const double lnMmax = log(limits.M_max);
+  const double lnMmax = log(limits.halo_m_max);
 
   double res = 0.0;
   if (init == 1)
@@ -824,6 +840,11 @@ double hm_funcs_nointerp(
   return (func == 1 || func == 2) ? res/ngal(ni, a) : res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double mmean_nointerp(
     const int ni, 
     const double a, 
@@ -832,6 +853,11 @@ double mmean_nointerp(
 {
   return hm_funcs_nointerp(ni, a, 1, init);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double fsat_nointerp(
     const int ni, 
@@ -842,6 +868,11 @@ double fsat_nointerp(
   return hm_funcs_nointerp(ni, a, 2, init);
 } 
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double bgal_nointerp(
     const int ni, 
     const double a, 
@@ -851,19 +882,23 @@ double bgal_nointerp(
   return hm_funcs_nointerp(ni, a, 3, init);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double bgal(const int ni, const double a)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static double lim[3]; // [0] = amin; [1] = amax; [2] = da
 
-  if (table == NULL || 
+  if (NULL == table || 
       fdiff(cache[1], Ntable.random) ||
-      fdiff(cache[3], redshift.random_clustering))  
+      fdiff(cache[3], redshift.random_clustering)) 
   {  
     if (table != NULL) free(table); 
     table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_a);
-    
     lim[0] = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
     lim[1] = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_a - 1.0);
@@ -871,20 +906,15 @@ double bgal(const int ni, const double a)
   if (fdiff(cache[0], cosmology.random) || 
       fdiff(cache[1], Ntable.random)    ||
       fdiff(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff(cache[3], redshift.random_clustering))
+      fdiff(cache[3], redshift.random_clustering)) 
   {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = bgal_nointerp(0, lim[0], 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for collapse(2)
-    for (int i=0; i<redshift.clustering_nbin; i++) 
-      for (int j=0; j<Ntable.N_a; j++) 
+    (void) bgal_nointerp(0, lim[0], 1); // init static vars  
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<redshift.clustering_nbin; i++) {
+      for (int j=0; j<Ntable.N_a; j++) {
         table[j][i] = bgal_nointerp(i, lim[0] + j*lim[2], 0);
-
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_galaxy_bias;
@@ -894,6 +924,11 @@ double bgal(const int ni, const double a)
     interpol1d(table[ni], Ntable.N_a, lim[0], lim[1], lim[2], a);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_for_I02_XY(double lnM, void* params) 
 {
   double* ar = (double*) params;
@@ -902,7 +937,6 @@ double int_for_I02_XY(double lnM, void* params)
   const double k2 = ar[2];
   const int XY = (int) ar[3];
   const double growfac_a = ar[4];
-
   const double m = exp(lnM);
   
   const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
@@ -932,12 +966,16 @@ double int_for_I02_XY(double lnM, void* params)
     }
     default:
     {
-      log_fatal("option not supported");
-      exit(1);
+      log_fatal("option not supported"); exit(1);
     }
   }
   return dNdlnM * u * (m/rhom) * (m/rhom);
 }  
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double I02_XY_nointerp(
     const double k1, 
@@ -950,8 +988,7 @@ double I02_XY_nointerp(
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -959,12 +996,13 @@ double I02_XY_nointerp(
   }
 
   double ar[5] = {a, k1, k2, func, growfac(a)};
-  const double lnMmin = log(limits.M_min);
-  const double lnMmax = log(limits.M_max);
+  const double lnMmin = log(limits.halo_m_min);
+  const double lnMmax = log(limits.halo_m_max);
 
   double res;
-  if (init == 1)
+  if (1 == init) {
     res = int_for_I02_XY((lnMmin + lnMmax)/2.0, (void*) ar);
+  }
   else
   {
     gsl_function F;
@@ -975,6 +1013,11 @@ double I02_XY_nointerp(
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_for_I11_X(double lnM, void* params) 
 {
   const double* ar = (double*) params;  
@@ -982,7 +1025,6 @@ double int_for_I11_X(double lnM, void* params)
   const double k = ar[1];
   const int func = (int) ar[2];
   const double growfac_a = ar[3];
-
   const double m = exp(lnM);
   
   const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
@@ -1007,12 +1049,16 @@ double int_for_I11_X(double lnM, void* params)
     }
     default:
     {
-      log_fatal("option not supported");
-      exit(1);
+      log_fatal("option not supported"); exit(1);
     }
   }
   return dNdlnM * u * (m/rhom) * hb1nu(nu, a)/bias_norm(a);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double I11_X_nointerp(
     const double k, 
@@ -1024,8 +1070,7 @@ double I11_X_nointerp(
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1033,14 +1078,14 @@ double I11_X_nointerp(
   }
 
   double ar[4] = {a, k, func, growfac(a)};
-  const double lnMmin = log(limits.M_min);
-  const double lnMmax = log(limits.M_max);
+  const double lnMmin = log(limits.halo_m_min);
+  const double lnMmax = log(limits.halo_m_max);
   
   double res;
-  if (init == 1)
+  if (1 == init) {
     res = int_for_I11_X((lnMmin + lnMmax)/2.0, (void*) ar);
-  else
-  {
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_for_I11_X;
@@ -1049,25 +1094,22 @@ double I11_X_nointerp(
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_for_G02(double lnM, void* param)
 {
   double* ar = (double*) param;
   
   const double k = ar[0];
   const double a = ar[1];
-  if (!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
   const int ni = (int) ar[2];
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   const double growfac_a = ar[3];
-
   const double m  = exp(lnM);
 
   const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
@@ -1081,10 +1123,13 @@ double int_for_G02(double lnM, void* param)
   const double nc = HOD_nc(m, a, ni);
   const double fc = HOD_fc(ni);
 
-
-
   return dNdlnM*(u*u*ns*ns + 2.0*u*ns*nc*fc);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double G02_nointerp(
     double k, 
@@ -1096,14 +1141,10 @@ double G02_nointerp(
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1111,14 +1152,14 @@ double G02_nointerp(
   }
 
   double ar[4] = {k, a, (double) ni, growfac(a)};
-  const double lnMmin = log(1.0e+8);
-  const double lnMmax = log(limits.M_max);
+  const double lnMmin = log(limits.halo_m_min);
+  const double lnMmax = log(limits.halo_m_max);
 
   double res;
-  if (init == 1)
+  if (1 == init) {
     res = int_for_G02((lnMmin + lnMmax)/2.0, (void*) ar);
-  else
-  {
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_for_G02;
@@ -1127,25 +1168,22 @@ double G02_nointerp(
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_GM02(double lnM, void* params)
 { // 1-halo galaxy-matter spectrum
   double* ar = (double*) params;
   
   const double k = ar[0];
   const double a = ar[1];
-  if (!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
   const int ni = (int) ar[2];
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   const double growfac_a = ar[3];
-
   const double m = exp(lnM);
 
   const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
@@ -1161,6 +1199,11 @@ double int_GM02(double lnM, void* params)
   return dNdlnM*(m/rhom)*u_c(c,k,m,a)*(u_g(c,k,m,a,ni)*ns + nc*fc);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double GM02_nointerp(
     double k, 
     double a, 
@@ -1171,14 +1214,12 @@ double GM02_nointerp(
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni);
     exit(1);
   }
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1187,13 +1228,13 @@ double GM02_nointerp(
 
   double ar[4] = {k, a, (double) ni, growfac(a)};
   const double lnMmin = log(10.)*(nuisance.hod[ni][0] - 1.0);
-  const double lnMmax = log(limits.M_max);
+  const double lnMmax = log(limits.halo_m_max);
 
   double res;
-  if (init == 1)
+  if (1 == init) {
     res = int_GM02((lnMmin + lnMmax)/2.0, (void*) ar);
-  else
-  {
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_GM02;
@@ -1235,9 +1276,8 @@ double p_xy_nointerp(
     case 1:
     { // PMY
       // convert to code unit, Table 2, 2009.01858
-      const double ks = 0.05618/pow(cosmology.sigma_8*a, 1.013)*cosmology.coverH0; 
+      const double ks = 0.05618/pow(cosmology.sigma_8*a,1.013)*cosmology.coverH0; 
       const double x = ks*ks*ks*ks;
-
       P1H  = I02*(1.0/(x + 1.0)); // suppress lowk (Eq17;2009.01858)
       I11X = I11_X_nointerp(k, a, 0, init);
       I11Y = I11_X_nointerp(k, a, 2, init);
@@ -1246,9 +1286,8 @@ double p_xy_nointerp(
     case 2:
     { // PYY
       // convert to code unit, Table 2, 2009.01858
-      const double ks = 0.05618/pow(cosmology.sigma_8*a, 1.013)*cosmology.coverH0; 
+      const double ks = 0.05618/pow(cosmology.sigma_8*a,1.013)*cosmology.coverH0; 
       const double x = ks*ks*ks*ks;
-      
       P1H  = I02*(1.0/(x + 1.0)); // suppress lowk (Eq17;2009.01858)
       I11X = I11_X_nointerp(k, a, func, init);
       I11Y = I11X;
@@ -1264,6 +1303,11 @@ double p_xy_nointerp(
   return P1H + (I11X * I11Y * p_lin(k, a));;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double p_mm(
     const double k, 
     const double a
@@ -1274,11 +1318,9 @@ double p_mm(
   static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
                            // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
 
-  if (table == NULL || fdiff(cache[1], Ntable.random))
-  {
+  if (NULL == table || fdiff(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
-    table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
-    
+    table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);   
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
@@ -1286,33 +1328,27 @@ double p_mm(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    { // p_xy_nointerp(k, a, func, init)
-      double init = p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for collapse(2)
-    for (int i=1; i<Ntable.N_a; i++) 
-      for (int j=0; j<Ntable.N_k_nlin; j++) 
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1); 
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=1; i<Ntable.N_a; i++) {
+      for (int j=0; j<Ntable.N_k_nlin; j++) { 
         table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
                                         lim[0][0] + i*lim[0][2], 0, 0));
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
-
-/*
-if (a < limits.a_min_hm){return Pdelta_halo(k,limits.a_min_hm)*pow(growfac(a)/growfac(limits.a_min_hm),2);}
-  if (a > 0.999){return Pdelta_halo(k,0.999)*pow(growfac(a)/growfac(0.999),2);}
-*/
   return exp(interpol2d(table, 
-    Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
-    Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
+                        Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
+                        Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double p_my(
     const double k, 
@@ -1324,11 +1360,9 @@ double p_my(
   static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
                            // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
 
-  if (table == NULL || fdiff(cache[1], Ntable.random))
-  {
+  if (NULL == table || fdiff(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin); 
-    
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
@@ -1340,27 +1374,27 @@ double p_my(
       fdiff(cache[1], Ntable.random) ||
       fdiff(cache[2], nuisance.random_gas))
   {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = p_xy_nointerp(exp(lim[1][0]), lim[0][0], 1, 1);
-    }
-    #pragma GCC diagnostic pop 
-    
-    #pragma omp parallel for collapse(2)
-    for (int i=1; i<Ntable.N_a; i++) 
-      for (int j=0; j<Ntable.N_k_nlin; j++) 
+    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 1, 1); // init static vars
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=1; i<Ntable.N_a; i++) {
+      for (int j=0; j<Ntable.N_k_nlin; j++) {
         table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
                                             lim[0][0] + i*lim[0][2], 1, 0));
-
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_gas;
   }
   return exp(interpol2d(table, 
-    Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
-    Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
+                        Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
+                        Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double p_yy(
     const double k, 
@@ -1369,14 +1403,12 @@ double p_yy(
 { 
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
-  static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
-                           // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
+  static double lim[2][3]; // lim[0][0]=amin, lim[0][1]=amax, lim[0][2]=da 
+                           // lim[1][0]=lnkmin, lim[1][1]=lnkmax, lim[1][2]=dlnk
 
-  if (table == NULL || fdiff(cache[1], Ntable.random))
-  {
+  if (NULL == table || fdiff(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
-    
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
@@ -1384,32 +1416,31 @@ double p_yy(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-
   if (fdiff(cache[0], cosmology.random) || 
       fdiff(cache[1], Ntable.random) ||
       fdiff(cache[2], nuisance.random_gas))
   { 
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = p_xy_nointerp(exp(lim[1][0]), lim[0][0], 2, 1);
-    }
-    #pragma GCC diagnostic pop   
-
-    #pragma omp parallel for collapse(2)
-    for (int i=1; i<Ntable.N_a; i++) 
-      for (int j=0; j<Ntable.N_k_nlin; j++) 
+    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 2, 1); // init static vars
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=1; i<Ntable.N_a; i++) {
+      for (int j=0; j<Ntable.N_k_nlin; j++) {
         table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
                                             lim[0][0] + i*lim[0][2], 2, 0));
-
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_gas;
   }
   return exp(interpol2d(table, 
-    Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
-    Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
+                        Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
+                        Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double p_gm_nointerp(
     const double k, 
@@ -1418,9 +1449,13 @@ double p_gm_nointerp(
     const int init
   )
 {
-  return Pdelta(k, a)*bgal(ni, a) + 
-            GM02_nointerp(k, a, ni, init)/ngal(ni, a);
+  return Pdelta(k, a)*bgal(ni, a) + GM02_nointerp(k, a, ni, init)/ngal(ni, a);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double p_gm(
     const double k, 
@@ -1438,15 +1473,13 @@ double p_gm(
   const int nbin = redshift.clustering_nbin;
   const int na = (int) Ntable.N_a/5.0; // range is the (\delta a) of a single bin
   
-  if (table == NULL || fdiff(cache[1], Ntable.random))
+  if (NULL == table || fdiff(cache[1], Ntable.random))
   {
     if (table != NULL) free(table);
     table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     if (lim != NULL) free(lim);
     lim = (double**) malloc2d(nbin+1, 3);
-
-    for (int l=0; l<redshift.clustering_nbin; l++) 
-    {
+    for (int l=0; l<redshift.clustering_nbin; l++) {
       lim[l][0] = amin_lens(l);
       lim[l][1] = amax_lens(l);
       lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.0);
@@ -1461,35 +1494,33 @@ double p_gm(
       fdiff(cache[2], nuisance.random_galaxy_bias) ||
       fdiff(cache[3], redshift.random_clustering))
   { 
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for collapse(3)
-    for (int l=0; l<redshift.clustering_nbin; l++) 
-      for (int i=0; i<na; i++) 
-        for (int j=0; j<Ntable.N_k_nlin; j++) 
+    (void) p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1); // init static vars
+    #pragma omp parallel for collapse(3) schedule(static,1)
+    for (int l=0; l<redshift.clustering_nbin; l++) {
+      for (int i=0; i<na; i++) {
+        for (int j=0; j<Ntable.N_k_nlin; j++) {
           table[l][i][j] = log(p_gm_nointerp(exp(lim[nbin][0] + j*lim[nbin][2]), 
-            lim[l][0] + i*lim[l][2], l, 0));
-
+                                             lim[l][0] + i*lim[l][2], l, 0));
+        }
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
   }
-
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  { // avoid segfault for accessing wrong array index
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   return (a < lim[ni][0] || a > lim[ni][1]) ? 0.0 : exp(interpol2d(table[ni], 
     na, lim[ni][0], lim[ni][1], lim[ni][2], a, 
     Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], log(k)));
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double p_gg_nointerp(
     const double k, 
@@ -1499,16 +1530,19 @@ double p_gg_nointerp(
     const int init
   )
 {
-  if (ni != nj)
-  {
+  if (ni != nj) {
     log_fatal("cross-tomography (ni,nj) = (%d,%d) bins not supported", ni, nj);
     exit(1);
   }
   const double bg = bgal(ni, a);
   const double ng = ngal(ni, a);
-  return Pdelta(k, a)*bg*bg + 
-    G02_nointerp(k, a, ni, init)/(ng*ng);
+  return Pdelta(k, a)*bg*bg + G02_nointerp(k, a, ni, init)/(ng*ng);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double p_gg(
     const double k, 
@@ -1523,66 +1557,54 @@ double p_gg(
                               //lim[redshift.clustering_nbin] = lnkmin; 
                               //lim[redshift.clustering_nbin] = lnkmax; 
                               //lim[redshift.clustering_nbin] = dlnk; 
-  
   const int nbin = redshift.clustering_nbin;
   const int na = (int) Ntable.N_a/5.0;
 
-  if (table == NULL || fdiff(cache[1], Ntable.random))
-  {
+  if (NULL == table || fdiff(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     if (lim != NULL) free(lim);
     lim = (double**) malloc2d(nbin+1, 3);
-
-    for (int l=0; l<redshift.clustering_nbin; l++) 
-    {
+    for (int l=0; l<redshift.clustering_nbin; l++) {
       lim[l][0] = amin_lens(l);
       lim[l][1] = amax_lens(l);
-      lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.0);
+      lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.);
     }
     lim[nbin][0] = log(limits.k_min_cH0);
     lim[nbin][1] = log(limits.k_max_cH0);
-    lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])/((double) Ntable.N_k_nlin - 1.0);
+    lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])/((double) Ntable.N_k_nlin - 1.);
   }
-
   if (fdiff(cache[0], cosmology.random) || 
       fdiff(cache[1], Ntable.random)    ||
       fdiff(cache[2], nuisance.random_galaxy_bias) ||
       fdiff(cache[3], redshift.random_clustering))
   { 
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      double init = p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for collapse(3)
-    for (int l=0; l<nbin; l++) 
-      for (int i=0; i<na; i++) 
-        for (int j=0; j<Ntable.N_k_nlin; j++) 
+    (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1); // init static vars
+    #pragma omp parallel for collapse(3) schedule(static,1)
+    for (int l=0; l<nbin; l++) {
+      for (int i=0; i<na; i++) {
+        for (int j=0; j<Ntable.N_k_nlin; j++) {
           table[l][i][j] = log(p_gg_nointerp(exp(lim[nbin][0]+j*lim[nbin][2]),
-            lim[l][0]+i*lim[l][2], l, l, 0));
-
+                                             lim[l][0]+i*lim[l][2], l, l, 0));
+        }
+      }
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
   }
-  
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  if (ni != nj)
-  {
+  if (ni != nj) {
     log_fatal("cross-tomography (ni,nj) = (%d,%d) bins not supported", ni, nj);
     exit(1);
   }  
-  return (a < lim[ni][0] || a > lim[ni][1]) ? 0.0 : exp(interpol2d(table[ni], 
-      na, lim[ni][0], lim[ni][1], lim[ni][2], a, 
-      Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], log(k)));
+  return (a < lim[ni][0] || a > lim[ni][1]) ? 0.0 : exp(
+    interpol2d(table[ni], 
+               na, lim[ni][0], lim[ni][1], lim[ni][2], a, 
+               Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], log(k)));
 }
 
 // ---------------------------------------------------------------------------

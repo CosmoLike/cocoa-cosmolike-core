@@ -99,6 +99,7 @@ void get_FPT_IA(void)
     for (int i=0; i<FPTIA.N; i++) {
       FPTIA.tab[7][i] *= 4.;
     }
+    
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

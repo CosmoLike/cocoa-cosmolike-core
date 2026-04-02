@@ -15,10 +15,10 @@ typedef struct
   double a_min_hm;
   double k_min_cH0;
   double k_max_cH0;
-  double M_min;
-  double M_max;
+  
   int LMIN_tab;
   int LMAX_NOLIMBER;
+  // ---------------------------------------------------
   // ---------------------------------------------------
   // CLUSTER ROUTINES (ALPHA STAGE)
   // ---------------------------------------------------
@@ -28,16 +28,24 @@ typedef struct
   double binned_P_lambda_obs_given_M_zmax_table;
   double SDSS_P_lambda_obs_given_M_true_lambda_min;
   double SDSS_P_lambda_obs_given_M_true_lambda_max;
-  double halo_exclusion_k_min;
-  double halo_exclusion_k_max;
-  double halo_exclusion_k_min_hankel;
-  double halo_exclusion_k_max_hankel;
-  double halo_exclusion_R_min;
-  double halo_exclusion_R_max;
-  double halo_uKS_cmin; // halo.c u_KS(double c, double k, double rv)
-  double halo_uKS_cmax; // halo.c u_KS(double c, double k, double rv)
-  double halo_uKS_xmin; // halo.c u_KS(double c, double k, double rv)
-  double halo_uKS_xmax; // halo.c u_KS(double c, double k, double rv)
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // COSMO3D MODEL
+  // ---------------------------------------------------
+  // --------------------------------------------------- 
+  double sigma2_m_min;
+  double sigma2_m_max;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // HALO MODEL
+  // ---------------------------------------------------
+  // --------------------------------------------------- 
+  double halo_m_min;
+  double halo_m_max;
+  double halo_uks_xmin;
+  double halo_uks_xmax;
+  double halo_uks_cmin;
+  double halo_uks_cmax;
 } lim;
 
 typedef struct 
@@ -83,15 +91,30 @@ typedef struct
   int high_def_integration;
   // ---------------------------------------------------
   // ---------------------------------------------------
+  // CONTROL NUM POINTS EVALUATED ON LIMBER DERIVATIVES
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  int dCX_dlnk_nlnk;
+  double dCX_dlnk_kmin;
+  double dCX_dlnk_kmax;
+  // ---------------------------------------------------
+  // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED BY FASPT
   // ---------------------------------------------------
   // ---------------------------------------------------
   int FPTboost;
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
+  // HALO MODEL
+  // ---------------------------------------------------
+  // ---------------------------------------------------  
+  int halo_uks_nc;
+  int halo_uks_nx;
   // ---------------------------------------------------
   // ---------------------------------------------------
+  // HALO MODEL
+  // ---------------------------------------------------
+  // ---------------------------------------------------  
   int N_a_halo_exclusion;        // N_a for binned_p_cc_incl_halo_exclusion (cluster_util.c)
   int N_k_halo_exclusion;        // N_k for binned_p_cc_incl_halo_exclusion (cluster_util.c)
   int N_k_hankel_halo_exclusion; // N for 3D Hankel Transform (pk_to_xi and xi_to_pk)
@@ -99,8 +122,6 @@ typedef struct
   int binned_P_lambda_obs_given_M_size_z_table;
   int binned_P_lambda_obs_given_M_size_M_table;
   int binned_p_cm_size_a_table;
-  int halo_uKS_nc;               // halo.c u_KS(double c, double k, double rv)
-  int halo_uks_nx;               // halo.c u_KS(double c, double k, double rv)
 } Ntab;
 
 typedef struct
@@ -369,9 +390,9 @@ typedef struct
 
 typedef struct 
 {
-  int shear_Npowerspectra;       // number of shear-shear tomography power spectra
-  int ggl_Npowerspectra;         // number of galaxy-galaxy lensing tomography power spectra
-  int clustering_Npowerspectra;  // number of galaxy-galaxy clustering tomography power spectra
+  int shear_Npowerspectra;       // num shear-shear tomo power combinations
+  int ggl_Npowerspectra;         // num galaxy-galaxy lensing tomo combinations
+  int clustering_Npowerspectra;  // num galaxy-galaxy clustering tomo combinations
   int* ggl_exclude;              // l-s pairs that are excluded in ggl
   int N_ggl_exclude;             // number of l-s ggl pairs excluded
 } tomopara;

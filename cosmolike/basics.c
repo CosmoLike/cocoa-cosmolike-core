@@ -30,17 +30,14 @@
 gsl_interp* malloc_gsl_interp(const int n)
 {
   gsl_interp* result;
-
   if (Ntable.photoz_interpolation_type == 0)
     result = gsl_interp_alloc(gsl_interp_cspline, n);
   else if (Ntable.photoz_interpolation_type == 1)
     result = gsl_interp_alloc(gsl_interp_linear, n);
   else
     result = gsl_interp_alloc(gsl_interp_steffen, n);
-
   if (result == NULL) {
-    log_fatal("array allocation failed");
-    exit(1);
+    log_fatal("array allocation failed"); exit(1);
   }
   return result;
 }

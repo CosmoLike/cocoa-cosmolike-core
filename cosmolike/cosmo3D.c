@@ -128,7 +128,6 @@ double a_chi(const double io_chi)
   const double dy = (chi                   - cosmology.chi[1][j])/
                     (cosmology.chi[1][j+1] - cosmology.chi[1][j]);
   double z  = cosmology.chi[0][j] + dy*(cosmology.chi[0][j+1]-cosmology.chi[0][j]);
-
   return 1.0/(1.0+z);
 }
 
@@ -508,6 +507,10 @@ double MG_Sigma(double a __attribute__((unused))) {
   return 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double int_for_sigma2(double x, void* params) // inner integral
 {
@@ -527,17 +530,21 @@ double int_for_sigma2(double x, void* params) // inner integral
   return PK*tmp*tmp/(ar[0] * 2.0 * M_PI * M_PI);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double sigma2_nointerp(
     const double M, 
     const double a, 
-    const int init_static_vars_only
+    const int init
   ) 
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
-  {
+  if (NULL == w || fdiff(cache[0], Ntable.random)) {
     const size_t szint = 500 + 500 * (Ntable.high_def_integration);
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -549,10 +556,10 @@ double sigma2_nointerp(
   const double xmax = 14.1;
 
   double res;
-  if (init_static_vars_only == 1)
+  if (1 == init) {
     res = int_for_sigma2((xmin+xmax)/2.0, (void*) ar);
-  else
-  {
+  }
+  else {
     gsl_function F;
     F.params = (void*) ar;
     F.function = int_for_sigma2;
@@ -561,33 +568,30 @@ double sigma2_nointerp(
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double sigma2(const double M) 
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double* table;
   static double lim[3];
 
-  if (table == NULL || fdiff(cache[1], Ntable.random))
-  {
+  if (NULL == table || fdiff(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double)*Ntable.N_M);
-    lim[0] = log(limits.M_min);
-    lim[1] = log(limits.M_max);
+    lim[0] = log(limits.halo_m_min);
+    lim[1] = log(limits.halo_m_max);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
   } 
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    { // sigma2_nointerp(M, a, init_static_vars_only) 
-      double init = sigma2_nointerp(exp(lim[0]), 1.0, 1);
-    }
-    #pragma GCC diagnostic pop
-    
-    #pragma omp parallel for
-    for (int i=0; i<Ntable.N_M; i++) 
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+    (void) sigma2_nointerp(exp(lim[0]), 1.0, 1);    
+    #pragma omp parallel for schedule(static,1)
+    for (int i=0; i<Ntable.N_M; i++) {
       table[i] = log(sigma2_nointerp(exp(lim[0] + i*lim[2]), 1.0, 0));
-    
+    }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

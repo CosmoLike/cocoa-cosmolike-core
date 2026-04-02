@@ -12,19 +12,13 @@
 #include "redshift_spline.h"
 #include "structs.h"
 
-double W_kappa(
-    const double a, 
-    const double fK, 
-    const int nz
-  ) 
+double W_kappa(const double a, const double fK, const int nz) 
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (nz < 0 || nz > redshift.shear_nbin - 1) 
-  {
+  if (nz < 0 || nz > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", nz);
     exit(1);
   }
@@ -33,13 +27,11 @@ double W_kappa(
 
 double W2_kappa(double a, double fK, int nz) 
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (nz < 0 || nz > redshift.shear_nbin - 1) 
-  {
+  if (nz < 0 || nz > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", nz);
     exit(1);
   }
@@ -49,14 +41,12 @@ double W2_kappa(double a, double fK, int nz)
 
 double W_mag(double a, double fK, int nz) 
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (nz < 0 || nz > redshift.clustering_nbin - 1) 
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nz, redshift.clustering_nbin);
+  if (nz < 0 || nz > redshift.clustering_nbin - 1) {
+    log_fatal("invalid bin input ni = %d", nz);
     exit(1);
   }
   return (1.5 * cosmology.Omega_m * fK / a) * g_lens(a, nz);
@@ -64,13 +54,11 @@ double W_mag(double a, double fK, int nz)
 
 double W_gal(double a, int ni, double hoverh0) 
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) 
-  {
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
   }
@@ -80,25 +68,21 @@ double W_gal(double a, int ni, double hoverh0)
 
 double W_source(double a, int ni, double hoverh0)
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (ni < 0 || ni > redshift.shear_nbin - 1) 
-  {
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
   }
-
   const double z = 1.0 / a - 1.0;
   return zdistr_photoz(z, ni) * hoverh0;
 }
 
 double f_rsd(double a) 
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
@@ -108,18 +92,15 @@ double f_rsd(double a)
 
 double W_RSD(double l, double a0, double a1, int ni) 
 {
-  if (!(a0>0) || !(a0<1)) 
-  {
+  if (!(a0>0) || !(a0<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (!(a1>0) || !(a1<1)) 
-  {
+  if (!(a1>0) || !(a1<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
-  if (ni < -1 || ni > redshift.clustering_nbin - 1) 
-  {
+  if (ni < -1 || ni > redshift.clustering_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
   }
@@ -134,8 +115,7 @@ double W_RSD(double l, double a0, double a1, int ni)
 
 double W_k(double a, double fK) 
 {
-  if (!(a>0) || !(a<1)) 
-  {
+  if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
   }
@@ -150,40 +130,3 @@ double W_y(double a) // efficiency weight function for Compton-y
   return sigma_Th/(E_e*a*a); //  dim = [comoving L]^2 / [Energy], 
                              // units = [c/H0]^2 / [G(M_solar/h)^2/(c/H0)]
 }
-
-/*
-double W_cluster(int nz, double a, double hoverh0)
-{
-  if(!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
-  const double z = 1. / a - 1.;
-  return zdistr_cluster(nz, z)*hoverh0;
-}
-*/
-
-/*
-double W_mag_cluster(double a, double fK, int nz, int nl)
-{
-  if(!(a>0) || !(a<1)) 
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
-  if(nz < -1 || nz > redshift.cluster_nbin - 1) 
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nz, tomo.cluster_Nbin);
-    exit(1);
-  }
-  if(nl < 0 || nl > Cluster.N200_Nbin - 1) 
-  {
-    log_fatal("invalid bin input ni = %d (max %d)", nl, Cluster.N200_Nbin);
-    exit(1);
-  } 
-  
-  double wmag = (1.5 * cosmology.Omega_m * fK / a)  * g_lens_cluster(a, nz, nl);
-  return wmag;
-}
-*/

@@ -16,7 +16,10 @@ void cfftlog(double *x, double *fx, long N, config *config, int ell, double *y, 
 	long N_pad = config->N_pad;
 	N += 2*N_pad;
 
-	if(N % 2) {printf("Please use even number of x !\n"); exit(0);}
+	if(N % 2) {
+		printf("Please use even number of x !\n"); 
+		exit(0);
+	}
 	long halfN = N/2;
 
 	double x0, y0;

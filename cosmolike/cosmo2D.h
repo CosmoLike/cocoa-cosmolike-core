@@ -22,7 +22,12 @@ extern "C" {
 
 // ss in real space
 double xi_pm_tomo(
-    const int pm, const int nt, const int ni, const int nj, const int limber);
+    const int pm, 
+    const int nt, 
+    const int ni, 
+    const int nj, 
+    const int limber
+  );
 
 // gs in real space
 double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber);
@@ -41,7 +46,12 @@ double w_ks_tomo(const int nt, const int ni, const int limber);
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-double C_ss_tomo_limber(const double l, const int ni, const int nj, const int EE);
+double C_ss_tomo_limber(
+    const double l, 
+    const int ni, 
+    const int nj, 
+    const int EE
+  );
 
 double C_gs_tomo_limber(const double l, const int ni, const int nj);
 
@@ -65,8 +75,13 @@ double C_yy_limber(const double l);
 // Non-Interpolated Version (Will compute the Integral at every call)
 // ----------------------------------------------------------------------------
 
-double C_ss_tomo_limber_nointerp(const double l, const int ni, const int nj, 
-  const int EE, const int init);
+double C_ss_tomo_limber_nointerp(
+    const double l, 
+    const int ni, 
+    const int nj, 
+    const int EE, 
+    const int init
+  );
 
 double C_gs_tomo_limber_nointerp(const double l, const int ni, 
   const int nj, const int init);

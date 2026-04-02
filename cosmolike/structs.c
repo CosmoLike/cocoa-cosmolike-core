@@ -41,10 +41,9 @@ lim limits =
   .a_min = 1.0/(1.0 + 40.0),    // a_min (z = 40, needed for CMB lensing)
   .k_min_cH0 = 2.e-2,           // k_min_cH0
   .k_max_cH0 = 3.e+6,           // k_max_cH0
-  .M_min = 1.0e+6,              // M_min
-  .M_max = 1.0e+17,             // M_max
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
+/*
   .cluster_util_log_M_min = 12.0,
   .cluster_util_log_M_max = 15.9,
   .binned_P_lambda_obs_given_M_zmin_table = 0.20,
@@ -57,10 +56,15 @@ lim limits =
   .halo_exclusion_k_max_hankel = 1.0E8,
   .halo_exclusion_R_min = 0.0,
   .halo_exclusion_R_max = 15.0/2997.,
-  .halo_uKS_cmin = 0.1,     // halo.c u_KS(double c, double k, double rv)
-  .halo_uKS_cmax = 50.0,    // halo.c u_KS(double c, double k, double rv)
-  .halo_uKS_xmin = 1e-10,   // halo.c u_KS(double c, double k, double rv)
-  .halo_uKS_xmax = 5e3      // halo.c u_KS(double c, double k, double rv)
+*/
+  .sigma2_m_min = 1.0e+6,
+  .sigma2_m_max = 1.0e+17,
+  .halo_m_min = 1.0e+6,     // halo.c M_min
+  .halo_m_max = 1.0e+17,     // halo.c M_max
+  .halo_uks_cmin = 0.1,     // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_cmax = 50.0,    // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_xmin = 1e-10,   // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_xmax = 5e3      // halo.c u_KS(double c, double k, double rv)
 };
 
 Ntab Ntable;
@@ -205,7 +209,6 @@ void reset_nuisance_struct(void)
   nuisance.random_ia = 0.0;
   nuisance.random_photoz_shear = 0.0;
   nuisance.random_photoz_clustering = 0.0;
-
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
     nuisance.shear_calibration_m[i] = 0.0;
     nuisance.gc[i] = 0.0;
@@ -254,18 +257,21 @@ void reset_cmb_struct(void)
 
 void reset_Ntable_struct(void)
 {
-  Ntable.LMAX     = 50000;
-  Ntable.random   = 0.0;
-  Ntable.N_a      = 225;                   // N_a       
-  Ntable.N_k_lin  = 500;                   // N_k_lin
-  Ntable.N_k_nlin = 500;                   // N_k_nlin
-  Ntable.N_ell    = 300;                   // N_ell      
-  Ntable.Ntheta   = 225;                   // N_theta  
-  Ntable.N_M      = 1000;                  // N_M, M = mass (Halo Model)
-  Ntable.NL_Nchi  = 500;                   // Cosmo2D - NL = NonLimber (NL_Nchi)
+  Ntable.LMAX  = 50000;
+  Ntable.random = 0.0;
+  Ntable.N_a       = 225;            // N_a       
+  Ntable.N_k_lin   = 500;            // N_k_lin
+  Ntable.N_k_nlin  = 500;            // N_k_nlin
+  Ntable.N_ell     = 300;            // N_ell      
+  Ntable.Ntheta    = 225;            // N_theta   
+  Ntable.N_M = 1000;                 // N_M, M = mass (Halo Model)
+  Ntable.NL_Nchi = 500;              // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.photoz_interpolation_type = 0;
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
+  Ntable.dCX_dlnk_nlnk = 190;
+  Ntable.dCX_dlnk_kmin = 1.e-5;
+  Ntable.dCX_dlnk_kmax = 1.e2;
 }
 
 /*

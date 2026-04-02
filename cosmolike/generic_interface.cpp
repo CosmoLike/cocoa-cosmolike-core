@@ -303,15 +303,17 @@ void init_accuracy_boost(
   )
 {
   static constexpr std::string_view fname = "init_accuracy_boost"sv;
+  static int cache[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS]; // standard: static vars init to zero
   debug("{}: {}", fname, errbegins);
-  static int N_a = 0;
-  static int N_ell = 0;
 
-  if (0 == N_a) N_a = Ntable.N_a;
-  Ntable.N_a = static_cast<int>(ceil(N_a*accuracy_boost));
+  if (0 == cache[0]) cache[0] = Ntable.N_a;
+  Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
   
-  if (0 == N_ell) N_ell = Ntable.N_ell;
-  Ntable.N_ell = static_cast<int>(ceil(N_ell*accuracy_boost));
+  if (0 == cache[1]) cache[1] = Ntable.N_ell;
+  Ntable.N_ell = static_cast<int>(ceil(cache[1]*accuracy_boost));
+
+  if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk;
+  Ntable.dCX_dlnk_nlnk = static_cast<int>(ceil(cache[2]*accuracy_boost));
 
   if (accuracy_boost>1) {
     Ntable.FPTboost = static_cast<int>(accuracy_boost-1.0);

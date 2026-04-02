@@ -33,6 +33,7 @@ namespace py = pybind11;
 #include "cosmolike/basics.h"
 #include "cosmolike/bias.h"
 #include "cosmolike/IA.h"
+#include "cosmolike/cosmo2D_scuts.h"
 #include "cosmolike/cosmo2D.h"
 #include "cosmolike/redshift_spline.h"
 #include "cosmolike/structs.h"
@@ -53,10 +54,6 @@ static int has_b2_galaxies()
   return res;
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -93,6 +90,11 @@ arma::Col<double> get_binning_fourier_space()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 py::tuple xi_pm_tomo_cpp()
 { 
@@ -117,6 +119,9 @@ py::tuple xi_pm_tomo_cpp()
   return py::make_tuple(carma::cube_to_arr(xp), carma::cube_to_arr(xm));
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 arma::Cube<double> w_gammat_tomo_cpp()
 {  
   arma::Cube<double> result(Ntable.Ntheta,
@@ -130,6 +135,9 @@ arma::Cube<double> w_gammat_tomo_cpp()
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 arma::Cube<double> w_gg_tomo_cpp()
 {
@@ -183,12 +191,13 @@ py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
   );
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
 {
   if (!(l.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ss_tomo_limber_cpp", 
-                     l.n_elem);
+    spdlog::critical("{}: l array size = {}", "C_ss_tomo_limber_cpp", l.n_elem);
     exit(1);
   }
   arma::Cube<double> EE(l.n_elem,
@@ -199,13 +208,10 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
                         redshift.shear_nbin,
                         redshift.shear_nbin,
                         arma::fill::zeros);
-  { // init static variables
-    const int ni = Z1(0);
-    const int nj = Z2(0);
-    (void) C_ss_tomo_limber_nointerp(l(0), ni, nj, 1, 1);
-    (void) C_ss_tomo_limber_nointerp(l(0), ni, nj, 0, 1);
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static vars
+    (void) C_ss_tomo_limber_nointerp(l(0), Z1(nz), Z2(nz), 1, 1); // EE
+    (void) C_ss_tomo_limber_nointerp(l(0), Z1(nz), Z2(nz), 0, 1); // BB
   }
-
   #pragma omp parallel for collapse(2)
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
     for (int i=0; i<static_cast<int>(l.n_elem); i++) {
@@ -215,9 +221,10 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
       BB(i, ni, nj) = C_ss_tomo_limber_nointerp(l(i), ni, nj, 0, 0);
     }
   }
-  return py::make_tuple(carma::cube_to_arr(EE),carma::cube_to_arr(BB));
+  return py::make_tuple(carma::cube_to_arr(EE), carma::cube_to_arr(BB));
 }
 
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
@@ -231,10 +238,16 @@ arma::Mat<double> gs_bins()
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double C_gs_tomo_limber_cpp(const double l, const int ni, const int nj)
 {
   return C_gs_tomo_limber_nointerp(l, ni, nj, 0);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
 {
@@ -248,8 +261,8 @@ arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
                             redshift.clustering_nbin, 
                             redshift.shear_nbin,
                             arma::fill::zeros);
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static variables
-    (void) C_gs_tomo_limber_nointerp(l(0),ZL(nz),ZS(nz),1);
+  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static vars
+    (void) C_gs_tomo_limber_nointerp(l(0), ZL(nz), ZS(nz), 1);
   }
   #pragma omp parallel for collapse(2)
   for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
@@ -262,11 +275,14 @@ arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double C_gg_tomo_limber_cpp(const double l, const int nz)
 {
   return C_gg_tomo_limber_nointerp(l, nz, nz, 0);
 }
+
+// ---------------------------------------------------------------------------
 
 arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
 {
@@ -280,7 +296,7 @@ arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
                             redshift.clustering_nbin,
                             redshift.clustering_nbin,
                             arma::fill::zeros);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
     (void) C_gg_tomo_limber_nointerp(l(0), 0, 0, 1);
   }
   #pragma omp parallel for collapse(2)
@@ -291,6 +307,9 @@ arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
 {
@@ -320,6 +339,7 @@ arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double C_gk_tomo_limber_cpp(const double l, const int ni)
 {
@@ -335,7 +355,7 @@ arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
     exit(1);
   }
   arma::Mat<double> result(l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
     (void) C_gk_tomo_limber_nointerp(l(0), nz, 1);
   }
   #pragma omp parallel for collapse(2)
@@ -356,6 +376,9 @@ double C_ks_tomo_limber_cpp(const double l, const int ni)
   return C_ks_tomo_limber_nointerp(l, ni, 0);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
 {
   if (l.n_elem == 0) {
@@ -365,7 +388,7 @@ arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
     exit(1);
   }
   arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static variables
+  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static vars
     (void) C_ks_tomo_limber_nointerp(l(0), nz, 1);
   }
   #pragma omp parallel for collapse(2)
@@ -441,11 +464,15 @@ arma::Mat<double> C_ys_tomo_limber_cpp(const arma::Col<double> l)
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double C_kk_limber_cpp(const double l)
 {
   return C_kk_limber_nointerp(l, 0);
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
 {
@@ -456,9 +483,7 @@ arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
     exit(1);
   }
   arma::Col<double> result(l.n_elem);
-  { // init static variables
-    (void) C_kk_limber_nointerp(l(0), 1);
-  }
+  (void) C_kk_limber_nointerp(l(0), 1);  // init static vars
   #pragma omp parallel for 
   for (int i=0; i<static_cast<int>(l.n_elem); i++) {
     result(i) = C_kk_limber_nointerp(l(i), 0);
@@ -466,6 +491,7 @@ arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
   return result;
 }
 
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
@@ -540,6 +566,9 @@ double int_for_C_ss_EE_tomo_limber_cpp(
   return int_for_C_ss_tomo_limber(a, (void*) ar); 
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 arma::Cube<double> int_for_C_ss_EE_tomo_limber_cpp(
     arma::Col<double> a, 
     arma::Col<double> l
@@ -554,7 +583,7 @@ arma::Cube<double> int_for_C_ss_EE_tomo_limber_cpp(
   }
   arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
-    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0),l(0),Z1(nz),Z2(nz));
+    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
   }
   #pragma omp parallel for collapse(3)
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
@@ -566,6 +595,9 @@ arma::Cube<double> int_for_C_ss_EE_tomo_limber_cpp(
   }
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double int_for_C_ss_BB_tomo_limber_cpp(
     const double a, 
@@ -605,6 +637,9 @@ arma::Cube<double> int_for_C_ss_BB_tomo_limber_cpp(
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 py::tuple int_for_C_ss_tomo_limber_cpp(
     const double a, 
     const double l, 
@@ -630,9 +665,9 @@ py::tuple int_for_C_ss_tomo_limber_cpp(
   }
   arma::Cube<double> EE(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
   arma::Cube<double> BB(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  { // init static variables
-    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(0), Z2(0));
-    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(0), Z2(0));
+  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static vars
+    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
+    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
   }
   #pragma omp parallel for collapse(3)
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
@@ -674,7 +709,7 @@ arma::Cube<double> int_for_C_gs_tomo_limber_cpp(
     exit(1);
   }
   arma::Cube<double> result(a.n_elem, l.n_elem, tomo.ggl_Npowerspectra);
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static variables
+  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static vars
     (void) int_for_C_gs_tomo_limber_cpp(a(0),l(0),ZL(nz),ZS(nz));
   }
   #pragma omp parallel for collapse(3)
@@ -716,7 +751,7 @@ arma::Cube<double> int_for_C_gg_tomo_limber_cpp(
     exit(1);
   }
   arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
+  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
     (void) int_for_C_gg_tomo_limber_cpp(a(0), l(0), nz, nz);
   }
   #pragma omp parallel for collapse(3)
@@ -1141,7 +1176,6 @@ arma::Mat<double> int_for_C_yy_limber_cpp(
 
 */
 
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
