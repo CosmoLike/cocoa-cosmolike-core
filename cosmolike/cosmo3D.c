@@ -521,10 +521,8 @@ double int_for_sigma2(double x, void* params) // inner integral
   
   gsl_sf_result J1;
   int status = gsl_sf_bessel_j1_e(x, &J1);
-  if (status) 
-  {
-    log_fatal(gsl_strerror(status));
-    exit(1);
+  if (status) {
+    log_fatal(gsl_strerror(status)); exit(1);
   }
   const double tmp = 3.0*J1.val/ar[0];
   return PK*tmp*tmp/(ar[0] * 2.0 * M_PI * M_PI);

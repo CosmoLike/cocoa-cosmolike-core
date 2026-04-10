@@ -140,6 +140,11 @@ static double tab_d1d3[800] = {
  1.375245e-10,  1.570844e-10,  6.863663e-11, -4.041614e-11,  8.088534e-11,  4.535038e-11,
 -7.937927e-11,  3.631226e-11,  2.014300e-10,  2.837585e-11};
 
+static double tab_d1d3_lnkmin = -3.5072499433953035; // kmin = 1e-5 h/Mpc
+static double tab_d1d3_lnkmax = 14.890404949627046; // kmax = 1e3 h/Mpc
+static int tab_d1d3_Nk = 800; 
+static double tab_d1d3_dlnk = (14.890404949627046 + 3.5072499433953035) / 800.0;
+
 void get_FPT_IA(void);
 
 void get_FPT_bias(void);

@@ -864,8 +864,8 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   struct chis chidchi = chi_all(a);
   const double growfac_a = growfac(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
-  const double k = ell/fK;
+  const double fK = f_K(chidchi.chi); // (Mpc/h)/(c/H0=100) (dimensionless)
+  const double k = ell/fK; // (c/H0)/(Mpc/h)
   
   const double WK1 = W_kappa(a, fK, n1);
   const double WK2 = W_kappa(a, fK, n2);
@@ -880,8 +880,10 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   switch(nuisance.IA_MODEL) 
   {
     case IA_MODEL_TATT:
-    { 
-      get_FPT_IA();
+    {
+      if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
+        get_FPT_IA();
+      }
 
       const double lnk = log(k);
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
@@ -908,7 +910,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
         
         const double ta_dE1 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[2], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
+
         const double ta_dE2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[3], FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
@@ -917,7 +919,7 @@ double int_for_C_ss_tomo_limber(double a, void* params)
         
         const double mixA = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[6], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
+
         const double mixB = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
           g4*interpol1d(FPTIA.tab[7], FPTIA.N, lim[0], lim[1], lim[2], lnk);
         
@@ -1149,7 +1151,10 @@ double int_for_C_gs_tomo_limber(double a, void* params)
         exit(1);
       }
 
-      get_FPT_IA();
+      if (0 == nuisance.IA_code){
+        get_FPT_IA();
+      }
+      
       const double lnk = log(k);
       double lim[3];
       lim[0] = log(FPTIA.k_min);
@@ -1181,7 +1186,10 @@ double int_for_C_gs_tomo_limber(double a, void* params)
       double oneloop = 0.0;
       if (1 == nonlinear_bias)
       { 
-        get_FPT_bias();
+        if (0 == nuisance.IA_code){
+          get_FPT_bias();
+        }
+        
         lim[0] = log(FPTbias.k_min);
         lim[1] = log(FPTbias.k_max);
         lim[2] = (lim[1] - lim[0])/FPTbias.N;
@@ -1192,14 +1200,15 @@ double int_for_C_gs_tomo_limber(double a, void* params)
         const double d1s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
           interpol1d(FPTbias.tab[2], FPTbias.N, lim[0], lim[1], lim[2], lnk);
         
-        const double d1d3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(tab_d1d3, FPTbias.N, lim[0], lim[1], lim[2], lnk);
+        const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
+          interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
 
         const double b2 = gb2(z, nl);
         const double bs2 = gbs2(z, nl);
         const double b3 = gb3(z, nl);
+        const double bk = gbK(z, nl);
 
-        oneloop = 0.5*g4*(b2 * d1d2 + bs2 * d1s2 + b3 * d1d3);
+        oneloop = 0.5*g4*(b2 * d1d2 + bs2 * d1s2 + b3 * d1p3) + (bk * k * k * PK);
       }
 
       const double C1ZS  = IA_A1_Z1(a, growfac_a, ns);
@@ -1234,7 +1243,9 @@ double int_for_C_gs_tomo_limber(double a, void* params)
       double oneloop = 0.0;
       if (1 == nonlinear_bias)
       {
-        get_FPT_bias();
+        if (0 == nuisance.IA_code){
+          get_FPT_bias();
+        }
         const double lnk = log(k);
         double lim[3];
         lim[0] = log(FPTbias.k_min);
@@ -1247,14 +1258,15 @@ double int_for_C_gs_tomo_limber(double a, void* params)
         const double d1s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
           interpol1d(FPTbias.tab[2], FPTbias.N, lim[0], lim[1], lim[2], lnk);
         
-        const double d1d3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(tab_d1d3, FPTbias.N, lim[0], lim[1], lim[2], lnk);
+        const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
+          interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
 
         const double b2 = gb2(z, nl);
         const double bs2 = gbs2(z, nl);
         const double b3 = gb3(z, nl);
+        const double bk = gbK(z, nl);
 
-        oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1d3);
+        oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
       }
       
       const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
@@ -1489,44 +1501,49 @@ double int_for_C_gg_tomo_limber(double a, void* params)
   double oneloop = 0.0;
   if (1 == nonlinear_bias && 0 == use_linear_ps)
   {
-    get_FPT_bias();
+    if (0 == nuisance.IA_code){
+      get_FPT_bias();
+    }
     const double lnk = log(k);
     double lim[3];
     lim[0] = log(FPTbias.k_min);
     lim[1] = log(FPTbias.k_max);
     lim[2] = (lim[1] - lim[0])/FPTbias.N;
 
+    const double s4 = FPTbias.sigma4; // PT_sigma4(k);
+
     const double d1d2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
       interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);
     
     const double d2d2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-      interpol1d(FPTbias.tab[1], FPTbias.N, lim[0], lim[1], lim[2], lnk);
+      interpol1d(FPTbias.tab[1], FPTbias.N, lim[0], lim[1], lim[2], lnk) - 2.*s4;
     
     const double d1s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
       interpol1d(FPTbias.tab[2], FPTbias.N, lim[0], lim[1], lim[2], lnk);
     
     const double d2s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-      interpol1d(FPTbias.tab[3], FPTbias.N, lim[0], lim[1], lim[2], lnk);
+      interpol1d(FPTbias.tab[3], FPTbias.N, lim[0], lim[1], lim[2], lnk) - 4. / 3.*s4;
     
     const double s2s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-      interpol1d(FPTbias.tab[4], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-    
-    const double d1d3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-      interpol1d(tab_d1d3, FPTbias.N, lim[0], lim[1], lim[2], lnk);
-    
-    const double s4 = 0.; // PT_sigma4(k);
+      interpol1d(FPTbias.tab[4], FPTbias.N, lim[0], lim[1], lim[2], lnk) - 8. / 9. * s4;
+
+    const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
+      interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
+
+    const double PK = (use_linear_ps ? p_lin(k,a) : Pdelta(k,a));
 
     const double growfac_a = growfac(a);
     const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
     const double b2 = gb2(z, ni);
     const double bs2 = gbs2(z, ni);
     const double b3 = gb3(z, ni);
+    const double bk = gbK(z, ni);
     
     oneloop = 1.0;
     oneloop *= WGALi*WGALi;
-    oneloop *= g4*(b1i*b2*d1d2 + 0.25*b2*b2 * (d2d2 - 2.*s4) +
-      b1i*bs2*d1s2 + 0.5*b2*bs2 * (d2s2 - 4. / 3.*s4) +
-      0.25*bs2*bs2* (s2s2 - 8. / 9. * s4) + b1i*b3*d1d3);
+    oneloop *= g4*(b1i*b2*d1d2 + 0.25*b2*b2 * d2d2 +
+      			   b1i*bs2*d1s2 + 0.5*b2*bs2 * d2s2 +
+      			   0.25*bs2*bs2*s2s2 + b1i*b3*d1p3) + (2*b1i*bk * k*k * PK);
   }
   return (res +  oneloop)*chidchi.dchida/(fK*fK);
 }
@@ -1690,7 +1707,7 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     log_fatal("error in selecting bin number ni = %d", nl); exit(1);
   }
   const double l = ar[1];
-  const int nonlinear = ar[2];
+  const int nonlinear_bias = ar[2];
 
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
@@ -1740,8 +1757,10 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     res *= PK;
   }
   double oneloop = 0.0;
-  if (1 == nonlinear) {
-    get_FPT_bias();
+  if (1 == nonlinear_bias) {
+    if (0 == nuisance.IA_code){
+      get_FPT_bias();
+    }
     const double growfac_a = growfac(a);
     const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
 
@@ -1755,14 +1774,21 @@ double int_for_C_gk_tomo_limber(double a, void* params)
       interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);
     
     const double d1s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-      interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);
+      interpol1d(FPTbias.tab[2], FPTbias.N, lim[0], lim[1], lim[2], lnk);
+
+    const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
+      interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
+
+    const double PK = Pdelta(k,a);
 
     const double b2 = gb2(z, nl);
     const double bs2 = gbs2(z, nl);
+    const double b3 = gb3(z, nl);
+    const double bk = gbK(z, nl);
     
     oneloop = WK;
     oneloop *= WGAL;
-    oneloop *= g4*(0.5*b2*d1d2 + 0.5*bs2*d1s2);
+    oneloop *= g4*(0.5*b2*d1d2 + 0.5*bs2*d1s2 + 0.5*b3*d1p3) + (bk * k * k * PK);
   }
   return ((res + oneloop)*chidchi.dchida/(fK*fK))*ell_prefactor;
 }

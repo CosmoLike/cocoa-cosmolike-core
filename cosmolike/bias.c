@@ -185,3 +185,26 @@ double gbmag(const double z, const int ni)
   }
   return ans;
 }
+
+double gbK(const double z, const int ni)
+{
+  if (ni < -1 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  double ans;
+  switch(like.galaxy_bias_model[5])
+  {
+    case BK_PER_BIN:
+    {
+      ans = nuisance.gb[5][ni];
+      break;
+    }
+    default:
+    {
+      log_fatal("like.galaxy_bias_model[5] = %d not supported", 
+        like.galaxy_bias_model[5]);
+      exit(1);
+    }
+  }
+  return ans;
+}

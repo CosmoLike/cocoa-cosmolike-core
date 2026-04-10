@@ -18,9 +18,11 @@ void get_FPT_bias(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min     = 1.e-5;
-    FPTIA.k_max     = 1.e+6;
-    FPTbias.N       = 350 + 200 * Ntable.FPTboost;
+    FPTbias.k_min     = 0.05;
+    FPTbias.k_max     = 1.0e+6;
+    FPTbias.k_cutoff  = 1.0e+4;
+    FPTbias.N         = 1100 + 200 * Ntable.FPTboost;
+    FPTbias.sigma4    = 0.0;
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
@@ -33,16 +35,16 @@ void get_FPT_bias(void)
     #pragma omp parallel for
     for (int i=0; i<FPTbias.N; i++) 
     {
-      FPTbias.tab[5][i] = exp(log(FPTbias.k_min) + i*dlogk);
-      FPTbias.tab[6][i] = p_lin(FPTbias.tab[5][i], 1.0);
+      FPTbias.tab[6][i] = exp(log(FPTbias.k_min) + i*dlogk);
+      FPTbias.tab[7][i] = p_lin(FPTbias.tab[6][i], 1.0);
     }
 
     double Pout[5][FPTbias.N];
-    Pd1d2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[0]);
-    Pd2d2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[1]);
-    Pd1s2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[2]);
-    Pd2s2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[3]);
-    Ps2s2(FPTbias.tab[5], FPTbias.tab[6], FPTbias.N, Pout[4]);
+    Pd1d2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[0]);
+    Pd2d2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[1]);
+    Pd1s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[2]);
+    Pd2s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[3]);
+    Ps2s2(FPTbias.tab[6], FPTbias.tab[7], FPTbias.N, Pout[4]);
 
     #pragma omp parallel for
     for (int i=0; i<FPTbias.N; i++) 
@@ -51,8 +53,14 @@ void get_FPT_bias(void)
       FPTbias.tab[1][i] = Pout[1][i]; // Pd2d2
       FPTbias.tab[2][i] = Pout[2][i]; // Pd1s2
       FPTbias.tab[3][i] = Pout[3][i]; // Pd2s2
-      FPTbias.tab[4][i] = Pout[3][i]; // Pd2s2
+      FPTbias.tab[4][i] = Pout[4][i]; // Ps2s2
+      // (JX) Pd1p3: interpolated from precomputed table at a 
+      //             mystery cosmology with sigma8 = 0.8
+      double lnk = log(FPTbias.tab[6][i]);
+      FPTbias.tab[5][i] = (lnk < tab_d1d3_lnkmin || lnk > tab_d1d3_lnkmax) ? 0.0 :
+      interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin, tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
     }
+    FPTbias.sigma4 = FPTbias.tab[1][0]/2.; // JX: dirty fix for sigma4 term: P_{d2d2}(k->0) / 2
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
@@ -64,9 +72,11 @@ void get_FPT_IA(void)
 
   if (fdiff(cache[1], Ntable.random))
   {
-    FPTIA.k_min = 1.e-5;
-    FPTIA.k_max = 1.e+6;
-    FPTIA.N     = 270 + 200 * Ntable.FPTboost;
+    FPTIA.k_min    = 0.05;
+    FPTIA.k_max    = 1.0e+6;
+    FPTIA.k_cutoff = 1.0e+4;
+    FPTIA.sigma4   = 0.0; // Not relevant for IA, but set to zero.
+    FPTIA.N        = 1100 + 200 * Ntable.FPTboost;
 
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);

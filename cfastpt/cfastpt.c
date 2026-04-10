@@ -25,7 +25,7 @@ double *coeff_A_ar, int Nterms, double *Pout, double *k, double *Pin, int Nk)
 
   fastpt_config config;
   config.nu = -2.;
-  config.c_window_width = 0.25;
+  config.c_window_width = 0.65; //0.25;
   config.N_pad = 1500;
   config.N_extrap_low = 500;
   config.N_extrap_high = 500;
@@ -351,8 +351,10 @@ double *coeff_AB_ar, int Nterms, double *Pout, double *k, double *Pin, int Nk)
     Fy[i] = malloc(sizeof(double) * Nk);
   }
   fastpt_config config;
-  config.c_window_width = 0.25; config.N_pad = 1500;
-  config.N_extrap_low = 500; config.N_extrap_high = 500;
+  config.c_window_width = 0.65; // 0.25;
+  config.N_pad = 1500;
+  config.N_extrap_low = 500;
+  config.N_extrap_high = 500;
 
   J_abJ1J2Jk_ar(k, Pin, Nk, alpha_ar, beta_ar, J1_ar, J2_ar, Jk_ar, Nterms, &config, Fy);
 

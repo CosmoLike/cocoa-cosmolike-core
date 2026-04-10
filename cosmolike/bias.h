@@ -21,6 +21,8 @@ extern "C" {
 
 #define BMAG_PER_BIN 0
 
+#define BK_PER_BIN 0
+
 // ----------------------------------------------------------------------
 // ----------------------------------------------------------------------
 // galaxy bias evolution with redshift
@@ -36,6 +38,8 @@ double gbs2(const double z, const int ni);
 double gb3(const double z, const int ni);
 
 double gbmag(const double z, const int ni);
+
+double gbK(const double z, const int ni);
 
 #ifdef __cplusplus
 }

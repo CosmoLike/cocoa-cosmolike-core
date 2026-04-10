@@ -233,6 +233,7 @@ void reset_nuisance_struct(void)
   nuisance.c1rhocrit_ia = 0.01389;
   nuisance.IA = 0;
   nuisance.IA_MODEL = 0;
+  nuisance.IA_code = 0; // 0 = CFASTPT; 1 = PyFASTPT
 }
 
 void reset_cmb_struct(void)

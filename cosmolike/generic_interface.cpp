@@ -580,18 +580,22 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
+void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
   static constexpr std::string_view fname = "init_IA"sv;
   debug("{}: {}", fname, errbegins);
-  debug(debugsel,fname,"IA MODEL",IA_MODEL,"IA REDSHIFT EVOLUTION",IA_REDSHIFT_EVOL);
-  if (IA_MODEL == 0 || IA_MODEL == 1) {
+  debug(debugsel, fname, "IA MODEL", IA_MODEL);
+  debug(debugsel, fname, "IA REDSHIFT EVOLUTION", IA_REDSHIFT_EVOL);
+  debug(debugsel, fname, "IA code", IA_code);
+  
+  if (0 == IA_MODEL || 1 == IA_MODEL) {
     nuisance.IA_MODEL = IA_MODEL;
   }
   else [[unlikely]] {
     critical(errorns2, fname, "nuisance.IA_MODEL", IA_MODEL);
     exit(1);
   }
+  
   if (IA_REDSHIFT_EVOL == NO_IA                   || 
       IA_REDSHIFT_EVOL == IA_NLA_LF               ||
       IA_REDSHIFT_EVOL == IA_REDSHIFT_BINNING     || 
@@ -603,8 +607,22 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
     critical(errorns2, fname, "nuisance.IA", IA_REDSHIFT_EVOL);
     exit(1);
   }
+
+  if (0 == IA_code || 1 == IA_code) {
+    nuisance.IA_code = IA_code;
+  }
+  else [[unlikely]] {
+    critical(errorns2, fname, "nuisance.IA_code", IA_code);
+    exit(1);
+  }
   debug("{}: {}", fname, errends);
   return;
+}
+
+// backward compatibility
+void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
+{
+	init_IA_fastpt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -913,6 +931,110 @@ void set_cosmological_parameters(
   }
   debug("{}: {}", fname, errends);
   return;
+}
+
+void set_IA_PS(
+    vector PS,
+    const double kmin,
+    const double kmax,
+    const double cutoff,
+    const int N
+  )
+{
+  static constexpr std::string_view fname = "set_IA_PS"sv;
+  static double cache[MAX_SIZE_ARRAYS];
+  const double coverH0 = cosmology.coverH0;
+
+  if (fdiff(cache[1], Ntable.random)) {
+    FPTIA.k_min  = kmin * coverH0;     // input in units of h/Mpc
+    FPTIA.k_max  = kmax * coverH0;     // input in units of h/Mpc
+    FPTIA.N      = N;
+    FPTIA.sigma4 = 0.0;                       // Not relevant for IA
+    FPTIA.k_cutoff = cutoff * coverH0;  // input in units of h/Mpc
+    if (FPTIA.tab != NULL) {
+      free(FPTIA.tab);
+    }
+    FPTIA.tab = (double**) malloc2d(12, FPTIA.N);
+  }
+  
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) { 
+    double lim[3];
+    lim[0] = log(FPTIA.k_min);
+    lim[1] = log(FPTIA.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTIA.N;
+    
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<12; i++){
+      for (int j=0; j<FPTIA.N; j++) 
+      {
+        if (std::isnan(PS[i*FPTIA.N+j])) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        if (i != 10) {
+          FPTIA.tab[i][j] = PS[i*FPTIA.N+j] / (coverH0*coverH0*coverH0);
+        }
+        else {
+          FPTIA.tab[i][j] = PS[i*FPTIA.N+j] * coverH0; // k
+        }
+      }
+    }
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+  }
+}
+
+void set_bias_PS(
+    vector PS,
+    const double kmin,
+    const double kmax,
+    const double cutoff,
+    const double sigma4,
+    const int N
+  )
+{
+  static constexpr std::string_view fname = "set_bias_PS"sv;
+  static double cache[MAX_SIZE_ARRAYS];
+  const double coverH0 = cosmology.coverH0;
+  
+  if (fdiff(cache[1], Ntable.random)) { 
+    FPTbias.k_min    = kmin * coverH0;    // input in units of h/Mpc
+    FPTbias.k_max    = kmax * coverH0;    // input in units of h/Mpc
+    FPTbias.N        = N;
+    FPTbias.k_cutoff = cutoff *coverH0; // input in units of h/Mpc
+    FPTbias.sigma4   = sigma4 / (coverH0*coverH0*coverH0);
+
+    if (FPTbias.tab != NULL) {
+      free(FPTbias.tab);
+    }
+    FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
+  }
+
+  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+    double lim[3];
+    lim[0] = log(FPTbias.k_min);
+    lim[1] = log(FPTbias.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTbias.N;
+
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i=0; i<8; i++) {
+      for (int j=0; j<FPTbias.N; j++) {
+        if (std::isnan(PS[i*FPTbias.N + j])) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        if (i != 6) {
+          FPTbias.tab[i][j] = PS[i*FPTbias.N+j] / (coverH0*coverH0*coverH0);
+        }
+        else { 
+          FPTbias.tab[i][j] = PS[i*FPTbias.N+j] * coverH0; // k
+        }
+      }
+    }
+    
+
+
+    cache[0] = cosmology.random;
+    cache[1] = Ntable.random;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,6 +1467,8 @@ void set_nuisance_linear_bias(vector B1)
   //            b[1][i] = linear galaxy bias in clustering bin i (b2)
   //            b[2][i] = leading order tidal bias in clustering bin i (b3)
   //            b[3][i] = leading order tidal bias in clustering bin i
+  //            b[4][i] = amplitude of magnification bias in clustering bin i
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B1(i))) [[unlikely]] {
@@ -1388,6 +1512,7 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
   //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
   //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i 
   //            b[4][i]: amplitude of magnification bias in clustering bin i 
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B1(i)) || std::isnan(B2(i))) [[unlikely]] {
@@ -1429,6 +1554,7 @@ void set_nuisance_magnification_bias(vector B_MAG)
   //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
   //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i 
   //            b[4][i]: amplitude of magnification bias in clustering bin i
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     if (std::isnan(B_MAG(i))) [[unlikely]] {
@@ -1452,6 +1578,74 @@ void set_nuisance_magnification_bias(vector B_MAG)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+void set_nuisance_nonlocal_bias(vector B3nl, vector BK)
+{
+  static constexpr std::string_view fname = "set_nuisance_nonlocal_bias"sv;
+  debug("{}: {}", fname, errbegins);
+  if (0 == redshift.clustering_nbin) [[unlikely]] {
+    critical(errorns2, fname, "clustering_Nbin", 0); exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(B3nl.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, B3nl.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  if (redshift.clustering_nbin != static_cast<int>(BK.n_elem)) [[unlikely]] {
+    critical(errorsz1d, fname, erriiwz, BK.n_elem, redshift.clustering_nbin);
+    exit(1);
+  }
+  // GALAXY BIAS ------------------------------------------
+  // 1st index: b[0][i]: linear galaxy bias in clustering bin i
+  //            b[1][i]: nonlinear b2 galaxy bias in clustering bin i
+  //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
+  //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i 
+  //            b[4][i]: amplitude of magnification bias in clustering bin i
+  //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
+  int cache_update = 0;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    if (std::isnan(B3nl(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if(fdiff(nuisance.gb[3][i], B3nl(i))) {
+      cache_update = 1;
+      nuisance.gb[3][i] = B3nl(i);
+    }
+    if (std::isnan(BK(i))) [[unlikely]] {
+      critical(errnance2, fname, i, errnance); exit(1);
+    }
+    if(fdiff(nuisance.gb[5][i], BK(i))) {
+      cache_update = 1;
+      nuisance.gb[5][i] = BK(i);
+    }
+  }
+  if(1 == cache_update || 1 == force_cache_update_test) {
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+void set_nuisance_bias_fastpt(vector B1, vector B2, vector B_MAG, vector B3nl, vector BK)
+{
+  set_nuisance_linear_bias(B1);
+  set_nuisance_nonlinear_bias(B1, B2);
+  set_nuisance_magnification_bias(B_MAG);
+  set_nuisance_nonlocal_bias(B3nl, BK);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// backwards compatibility
 void set_nuisance_bias(vector B1, vector B2, vector B_MAG)
 {
   set_nuisance_linear_bias(B1);
