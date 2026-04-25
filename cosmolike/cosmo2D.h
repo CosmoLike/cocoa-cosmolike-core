@@ -78,27 +78,6 @@ double C_ky_limber(const double l);
 double C_yy_limber(const double l);
 
 // ----------------------------------------------------------------------------
-// range-version
-// ----------------------------------------------------------------------------
-
-void C_ss_tomo_limber_fill(
-    const int nz, 
-    const int lmin, 
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out_EE,
-    double* RESTRICT out_BB
-  );
-
-void C_gs_tomo_limber_fill(
-    const int nz,
-    const int lmin,
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out
-  );
-
-// ----------------------------------------------------------------------------
 // Non-Interpolated Version (Will compute the Integral at every call)
 // ----------------------------------------------------------------------------
 

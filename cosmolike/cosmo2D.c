@@ -35,19 +35,17 @@ static int include_RSD_GY = 0; // 0 or 1
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-// BASIC DEFINITIONS
+// BASIC DEFINITIONS & DECLARATIONS
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-double beam_cmb(const int l)
-{
+double beam_cmb(const int l) {
   const double s = cmb.fwhm/sqrt(16.0*log(2.0));
   return ((l<cmb.lmink_wxk) || (l>cmb.lmaxk_wxk)) ? 0.0 : exp(-l*(l+1.0)*s*s);
 }
 
-double w_pixel(const int l)
-{
+double w_pixel(const int l) {
   if (0 == cmb.healpixwin_ncls) {
     log_fatal("cmb.healpixwin_ncls not initialized");
     exit(1);
@@ -55,8 +53,7 @@ double w_pixel(const int l)
   return (l < cmb.healpixwin_ncls) ? cmb.healpixwin[l] : 0.0;
 }
 
-static int has_b2_galaxies(void)
-{
+static int has_b2_galaxies(void) {
   int res = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) 
     if (nuisance.gb[1][i])
@@ -69,6 +66,31 @@ static inline double wtime(void) {
   clock_gettime(CLOCK_MONOTONIC, &t);
   return t.tv_sec + 1e-9 * t.tv_nsec;
 }
+
+// -------------------------------------------------------------------------
+// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
+//               overhead to calls to logl/N_shear/interpol1d is quite expensive
+// -------------------------------------------------------------------------
+void C_ss_tomo_limber_fill(
+    const int nz, 
+    const int lmin, 
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out_EE,
+    double* RESTRICT out_BB
+  );
+
+// -------------------------------------------------------------------------
+// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
+//               overhead to calls to logl/N_shear/interpol1d is quite expensive
+// -------------------------------------------------------------------------
+void C_gs_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  );
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -485,7 +507,8 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
   static double* w_vec = NULL;
   static double cache[MAX_SIZE_ARRAYS];
   static double** Cl = NULL; 
-  
+  static double* lnell = NULL;
+
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
     exit(1);
@@ -499,6 +522,14 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
       fdiff(cache[3], Ntable.random))
   {
     const int lmin = 1;
+
+    if (lnell != NULL) {
+      free(lnell);
+    }
+    lnell = (double*) malloc1d(Ntable.LMAX + 1);
+    for (int l = 1; l <= Ntable.LMAX; l++) {
+      lnell[l] = log((double) l);
+    }
 
     if (Pl != NULL) {
       free(Pl);
@@ -572,6 +603,7 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
           Cl[nz][l] = C_gg_tomo_limber_nointerp((double) l, nz, nz, 0);
         }
       }
+      
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
@@ -1355,10 +1387,9 @@ double C_ss_tomo_limber(
   return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
 }
 
-// -------------------------------------------------------------------------
-// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
-//               overhead to calls to logl/N_shear/interpol1d is quite expensive
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 void C_ss_tomo_limber_fill(
     const int nz, 
@@ -1409,16 +1440,13 @@ static double int_for_C_gs_tomo_limber_core(
   ) 
 {
   const double ell = l + 0.5;
-  const double k = ell/fK;
-  const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
   const double z = 1.0/a - 1.0;
-
   const double b1 = gb1(z, nl);
   const double bmag = gbmag(z, nl);
-
-  const double WK = W_kappa(a, fK, ns);
   const double WGAL = W_gal(a, nl, hoverh0);
   const double WMAG = W_mag(a, fK, nl);
+
+  const double WK = W_kappa(a, fK, ns);
   const double WS   = W_source(a, ns, hoverh0);
 
   double ans;
@@ -1427,8 +1455,7 @@ static double int_for_C_gs_tomo_limber_core(
   {
     case IA_MODEL_TATT:
     {
-      if (include_HOD_GX == 1)
-      {
+      if (1 == include_HOD_GX) {
         log_fatal("HOD NOT IMPLEMENTED");
         exit(1);
       }
@@ -1437,11 +1464,14 @@ static double int_for_C_gs_tomo_limber_core(
         get_FPT_IA();
       }
       
+      const double k = ell/fK;
       const double lnk = log(k);
       double lim[3];
       lim[0] = log(FPTIA.k_min);
       lim[1] = log(FPTIA.k_max);
       lim[2] = (lim[1] - lim[0])/FPTIA.N;
+      
+      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
 
       const double mixA = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
         g4*interpol1d(FPTIA.tab[6], FPTIA.N, lim[0], lim[1], lim[2], lnk);
@@ -1456,8 +1486,7 @@ static double int_for_C_gs_tomo_limber_core(
         g4*interpol1d(FPTIA.tab[3], FPTIA.N, lim[0], lim[1], lim[2], lnk);
 
       double WRSD = 0.0;
-      if (include_RSD_GS == 1)
-      {
+      if (1 == include_RSD_GS) {
         const double chi_0 = f_K(ell/k);
         const double chi_1 = f_K((ell+1.)/k);
         const double a_0 = a_chi(chi_0);
@@ -1506,15 +1535,14 @@ static double int_for_C_gs_tomo_limber_core(
     }
     case IA_MODEL_NLA:
     {
-      if (include_HOD_GX == 1)
-      {
+      if (include_HOD_GX == 1) {
         log_fatal("HOD NOT IMPLEMENTED");
         exit(1);
       }
 
       double WRSD = 0.0;
-      if (include_RSD_GS == 1)
-      {
+      if (1 == include_RSD_GS) {
+        const double k = ell/fK;
         const double chi_0 = f_K(ell/k);
         const double chi_1 = f_K((ell+1.)/k);
         const double a_0 = a_chi(chi_0);
@@ -1523,11 +1551,12 @@ static double int_for_C_gs_tomo_limber_core(
       }
 
       double oneloop = 0.0;
-      if (1 == nonlinear_bias)
-      {
+      if (1 == nonlinear_bias) {
         if (0 == nuisance.IA_code){
           get_FPT_bias();
         }
+        
+        const double k = ell/fK;
         const double lnk = log(k);
         double lim[3];
         lim[0] = log(FPTbias.k_min);
@@ -1547,13 +1576,16 @@ static double int_for_C_gs_tomo_limber_core(
         const double bs2 = gbs2(z, nl);
         const double b3 = gb3(z, nl);
         const double bk = gbK(z, nl);
+        
+        const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
 
         oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
       }
       
       const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
 
-      ans = (WK-WS*C1ZS)*((WGAL*b1+WMAG*ell_prefactor*bmag+WRSD)*PK+WGAL*oneloop);
+      ans = (WK - WS*C1ZS)*((WGAL*b1 + WMAG*ell_prefactor*bmag + WRSD)*PK 
+                            + WGAL*oneloop);
       break;
     }
     default:
@@ -1825,8 +1857,7 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
 }
 
 // ---------------------------------------------------------------------------
-// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
-//               overhead to calls to logl/N_shear/interpol1d is quite expensive
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 void C_gs_tomo_limber_fill(
