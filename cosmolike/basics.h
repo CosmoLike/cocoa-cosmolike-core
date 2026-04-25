@@ -44,7 +44,17 @@ void**** malloc4d(const long nx, const long ny, const long nz, const long nw);
 
 void* calloc1d(const int nx);
 
-int fdiff(const double a, const double b);
+
+inline int fdiff2(const uint64_t a, const uint64_t b)
+{
+  return (a == b) ? 0 : 1;
+}
+
+inline int fdiff(const double a, const double b)
+{
+  return (fabs(a-b) < 1.0e-13 * fabs(a+b) || fabs(a-b) < 2.0e-38) ? 0 : 1;
+}
+
 
 double fmin(const double a, const double b);
 

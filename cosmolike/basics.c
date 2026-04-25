@@ -245,10 +245,7 @@ void* calloc1d(const int nx)
   return (void*) vec;
 }
 
-int fdiff(const double a, const double b)
-{
-  return (fabs(a-b) < 1.0e-13 * fabs(a+b) || fabs(a-b) < 2.0e-38) ? 0 : 1;
-}
+
 
 double fmin(const double a, const double b)
 {
@@ -265,13 +262,13 @@ bin_avg set_bin_average(const int i_theta, const int j_L)
   static double*** P  = NULL;
   static double** xminmax = NULL;
   static int ntheta = 0;
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache [MAX_SIZE_ARRAYS];
 
   if (Ntable.Ntheta == 0) {
     log_fatal("Ntable.Ntheta not initialized");
     exit(1);
   }
-  if (P == NULL || (ntheta != Ntable.Ntheta) || fdiff(cache[0], Ntable.random))
+  if (P == NULL || (ntheta != Ntable.Ntheta) || fdiff2(cache[0], Ntable.random))
   {
     if (P != NULL) {
       free(P);
