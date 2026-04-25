@@ -32,6 +32,14 @@ static int include_RSD_GG = 1; // 0 or 1
 static int include_RSD_GK = 0; // 0 or 1
 static int include_RSD_GY = 0; // 0 or 1
 
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// BASIC DEFINITIONS
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
 double beam_cmb(const int l)
 {
   const double s = cmb.fwhm/sqrt(16.0*log(2.0));
@@ -200,19 +208,9 @@ double xi_pm_tomo(
           Cl[1][nz][l] = C_ss_tomo_limber_nointerp((double) l, Z1NZ, Z2NZ, 0, 0);
         }
       }
-      /*
-      #pragma omp parallel for collapse(3) schedule(static,1)
-      for (int i=0; i<2; i++) {
-        for (int nz=0; nz<NSIZE; nz++) {
-          for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
-            Cl[i][nz][l] = C_ss_tomo_limber((double) l, Z1(nz), Z2(nz), 1-i);
-          }
-        }
-      }*/
       #pragma omp parallel for schedule(static)
       for (int nz = 0; nz < NSIZE; nz++) {
-        C_ss_tomo_limber_fill(Z1(nz), 
-                              Z2(nz), 
+        C_ss_tomo_limber_fill(nz,
                               limits.LMIN_tab, 
                               Ntable.LMAX, 
                               lnell,
@@ -318,8 +316,9 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
-  static double cache[MAX_SIZE_ARRAYS];
   static double** Cl = NULL;
+  static double* lnell = NULL;
+  static double cache[MAX_SIZE_ARRAYS];
 
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
@@ -334,6 +333,14 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       fdiff(cache[6], Ntable.random))
   {
     const int lmin = 1;
+
+    if (lnell != NULL) {
+      free(lnell);
+    }
+    lnell = (double*) malloc1d(Ntable.LMAX + 1);
+    for (int l = 1; l <= Ntable.LMAX; l++) {
+      lnell[l] = log((double) l);
+    }
 
     if (Pl != NULL) {
       free(Pl);
@@ -414,6 +421,10 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {  
           Cl[nz][l] = C_gs_tomo_limber((double) l, ZL(nz), ZS(nz));
         }
+      }
+      #pragma omp parallel for schedule(static)
+      for (int nz = 0; nz < NSIZE; nz++) {
+        C_gs_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
     else {
@@ -919,38 +930,93 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-double int_for_C_ss_tomo_limber(double a, void* params)
-{
-  if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true"); exit(1);
-  }
-  double* ar = (double*) params;
-  const int n1 = (int) ar[0]; // first source bin 
-  const int n2 = (int) ar[1]; // second source bin 
-  if (n1 < 0 || n1 > redshift.shear_nbin - 1 || 
-      n2 < 0 || n2 > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", n1,n2); exit(1);
-  }
-  const double l = ar[2];
-  const int EE = (int) ar[3];
-  const int deriv = (int) ar[4];
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  create_cosmo_nodes once: chi, G, f_K, hoverh0 at all quadrature nodes
+//                           These are independent of ell and tomo bins.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
+typedef struct {
+  int npts;
+  double** data;
+} cosmo_nodes;
+
+enum {
+  CN_A = 0,
+  CN_WT,
+  CN_FK,        // f_K
+  CN_GROWFAC,   // growfac;
+  CN_HOVERH0,   // hoverh0v2
+  CN_DCHIDA,    // chidchi.dchida
+  CN_NPARAMS    // trick to set automatically the number of parameters
+};
+
+cosmo_nodes create_cosmo_nodes(
+    const double amin,
+    const double amax,
+    const gsl_integration_glfixed_table* w)
+{
+  cosmo_nodes cn;
+  cn.npts = (int) w->n;
+  cn.data = (double**) malloc2d(CN_NPARAMS, cn.npts);
+
+  #pragma omp parallel for schedule(static,1)
+  for (int p = 0; p < cn.npts; p++) {
+    gsl_integration_glfixed_point(amin, 
+                                  amax, 
+                                  p, 
+                                  &cn.data[CN_A][p], 
+                                  &cn.data[CN_WT][p], 
+                                  w);
+    const double a      = cn.data[CN_A][p];
+    struct chis chidchi = chi_all(a);
+    cn.data[CN_FK][p]   = f_K(chidchi.chi);
+    cn.data[CN_GROWFAC][p] = growfac(a);
+    cn.data[CN_HOVERH0][p] = hoverh0v2(a, chidchi.dchida);
+    cn.data[CN_DCHIDA][p]  = chidchi.dchida;
+  }
+  return cn;
+}
+
+void free_cosmo_nodes(cosmo_nodes* cn) {
+  free(cn->data);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// SS = SHEAR SHEAR
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+static double int_for_C_ss_tomo_limber_core(
+    const double a,
+    const double fK,
+    const double PK,
+    const double growfac_a,
+    const double hoverh0,
+    const double dchida,
+    const double ell_prefactor,
+    const double l,
+    const int n1,
+    const int n2,
+    const int EE, 
+    const int deriv
+  )
+{
   const double ell = l + 0.5;
-  struct chis chidchi = chi_all(a);
-  const double growfac_a = growfac(a);
-  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi); // (Mpc/h)/(c/H0=100) (dimensionless)
-  const double k = ell/fK; // (c/H0)/(Mpc/h)
-  
+  const double k = ell/fK;
+
   const double WK1 = W_kappa(a, fK, n1);
   const double WK2 = W_kappa(a, fK, n2);
   const double WS1 = W_source(a, n1, hoverh0);
   const double WS2 = W_source(a, n2, hoverh0);
-  const double PK  = Pdelta(k, a);
-
-  const double ell4 = ell*ell*ell*ell; // correction (1812.05995 eqs 74-79)
-  const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4; 
-
+  
   double ans = 1.0;
   switch(nuisance.IA_MODEL) 
   {
@@ -1048,15 +1114,52 @@ double int_for_C_ss_tomo_limber(double a, void* params)
     }
   }
   if (0 == deriv) {
-    return ans*(chidchi.dchida/(fK*fK))*ell_prefactor;
+    return ans*(dchida/(fK*fK))*ell_prefactor;
   } 
   else { // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
-    //return (-1.0/fK)*(ans*chidchi.dchida*ell_prefactor);
-    //return -ans*(chidchi.dchida/fK)*ell_prefactor;
-    //printf("testing: %e %e %e %e %e %d\n", ans, chidchi.dchida, fK, ell_prefactor, a, EE);
-    return ans*(chidchi.dchida/fK)*ell_prefactor;
+    return ans*(dchida/fK)*ell_prefactor;
   }
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double int_for_C_ss_tomo_limber(double a, void* params)
+{
+  if (!(a>0) || !(a<1)) {
+    log_fatal("a>0 and a<1 not true"); exit(1);
+  }
+  double* ar = (double*) params;
+  const int n1 = (int) ar[0]; // first source bin 
+  const int n2 = (int) ar[1]; // second source bin 
+  if (n1 < 0 || n1 > redshift.shear_nbin - 1 || 
+      n2 < 0 || n2 > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", n1,n2); exit(1);
+  }
+  const double l = ar[2];
+  const int EE = (int) ar[3];
+  const int deriv = (int) ar[4];
+
+  const double ell = l + 0.5;
+  struct chis chidchi = chi_all(a);
+  const double growfac_a = growfac(a);
+  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
+  const double fK = f_K(chidchi.chi); // (Mpc/h)/(c/H0=100) (dimensionless)
+  const double k = ell/fK;            // (c/H0)/(Mpc/h)
+  const double PK  = Pdelta(k, a);
+  const double ell4 = ell*ell*ell*ell; // correction (1812.05995 eqs 74-79)
+  const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4; 
+
+  return int_for_C_ss_tomo_limber_core(
+      a, fK, PK, growfac_a, hoverh0, chidchi.dchida,
+      ell_prefactor, l, n1, n2, EE, deriv
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double C_ss_tomo_limber_nointerp(
     const double l, 
@@ -1064,7 +1167,7 @@ double C_ss_tomo_limber_nointerp(
     const int nj, 
     const int EE, 
     const int init
-  )
+  ) // still used for l < limits.LMIN_tab
 {
   static double cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL; 
@@ -1102,8 +1205,16 @@ double C_ss_tomo_limber_nointerp(
   return res;   
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 // so C_ss_tomo_limber_fill can see C_ss_tomo_limber data
 static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double C_ss_tomo_limber(
     const double l, 
@@ -1116,11 +1227,14 @@ double C_ss_tomo_limber(
   static double*** table;
   static double lim[3];
   static int nell;
+  static gsl_integration_glfixed_table* w = NULL;
+
   if (NULL == table || fdiff(cache[4], Ntable.random)) {
-    nell   = Ntable.N_ell;
+    nell = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
+    
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
   
@@ -1128,8 +1242,17 @@ double C_ss_tomo_limber(
     ss_.lim[0] = lim[0]; 
     ss_.lim[1] = lim[1]; 
     ss_.lim[2] = lim[2]; 
-    ss_.nell = nell;       
+    ss_.nell = nell;  
+
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 96 :
+                         (2 == hdi) ? 128 :
+                         (3 == hdi) ? 256 : 512;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
   }
+
   if (fdiff(cache[0], cosmology.random) ||
       fdiff(cache[1], nuisance.random_photoz_shear) ||
       fdiff(cache[2], nuisance.random_ia) ||
@@ -1142,16 +1265,71 @@ double C_ss_tomo_limber(
       (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 1, 1); // EE
       (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 0, 1); // BB  
     }
-    #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int k=0; k<tomo.shear_Npowerspectra; k++) {  
-      for (int i=0; i<nell; i++) { 
-        const double lx = exp(lim[0] + i*lim[2]);
-        const double Z1NZ = Z1(k);
-        const double Z2NZ = Z2(k);
-        table[0][k][i] = C_ss_tomo_limber_nointerp(lx, Z1NZ, Z2NZ, 1, 0);
-        table[1][k][i] = C_ss_tomo_limber_nointerp(lx, Z1NZ, Z2NZ, 0, 0);
-      } 
+
+    // ------------------------------------------------------------------
+    // optimization: amin and amax are independent of redshift bin
+    //               compute cosmo quantities and prefactor only once. 
+    // ------------------------------------------------------------------
+    const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
+    const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
+    
+    cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
+    
+    double lx[nell];
+    double ell_prefactor[nell];
+    for (int i = 0; i < nell; i++) {
+      lx[i] = exp(lim[0] + i * lim[2]);
+      const double ell = lx[i] + 0.5;
+      const double ell4 = ell * ell * ell * ell;
+      ell_prefactor[i] = lx[i]*(lx[i]-1.)*(lx[i]+1.)*(lx[i]+2.)/ell4;
     }
+
+    double** PK = (double**) malloc2d(nell, cn.npts);
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int i = 0; i < nell; i++)  {
+      for (int p = 0; p < cn.npts; p++) {
+        const double ell = lx[i] + 0.5;
+        const double fK = cn.data[CN_FK][p];
+        const double k = ell / fK;
+        PK[i][p] = Pdelta(k, cn.data[CN_A][p]);
+      }
+    }
+
+    #pragma omp parallel for schedule(static,1)
+    for (int i = 0; i < nell; i++) {
+      for (int k = 0; k < tomo.shear_Npowerspectra; k++) {
+        const int Z1NZ = Z1(k);
+        const int Z2NZ = Z2(k);
+        if (Z1NZ < 0 || Z1NZ > redshift.shear_nbin - 1 || 
+            Z2NZ < 0 || Z2NZ > redshift.shear_nbin - 1) {
+          log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",Z1NZ, Z2NZ); 
+          exit(1);
+        }
+        double sum_EE = 0.0;
+        double sum_BB = 0.0;
+        for (int p = 0; p < cn.npts; p++) {
+          const double a = cn.data[CN_A][p];
+          const double fK = cn.data[CN_FK][p];
+          const double growfac_a = cn.data[CN_GROWFAC][p];
+          const double hoverh0 = cn.data[CN_HOVERH0][p];
+          const double dchida = cn.data[CN_DCHIDA][p];
+          const double wt = cn.data[CN_WT][p];
+
+          sum_EE += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a, 
+            hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ, 1, 0) * wt;
+          if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+            sum_BB += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a, 
+              hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ, 0, 0) * wt;
+          }
+        }
+        table[0][k][i] = sum_EE;
+        table[1][k][i] = sum_BB;
+      }
+    }
+    
+    free(PK);
+    free_cosmo_nodes(&cn);
+
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -1177,14 +1355,13 @@ double C_ss_tomo_limber(
   return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
 }
 
-/*
-* xpm computes C_ss_tomo_limber so many times that the overhead to calls
-* calls to log(l), N_shear, and interpol1d becomes expensive (15% speedup)
-*/
+// -------------------------------------------------------------------------
+// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
+//               overhead to calls to logl/N_shear/interpol1d is quite expensive
+// -------------------------------------------------------------------------
 
 void C_ss_tomo_limber_fill(
-    const int ni, 
-    const int nj,
+    const int nz, 
     const int lmin, 
     const int lmax,
     const double* restrict ln_ell,
@@ -1192,14 +1369,13 @@ void C_ss_tomo_limber_fill(
     double* restrict out_BB
   )
 {
-  const int q = N_shear(ni, nj);
-  const double* restrict tab_EE = ss_.tab[0][q];
-  const double* restrict tab_BB = ss_.tab[1][q];
+  const double* restrict tab_EE = ss_.tab[0][nz];
+  const double* restrict tab_BB = ss_.tab[1][nz];
   const double inv_dx = 1.0 / ss_.lim[2];
   const double a = ss_.lim[0];
   const int n = ss_.nell;
 
-  for (int l = lmin; l < lmax; l++) {
+  for (int l = lmin; l < lmax; l++) { // inline interpol 1D
     const double r = (ln_ell[l] - a) * inv_dx;
     const int i = (int) r;
     const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
@@ -1212,36 +1388,30 @@ void C_ss_tomo_limber_fill(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// GS = GALAXY-SHEAR
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_for_C_gs_tomo_limber(double a, void* params)
+static double int_for_C_gs_tomo_limber_core(
+    const double a,
+    const double fK,
+    const double PK,
+    const double growfac_a,
+    const double hoverh0,
+    const double dchida,
+    const double ell_prefactor,
+    const double ell_prefactor2,
+    const double l,
+    const int nl, 
+    const int ns,
+    const int nonlinear_bias
+  ) 
 {
-  if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
-  double* ar = (double*) params;
-  const int nl = (int) ar[0];
-  const int ns = (int) ar[1];
-  if (nl < 0 || nl > redshift.clustering_nbin - 1 || 
-      ns < 0 || ns > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (nl, ns) = [%d,%d]", nl, ns);
-    exit(1);
-  }
-  const double l = ar[2];
-  const int nonlinear_bias = ar[3];
-  
-  const double growfac_a = growfac(a);
-  struct chis chidchi = chi_all(a);
-  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
   const double ell = l + 0.5;
-  const double fK = f_K(chidchi.chi);
   const double k = ell/fK;
+  const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
   const double z = 1.0/a - 1.0;
-  const double PK = Pdelta(k,a);
 
   const double b1 = gb1(z, nl);
   const double bmag = gbmag(z, nl);
@@ -1250,10 +1420,6 @@ double int_for_C_gs_tomo_limber(double a, void* params)
   const double WGAL = W_gal(a, nl, hoverh0);
   const double WMAG = W_mag(a, fK, nl);
   const double WS   = W_source(a, ns, hoverh0);
-
-  const double ell_prefactor = l*(l + 1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
-  const double tmp = (l - 1.)*l*(l + 1.)*(l + 2.);   // correction (1812.05995 eqs 74-79)
-  const double ell_prefactor2 = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
 
   double ans;
 
@@ -1396,7 +1562,44 @@ double int_for_C_gs_tomo_limber(double a, void* params)
       exit(1);
     }
   }
-  return ans*(chidchi.dchida/(fK*fK))*ell_prefactor2;
+  return ans*(dchida/(fK*fK))*ell_prefactor2;
+}
+
+double int_for_C_gs_tomo_limber(double a, void* params)
+{
+  if (!(a>0) || !(a<1)) {
+    log_fatal("a>0 and a<1 not true");
+    exit(1);
+  }
+  double* ar = (double*) params;
+  const int nl = (int) ar[0];
+  const int ns = (int) ar[1];
+  if (nl < 0 || nl > redshift.clustering_nbin - 1 || 
+      ns < 0 || ns > redshift.shear_nbin - 1) {
+    log_fatal("error in selecting bin number (nl, ns) = [%d,%d]", nl, ns);
+    exit(1);
+  }
+  const double l = ar[2];
+  const int nonlinear_bias = ar[3];
+  
+  const double growfac_a = growfac(a);
+  struct chis chidchi = chi_all(a);
+  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
+  const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
+  const double ell = l + 0.5;
+  const double fK = f_K(chidchi.chi);
+  const double k = ell/fK;
+  const double z = 1.0/a - 1.0;
+  const double PK = Pdelta(k,a);
+
+  const double ell_prefactor = l*(l + 1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
+  const double tmp = (l - 1.)*l*(l + 1.)*(l + 2.);   // correction (1812.05995 eqs 74-79)
+  const double ell_prefactor2 = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
+
+  return int_for_C_gs_tomo_limber_core(a, fK, PK, growfac_a, hoverh0,
+                                       chidchi.dchida, ell_prefactor, 
+                                       ell_prefactor2, l,
+                                       nl, ns, nonlinear_bias);
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,12 +1669,20 @@ double C_gs_tomo_limber_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// so C_gs_tomo_limber_fill can see C_gs_tomo_limber data
+static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double C_gs_tomo_limber(const double l, const int ni, const int nj)
 {
   static double cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static int nell;
   static double lim[3];
+  static gsl_integration_glfixed_table* w = NULL;
 
   if (NULL == table || fdiff(cache[6], Ntable.random)) {
     nell   = Ntable.N_ell;
@@ -1483,7 +1694,22 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       free(table);
     }
     table = (double**) malloc2d(tomo.ggl_Npowerspectra, nell);
+
+    gs_.tab    = table;
+    gs_.lim[0] = lim[0];
+    gs_.lim[1] = lim[1];
+    gs_.lim[2] = lim[2];
+    gs_.nell   = nell;
+
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 96 :
+                         (2 == hdi) ? 128 :
+                         (3 == hdi) ? 256 : 512;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
   }
+
   if (fdiff(cache[0], cosmology.random) ||
       fdiff(cache[1], nuisance.random_photoz_shear) ||
       fdiff(cache[2], nuisance.random_photoz_clustering) ||
@@ -1496,13 +1722,74 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static vars     
       (void) C_gs_tomo_limber_nointerp(exp(lim[0]), ZL(k), ZS(k), 1);
     }
+    
+    const int nonlinear_bias = has_b2_galaxies();
+
+    // ------------------------------------------------------------------
+    // optimization: amin and amax are dependent of redshift bin
+    //               we can compute cosmo quantities and nlens times. 
+    // ------------------------------------------------------------------
+    const int nbin = redshift.clustering_nbin;
+    cosmo_nodes cn_all[nbin];
+    for (int ZLNZ = 0; ZLNZ < nbin; ZLNZ++) {
+      const double amin = amin_lens(ZLNZ);
+      const double amax = amax_lens(ZLNZ);
+      cn_all[ZLNZ] = create_cosmo_nodes(amin, amax, w);
+    }
+
+    double lx[nell];
+    double ell_prefactor[nell];
+    double ell_prefactor2[nell];
+    for (int i = 0; i < nell; i++) {
+      lx[i] = exp(lim[0] + i * lim[2]);
+      const double ell = lx[i] + 0.5;
+      ell_prefactor[i] = lx[i]*(lx[i]+1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
+      const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
+      ell_prefactor2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
+    }
+
+    double*** PK = (double***) malloc3d(nbin, nell, cn_all[0].npts);
     #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int k=0; k<tomo.ggl_Npowerspectra; k++) {
-      for (int i=0; i<nell; i++) {
-        const double lx = exp(lim[0] + i*lim[2]);
-        table[k][i] = C_gs_tomo_limber_nointerp(lx, ZL(k), ZS(k), 0);
+    for (int q = 0; q < nbin; q++) {
+      for (int i = 0; i < nell; i++) {
+        for (int p = 0; p < cn_all[0].npts; p++) {
+          const double ell = lx[i] + 0.5;
+          const double k = ell / cn_all[q].data[CN_FK][p];
+          PK[q][i][p] = Pdelta(k, cn_all[q].data[CN_A][p]);
+        }
       }
     }
+
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int k = 0; k<tomo.ggl_Npowerspectra; k++) {
+      for (int i = 0; i<nell; i++) {
+        const int ZLNZ = ZL(k);
+        const int ZSNZ = ZS(k);
+        const cosmo_nodes* cn = &cn_all[ZLNZ];
+        
+        double sum = 0.0;
+        for (int p = 0; p<cn_all[0].npts; p++) {
+          const double a = cn->data[CN_A][p];
+          const double fK = cn->data[CN_FK][p];
+          const double growfac_a = cn->data[CN_GROWFAC][p];
+          const double hoverh0 = cn->data[CN_HOVERH0][p];
+          const double dchida = cn->data[CN_DCHIDA][p];
+          const double wt = cn->data[CN_WT][p];
+
+          sum += int_for_C_gs_tomo_limber_core(a, fK, PK[ZLNZ][i][p], growfac_a, 
+                                               hoverh0, dchida, ell_prefactor[i], 
+                                               ell_prefactor2[i], lx[i], ZLNZ,
+                                               ZSNZ, nonlinear_bias) * wt;
+        }
+        table[k][i] = sum;
+      }
+    }
+
+    free(PK);
+    for (int ZLNZ = 0; ZLNZ < nbin; ZLNZ++) {
+      free_cosmo_nodes(&cn_all[ZLNZ]);
+    }
+    
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_photoz_clustering;
@@ -1535,6 +1822,33 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     res = interpol1d(table[q], nell, lim[0], lim[1], lim[2], lnl);
   }
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
+//               overhead to calls to logl/N_shear/interpol1d is quite expensive
+// ---------------------------------------------------------------------------
+
+void C_gs_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  )
+{ 
+  const double* RESTRICT tab = gs_.tab[nz];
+  const double inv_dx = 1.0 / gs_.lim[2];
+  const double a = gs_.lim[0];
+  const int n = gs_.nell;
+ 
+  for (int l = lmin; l < lmax; l++) { // inline interpol1D
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) r;
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -82,13 +82,20 @@ double C_yy_limber(const double l);
 // ----------------------------------------------------------------------------
 
 void C_ss_tomo_limber_fill(
-    const int ni, 
-    const int nj,
+    const int nz, 
     const int lmin, 
     const int lmax,
     const double* RESTRICT ln_ell,
     double* RESTRICT out_EE,
     double* RESTRICT out_BB
+  );
+
+void C_gs_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
   );
 
 // ----------------------------------------------------------------------------
