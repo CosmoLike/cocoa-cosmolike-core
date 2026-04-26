@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <gsl/gsl_interp2d.h>
 
 #ifndef __COSMOLIKE_STRUCTS_H
