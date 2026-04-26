@@ -539,10 +539,10 @@ double sigma2_nointerp(
     const int init
   ) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = 500 + 500 * (Ntable.high_def_integration);
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -573,18 +573,18 @@ double sigma2_nointerp(
 
 double sigma2(const double M) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table;
   static double lim[3];
 
-  if (NULL == table || fdiff(cache[1], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double)*Ntable.N_M);
     lim[0] = log(limits.halo_m_min);
     lim[1] = log(limits.halo_m_max);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
   } 
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
     (void) sigma2_nointerp(exp(lim[0]), 1.0, 1);    
     #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_M; i++) {

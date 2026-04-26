@@ -942,45 +942,61 @@ void set_IA_PS(
   )
 {
   static constexpr std::string_view fname = "set_IA_PS"sv;
-  static double cache[MAX_SIZE_ARRAYS];
+  constexpr int NIAPS = 12;
   const double coverH0 = cosmology.coverH0;
-
-  if (fdiff(cache[1], Ntable.random)) {
+  const double coverH0cube = coverH0*coverH0*coverH0;
+  
+  int cache_update = 0;
+  if (FPTIA.N != N ||
+      fdiff(FPTIA.k_min, kmin) || 
+      fdiff(FPTIA.k_max, kmax) || 
+      fdiff(FPTIA.k_cutoff, cutoff * coverH0)) {
+    cache_update = 1;
+  }
+  else {
+    for (int i=0; i<NIAPS; i++) {
+      for (int j=0; j<FPTIA.N; j++) {
+        if (i != 10) {
+          if (fdiff(FPTIA.tab[i][j],PS[i*FPTIA.N+j]/(coverH0cube))) {
+            cache_update = 1; 
+            break; 
+          }
+        }
+        else {
+          if (fdiff(FPTIA.tab[i][j],PS[i*FPTIA.N+j]*coverH0)) { // k
+            cache_update = 1; 
+            break; 
+          }
+        }
+      }
+    }
+  }
+  if (1 == cache_update || 1 == force_cache_update_test) { 
     FPTIA.k_min  = kmin * coverH0;     // input in units of h/Mpc
     FPTIA.k_max  = kmax * coverH0;     // input in units of h/Mpc
     FPTIA.N      = N;
-    FPTIA.sigma4 = 0.0;                       // Not relevant for IA
-    FPTIA.k_cutoff = cutoff * coverH0;  // input in units of h/Mpc
+    FPTIA.sigma4 = 0.0;                // Not relevant for IA
+    FPTIA.k_cutoff = cutoff * coverH0; // input in units of h/Mpc
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
     }
-    FPTIA.tab = (double**) malloc2d(12, FPTIA.N);
-  }
-  
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) { 
-    double lim[3];
-    lim[0] = log(FPTIA.k_min);
-    lim[1] = log(FPTIA.k_max);
-    lim[2] = (lim[1] - lim[0])/FPTIA.N;
+    FPTIA.tab = (double**) malloc2d(NIAPS, FPTIA.N);
     
-    #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=0; i<12; i++){
-      for (int j=0; j<FPTIA.N; j++) 
-      {
+    for (int i=0; i<NIAPS; i++) {
+      for (int j=0; j<FPTIA.N; j++) {
         if (std::isnan(PS[i*FPTIA.N+j])) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
         if (i != 10) {
-          FPTIA.tab[i][j] = PS[i*FPTIA.N+j] / (coverH0*coverH0*coverH0);
+          FPTIA.tab[i][j] = PS[i*FPTIA.N+j] / (coverH0cube);
         }
         else {
           FPTIA.tab[i][j] = PS[i*FPTIA.N+j] * coverH0; // k
         }
       }
     }
-    cache[0] = cosmology.random;
-    cache[1] = Ntable.random;
-  }
+    nuisance.random_ia = RandomNumber::get_instance().get();
+  } 
 }
 
 void set_bias_PS(
@@ -993,47 +1009,62 @@ void set_bias_PS(
   )
 {
   static constexpr std::string_view fname = "set_bias_PS"sv;
-  static double cache[MAX_SIZE_ARRAYS];
-  const double coverH0 = cosmology.coverH0;
-  
-  if (fdiff(cache[1], Ntable.random)) { 
+  constexpr int NBIAS = 12;
+  const double coverH0  = cosmology.coverH0;
+  const double coverH0cube = coverH0*coverH0*coverH0;
+
+  int cache_update = 0;
+  if (FPTIA.N != N ||
+      fdiff(FPTIA.k_min, kmin) || 
+      fdiff(FPTIA.k_max, kmax) || 
+      fdiff(FPTIA.k_cutoff, cutoff * coverH0) ||
+      fdiff(FPTbias.sigma4, sigma4 / (coverH0cube))) {
+    cache_update = 1;
+  }
+  else {
+    for (int i=0; i<NBIAS; i++)  {
+      for (int j=0; j<FPTbias.N; j++) {
+        if (i != 6) {
+          if(fdiff(FPTbias.tab[i][j],PS[i*FPTbias.N+j]/(coverH0cube))) {
+            cache_update = 1; 
+            break; 
+          }
+        }
+        else { 
+          if(fdiff(FPTbias.tab[i][j],PS[i*FPTbias.N+j]*coverH0)) { // k
+            cache_update = 1; 
+            break; 
+          }
+        }
+      }
+    }
+  }
+
+  if (1 == cache_update || 1 == force_cache_update_test) { 
+    FPTbias.N        = N;
     FPTbias.k_min    = kmin * coverH0;    // input in units of h/Mpc
     FPTbias.k_max    = kmax * coverH0;    // input in units of h/Mpc
-    FPTbias.N        = N;
     FPTbias.k_cutoff = cutoff *coverH0; // input in units of h/Mpc
-    FPTbias.sigma4   = sigma4 / (coverH0*coverH0*coverH0);
-
+    FPTbias.sigma4   = sigma4 / (coverH0cube);
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
-    FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
-  }
+    FPTbias.tab = (double**) malloc2d(NBIAS, FPTbias.N);
 
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
-    double lim[3];
-    lim[0] = log(FPTbias.k_min);
-    lim[1] = log(FPTbias.k_max);
-    lim[2] = (lim[1] - lim[0])/FPTbias.N;
-
-    #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=0; i<8; i++) {
+    for (int i=0; i<NBIAS; i++)  {
       for (int j=0; j<FPTbias.N; j++) {
         if (std::isnan(PS[i*FPTbias.N + j])) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
         if (i != 6) {
-          FPTbias.tab[i][j] = PS[i*FPTbias.N+j] / (coverH0*coverH0*coverH0);
+          FPTbias.tab[i][j] = PS[i*FPTbias.N+j] / (coverH0cube);
         }
         else { 
           FPTbias.tab[i][j] = PS[i*FPTbias.N+j] * coverH0; // k
         }
       }
     }
-    
-
-
-    cache[0] = cosmology.random;
-    cache[1] = Ntable.random;
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
   }
 }
 

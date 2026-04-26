@@ -63,18 +63,18 @@ class RandomNumber
       static RandomNumber instance;
       return instance;
     }
-    double get() {
+    uint64_t get() {
       return dist_(mt_);
     }
   protected:
     std::random_device rd_;
-    std::mt19937 mt_;
-    std::uniform_real_distribution<double> dist_;
+    std::mt19937_64 mt_;
+    std::uniform_int_distribution<uint64_t> dist_;
   private:
     RandomNumber() :
       rd_(),
       mt_(rd_()),
-      dist_(0.0, 1.0) {
+      dist_(1, std::numeric_limits<uint64_t>::max()) {
       };
     RandomNumber(RandomNumber const&) = delete;
 };

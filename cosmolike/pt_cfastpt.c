@@ -14,9 +14,9 @@
 
 void get_FPT_bias(void) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
 
-  if (fdiff(cache[1], Ntable.random))
+  if (fdiff2(cache[1], Ntable.random))
   {
     FPTbias.k_min     = 0.05;
     FPTbias.k_max     = 1.0e+6;
@@ -28,7 +28,7 @@ void get_FPT_bias(void)
     }
     FPTbias.tab = (double**) malloc2d(7, FPTbias.N);
   }
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random))
   {
     const double dlogk = (log(FPTbias.k_max) - log(FPTbias.k_min))/FPTbias.N;
 
@@ -68,9 +68,9 @@ void get_FPT_bias(void)
 
 void get_FPT_IA(void) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
 
-  if (fdiff(cache[1], Ntable.random))
+  if (fdiff2(cache[1], Ntable.random))
   {
     FPTIA.k_min    = 0.05;
     FPTIA.k_max    = 1.0e+6;
@@ -83,7 +83,7 @@ void get_FPT_IA(void)
     }
     FPTIA.tab = (double**) malloc2d(12, FPTIA.N);
   }
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random))
   {
     double lim[3];
     lim[0] = log(FPTIA.k_min);

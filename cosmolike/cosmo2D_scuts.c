@@ -86,13 +86,13 @@ double dC_ss_dlnk_tomo_limber(
     const int EE
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double**** table;
   static double lim[6];
   static int nell;
   static int nlnk;
   
-  if (NULL == table || fdiff(cache[4], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1.);
@@ -106,11 +106,11 @@ double dC_ss_dlnk_tomo_limber(
     if (table != NULL) free(table);
     table = (double****) malloc4d(2, tomo.shear_Npowerspectra, nlnk, nell);
   }
-  if (fdiff(cache[0], cosmology.random) ||
-      fdiff(cache[1], nuisance.random_photoz_shear) ||
-      fdiff(cache[2], nuisance.random_ia) ||
-      fdiff(cache[3], redshift.random_shear) ||
-      fdiff(cache[4], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) ||
+      fdiff2(cache[1], nuisance.random_photoz_shear) ||
+      fdiff2(cache[2], nuisance.random_ia) ||
+      fdiff2(cache[3], redshift.random_shear) ||
+      fdiff2(cache[4], Ntable.random))
   {
     // init static vars
     (void) dC_ss_dlnk_tomo_limber_nointerp(exp(lim[3]), exp(lim[0]),
@@ -163,13 +163,13 @@ double dlnC_ss_dlnk_tomo_limber(
     const int EE
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double**** table;
   static double lim[6];
   static int nell;
   static int nlnk;
   
-  if (NULL == table || fdiff(cache[4], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1.);
@@ -183,11 +183,11 @@ double dlnC_ss_dlnk_tomo_limber(
     if (table != NULL) free(table);
     table = (double****) malloc4d(2, tomo.shear_Npowerspectra, nlnk, nell);
   }
-  if (fdiff(cache[0], cosmology.random) ||
-      fdiff(cache[1], nuisance.random_photoz_shear) ||
-      fdiff(cache[2], nuisance.random_ia) ||
-      fdiff(cache[3], redshift.random_shear) ||
-      fdiff(cache[4], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) ||
+      fdiff2(cache[1], nuisance.random_photoz_shear) ||
+      fdiff2(cache[2], nuisance.random_ia) ||
+      fdiff2(cache[3], redshift.random_shear) ||
+      fdiff2(cache[4], Ntable.random))
   {
     // init static vars
     (void) dC_ss_dlnk_tomo_limber(exp(lim[3]), exp(lim[0]),  Z1(0), Z2(0), 1);
@@ -336,9 +336,9 @@ double RF_C_ss_tomo_limber_nointerp(
     const int init
   ) // compute RF_X = \int_{-infty}^{kmax} dlnk |dlnX_dlnk|
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL; 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 256 : 
                          (1 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -381,7 +381,7 @@ double RF_C_ss_tomo_limber_nointerp(
 double** dlnxi_dlnk_pm_tomo_nointerp(const double k)
 {  
   static double*** Glpm = NULL; //Glpm[0] = Gl+, Glpm[1] = Gl-
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double**** dCldlnk = NULL;
   static double lim[3];
   static int nlnk;
@@ -390,7 +390,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(const double k)
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
   const int NSIZE = tomo.shear_Npowerspectra;
-  if (NULL == Glpm ||  NULL == dCldlnk || fdiff(cache[4], Ntable.random))
+  if (NULL == Glpm ||  NULL == dCldlnk || fdiff2(cache[4], Ntable.random))
   {
     if (Glpm != NULL) free(Glpm);
     Glpm = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX);
@@ -456,11 +456,11 @@ double** dlnxi_dlnk_pm_tomo_nointerp(const double k)
     if (dCldlnk != NULL) free(dCldlnk);
     dCldlnk = (double****) malloc4d(2, NSIZE, Ntable.LMAX, nlnk);
   }
-  if (fdiff(cache[0], cosmology.random) ||
-      fdiff(cache[1], nuisance.random_photoz_shear) ||
-      fdiff(cache[2], nuisance.random_ia) ||
-      fdiff(cache[3], redshift.random_shear) ||
-      fdiff(cache[4], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) ||
+      fdiff2(cache[1], nuisance.random_photoz_shear) ||
+      fdiff2(cache[2], nuisance.random_ia) ||
+      fdiff2(cache[3], redshift.random_shear) ||
+      fdiff2(cache[4], Ntable.random))
   {
     for (int q=0; q<nlnk; q++) {
       for (int i=0; i<NSIZE; i++) {
@@ -576,12 +576,12 @@ double dlnxi_dlnk_pm_tomo(
     const int nj
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table = NULL; 
   static double lim[6];
   static int nlnk;
   const int NSIZE = tomo.shear_Npowerspectra;
-  if (NULL == table || fdiff(cache[4], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nlnk = Ntable.dCX_dlnk_nlnk;
     lim[0] = log(Ntable.dCX_dlnk_kmin);
     lim[1] = log(Ntable.dCX_dlnk_kmax);
@@ -589,11 +589,11 @@ double dlnxi_dlnk_pm_tomo(
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nlnk);
   }
-  if (fdiff(cache[0], cosmology.random) ||
-      fdiff(cache[1], nuisance.random_photoz_shear) ||
-      fdiff(cache[2], nuisance.random_ia) ||
-      fdiff(cache[3], redshift.random_shear) ||
-      fdiff(cache[4], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) ||
+      fdiff2(cache[1], nuisance.random_photoz_shear) ||
+      fdiff2(cache[2], nuisance.random_ia) ||
+      fdiff2(cache[3], redshift.random_shear) ||
+      fdiff2(cache[4], Ntable.random))
   {
     for (int f=0; f<nlnk; f++) {  
       double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*lim[2]));
@@ -704,9 +704,9 @@ double RF_xi_tomo_limber_nointerp(
     const int init
   ) // compute RF_X = \int_{-infty}^{kmax} dlnk |dlnX_dlnk|
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL; 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 256 : 
                          (1 == hdi) ? 512 : 1024; // predefined GSL tables

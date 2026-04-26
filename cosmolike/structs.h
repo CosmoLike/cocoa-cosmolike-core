@@ -55,7 +55,7 @@ typedef struct
   // CACHE VARIABLES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  double random; 
+  uint64_t random; 
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CONTROL NUM POINTS ON COSMOLIKE TABLES
@@ -131,7 +131,7 @@ typedef struct
   // CACHE VARIABLES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  double random;
+  uint64_t random;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // COSMO PARAMETERS
@@ -206,11 +206,11 @@ typedef struct
   // CACHE VARIABLES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  double random_photoz_shear;
-  double random_photoz_clustering;
-  double random_ia;
-  double random_galaxy_bias;
-  double random_gas;
+  uint64_t random_photoz_shear;
+  uint64_t random_photoz_clustering;
+  uint64_t random_ia;
+  uint64_t random_galaxy_bias;
+  uint64_t random_gas;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // INTRINSIC ALIGMENT --------------------------------
@@ -365,7 +365,7 @@ typedef struct
   // CACHE VARIABLES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  double random;
+  uint64_t random;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // To be applied on w_xk (real space cross-corr w/ cmb lensing)
@@ -408,8 +408,8 @@ typedef struct
   // CACHE VARIABLES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  double random_shear;
-  double random_clustering;
+  uint64_t random_shear;
+  uint64_t random_clustering;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // SOURCE n(Z)

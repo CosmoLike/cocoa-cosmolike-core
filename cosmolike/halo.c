@@ -140,10 +140,10 @@ double int_for_bias_norm(double nu, void* params)
 
 double bias_norm_nointerp(const double a, const int init)
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -176,18 +176,18 @@ double bias_norm_nointerp(const double a, const int init)
 
 double bias_norm(const double a) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
   static double lim[3];
   
-  if (NULL == table  || fdiff(cache[1], Ntable.random)) {
+  if (NULL == table  || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double)*Ntable.N_a);
     lim[0] = limits.a_min; 
     lim[1] = 0.9999999;
     lim[2] = (lim[1] - lim[0]) / ((double) Ntable.N_a - 1.0);
   }
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
     (void) bias_norm_nointerp(lim[0], 1); // init static vars
     #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_a; i++) {
@@ -217,11 +217,11 @@ double lognu0_gsl(double lnM, void* params __attribute__((unused)))
 
 double dlognudlogm(const double M) 
 { // if sigma(z) \propto to D(z), then d\ln \nu/dlnM independent of z
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
   static double lim[3];
 
-  if (NULL == table || fdiff(cache[1], Ntable.random))
+  if (NULL == table || fdiff2(cache[1], Ntable.random))
   {
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double) * Ntable.N_M);
@@ -230,7 +230,7 @@ double dlognudlogm(const double M)
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
   }
 
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random))
+  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random))
   {
     {
       const int i = 0;
@@ -448,10 +448,10 @@ double int_F0_KS(double x, void* params __attribute__((unused)))
 
 double F0_KS_nointerp(double c, const int init)
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -496,10 +496,10 @@ double int_F_KS(double x, void* params)
 
 double F_KS_nointerp(double c, double krs, const int init) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -530,14 +530,14 @@ double F_KS_nointerp(double c, double krs, const int init)
 
 double u_KS(double c, double k, const double rv)
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
   static double* norm = 0;
   static double  lim[2][3]; // lim[0][0] = cmin;  lim[1][0] = lnxmin;
                             // lim[0][1] = cmax;  lim[1][1] = lnxmax;
                             // lim[0][2] = dc;    lim[1][2] = dlnx; 
  
-  if (NULL == table || fdiff(cache[1], Ntable.random)) {   
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {   
     if (table != NULL) free(table); 
     table = (double**) malloc2d(Ntable.halo_uks_nc, Ntable.halo_uks_nx);
     if (norm != NULL) free(norm); 
@@ -551,7 +551,7 @@ double u_KS(double c, double k, const double rv)
     lim[1][2] = (lim[1][1] - lim[1][0])/((double) Ntable.halo_uks_nx - 1.); 
   }
 
-  if (fdiff(cache[0], nuisance.random_gas) || fdiff(cache[1], Ntable.random)) 
+  if (fdiff2(cache[0], nuisance.random_gas) || fdiff2(cache[1], Ntable.random)) 
   { 
     (void) F0_KS_nointerp(lim[0][0], 1);                 // init static vars
     (void) F_KS_nointerp(lim[0][0],exp(lim[1][0]), 1);   // init static vars
@@ -722,13 +722,13 @@ double ngal_nointerp(
     const int init
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -759,13 +759,13 @@ double ngal_nointerp(
 
 double ngal(const int ni, const double a)
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static double lim[3]; // [0] = amin; [1] = amax; [2] = da
 
   if (table == NULL || 
-      fdiff(cache[1], Ntable.random) ||
-      fdiff(cache[3], redshift.random_clustering)) 
+      fdiff2(cache[1], Ntable.random) ||
+      fdiff2(cache[3], redshift.random_clustering)) 
   { 
     if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_a);
@@ -775,10 +775,10 @@ double ngal(const int ni, const double a)
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_a - 1.0);
   }
   
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random)    ||
-      fdiff(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff(cache[3], redshift.random_clustering))
+  if (fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random)    ||
+      fdiff2(cache[2], nuisance.random_galaxy_bias) ||
+      fdiff2(cache[3], redshift.random_clustering))
   {
     (void) ngal_nointerp(0, lim[0], 1);    
     #pragma omp parallel for collapse(2) schedule(static,1)
@@ -808,14 +808,14 @@ double hm_funcs_nointerp(
     const int init
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
 
-  if (w == NULL || fdiff(cache[0], Ntable.random))
+  if (w == NULL || fdiff2(cache[0], Ntable.random))
   {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
@@ -889,13 +889,13 @@ double bgal_nointerp(
 
 double bgal(const int ni, const double a)
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static double lim[3]; // [0] = amin; [1] = amax; [2] = da
 
   if (NULL == table || 
-      fdiff(cache[1], Ntable.random) ||
-      fdiff(cache[3], redshift.random_clustering)) 
+      fdiff2(cache[1], Ntable.random) ||
+      fdiff2(cache[3], redshift.random_clustering)) 
   {  
     if (table != NULL) free(table); 
     table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_a);
@@ -903,10 +903,10 @@ double bgal(const int ni, const double a)
     lim[1] = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_a - 1.0);
   }
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random)    ||
-      fdiff(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff(cache[3], redshift.random_clustering)) 
+  if (fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random)    ||
+      fdiff2(cache[2], nuisance.random_galaxy_bias) ||
+      fdiff2(cache[3], redshift.random_clustering)) 
   {
     (void) bgal_nointerp(0, lim[0], 1); // init static vars  
     #pragma omp parallel for collapse(2) schedule(static,1)
@@ -985,10 +985,10 @@ double I02_XY_nointerp(
     const int init
   ) 
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1067,10 +1067,10 @@ double I11_X_nointerp(
     const int init
   ) 
 { 
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1138,13 +1138,13 @@ double G02_nointerp(
     const int init
   )
 { //needs to be divided by ngal^2
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1211,7 +1211,7 @@ double GM02_nointerp(
     const int init
   )
 { // needs to be divided by ngal
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
@@ -1219,7 +1219,7 @@ double GM02_nointerp(
     exit(1);
   }
 
-  if (NULL == w || fdiff(cache[0], Ntable.random)) {
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
@@ -1313,12 +1313,12 @@ double p_mm(
     const double a
   )
 { 
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
                            // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
 
-  if (NULL == table || fdiff(cache[1], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);   
     lim[0][0] = limits.a_min;
@@ -1328,7 +1328,7 @@ double p_mm(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-  if (fdiff(cache[0], cosmology.random) || fdiff(cache[1], Ntable.random)) {
+  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
     (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1); 
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=1; i<Ntable.N_a; i++) {
@@ -1355,12 +1355,12 @@ double p_my(
     const double a
   )
 { 
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
   static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
                            // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
 
-  if (NULL == table || fdiff(cache[1], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin); 
     lim[0][0] = limits.a_min;
@@ -1370,9 +1370,9 @@ double p_my(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random) ||
-      fdiff(cache[2], nuisance.random_gas))
+  if (fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random) ||
+      fdiff2(cache[2], nuisance.random_gas))
   {
     (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 1, 1); // init static vars
     #pragma omp parallel for collapse(2) schedule(static,1)
@@ -1401,12 +1401,12 @@ double p_yy(
     const double a
   )
 { 
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
   static double lim[2][3]; // lim[0][0]=amin, lim[0][1]=amax, lim[0][2]=da 
                            // lim[1][0]=lnkmin, lim[1][1]=lnkmax, lim[1][2]=dlnk
 
-  if (NULL == table || fdiff(cache[1], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
     lim[0][0] = limits.a_min;
@@ -1416,9 +1416,9 @@ double p_yy(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random) ||
-      fdiff(cache[2], nuisance.random_gas))
+  if (fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random) ||
+      fdiff2(cache[2], nuisance.random_gas))
   { 
     (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 2, 1); // init static vars
     #pragma omp parallel for collapse(2) schedule(static,1)
@@ -1463,7 +1463,7 @@ double p_gm(
     const int ni
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table = NULL;
   static double** lim = NULL; //lim[:,0] = amin; lim[:,1] = amax; lim[:,2] = da; 
                               //lim[redshift.clustering_nbin][0] = lnkmin; 
@@ -1473,7 +1473,7 @@ double p_gm(
   const int nbin = redshift.clustering_nbin;
   const int na = (int) Ntable.N_a/5.0; // range is the (\delta a) of a single bin
   
-  if (NULL == table || fdiff(cache[1], Ntable.random))
+  if (NULL == table || fdiff2(cache[1], Ntable.random))
   {
     if (table != NULL) free(table);
     table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
@@ -1489,10 +1489,10 @@ double p_gm(
     lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])/((double) Ntable.N_k_nlin - 1.0);
   }
 
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random)    ||
-      fdiff(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff(cache[3], redshift.random_clustering))
+  if (fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random)    ||
+      fdiff2(cache[2], nuisance.random_galaxy_bias) ||
+      fdiff2(cache[3], redshift.random_clustering))
   { 
     (void) p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1); // init static vars
     #pragma omp parallel for collapse(3) schedule(static,1)
@@ -1551,7 +1551,7 @@ double p_gg(
     const int nj
   )
 {
-  static double cache[MAX_SIZE_ARRAYS];
+  static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table = NULL;
   static double** lim = NULL; //lim[0,:] = amin; lim[:,1] = amax; lim[:,2] = da; 
                               //lim[redshift.clustering_nbin] = lnkmin; 
@@ -1560,7 +1560,7 @@ double p_gg(
   const int nbin = redshift.clustering_nbin;
   const int na = (int) Ntable.N_a/5.0;
 
-  if (NULL == table || fdiff(cache[1], Ntable.random)) {
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
     table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     if (lim != NULL) free(lim);
@@ -1574,10 +1574,10 @@ double p_gg(
     lim[nbin][1] = log(limits.k_max_cH0);
     lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])/((double) Ntable.N_k_nlin - 1.);
   }
-  if (fdiff(cache[0], cosmology.random) || 
-      fdiff(cache[1], Ntable.random)    ||
-      fdiff(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff(cache[3], redshift.random_clustering))
+  if (fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random)    ||
+      fdiff2(cache[2], nuisance.random_galaxy_bias) ||
+      fdiff2(cache[3], redshift.random_clustering))
   { 
     (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1); // init static vars
     #pragma omp parallel for collapse(3) schedule(static,1)

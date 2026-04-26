@@ -4,6 +4,12 @@
 extern "C" {
 #endif
 
+#ifdef __cplusplus
+  #define RESTRICT __restrict__
+#else
+  #define RESTRICT restrict
+#endif
+
 // ----------------------------------------------------------------------------
 // Naming convention:
 // ----------------------------------------------------------------------------
