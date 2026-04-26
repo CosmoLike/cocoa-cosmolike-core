@@ -1303,8 +1303,9 @@ double C_ss_tomo_limber(
     }
 
     // ------------------------------------------------------------------
-    // optimization: amin and amax are independent of redshift bin
-    //               compute cosmo quantities and prefactor only once. 
+    // optimization: - compute cosmo quantities and prefactor only once.
+    //                 (why once? amin and amax are nl and ns independent)
+    //               - compute WS only nsource times (not ns(ns-1)/2 !) 
     // ------------------------------------------------------------------
     const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
     const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
@@ -1320,7 +1321,7 @@ double C_ss_tomo_limber(
       ell_prefactor[i] = lx[i]*(lx[i]-1.)*(lx[i]+1.)*(lx[i]+2.)/ell4;
     }
 
-    // precompute P(k,z)
+    // precompute P(k,z) (matter power spectrum)
     double** PK = (double**) malloc2d(nell, cn.npts);
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i = 0; i < nell; i++)  {
@@ -1332,7 +1333,7 @@ double C_ss_tomo_limber(
       }
     }
     
-    // precompute WK, WS
+    // precompute: WS (only  need to be computed ns times, not ns (ns -1)/2
     double*** W = (double***) malloc3d(2, redshift.shear_nbin, cn.npts);
     for (int b = 0; b < redshift.shear_nbin; b++) {
       for (int p = 0; p < cn.npts; p++) {
@@ -1361,18 +1362,18 @@ double C_ss_tomo_limber(
           const double dchida = cn.data[CN_DCHIDA][p];
           const double wt = cn.data[CN_WT][p];
           
-          const double wk1 = W[0][Z1NZ][p];
-          const double wk2 = W[0][Z2NZ][p];
-          const double ws1 = W[1][Z1NZ][p];
-          const double ws2 = W[1][Z2NZ][p];
+          const double WK1 = W[0][Z1NZ][p];
+          const double WK2 = W[0][Z2NZ][p];
+          const double WS1 = W[1][Z1NZ][p];
+          const double WS2 = W[1][Z2NZ][p];
 
           sum_EE += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a, 
             hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ, 
-            wk1, wk2, ws1, ws2, 1, 0) * wt;
+            WK1, WK2, WS1, WS2, 1, 0) * wt;
           if (nuisance.IA_MODEL == IA_MODEL_TATT) {
             sum_BB += int_for_C_ss_tomo_limber_core(a, fK, PK[i][p], growfac_a, 
               hoverh0, dchida, ell_prefactor[i], lx[i], Z1NZ, Z2NZ, 
-              wk1, wk2, ws1, ws2, 0, 0) * wt;
+              WK1, WK2, WS1, WS2, 0, 0) * wt;
           }
         }
         table[0][k][i] = sum_EE;
