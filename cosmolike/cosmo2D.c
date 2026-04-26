@@ -4,6 +4,7 @@
 #include <gsl/gsl_sf.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -239,7 +240,6 @@ double xi_pm_tomo(
                               Cl[0][nz], 
                               Cl[1][nz]);
       }
-
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
@@ -256,53 +256,6 @@ double xi_pm_tomo(
           xipm[1][q] = sum1;
         }
       }
-      /*
-      // ----------------------------------------------------------------------
-      // Without blocking: each (nz,theta) streams the full length of Cl and  
-      // Glpm arrays through the cache. With many pairs, total memory traffic
-      // far exceeds L2/L3. CPU stalls waiting for RAM on every iteration.
-      //
-      // With blocking: process ALL (nz, theta) pairs for a small chunk
-      // of l before moving to the next chunk. Within each block:
-      // The more tomo bins (nz), the more reuse per block, and the
-      // larger the speedup over the unblocked version (perfect for Roman).
-      // -----------------------------------------------------------------------
-      for (int nz = 0; nz < NSIZE; nz++) {
-        for (int i = 0; i < Ntable.Ntheta; i++) {
-          xipm[0][nz * Ntable.Ntheta + i] = 0.0;
-          xipm[1][nz * Ntable.Ntheta + i] = 0.0;
-        }
-      }
-      const int BLOCK = 1024;
-      #pragma omp parallel
-      {
-        for (int lb = lmin; lb < Ntable.LMAX; lb += BLOCK) 
-        {
-          const int lend = (lb + BLOCK < Ntable.LMAX) 
-                            ? lb + BLOCK : Ntable.LMAX;
-
-          #pragma omp for collapse(2) schedule(static) nowait
-          for (int nz = 0; nz < NSIZE; nz++) {
-            for (int i = 0; i < Ntable.Ntheta; i++) {
-              const double* restrict c0  = Cl[0][nz];
-              const double* restrict c1  = Cl[1][nz];
-              const double* restrict gl0 = Glpm[0][i];
-              const double* restrict gl1 = Glpm[1][i];
-              double s0 = 0.0, s1 = 0.0;
-              for (int l = lb; l < lend; l++) {
-                const double plus  = c0[l] + c1[l];
-                const double minus = c0[l] - c1[l];
-                s0 += gl0[l] * plus;
-                s1 += gl1[l] * minus;
-              }
-              const int q = nz * Ntable.Ntheta + i;
-              xipm[0][q] += s0;
-              xipm[1][q] += s1;
-            }
-          }
-        }
-      }
-      */
     }
     else {
       log_fatal("NonLimber not implemented");
