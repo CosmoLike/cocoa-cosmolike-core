@@ -54,8 +54,7 @@ gsl_spline* malloc_gsl_spline(const int n)
     result = gsl_spline_alloc(gsl_interp_steffen, n);
 
   if (result == NULL) {
-    log_fatal("array allocation failed");
-    exit(1);
+    log_fatal("array allocation failed"); exit(1);
   }
   return result;
 }
@@ -63,189 +62,188 @@ gsl_spline* malloc_gsl_spline(const int n)
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
 {
   gsl_integration_glfixed_table* w = gsl_integration_glfixed_table_alloc(n);
-  if (w == NULL)
-  {
-    log_fatal("array allocation failed");
-    exit(1);
+  if (w == NULL) {
+    log_fatal("array allocation failed"); exit(1);
   }
   return w;
 }
 
-void**** malloc4d(const long nx, const long ny, const long nz, const long nw) {
+void**** malloc4d(const long nx, const long ny, const long nz, const long nw)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(double***);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(double***);
+
+  size_t nxyp = nx * ny * sizeof(double**);
+  if (nxyp % align != 0) nxyp = nxyp + (align - nxyp % align);
+  nxyp = nxyp / sizeof(double**);
+
+  size_t nxyzp = nx * ny * nz * sizeof(double*);
+  if (nxyzp % align != 0) nxyzp = nxyzp + (align - nxyzp % align);
+  nxyzp = nxyzp / sizeof(double*);
+
+  // each row of nw doubles, padded
+  size_t nwp = nw * sizeof(double);
+  if (nwp % align != 0) nwp = nwp + (align - nwp % align);
+  nwp = nwp / sizeof(double);
+
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, 64, sizeof(double***)*nx + 
-                                     sizeof(double**)*nx*ny+ 
-                                     sizeof(double*)*nx*ny*nz +
-                                     sizeof(double)*nx*ny*nz*nw) != 0) {
-    log_fatal("posix_memalign failed in malloc4d_aligned64");
+  if (posix_memalign(&raw_block, align,
+                     nxp * sizeof(double***) +
+                     nxyp * sizeof(double**) +
+                     nxyzp * sizeof(double*) +
+                     nx * ny * nz * nwp * sizeof(double)) != 0) {
+    log_fatal("posix_memalign failed in malloc4d");
     exit(EXIT_FAILURE);
   }
+
   double**** tab = (double****) raw_block;
-  if (NULL == tab) {
-    log_fatal("array allocation failed"); exit(1);
-  }
-  double*** lvl3 = (double***)(tab + nx);
-  double**  lvl2 = (double** )(lvl3 + nx*ny);     
-  double*   data = (double*  )(lvl2 + nx*ny*nz);
+
+  double*** lvl3 = (double***) ((char*) raw_block +
+                                nxp * sizeof(double***));
+  double**  lvl2 = (double**)  ((char*) raw_block + 
+                                nxp * sizeof(double***) +
+                                nxyp * sizeof(double**));
+  double*   data = (double*)   ((char*) raw_block +
+                                nxp * sizeof(double***) +
+                                nxyp * sizeof(double**) +
+                                nxyzp * sizeof(double*));
   #pragma omp parallel for
   for (int i = 0; i < nx; ++i) {
-    tab[i] = lvl3 + i*ny;
+    tab[i] = lvl3 + i * ny;
     for (int j = 0; j < ny; ++j) {
-      tab[i][j] = lvl2 + (ny*i+j)*nz;
+      tab[i][j] = lvl2 + (ny * i + j) * nz;
       for (int k = 0; k < nz; ++k)
-        tab[i][j][k] = data + ((ny*i+j)*nz + k)*nw;
+        tab[i][j][k] = data + ((ny * i + j) * nz + k) * nwp;
     }
   }
-  return (void****)tab;
+  return (void****) tab;
 }
 
-/*
 void*** malloc3d(const int nx, const int ny, const int nz)
 {
-  double*** tab = (double***) malloc(sizeof(double**)*nx +
-                                     sizeof(double*)*nx*ny + 
-                                     sizeof(double)*nx*ny*nz);
-  if (tab == NULL)
-  {
-    log_fatal("array allocation failed");
-    exit(1);
-  }
+  const size_t align = 64;
 
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<nx; i++)
-  {
-    for (int j=0; j<ny; j++)
-    {
-      tab[i] = (double**)(tab + nx) + ny*i;
-      tab[i][j] = (double*)((double**)(tab+nx) + nx*ny) + ny*nz*i + nz*j;
-    }
-  }
+  // first pointer table: nx double** pointers
+  size_t nxp = nx * sizeof(double**);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(double**);
 
-  return (void***) tab;
-}
-*/
+  // second pointer table: nx*ny double* pointers
+  size_t nxyp = nx * ny * sizeof(double*);
+  if (nxyp % align != 0) nxyp = nxyp + (align - nxyp % align);
+  nxyp = nxyp / sizeof(double*);
 
-void*** malloc3d(const int nx, const int ny, const int nz)
-{ // Got help from ChatGPT to do the align version of my previous malloc func
+  // each row of nz doubles, padded
+  size_t nzp = nz * sizeof(double);
+  if (nzp % align != 0) nzp = nzp + (align - nzp % align);
+  nzp = nzp / sizeof(double);
+
   void* raw_block = NULL;
-  if (posix_memalign(&raw_block, 64, nx * sizeof(double**) + 
-                                     nx * ny * sizeof(double*) + 
-                                     nx * ny * nz * sizeof(double)) != 0) {
-    log_fatal("posix_memalign failed in malloc3d_aligned64");
-    exit(EXIT_FAILURE);
+  if (posix_memalign(&raw_block, align,
+                     nxp * sizeof(double**) +
+                     nxyp * sizeof(double*) +
+                     nx * ny * nzp * sizeof(double)) != 0) {
+    log_fatal("posix_memalign failed in malloc3d"); exit(EXIT_FAILURE);
   }
 
   double*** tab = (double***) raw_block;
-
   #pragma omp parallel for
   for (int i = 0; i < nx; ++i) {
-    tab[i] = (double**) ((char*) raw_block + nx*sizeof(double**)) + ny*i;
+    tab[i] = (double**) ((char*) raw_block +
+             nxp * sizeof(double**)) + ny * i;
     for (int j = 0; j < ny; ++j) {
-      tab[i][j] = (double*)  ((char*) raw_block + 
-                              nx*sizeof(double**) + 
-                              nx*ny*sizeof(double*)) + nz*(ny*i + j);
+      tab[i][j] = (double*) ((char*) raw_block +
+                  nxp * sizeof(double**) +
+                  nxyp * sizeof(double*)) + nzp * (ny * i + j);
     }
   }
-
   return (void***) tab;
 }
 
-/*
-void** malloc2d(const int nx, const int ny)
-{
-  double** tab = (double**) malloc(sizeof(double*)*nx + 
-                                   sizeof(double)*nx*ny);
-  if (tab == NULL)
-  {
-    log_fatal("array allocation failed");
-    exit(1);
-  }
-
-  #pragma omp parallel for
-  for (int i=0; i<nx; i++) {
-    tab[i] = (double*)(tab + nx) + ny*i;
-  }
-  
-  return (void**) tab;
-}
-*/
-
 void** malloc2d_int(const int nx, const int ny)
 {
-  int** tab = (int**) malloc(sizeof(int*)*nx + 
-                             sizeof(int)*nx*ny);
-  if (tab == NULL) {
-    log_fatal("array allocation failed"); exit(1);
+  const size_t align = 64;
+  size_t nxp = nx * sizeof(int*);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(int*);
+  size_t nyp = ny * sizeof(int);
+  if (nyp % align != 0) nyp = nyp + (align - nyp % align);
+  nyp = nyp / sizeof(int);
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block,
+                     align,
+                     sizeof(int*)*nxp + sizeof(int)*nx*nyp) != 0) {
+    log_fatal("array allocation failed (malloc2d_int)"); exit(EXIT_FAILURE);
   }
+  int** tab = (int**) raw_block;
   #pragma omp parallel for
-  for (int i=0; i<nx; i++) {
-    tab[i] = (int*)(tab + nx) + ny*i;
+  for (int i = 0; i < nx; ++i) {
+    // with padding, we need to use the byte-level cast 
+    // (char*) raw_block + nxp*sizeof(int*) to get the exact padded offset
+    tab[i] = (int*) ((char*) raw_block + nxp*sizeof(int*)) + i * nyp;
   }
   return (void**) tab;
 }
 
 void** malloc2d(const int nx, const int ny)
-{ // Got help from ChatGPT to do the align version of my previous malloc func
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(double*);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp/sizeof(double*);
+
+  size_t nyp = ny * sizeof(double);
+  if (nyp % align != 0) nyp = nyp + (align - nyp % align);
+  nyp = nyp/sizeof(double);
+
   void* raw_block = NULL;
   if (posix_memalign(&raw_block, 
-                     64, 
-                     sizeof(double*)*nx+sizeof(double)*nx*ny) != 0) {
-    log_fatal("posix_memalign failed for malloc2d");
-    exit(1);
+                     align, 
+                     sizeof(double*)*nxp+sizeof(double)*nxp*nyp) != 0) {
+    log_fatal("posix_memalign failed for malloc2d"); exit(EXIT_FAILURE);
   }
 
   double** tab = (double**) raw_block;
   #pragma omp parallel for
   for (int i = 0; i < nx; ++i) {
-    tab[i] = (double*) ((char*) raw_block + nx*sizeof(double*)) + i * ny;
+    // with padding, we need to use the byte-level cast 
+    // (char*) raw_block + nxp*sizeof(int*) to get the exact padded offset
+    tab[i] = (double*) ((char*) raw_block + nxp*sizeof(double*)) + i * nyp;
   }
   return (void**) tab;
 }
-
-/*
-void* malloc1d(const int nx)
-{
-  double* vec = (double*) malloc(sizeof(double)*nx);
-  if (vec == NULL)
-  {
-    log_fatal("array allocation failed");
-    exit(1);
-  }
-  return (void*) vec;
-}
-*/
 
 void* malloc1d_int(const int nx)
 {
   int* vec = (int*) malloc(sizeof(int)*nx);
   if (NULL == vec) {
-    log_fatal("array allocation failed"); exit(1);
+    log_fatal("array allocation failed"); exit(EXIT_FAILURE);
   }
   return (void*) vec;
 }
 
 void* malloc1d(const int nx)
-{ // Got help from ChatGPT to do the align version of my previous malloc func
+{
   void* vec = NULL;
   if (posix_memalign(&vec, 64, sizeof(double) * nx) != 0) {
-    log_fatal("array allocation failed (malloc1d)");
-    exit(1); 
+    log_fatal("array allocation failed (malloc1d)"); exit(EXIT_FAILURE); 
   }
   return vec;
 }
 
 void* calloc1d(const int nx)
 {
-  double* vec = (double*) calloc(nx, sizeof(double));
-  if (vec == NULL)
-  {
-    log_fatal("array allocation failed");
-    exit(1);
+  void* vec = NULL;
+  if (posix_memalign(&vec, 64, sizeof(double) * nx) != 0) {
+    log_fatal("array allocation failed (calloc1d)"); exit(EXIT_FAILURE);
   }
-  return (void*) vec;
+  memset(vec, 0, sizeof(double) * nx);
+  return vec;
 }
-
-
 
 double fmin(const double a, const double b)
 {
@@ -265,8 +263,7 @@ bin_avg set_bin_average(const int i_theta, const int j_L)
   static uint64_t cache [MAX_SIZE_ARRAYS];
 
   if (Ntable.Ntheta == 0) {
-    log_fatal("Ntable.Ntheta not initialized");
-    exit(1);
+    log_fatal("Ntable.Ntheta not initialized"); exit(EXIT_FAILURE);
   }
   if (P == NULL || (ntheta != Ntable.Ntheta) || fdiff2(cache[0], Ntable.random))
   {
@@ -294,24 +291,22 @@ bin_avg set_bin_average(const int i_theta, const int j_L)
     for (int i=0; i<Ntable.Ntheta; i++) {
       if (fabs(xminmax[0][i]) > 1) {
         log_fatal("logical error: Legendre argument xmin = %.3e>1", xminmax[0][i]);
-        exit(1);
+        exit(EXIT_FAILURE);
       }
       if (fabs(xminmax[1][i]) > 1) {
         log_fatal("logical error: Legendre argument xmax = %.3e>1", xminmax[1][i]);
-        exit(1);
+        exit(EXIT_FAILURE);
       }
       
       int status = 
       gsl_sf_legendre_Pl_deriv_array(Ntable.LMAX, xminmax[0][i], Pmin[i], dPmin[i]);
       if (status) {
-        log_fatal(gsl_strerror(status));
-        exit(1);
+        log_fatal(gsl_strerror(status)); exit(EXIT_FAILURE);
       }
       status = 
       gsl_sf_legendre_Pl_deriv_array(Ntable.LMAX, xminmax[1][i], Pmax[i], dPmax[i]);
       if (status) {
-        log_fatal(gsl_strerror(status));
-        exit(1);
+        log_fatal(gsl_strerror(status)); exit(EXIT_FAILURE);
       } 
     }
     ntheta = Ntable.Ntheta;
