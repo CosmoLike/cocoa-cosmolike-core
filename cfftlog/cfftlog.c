@@ -13,6 +13,7 @@
 #include "utils_complex.h"
 
 #include "log.c/src/log.h"
+#include <omp.h>
 
 void cfftlog(double *x, double *fx, long N, config *config, int ell, double *y, double *Fy) {
 	long N_original = N;
@@ -357,7 +358,7 @@ void cfftlog_ells_increment(double *x, double *fx, long N, config *config, int* 
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-// begin of new version
+// begin of new experimental version
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
@@ -366,183 +367,127 @@ void cfftlog_ells_increment(double *x, double *fx, long N, config *config, int* 
 typedef fftw_complex fftwc;
 typedef fftw_plan fftwp;
 
-static void**** malloc4d_complex(const long nx, const long ny,
-                                 const long nz, const long nw)
+static void*** malloc3d_complex(const long nx, const long ny, const long nz)
 {
   const size_t align = 64;
 
-  size_t nxp = nx * sizeof(double complex***);
+  size_t nxp = nx * sizeof(double complex**);
   if (nxp % align != 0) nxp = nxp + (align - nxp % align);
-  nxp = nxp / sizeof(double complex***);
+  nxp = nxp / sizeof(double complex**);
 
-  size_t s2p = nx * ny * sizeof(double complex**);
+  size_t s2p = nx * ny * sizeof(double complex*);
   if (s2p % align != 0) s2p = s2p + (align - s2p % align);
-  s2p = s2p / sizeof(double complex**);
+  s2p = s2p / sizeof(double complex*);
 
-  size_t s3p = nx * ny * nz * sizeof(double complex*);
-  if (s3p % align != 0) s3p = s3p + (align - s3p % align);
-  s3p = s3p / sizeof(double complex*);
-
-  size_t nwp = nw * sizeof(double complex);
-  if (nwp % align != 0) nwp = nwp + (align - nwp % align);
-  nwp = nwp / sizeof(double complex);
+  size_t nzp = nz * sizeof(double complex);
+  if (nzp % align != 0) nzp = nzp + (align - nzp % align);
+  nzp = nzp / sizeof(double complex);
 
   void* raw_block = NULL;
   if (posix_memalign(&raw_block, align,
-                     sizeof(double complex***) * nxp +
-                     sizeof(double complex**)  * s2p +
-                     sizeof(double complex*)   * s3p +
-                     sizeof(double complex)    * nx * ny * nz * nwp) != 0) {
-    log_fatal("array allocation failed (malloc4d_complex)"); exit(1);
-  }
-
-  double complex**** tab = (double complex****) raw_block;
-  double complex***  lvl3 = (double complex***)
-    ((char*) raw_block + sizeof(double complex***) * nxp);
-  double complex**   lvl2 = (double complex**)
-    ((char*) raw_block + sizeof(double complex***) * nxp +
-                         sizeof(double complex**)  * s2p);
-  double complex* data = (double complex*)
-    ((char*) raw_block + sizeof(double complex***) * nxp +
-                         sizeof(double complex**)  * s2p +
-                         sizeof(double complex*)   * s3p);
-
-  for (int i = 0; i < nx; i++) {
-    tab[i] = lvl3 + i * ny;
-    for (int j = 0; j < ny; j++) {
-      tab[i][j] = lvl2 + (ny * i + j) * nz;
-      for (int k = 0; k < nz; k++) {
-        tab[i][j][k] = data + ((long)(ny * i + j) * nz + k) * nwp;
-      }
-    }
-  }
-  return (void****) tab;
-}
-
-static void**** malloc3d_ptr(const long nx, const long ny, const long nz)
-{
-  const size_t align = 64;
-
-  size_t nxp = nx * sizeof(double***);
-  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
-  nxp = nxp / sizeof(double***);
-
-  size_t s2p = nx * ny * sizeof(double**);
-  if (s2p % align != 0) s2p = s2p + (align - s2p % align);
-  s2p = s2p / sizeof(double**);
-
-  void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(double***) * nxp +
-                     sizeof(double**)  * s2p +
-                     sizeof(double*)   * nx * ny * nz) != 0) {
-    log_fatal("array allocation failed (malloc3d_ptr)"); exit(1);
-  }
-
-  double**** tab = (double****) raw_block;
-  double***  lvl2 = (double***)
-    ((char*) raw_block + sizeof(double***) * nxp);
-  double**   lvl1 = (double**)
-    ((char*) raw_block + sizeof(double***) * nxp +
-                         sizeof(double**)  * s2p);
-
-  for (int i = 0; i < nx; i++) {
-    tab[i] = lvl2 + i * ny;
-    for (int j = 0; j < ny; j++) {
-      tab[i][j] = lvl1 + (ny * i + j) * nz;
-    }
-  }
-  return (void****) tab;
-}
-
-static void**** malloc4d_fftwc(const long nx, const long ny,
-                               const long nz, const long nw)
-{
-  const size_t align = 64;
-
-  size_t nxp = nx * sizeof(fftwc***);
-  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
-  nxp = nxp / sizeof(fftwc***);
-
-  size_t s2p = nx * ny * sizeof(fftwc**);
-  if (s2p % align != 0) s2p = s2p + (align - s2p % align);
-  s2p = s2p / sizeof(fftwc**);
-
-  size_t s3p = nx * ny * nz * sizeof(fftwc*);
-  if (s3p % align != 0) s3p = s3p + (align - s3p % align);
-  s3p = s3p / sizeof(fftwc*);
-
-  size_t nwp = nw * sizeof(fftwc);
-  if (nwp % align != 0) nwp = nwp + (align - nwp % align);
-  nwp = nwp / sizeof(fftwc);
-
-  void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(fftwc***) * nxp +
-                     sizeof(fftwc**)  * s2p +
-                     sizeof(fftwc*)   * s3p +
-                     sizeof(fftwc)    * nx * ny * nz * nwp) != 0) {
-    log_fatal("array allocation failed (malloc4d_fftwc)"); exit(1);
-  }
-
-  fftwc**** tab = (fftwc****) raw_block;
-  fftwc***  lvl3 = (fftwc***)
-    ((char*) raw_block + sizeof(fftwc***) * nxp);
-  fftwc**   lvl2 = (fftwc**)
-    ((char*) raw_block + sizeof(fftwc***) * nxp +
-                         sizeof(fftwc**)  * s2p);
-  fftwc*    data = (fftwc*)
-    ((char*) raw_block + sizeof(fftwc***) * nxp +
-                         sizeof(fftwc**)  * s2p +
-                         sizeof(fftwc*)   * s3p);
-
-  for (int i = 0; i < nx; i++) {
-    tab[i] = lvl3 + i * ny;
-    for (int j = 0; j < ny; j++) {
-      tab[i][j] = lvl2 + (ny * i + j) * nz;
-      for (int k = 0; k < nz; k++) {
-        tab[i][j][k] = data + ((long)(ny * i + j) * nz + k) * nwp;
-      }
-    }
-  }
-  return (void****) tab;
-}
-
-static void*** malloc3d_fftwp(const long nx, const long ny, const long nz)
-{
-  const size_t align = 64;
-
-  size_t nxp = nx * sizeof(fftwp**);
-  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
-  nxp = nxp / sizeof(fftwp**);
-
-  size_t s2p = nx * ny * sizeof(fftwp*);
-  if (s2p % align != 0) s2p = s2p + (align - s2p % align);
-  s2p = s2p / sizeof(fftwp*);
-
-  void* raw_block = NULL;
-  if (posix_memalign(&raw_block, align,
-                     sizeof(fftwp**) * nxp +
-                     sizeof(fftwp*)  * s2p +
-                     sizeof(fftwp)   * nx * ny * nz) != 0) {
-    log_fatal("array allocation failed (malloc3d_fftwp)");
+                     sizeof(double complex**) * nxp +
+                     sizeof(double complex*)  * s2p +
+                     sizeof(double complex)   * nx * ny * nzp) != 0) {
+    log_fatal("array allocation failed (malloc3d_complex)");
     exit(1);
   }
 
-  fftwp*** tab = (fftwp***) raw_block;
-  fftwp**  lvl2 = (fftwp**)
-    ((char*) raw_block + sizeof(fftwp**) * nxp);
-  fftwp*   lvl1 = (fftwp*)
-    ((char*) raw_block + sizeof(fftwp**) * nxp +
-                         sizeof(fftwp*)  * s2p);
+  double complex*** tab = (double complex***) raw_block;
+  double complex**  lvl2 = (double complex**)
+    ((char*) raw_block + sizeof(double complex**) * nxp);
+  double complex*   data = (double complex*)
+    ((char*) raw_block + sizeof(double complex**) * nxp +
+                         sizeof(double complex*)  * s2p);
 
   for (int i = 0; i < nx; i++) {
     tab[i] = lvl2 + i * ny;
     for (int j = 0; j < ny; j++) {
-      tab[i][j] = lvl1 + (ny * i + j) * nz;
+      tab[i][j] = data + ((long)(ny * i) + j) * nzp;
     }
   }
   return (void***) tab;
+}
+
+static void*** malloc2d_ptr(const long nx, const long ny)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(double**);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(double**);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(double**) * nxp +
+                     sizeof(double*)  * nx * ny) != 0) {
+    log_fatal("array allocation failed (malloc2d_ptr)");
+    exit(1);
+  }
+
+  double*** tab = (double***) raw_block;
+  double**  data = (double**)
+    ((char*) raw_block + sizeof(double**) * nxp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = data + i * ny;
+  }
+  return (void***) tab;
+}
+
+static void** malloc2d_fftwc(const long nx, const long ny)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(fftwc*);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(fftwc*);
+
+  size_t nyp = ny * sizeof(fftwc);
+  if (nyp % align != 0) nyp = nyp + (align - nyp % align);
+  nyp = nyp / sizeof(fftwc);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(fftwc*) * nxp +
+                     sizeof(fftwc)  * nx * nyp) != 0) {
+    log_fatal("array allocation failed (malloc2d_fftwc)");
+    exit(1);
+  }
+
+  fftwc** tab = (fftwc**) raw_block;
+  fftwc*  data = (fftwc*)
+    ((char*) raw_block + sizeof(fftwc*) * nxp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = data + i * nyp;
+  }
+  return (void**) tab;
+}
+
+static void** malloc2d_fftwp(const long nx, const long ny)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(fftwp*);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(fftwp*);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(fftwp*) * nxp +
+                     sizeof(fftwp)  * nx * ny) != 0) {
+    log_fatal("array allocation failed (malloc2d_fftwp)");
+    exit(1);
+  }
+
+  fftwp** tab = (fftwp**) raw_block;
+  fftwp*  data = (fftwp*)
+    ((char*) raw_block + sizeof(fftwp*) * nxp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = data + i * ny;
+  }
+  return (void**) tab;
 }
 
 void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin 
@@ -620,17 +565,24 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------	
-	fftwc* toutfwd[SIZE1][SIZE2]; fftwp planf[SIZE1][SIZE2];
+	fftwc* toutfwd[SIZE1][SIZE2]; 
 	for(int i=0; i<SIZE1; i++) {
 		for(int j=0; j<SIZE2; j++) {
 			toutfwd[i][j] = (fftwc*) fftw_malloc(sizeof(fftwc)*(N[j][2]/2+1));
-			planf[i][j] = fftw_plan_dft_r2c_1d(N[j][2], fb[i][j], toutfwd[i][j], FFTW_ESTIMATE);
 		}
+	}
+
+	fftwp planf[SIZE2];
+	for (int j=0; j<SIZE2; j++) {
+	  planf[j] = fftw_plan_dft_r2c_1d(N[j][2], 
+	  																fb[0][j], 
+	  																toutfwd[0][j],
+	                                  FFTW_ESTIMATE);
 	}
 	#pragma omp parallel for collapse(2) schedule(static,1)
 	for(int i=0; i<SIZE1; i++) {
 		for(int j=0; j<SIZE2; j++) {
-			fftw_execute(planf[i][j]);
+			fftw_execute_dft_r2c(planf[j], fb[i][j], toutfwd[i][j]);
 			// c_window_cfft function begins -----------------------------------------
 			const double cww = cfg[j].c_window_width;
 			if( !(cww > 0) || !(cww	< 1)) {
@@ -639,14 +591,11 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 			const int halfN = N[j][2]/2;
 			const int kmax = (int) (halfN * cww);
 			for(int k=0; k<(kmax+1); k++) { // window for right-side
-				const double tmp = (double)(k)/kmax;
 				const double W = (double)(k)/kmax - sin(2.*M_PI*k/kmax)/(2.*M_PI);
 				toutfwd[i][j][N[j][2]/2-k] *= W;
 			}
 		}
 	}
-	fftwc* const* const* const* const outfwd = 
-		(fftwc* const* const* const* const) malloc4d_fftwc(SIZE1,SIZE2,Nellmax,Nmax/2+1);
 	double eta_m[SIZE2][Nmax/2+1];
 	for(int j=0; j<SIZE2; j++) {
 		#pragma omp parallel for schedule(static,1)
@@ -654,21 +603,11 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 			eta_m[j][q] = (2.0*M_PI/(dlnx * N[j][2])) * q;	
 		}
 	}
-	#pragma omp parallel for collapse(2) schedule(static,1)
-	for(int i=0; i<SIZE1; i++) {
-		for(int j=0; j<SIZE2; j++) {
-			for (int k=0; k<LMAX[i]; k++) {
-				for(int q=0; q<(N[j][2]/2+1); q++) { 
-					outfwd[i][j][k][q] = toutfwd[i][j][q];
-				}
-			}
-		}
-	}
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------
-	double complex* const* const* const* const gl = 
-		(double complex* const* const* const* const) malloc4d_complex(SIZE1, SIZE2, Nellmax, Nmax/2+1);
+	double complex* const* const* const gl = 
+		(double complex* const* const* const) malloc3d_complex(SIZE2,Nellmax,Nmax/2+1);
 	double pfac[] = {0.99999999999980993227684700473478,
 									 676.520368121885098567009190444019,
 									-1259.13921672240287047156078755283,
@@ -679,7 +618,7 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 									 9.984369578019570859563e-6,
 									 1.50563273514931155834e-7};
 	{
-		int i = imax;
+		int i = imax; // index where LMAX is the max!
 		for(int j=0; j<SIZE2; j++) {
 			const double nu = cfg[j].nu;
 			switch(cfg[j].derivative) 
@@ -725,7 +664,7 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
 								}
 							}
-							gl[i][j][k][q] = cexp(z*ln2 + part1 - part2);	
+							gl[j][k][q] = cexp(z*ln2 + part1 - part2);	
 						}
 					}
 					break;
@@ -756,7 +695,6 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 							double complex part2;
 							{
 								const double complex a = 0.5*(4 + ell[i][k] - z);
-								double complex tmp = pfac[0];
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -771,7 +709,7 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
 								}
 							}
-							gl[i][j][k][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
+							gl[j][k][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
 						}
 					}
 					break;
@@ -816,7 +754,7 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
 								}
 							}
-							gl[i][j][k][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
+							gl[j][k][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
 						}
 					}
 					break;
@@ -824,71 +762,43 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 			}
 		}
 	}
-	for(int i=0; i<imax; i++) {
-		for(int j=0; j<SIZE2; j++) {
-			#pragma omp parallel for collapse(2) schedule(static,1)
-			for (int k=0; k<LMAX[i]; k++) {
-				for(int q=0; q<N[j][2]/2+1; q++) {
-					gl[i][j][k][q] = gl[imax][j][k][q]; 
-				}
-			}
-		}
-	}
-	if (imax+1 < SIZE1) {
-		for(int i=imax+1; i<SIZE1; i++) {
-			for(int j=0; j<SIZE2; j++) {
-				#pragma omp parallel for collapse(2) schedule(static,1)
-				for (int k=0; k<LMAX[i]; k++) {
-					for(int q=0; q<N[j][2]/2+1; q++) {
-						gl[i][j][k][q] = gl[imax][j][k][q]; 
-					}
-				}
-			}
-		}
-	}
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------
-	// ---------------------------------------------------------------------------
-	double**** outbcw = (double****) malloc3d_ptr(SIZE1, SIZE2, Nellmax);
-	fftwp*** planb = (fftwp***) malloc3d_fftwp(SIZE1, SIZE2, Nellmax);
-	for(int i=0; i<SIZE1; i++) {
-		for(int j=0; j<SIZE2; j++) {
-			for(int k=0; k<LMAX[i]; k++) {
-				outbcw[i][j][k] = (double*) fftw_malloc(sizeof(double)*N[j][2]);
-				planb[i][j][k] = fftw_plan_dft_c2r_1d(N[j][2], 
-																							outfwd[i][j][k], 
-																							outbcw[i][j][k], 
-																							FFTW_ESTIMATE);
-			}
-		}
+	// ---------------------------------------------------------------------------	
+	const int NTHREADS = omp_get_max_threads();
+	fftwc** outfwd = (fftwc**) malloc2d_fftwc(NTHREADS, Nmax/2+1);
+	double** outbcw = (double**) malloc2d(NTHREADS, Nmax);
+
+	fftwp planb[SIZE2];
+	for(int j=0; j<SIZE2; j++) {
+		planb[j] = fftw_plan_dft_c2r_1d(N[j][2],
+																	  outfwd[0], 
+																	  outbcw[0], 
+																		FFTW_ESTIMATE);
 	}
-	for(int i=0; i<SIZE1; i++) {
-		for(int j=0; j<SIZE2; j++) {
-			#pragma omp parallel for collapse(2) schedule(static,1)
-			for (int k=0; k<LMAX[i]; k++) {
-				for(int q=0; q<(N[j][2]/2+1); q++) { 
-					const double y0 = y[i][k][0];			
-					outfwd[i][j][k][q] *= cpow(x0*y0/exp(2*N[j][0]*dlnx),-I*eta_m[j][q]);
-					outfwd[i][j][k][q] *= gl[i][j][k][q];
-					outfwd[i][j][k][q]  = conj(outfwd[i][j][k][q]);
-				}
-			}
-		}
-	}
+
+  double base_j[SIZE2];
+  for(int j=0; j<SIZE2; j++) {
+  	base_j[j] = x0 / exp(2 * N[j][0] * dlnx);
+  }
 	for(int i=0; i<SIZE1; i++) {
 		#pragma omp parallel for collapse(2) schedule(static,1)
 		for(int j=0; j<SIZE2; j++) {
-			for (int k=0; k<LMAX[i]; k++) {
-				fftw_execute(planb[i][j][k]);
-			}
-		}
-	}
-	for(int i=0; i<SIZE1; i++) {
-		#pragma omp parallel for collapse(3) schedule(static,1)
-		for(int j=0; j<SIZE2; j++) {
-			for (int k=0; k<LMAX[i]; k++) {
+			for (int k=0; k<LMAX[i]; k++) {	
+			  const int id = omp_get_thread_num();	
+			  const double lnbase = log(base_j[j] * y[i][k][0]);		
+				for(int q=0; q<(N[j][2]/2+1); q++) { 
+					fftwc val = toutfwd[i][j][q];	
+					const double phase = -eta_m[j][q] * lnbase;
+					val *= cos(phase) + I * sin(phase);
+					val *= gl[j][k][q];
+					outfwd[id][q] = conj(val);
+				}
+				
+				fftw_execute_dft_c2r(planb[j], outfwd[id], outbcw[id]);
+				
 				for(int q=0; q<Nx; q++) {
-					Fy[i][j][k][q] = outbcw[i][j][k][N[j][0]+q] * sqrtpi / 
+					Fy[i][j][k][q] = outbcw[id][N[j][0]+q] * sqrtpi / 
 													 (4.*N[j][2] * pow(y[i][k][q], cfg[j].nu));
 				}
 			}
@@ -900,17 +810,14 @@ void cfftlog_ells_cocoa( // 1D array: 1st dim: zbins, 2nd dim: three FFT per bin
 	for(int i=0; i<SIZE1; i++) {
 		for(int j=0; j<SIZE2; j++) {
 			free(toutfwd[i][j]);
-			fftw_destroy_plan(planf[i][j]);
-			for(int k=0; k<LMAX[i]; k++) {
-				free(outbcw[i][j][k]);
-				fftw_destroy_plan(planb[i][j][k]);
-			}
 		}
+	}
+	for(int j=0; j<SIZE2; j++) {
+		fftw_destroy_plan(planb[j]);
 	}
 	free((void*) outbcw); 
 	free((void*) outfwd); 
 	free((void*) gl); 
 	free((void*) fb);
-	free((void*) planb);
 	return;
 }

@@ -623,6 +623,8 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         
         C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
       }
+      //C_cl_tomo_cocoa(Cl);
+    
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
         for (int l=limits.LMAX_NOLIMBER; l<Ntable.LMAX; l++) {
@@ -3288,4 +3290,188 @@ void C_cl_tomo(
   free(Fk1);
   free(f1_chi);
   free(ell_ar);
+}
+
+void C_cl_tomo_cocoa(double* const* const Cl)
+{
+  static double cache[MAX_SIZE_ARRAYS];
+  static int** ell = NULL;
+  static int* LMAX = NULL;
+  static double* x = NULL;
+  static double*** fx= NULL;
+  static double*** y = NULL;
+  static double**** Fy = NULL;
+  static double*** vres = NULL;
+  static config cfg[3];
+  
+  const int nbins = redshift.clustering_nbin; 
+  const int nchi = Ntable.NL_Nchi;
+  if (NULL == ell || NULL == LMAX || NULL == x || 
+      NULL == y || NULL == Fy || NULL == fx ||
+      fdiff(cache[0], Ntable.random))
+  {
+    if (ell != NULL) free((void*) ell);
+    ell  = (int**) malloc2d_int(nbins, limits.LMAX_NOLIMBER);
+    if (LMAX != NULL) free((void*) LMAX);
+    LMAX = (int*) malloc1d_int(nbins);
+    if (x != NULL) free((void*) x);
+    x =  (double*) malloc1d(nchi);
+    if (y != NULL) free((void*) y);
+    y  = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi);
+    if (Fy != NULL) free((void*) Fy);
+    Fy = (double****) malloc4d(nbins, 3, limits.LMAX_NOLIMBER, nchi);
+    if (fx != NULL) free((void*) fx);
+    fx = (double***) malloc3d(nbins,3,nchi); 
+    if (vres != NULL) free((void*) vres);
+    vres = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi); 
+    cfg[0].nu = 1.;
+    cfg[0].c_window_width = 0.25;
+    cfg[0].derivative = 0;
+    cfg[0].N_pad = 200;
+    // RSD
+    cfg[1].nu = 1.01;
+    cfg[1].c_window_width = 0.25;
+    cfg[1].derivative = 2;
+    cfg[1].N_pad = 500;
+    // MAG
+    cfg[2].nu = 1.;
+    cfg[2].c_window_width = 0.25;
+    cfg[2].derivative = 0;
+    cfg[2].N_pad = 500;
+    cache[0] = Ntable.random;
+  }
+  const double real_coverH0 = cosmology.coverH0/cosmology.h0;
+  const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // DIMENSIONELESS
+  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;   // DIMENSIONELESS
+  const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
+  const double dlnk    = dlnchi;
+  { // INIT: make sure static init variables inside the funcs are defined
+    const int i = 0;
+    const double chi = chi_min/real_coverH0;
+    const double a   = a_chi(chi);
+    const double z   = 1. / a - 1.;
+    const double fK = f_K(chi);
+    (void) growfac_all(a);
+    (void) hoverh0(a);
+    for (int i=0; i<nbins; i++) {
+      (void) pf_photoz(z,i);
+      (void) W_mag(a,fK,i);
+      (void) gb1(z,i);
+    }
+    (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
+    (void) C_gg_tomo_limber_nointerp((double) 100, 0, 0, 1);
+  }
+  #pragma omp parallel for schedule(static,1)
+  for (int j=0; j<nchi; j++) {
+    x[j] = chi_min * exp(dlnchi * j);
+    for (int i=0; i<nbins; i++) {
+      const double chi = x[j]/real_coverH0;
+      const double a   = a_chi(chi);
+      const double z   = 1. / a - 1.;
+      if (z < redshift.clustering_zdist_zmin[i] || 
+          z > redshift.clustering_zdist_zmax[i]) { 
+        fx[i][0][j] = 0.;
+        fx[i][1][j] = 0.;
+        fx[i][2][j] = 0.;
+      }
+      else {
+        const double pf = pf_photoz(z,i);
+        const double hoverh0_a = hoverh0(a);
+        const double fK = f_K(chi);
+        const double WM = W_mag(a, fK, i);
+        struct growths growfac_a = growfac_all(a);
+        const double D = growfac_a.D;
+        const double f = growfac_a.f;
+        fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
+        fx[i][1][j] = -chi*pf*D*hoverh0_a*f;
+        fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2] 
+      }
+    }
+  }
+  for (int i=0; i<nbins; i++) { 
+    // based on a fit to what lmax get ~1% accuracy on LSST-Y1. (+6=extra safety)
+    const double zmean = redshift.clustering_zdist_zmean[i];
+    if (zmean < 1.5) {
+      LMAX[i] = (int) fmin((45.55*zmean+8.85) + 6, limits.LMAX_NOLIMBER);
+    }
+    else {
+      LMAX[i] = (int) fmin((45.55*1.5+8.85) + 6, limits.LMAX_NOLIMBER);
+    }
+  }
+  #pragma omp parallel for
+  for (int i=0; i<nbins; i++) {
+    for (int k=0; k<LMAX[i]; k++) {
+      ell[i][k] = k;
+    }
+  }  
+  int is_bmag_zero = 1;
+  for (int i=0; i<nbins; i++) {
+    if (fabs(gbmag(0.,i)) > 1.e-12) {
+      is_bmag_zero = 0;
+    }    
+  }
+  if (0 == is_bmag_zero) {
+    cfftlog_ells_cocoa((double* const) x, 
+                       (double* const* const* const) fx, 
+                       nchi, 
+                       cfg, 
+                       (int* const* const) ell, 
+                       (int* const) LMAX, 
+                       (double* const* const* const) y, 
+                       (double* const* const* const* const) Fy, 
+                       nbins, 
+                       3);
+  }
+  else {
+    cfftlog_ells_cocoa((double* const) x, 
+                       (double* const* const* const) fx, 
+                       nchi, 
+                       cfg, 
+                       (int* const* const) ell, 
+                       (int* const) LMAX, 
+                       (double* const* const* const) y, 
+                       (double* const* const* const* const) Fy, 
+                       nbins, 
+                       2);  
+    for (int i=0; i<nbins; i++) { 
+      #pragma omp parallel for collapse(2) schedule(static,1)
+      for (int k=0; k<LMAX[i]; k++) {
+        for (int q=0; q<nchi; q++) {
+          Fy[i][2][k][q] = 0.0;
+        }
+      }
+    }
+  }
+  for (int i=0; i<nbins; i++) {
+    #pragma omp parallel for collapse(2) schedule(static,1)
+    for (int k=0; k<LMAX[i]; k++) {
+      for (int q=0; q<nchi; q++) {
+        const int l = ell[i][k];
+        const double ell_prefactor = l * (l + 1.);
+        const double ty    = y[i][k][q];
+        const double k1cH0 = ty*real_coverH0;
+        const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
+                         gbmag(0.,i)*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
+        vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+      }
+    }
+  }
+  for (int i=0; i<nbins; i++) {
+    #pragma omp parallel for
+    for (int k=0; k<LMAX[i]; k++) {
+      double tcl = 0.0;
+      for (int q=0; q<nchi; q++) tcl += vres[i][k][q];
+      const int l = ell[i][k];
+      Cl[i][l] = tcl * dlnk * 2. / M_PI + 
+                     C_gg_tomo_limber_linpsopt_nointerp((double) ell[i][k], i, i, 0, 0)
+                    -C_gg_tomo_limber_linpsopt_nointerp((double) ell[i][k], i, i, 1, 0);
+    }
+  }
+  for (int i=0; i<nbins; i++) {
+    #pragma omp parallel for schedule(static,1)
+    for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER+1; k++) {
+      Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) :
+                                         C_gg_tomo_limber_nointerp(k, i, i, 0);
+    }
+  }
 }
