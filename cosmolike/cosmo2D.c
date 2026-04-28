@@ -3550,6 +3550,7 @@ void C_cl_tomo(
   
   const int nbins = redshift.clustering_nbin; 
   const int nchi = Ntable.NL_Nchi;
+  
   if (NULL == LMAX || 
       NULL == x || 
       NULL == y || 
@@ -3609,10 +3610,15 @@ void C_cl_tomo(
   #pragma omp parallel for schedule(static,1)
   for (int j=0; j<nchi; j++) {
     x[j] = chi_min * exp(dlnchi * j);
-    for (int i=0; i<nbins; i++) {
-      const double chi = x[j]/real_coverH0;
-      const double a   = a_chi(chi);
-      const double z   = 1. / a - 1.;
+    const double chi = x[j]/real_coverH0;
+    const double a   = a_chi(chi);
+    const double z   = 1. / a - 1.;
+    const double hoverh0_a = hoverh0(a);
+    const double fK = f_K(chi);
+    struct growths growfac_a = growfac_all(a);
+    const double D = growfac_a.D;
+    const double f = growfac_a.f;
+    for (int i=0; i<nbins; i++) {  
       if (z < redshift.clustering_zdist_zmin[i] || 
           z > redshift.clustering_zdist_zmax[i]) { 
         fx[i][0][j] = 0.;
@@ -3621,12 +3627,7 @@ void C_cl_tomo(
       }
       else {
         const double pf = pf_photoz(z,i);
-        const double hoverh0_a = hoverh0(a);
-        const double fK = f_K(chi);
         const double WM = W_mag(a, fK, i);
-        struct growths growfac_a = growfac_all(a);
-        const double D = growfac_a.D;
-        const double f = growfac_a.f;
         fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
         fx[i][1][j] = -chi*pf*D*hoverh0_a*f;
         fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2] 
