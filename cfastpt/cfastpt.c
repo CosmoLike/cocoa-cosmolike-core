@@ -459,7 +459,7 @@ void Ps2s2(double *k, double *Pin, long Nk, double *Pout)
 //   b1[i] = base + 3 * s_Ntotal   (FFT(b))
 //   cv[i] = base + 4 * s_Ntotal   (IFFT result of convolution)
 //
-// ALGORITHM PER TERM (McEwen et al 2016, Eq. 2.21):
+// ALGORITHM PER TERM
 //   1. Multiply precomputed windowed FFT(fb) by g_m(J) -> a, b
 //   2. FFT(a) -> a1,  FFT(b) -> b1           (2 FFTs)
 //   3. Pointwise multiply: a1 *= b1

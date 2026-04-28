@@ -257,57 +257,9 @@ double xi_pm_tomo(
           xipm[1][q] = sum1;
         }
       }
-      /*
-      // ----------------------------------------------------------------------
-      // Without blocking: each (nz,theta) streams the full length of Cl and  
-      // Glpm arrays through the cache. With many pairs, total memory traffic
-      // far exceeds L2/L3. CPU stalls waiting for RAM on every iteration.
-      //
-      // With blocking: process ALL (nz, theta) pairs for a small chunk
-      // of l before moving to the next chunk. Within each block:
-      // The more tomo bins (nz), the more reuse per block, and the
-      // larger the speedup over the unblocked version (perfect for Roman).
-      // -----------------------------------------------------------------------
-      for (int nz = 0; nz < NSIZE; nz++) {
-        for (int i = 0; i < Ntable.Ntheta; i++) {
-          xipm[0][nz * Ntable.Ntheta + i] = 0.0;
-          xipm[1][nz * Ntable.Ntheta + i] = 0.0;
-        }
-      }
-      const int BLOCK = 1024;
-      #pragma omp parallel
-      {
-        for (int lb = lmin; lb < Ntable.LMAX; lb += BLOCK) 
-        {
-          const int lend = (lb + BLOCK < Ntable.LMAX) 
-                            ? lb + BLOCK : Ntable.LMAX;
-
-          #pragma omp for collapse(2) schedule(static) nowait
-          for (int nz = 0; nz < NSIZE; nz++) {
-            for (int i = 0; i < Ntable.Ntheta; i++) {
-              const double* restrict c0  = Cl[0][nz];
-              const double* restrict c1  = Cl[1][nz];
-              const double* restrict gl0 = Glpm[0][i];
-              const double* restrict gl1 = Glpm[1][i];
-              double s0 = 0.0, s1 = 0.0;
-              for (int l = lb; l < lend; l++) {
-                const double plus  = c0[l] + c1[l];
-                const double minus = c0[l] - c1[l];
-                s0 += gl0[l] * plus;
-                s1 += gl1[l] * minus;
-              }
-              const int q = nz * Ntable.Ntheta + i;
-              xipm[0][q] += s0;
-              xipm[1][q] += s1;
-            }
-          }
-        }
-      }
-      */
     }
     else {
-      log_fatal("NonLimber not implemented");
-      exit(1);
+      log_fatal("NonLimber not implemented"); exit(1);
     }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
@@ -1070,27 +1022,24 @@ static double int_for_C_ss_tomo_limber_core(
       lim[2] = (lim[1] - lim[0])/FPTIA.N;
 
       if (1 == EE) {
-        const double tt = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[0], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double ta_dE1 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[2], FPTIA.N, lim[0], lim[1], lim[2], lnk);
+        double tt, ta_dE1, ta_dE2, ta, mixA, mixB, mixEE;
+        if (lnk < lim[0] || lnk > lim[1]) {
+          tt = 0.0; ta_dE1 = 0.0; ta_dE2 = 0.0; ta = 0.0; mixA = 0.0;
+          mixB = 0.0; mixEE = 0.0;
+        } else {
+          const double r = (lnk - lim[0]) / lim[2];
+          const int i = (int) floor(r);
+          const double w = r - i;
+          const int i1 = (i + 1 >= FPTIA.N) ? FPTIA.N - 1 : i + 1;
+          tt     = g4 * (w * (FPTIA.tab[0][i1] - FPTIA.tab[0][i]) + FPTIA.tab[0][i]);
+          ta_dE1 = g4 * (w * (FPTIA.tab[2][i1] - FPTIA.tab[2][i]) + FPTIA.tab[2][i]);
+          ta_dE2 = g4 * (w * (FPTIA.tab[3][i1] - FPTIA.tab[3][i]) + FPTIA.tab[3][i]);
+          ta     = g4 * (w * (FPTIA.tab[4][i1] - FPTIA.tab[4][i]) + FPTIA.tab[4][i]);
+          mixA   = g4 * (w * (FPTIA.tab[6][i1] - FPTIA.tab[6][i]) + FPTIA.tab[6][i]);
+          mixB   = g4 * (w * (FPTIA.tab[7][i1] - FPTIA.tab[7][i]) + FPTIA.tab[7][i]);
+          mixEE  = g4 * (w * (FPTIA.tab[8][i1] - FPTIA.tab[8][i]) + FPTIA.tab[8][i]);
+        }
 
-        const double ta_dE2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[3], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double ta = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[4], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double mixA = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[6], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-
-        const double mixB = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[7], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double mixEE = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[8], FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
         ans = WK1*WK2*PK 
               - WS1*WK2*(C11*PK + C11*bta1*(ta_dE1+ta_dE2) - 5*C21*(mixA+mixB))
               - WS2*WK1*(C12*PK + C12*bta2*(ta_dE1+ta_dE2) - 5*C22*(mixA+mixB))
@@ -1100,16 +1049,21 @@ static double int_for_C_ss_tomo_limber_core(
                          - 5.*(C11*bta1*C22+C12*bta2*C21)*mixEE
                          + 25.*C21*C22*tt);
       }
-      else  {        
-        const double tt = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[1],FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double ta = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[5],FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double mix = (lnk<lim[0] || lnk>lim[1]) ? 0.0 : 
-          g4*interpol1d(FPTIA.tab[9],FPTIA.N, lim[0], lim[1], lim[2], lnk);
-        
+      else  {
+        double tt, ta, mix;
+        if (lnk < lim[0] || lnk > lim[1]) {
+          tt  = 0.0;
+          ta  = 0.0;
+          mix = 0.0;
+        } else {
+          const double r = (lnk - lim[0]) / lim[2];
+          const int i = (int) floor(r);
+          const double w = r - i;
+          const int i1 = (i + 1 >= FPTIA.N) ? FPTIA.N - 1 : i + 1;
+          tt  = g4 * (w * (FPTIA.tab[1][i1] - FPTIA.tab[1][i]) + FPTIA.tab[1][i]);
+          ta  = g4 * (w * (FPTIA.tab[5][i1] - FPTIA.tab[5][i]) + FPTIA.tab[5][i]);
+          mix = g4 * (w * (FPTIA.tab[9][i1] - FPTIA.tab[9][i]) + FPTIA.tab[9][i]);
+        }        
         ans = WS1*WS2*(C11*C12*bta1*bta2*ta 
                        - 5.*(C11*bta1*C22+C12*bta2*C21)*mix 
                        + 25.*C21*C22*tt);
@@ -3549,7 +3503,7 @@ void C_cl_tomo(
   static config cfg[3];
   
   const int nbins = redshift.clustering_nbin; 
-  const int nchi = Ntable.NL_Nchi;
+  const int nchi  = Ntable.NL_Nchi;
   
   if (NULL == LMAX || 
       NULL == x || 
