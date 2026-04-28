@@ -450,21 +450,24 @@ void cfftlog_ells_cocoa0(
 
 void cfftlog_ells_cocoa(
   double* const x,
-  double* const* const* const fx,
   int const Nx,
   config* const cfg,
-  int* const* const ell,
-  int* const LMAX,
+  const int* const ell,
+  int const LMAX,
   double* const* const* const y,
   double* const* const* const* const Fy,
-  fftwc* const* const toutfwd,   // new
-  double* const* const eta_m,    // new
-  int const N[][3],              // new
-  int const Nmax,                // new
+  fftwc* const* const toutfwd,
+  double* const* const eta_m,
+  int const N[][3],
+  int const Nmax,
+  int const ks, // k start
+  int const ke, // k end
   int const SIZE1,
   int const SIZE2
 ) 
 {
+	const int kmax = (ke < LMAX) ? ke : LMAX;
+
 	if (SIZE1 < 1 || SIZE2 < 1) {
     log_fatal("SIZE1 and SIZE2 must be >= 1");
     exit(1);
@@ -477,21 +480,14 @@ void cfftlog_ells_cocoa(
 	const double complex clogpi = clog(M_PI);
 	const double ln2pio2 = 0.5*log(2*M_PI);
 
-	int imax, Nellmax = 0;
-	for(int i=0; i<SIZE1; i++) {
-		if (LMAX[i] > Nellmax) {
-			Nellmax = LMAX[i];
-			imax = i;
-		}
-	}
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------	
 	#pragma omp parallel for collapse(2) schedule(static,1)
 	for(int i=0; i<SIZE1; i++) {
 		for(int q=0; q<Nx; q++) { // q < Nx
-			for (int k=0; k<LMAX[i]; k++) {
-				y[i][k][q] = (ell[i][k] + 1.) / x[Nx -1 -q];
+			for (int k=ks; k<kmax; k++) {
+				y[i][k][q] = (ell[k] + 1.) / x[Nx -1 -q];
 			}
 		}
 	}	
@@ -499,7 +495,7 @@ void cfftlog_ells_cocoa(
 	// ---------------------------------------------------------------------------
 	// ---------------------------------------------------------------------------
 	double complex* const* const* const gl = 
-		(double complex* const* const* const) malloc3d_complex(SIZE2,Nellmax,Nmax/2+1);
+		(double complex* const* const* const) malloc3d_complex(SIZE2,ke-ks,Nmax/2+1);
 	double pfac[] = {0.99999999999980993227684700473478,
 									 676.520368121885098567009190444019,
 									-1259.13921672240287047156078755283,
@@ -510,7 +506,7 @@ void cfftlog_ells_cocoa(
 									 9.984369578019570859563e-6,
 									 1.50563273514931155834e-7};
 	{
-		int i = imax; // index where LMAX is the max!
+		const int i = 0; // now LMAX is a scalar
 		for(int j=0; j<SIZE2; j++) {
 			const double nu = cfg[j].nu;
 			switch(cfg[j].derivative) 
@@ -518,13 +514,13 @@ void cfftlog_ells_cocoa(
 				case 0: 
 				{
 					#pragma omp parallel for collapse(2) schedule(static,1)
-					for (int k=0; k<LMAX[i]; k++) {
+					for (int k=ks; k<ke; k++) {
 						for(int q=0; q<N[j][2]/2+1; q++) 
 						{
 							const double complex z = nu + I*eta_m[j][q];
 							double complex part1;
 							{
-								const double complex a = 0.5*(ell[i][k] + z);
+								const double complex a = 0.5*(ell[k] + z);
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -541,7 +537,7 @@ void cfftlog_ells_cocoa(
 							}
 							double complex part2;
 							{
-								const double complex a = 0.5*(3 + ell[i][k] - z);
+								const double complex a = 0.5*(3 + ell[k] - z);
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -556,7 +552,7 @@ void cfftlog_ells_cocoa(
 									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
 								}
 							}
-							gl[j][k][q] = cexp(z*ln2 + part1 - part2);	
+							gl[j][k-ks][q] = cexp(z*ln2 + part1 - part2);	
 						}
 					}
 					break;
@@ -564,12 +560,12 @@ void cfftlog_ells_cocoa(
 				case 1: 
 				{
 					#pragma omp parallel for collapse(2) schedule(static,1)
-					for (int k=0; k<LMAX[i]; k++) {
+					for (int k=ks; k<ke; k++) {
 						for(int q=0; q<N[j][2]/2+1; q++) {
 							const double complex z = nu + I*eta_m[j][q];
 							double complex part1;
 							{
-								const double complex a = 0.5*(ell[i][k] + z - 1.);
+								const double complex a = 0.5*(ell[k] + z - 1.);
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -586,7 +582,7 @@ void cfftlog_ells_cocoa(
 							}
 							double complex part2;
 							{
-								const double complex a = 0.5*(4 + ell[i][k] - z);
+								const double complex a = 0.5*(4 + ell[k] - z);
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -601,7 +597,7 @@ void cfftlog_ells_cocoa(
 									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
 								}
 							}
-							gl[j][k][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
+							gl[j][k-ks][q] = -(z-1)*cexp((z-1)*ln2 + part1 - part2);
 						}
 					}
 					break;
@@ -609,12 +605,12 @@ void cfftlog_ells_cocoa(
 				case 2: 
 				{
 					#pragma omp parallel for collapse(2) schedule(static,1)
-					for (int k=0; k<LMAX[i]; k++) {
+					for (int k=ks; k<ke; k++) {
 						for(int q=0; q<N[j][2]/2+1; q++) {
 							const double complex z = nu + I*eta_m[j][q];
 							double complex part1;
 							{
-								const double complex a = 0.5*(ell[i][k] + z - 2);
+								const double complex a = 0.5*(ell[k] + z - 2);
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -631,7 +627,7 @@ void cfftlog_ells_cocoa(
 							}
 							double complex part2;
 							{
-								const double complex a = 0.5*(5 + ell[i][k] - z);
+								const double complex a = 0.5*(5 + ell[k] - z);
 								if(creal(a) < 0.5) {
 									double complex tmp = pfac[0];
 									for(int w=1; w<9; w++) tmp += pfac[w] / ((-a) + w);
@@ -646,7 +642,7 @@ void cfftlog_ells_cocoa(
 									part2 = ln2pio2 + ((a-1) + 0.5)*clog(t) - t + clog(tmp);
 								}
 							}
-							gl[j][k][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
+							gl[j][k-ks][q] = (z-1)*(z-2)*cexp((z-2)*ln2+part1-part2);
 						}
 					}
 					break;
@@ -676,14 +672,14 @@ void cfftlog_ells_cocoa(
 	for(int i=0; i<SIZE1; i++) {
 		#pragma omp parallel for collapse(2) schedule(static,1)
 		for(int j=0; j<SIZE2; j++) {
-			for (int k=0; k<LMAX[i]; k++) {	
+			for (int k=ks; k<kmax; k++) {	
 			  const int id = omp_get_thread_num();	
 			  const double lnbase = log(base_j[j] * y[i][k][0]);		
 				for(int q=0; q<(N[j][2]/2+1); q++) { 
 					fftwc val = toutfwd[i*SIZE2+j][q];	
 					const double phase = -eta_m[j][q] * lnbase;
 					val *= cos(phase) + I * sin(phase);
-					val *= gl[j][k][q];
+					val *= gl[j][k-ks][q];
 					outfwd[id][q] = conj(val);
 				}
 				

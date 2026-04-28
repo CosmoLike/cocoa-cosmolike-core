@@ -3297,7 +3297,7 @@ void C_cl_tomo(
 void C_cl_tomo_cocoa(double* const* const Cl)
 {
   static double cache[MAX_SIZE_ARRAYS];
-  static int** ell = NULL;
+  static int* ell = NULL;
   static int* LMAX = NULL;
   static double* x = NULL;
   static double*** fx= NULL;
@@ -3313,7 +3313,7 @@ void C_cl_tomo_cocoa(double* const* const Cl)
       fdiff(cache[0], Ntable.random))
   {
     if (ell != NULL) free((void*) ell);
-    ell  = (int**) malloc2d_int(nbins, limits.LMAX_NOLIMBER);
+    ell  = (int*) malloc1d_int(limits.LMAX_NOLIMBER);
     if (LMAX != NULL) free((void*) LMAX);
     LMAX = (int*) malloc1d_int(nbins);
     if (x != NULL) free((void*) x);
@@ -3390,21 +3390,7 @@ void C_cl_tomo_cocoa(double* const* const Cl)
       }
     }
   }
-  for (int i=0; i<nbins; i++) { 
-    // based on a fit to what lmax get ~1% accuracy on LSST-Y1. (+6=extra safety)
-    const double zmean = redshift.clustering_zdist_zmean[i];
-    if (zmean < 1.5) {
-      LMAX[i] = (int) fmin((45.55*zmean+8.85) + 6, limits.LMAX_NOLIMBER);
-    }
-    else {
-      LMAX[i] = (int) fmin((45.55*1.5+8.85) + 6, limits.LMAX_NOLIMBER);
-    }
-  }
-  for (int i=0; i<nbins; i++) {
-    for (int k=0; k<LMAX[i]; k++) {
-      ell[i][k] = k;
-    }
-  }  
+
   int is_bmag_zero = 1;
   for (int i=0; i<nbins; i++) {
     if (fabs(gbmag(0.,i)) > 1.e-12) {
@@ -3441,58 +3427,95 @@ void C_cl_tomo_cocoa(double* const* const Cl)
                       Nmax, 
                       nbins, 
                       SIZE2);
-  cfftlog_ells_cocoa((double* const) x, 
-                   (double* const* const* const) fx, 
-                   nchi, 
-                   cfg, 
-                   (int* const* const) ell, 
-                   (int* const) LMAX, 
-                   (double* const* const* const) y, 
-                   (double* const* const* const* const) Fy, 
-                   (fftw_complex* const* const) toutfwd,
-                   (double* const* const) eta_m,
-                   N,
-                   Nmax,
-                   nbins, 
-                   SIZE2);
-  free((void*) toutfwd);
-  free((void*) eta_m);
 
-  if (0 != is_bmag_zero) {
-    for (int i=0; i<nbins; i++) { 
-      #pragma omp parallel for collapse(2) schedule(static,1)
-      for (int k=0; k<LMAX[i]; k++) {
-        for (int q=0; q<nchi; q++) {
-          Fy[i][2][k][q] = 0.0;
+  const int BLOCK = 16;
+  const double tol = 0.01;
+  int converged[nbins];
+  for (int i=0; i<nbins; i++) {
+    converged[i] = 0;
+    LMAX[i] = limits.LMAX_NOLIMBER;
+  } 
+  for (int k=0; k<limits.LMAX_NOLIMBER; k++) {
+    ell[k] = k;
+  }
+  int all_done = 0;
+  int ks = 0;
+
+  while (!all_done && ks < limits.LMAX_NOLIMBER) 
+  {
+    if (ks >= limits.LMAX_NOLIMBER - BLOCK) break;
+    
+    const int ke = (ks + BLOCK < limits.LMAX_NOLIMBER) ? ks + BLOCK : limits.LMAX_NOLIMBER;
+
+    cfftlog_ells_cocoa((double* const) x,
+                       nchi, 
+                       cfg, 
+                       (const int* const) ell, 
+                       limits.LMAX_NOLIMBER, 
+                       (double* const* const* const) y, 
+                       (double* const* const* const* const) Fy, 
+                       (fftw_complex* const* const) toutfwd,
+                       (double* const* const) eta_m,
+                       N,
+                       Nmax,
+                       ks, 
+                       ke,
+                       nbins, 
+                       SIZE2);
+    if (0 != is_bmag_zero) {
+      for (int i=0; i<nbins; i++) { 
+        const int kk = (ke < LMAX[i]) ? ke : LMAX[i];
+        for (int k=ks; k<kk; k++) {
+          for (int q=0; q<nchi; q++) {
+            Fy[i][2][k][q] = 0.0;
+          }
         }
       }
     }
-  }
-  for (int i=0; i<nbins; i++) {
-    #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int k=0; k<LMAX[i]; k++) {
-      for (int q=0; q<nchi; q++) {
-        const int l = ell[i][k];
-        const double ell_prefactor = l * (l + 1.);
-        const double ty    = y[i][k][q];
-        const double k1cH0 = ty*real_coverH0;
-        const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
-                         gbmag(0.,i)*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
-        vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+    
+    for (int i=0; i<nbins; i++) 
+    {
+      if (converged[i] || ks >= LMAX[i]) continue;
+      const int kk = (ke < LMAX[i]) ? ke : LMAX[i];
+
+      #pragma omp parallel for collapse(2) schedule(static,1)
+      for (int k=ks; k<kk; k++) {
+        for (int q=0; q<nchi; q++) {
+          const int l = ell[k];
+          const double ell_prefactor = l * (l + 1.);
+          const double ty    = y[i][k][q];
+          const double k1cH0 = ty*real_coverH0;
+          const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
+                           gbmag(0.,i)*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
+          vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+        }
+      }
+      #pragma omp parallel for
+      for (int k=ks; k<kk; k++) {
+        double tcl = 0.0;
+        for (int q=0; q<nchi; q++) tcl += vres[i][k][q];
+        const int l = ell[k];
+        Cl[i][l] = tcl * dlnk * 2. / M_PI + 
+                       C_gg_tomo_limber_linpsopt_nointerp((double) ell[k], i, i, 0, 0)
+                      -C_gg_tomo_limber_linpsopt_nointerp((double) ell[k], i, i, 1, 0);
+      }
+
+      // check convergeence
+      const int L = kk - 1;
+      const double dev = Cl[i][L] / C_gg_tomo_limber_nointerp(L, i, i, 0) - 1.0;
+      if (fabs(dev) < tol) {
+        converged[i] = 1;
+        LMAX[i] = kk;
       }
     }
-  }
-  for (int i=0; i<nbins; i++) {
-    #pragma omp parallel for
-    for (int k=0; k<LMAX[i]; k++) {
-      double tcl = 0.0;
-      for (int q=0; q<nchi; q++) tcl += vres[i][k][q];
-      const int l = ell[i][k];
-      Cl[i][l] = tcl * dlnk * 2. / M_PI + 
-                     C_gg_tomo_limber_linpsopt_nointerp((double) ell[i][k], i, i, 0, 0)
-                    -C_gg_tomo_limber_linpsopt_nointerp((double) ell[i][k], i, i, 1, 0);
+
+    all_done = 1;
+    for (int i=0; i <nbins; i++) {
+      if (!converged[i]) all_done = 0;
     }
+    ks = ke;
   }
+
   for (int i=0; i<nbins; i++) {
     #pragma omp parallel for schedule(static,1)
     for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER+1; k++) {
@@ -3500,4 +3523,6 @@ void C_cl_tomo_cocoa(double* const* const Cl)
                                          C_gg_tomo_limber_nointerp(k, i, i, 0);
     }
   }
+  free((void*) toutfwd);
+  free((void*) eta_m);
 }
