@@ -160,7 +160,10 @@ void C_cl_tomo2(
     const int nell 
   );
 
-void C_cl_tomo_cocoa(double* const* const Cl);
+void C_cl_tomo_cocoa(
+    double* const* const Cl,
+    double tol
+  );
 
 #ifdef __cplusplus
 }

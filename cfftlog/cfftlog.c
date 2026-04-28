@@ -506,7 +506,6 @@ void cfftlog_ells_cocoa(
 									 9.984369578019570859563e-6,
 									 1.50563273514931155834e-7};
 	{
-		const int i = 0; // now LMAX is a scalar
 		for(int j=0; j<SIZE2; j++) {
 			const double nu = cfg[j].nu;
 			switch(cfg[j].derivative) 

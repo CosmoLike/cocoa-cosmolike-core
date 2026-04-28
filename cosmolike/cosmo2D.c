@@ -625,7 +625,8 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         
         C_cl_tomo(L, Z1, Z2, Cl[nz], dev, tolerance);
       }*/
-      C_cl_tomo_cocoa(Cl);
+      const double tolerance = 0.01;
+      C_cl_tomo_cocoa(Cl, tolerance);
     
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
@@ -3294,7 +3295,10 @@ void C_cl_tomo(
   free(ell_ar);
 }
 
-void C_cl_tomo_cocoa(double* const* const Cl)
+void C_cl_tomo_cocoa(
+    double* const* const Cl,
+    double tol
+  )
 {
   static double cache[MAX_SIZE_ARRAYS];
   static int* ell = NULL;
@@ -3429,7 +3433,6 @@ void C_cl_tomo_cocoa(double* const* const Cl)
                       SIZE2);
 
   const int BLOCK = 16;
-  const double tol = 0.01;
   int converged[nbins];
   for (int i=0; i<nbins; i++) {
     converged[i] = 0;
