@@ -9,7 +9,6 @@
 
 #include <gsl/gsl_sum.h>
 #include <gsl/gsl_integration.h>
-#include "../cfftlog/cfftlog.h"
 #include <fftw3.h>
 
 #include "bias.h"
