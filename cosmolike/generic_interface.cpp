@@ -315,6 +315,9 @@ void init_accuracy_boost(
   if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk;
   Ntable.dCX_dlnk_nlnk = static_cast<int>(ceil(cache[2]*accuracy_boost));
 
+  if (0 == cache[3]) cache[3] = Ntable.NL_Nchi;
+  Ntable.NL_Nchi = static_cast<int>(ceil(cache[3]*accuracy_boost));
+
   if (accuracy_boost>1) {
     Ntable.FPTboost = static_cast<int>(accuracy_boost-1.0);
   }
@@ -396,7 +399,9 @@ void init_bias(vector bias_z_evol_model)
                                           // [1] = b2, 
                                           // [2] = bs2, 
                                           // [3] = b3, 
-                                          // [4] = bmag 
+                                          // [4] = b3 
+                                          // [5] = bmag 
+                                          // [6] = bk 
   */
   for(int i=0; i<nsz; i++) {
     if (std::isnan(bias_z_evol_model(i))) [[unlikely]] {

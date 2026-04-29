@@ -43,6 +43,14 @@ void*** malloc3d(const int nx, const int ny, const int nz);
 
 void**** malloc4d(const long nx, const long ny, const long nz, const long nw);
 
+void** malloc2d_fftwc(const long nx, const long ny);
+
+void** malloc2d_fftwp(const long nx, const long ny);
+
+void*** malloc2d_ptr(const long nx, const long ny);
+
+void*** malloc3d_complex(const long nx, const long ny, const long nz);
+
 void* calloc1d(const int nx);
 
 

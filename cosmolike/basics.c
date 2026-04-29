@@ -26,6 +26,7 @@
 #include "basics.h"
 
 #include "log.c/src/log.h"
+#include <complex.h>
 
 gsl_interp* malloc_gsl_interp(const int n)
 {
@@ -243,6 +244,129 @@ void* calloc1d(const int nx)
   }
   memset(vec, 0, sizeof(double) * nx);
   return vec;
+}
+
+void** malloc2d_fftwc(const long nx, const long ny)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(fftw_complex*);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(fftw_complex*);
+
+  size_t nyp = ny * sizeof(fftw_complex);
+  if (nyp % align != 0) nyp = nyp + (align - nyp % align);
+  nyp = nyp / sizeof(fftw_complex);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(fftw_complex*) * nxp +
+                     sizeof(fftw_complex)  * nx * nyp) != 0) {
+    log_fatal("array allocation failed (malloc2d_fftwc)");
+    exit(1);
+  }
+
+  fftw_complex** tab = (fftw_complex**) raw_block;
+  fftw_complex*  data = (fftw_complex*)
+    ((char*) raw_block + sizeof(fftw_complex*) * nxp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = data + i * nyp;
+  }
+  return (void**) tab;
+}
+
+void** malloc2d_fftwp(const long nx, const long ny)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(fftw_plan*);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(fftw_plan*);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(fftw_plan*) * nxp +
+                     sizeof(fftw_plan)  * nx * ny) != 0) {
+    log_fatal("array allocation failed (malloc2d_fftwp)");
+    exit(1);
+  }
+
+  fftw_plan** tab = (fftw_plan**) raw_block;
+  fftw_plan*  data = (fftw_plan*)
+    ((char*) raw_block + sizeof(fftw_plan*) * nxp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = data + i * ny;
+  }
+  return (void**) tab;
+}
+
+void*** malloc2d_ptr(const long nx, const long ny)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(double**);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(double**);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(double**) * nxp +
+                     sizeof(double*)  * nx * ny) != 0) {
+    log_fatal("array allocation failed (malloc2d_ptr)");
+    exit(1);
+  }
+
+  double*** tab = (double***) raw_block;
+  double**  data = (double**)
+    ((char*) raw_block + sizeof(double**) * nxp);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = data + i * ny;
+  }
+  return (void***) tab;
+}
+
+void*** malloc3d_complex(const long nx, const long ny, const long nz)
+{
+  const size_t align = 64;
+
+  size_t nxp = nx * sizeof(double complex**);
+  if (nxp % align != 0) nxp = nxp + (align - nxp % align);
+  nxp = nxp / sizeof(double complex**);
+
+  size_t s2p = nx * ny * sizeof(double complex*);
+  if (s2p % align != 0) s2p = s2p + (align - s2p % align);
+  s2p = s2p / sizeof(double complex*);
+
+  size_t nzp = nz * sizeof(double complex);
+  if (nzp % align != 0) nzp = nzp + (align - nzp % align);
+  nzp = nzp / sizeof(double complex);
+
+  void* raw_block = NULL;
+  if (posix_memalign(&raw_block, align,
+                     sizeof(double complex**) * nxp +
+                     sizeof(double complex*)  * s2p +
+                     sizeof(double complex)   * nx * ny * nzp) != 0) {
+    log_fatal("array allocation failed (malloc3d_complex)");
+    exit(1);
+  }
+
+  double complex*** tab = (double complex***) raw_block;
+  double complex**  lvl2 = (double complex**)
+    ((char*) raw_block + sizeof(double complex**) * nxp);
+  double complex*   data = (double complex*)
+    ((char*) raw_block + sizeof(double complex**) * nxp +
+                         sizeof(double complex*)  * s2p);
+
+  for (int i = 0; i < nx; i++) {
+    tab[i] = lvl2 + i * ny;
+    for (int j = 0; j < ny; j++) {
+      tab[i][j] = data + ((long)(ny * i) + j) * nzp;
+    }
+  }
+  return (void***) tab;
 }
 
 double fmin(const double a, const double b)
