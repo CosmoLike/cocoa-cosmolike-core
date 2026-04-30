@@ -841,7 +841,7 @@ double g_tomo(double ainput, const int ni) {
   static double** Pint = NULL; // P integrand samples on fine grid
   static double** Qint = NULL; // Q integrand samples on fine grid
 
-  const int x  = 25*(1 + int(Ntable.high_def_integration));
+  const int x  = 25*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0/(redshift.shear_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
@@ -911,7 +911,7 @@ double g2_tomo(double a, int ni)
   static double** Qint  = NULL;  // Q integrand on fine grid
   static double** Rint  = NULL;  // R integrand on fine grid
 
-  const int x = 25*(1 + int(Ntable.high_def_integration));
+  const int x = 25*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.shear_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
@@ -993,7 +993,7 @@ double g_lens(double a, int ni)
   static double** Pint  = NULL; // P integrand samples on fine grid
   static double** Qint  = NULL; // Q integrand samples on fine grid
 
-  const int x = 25*(1 + int(Ntable.high_def_integration));
+  const int x = 25*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.clustering_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
