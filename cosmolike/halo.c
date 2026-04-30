@@ -645,7 +645,7 @@ double u_y_ejc(double m)
 double n_s_cmv(double a) 
 { 
   double dV_dz = pow(f_K(chi(a)), 2.0) / hoverh0(a); // comoving dV/dz per radian^2
-  return zdistr_photoz(1.0/a - 1., -1) * survey.n_gal * 
+  return nz_source_photoz(1.0/a - 1., -1) * survey.n_gal * 
     survey.n_gal_conversion_factor / dV_dz; // dN/dz/radian^2/(dV/dz/radian^2)
 }
 

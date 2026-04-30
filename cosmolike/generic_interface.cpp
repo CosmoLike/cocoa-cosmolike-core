@@ -1867,7 +1867,7 @@ void set_lens_sample(arma::Mat<double> input_table)
     // READ THE N(Z) FILE ENDS ------------
     redshift.random_clustering = RandomNumber::get_instance().get();
 
-    pf_photoz(0.1, 0); // init static variables
+    nz_lens_photoz(0.1, 0); // init static variables
 
     for (int k=0; k<Ntomo; k++) {
       redshift.clustering_zdist_zmean[k] = zmean(k);
@@ -1976,7 +1976,7 @@ void set_source_sample(arma::Mat<double> input_table)
           redshift.shear_zdist_zmax[Ntomo-1]);
       exit(1);
     } 
-    zdistr_photoz(0.1, 0); // init static variables
+    nz_source_photoz(0.1, 0); // init static variables
     for (int k=0; k<Ntomo; k++) {
       debug("{}: bin {} - {} = {}.", fname, k, "<z_s>", zmean_source(k));
     }

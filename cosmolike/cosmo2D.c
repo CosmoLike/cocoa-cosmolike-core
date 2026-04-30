@@ -951,7 +951,7 @@ cosmo_nodes create_cosmo_nodes(
                                   w);
     const double a      = cn.data[CN_A][p];
     struct chis chidchi = chi_all(a);
-    cn.data[CN_FK][p]   = f_K(chidchi.chi);
+    cn.data[CN_FK][p]   = chidchi.chi;
     cn.data[CN_GROWFAC][p] = growfac(a);
     cn.data[CN_HOVERH0][p] = hoverh0v2(a, chidchi.dchida);
     cn.data[CN_DCHIDA][p]  = chidchi.dchida;
@@ -1134,8 +1134,8 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   struct chis chidchi = chi_all(a);
   const double growfac_a = growfac(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi); // (Mpc/h)/(c/H0=100) (dimensionless)
-  const double k = ell/fK;            // (c/H0)/(Mpc/h)
+  const double fK = chidchi.chi; // (Mpc/h)/(c/H0=100) (dimensionless)
+  const double k = ell/fK;       // (c/H0)/(Mpc/h)
   const double PK  = Pdelta(k, a);
   const double ell4 = ell*ell*ell*ell; // correction (1812.05995 eqs 74-79)
   const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4; 
@@ -1478,8 +1478,8 @@ static double int_for_C_gs_tomo_limber_core(
 
       double WRSD = 0.0;
       if (1 == include_RSD_GS) {
-        const double chi_0 = f_K(ell/k);
-        const double chi_1 = f_K((ell+1.)/k);
+        const double chi_0 = ell/k;
+        const double chi_1 = (ell+1.)/k;
         const double a_0 = a_chi(chi_0);
         const double a_1 = a_chi(chi_1);
         WRSD = W_RSD(ell, a_0, a_1, nl);
@@ -1535,8 +1535,8 @@ static double int_for_C_gs_tomo_limber_core(
       double WRSD = 0.0;
       if (1 == include_RSD_GS) {
         const double k = ell/fK;
-        const double chi_0 = f_K(ell/k);
-        const double chi_1 = f_K((ell+1.)/k);
+        const double chi_0 = ell/k;
+        const double chi_1 = (ell+1.)/k;
         const double a_0 = a_chi(chi_0);
         const double a_1 = a_chi(chi_1);
         WRSD = W_RSD(ell, a_0, a_1, nl);
@@ -1612,7 +1612,7 @@ double int_for_C_gs_tomo_limber(double a, void* params)
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
   const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
   const double ell = l + 0.5;
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell/fK;
   const double z = 1.0/a - 1.0;
   const double PK = Pdelta(k,a);
@@ -1937,7 +1937,7 @@ double int_for_C_gg_tomo_limber(double a, void* params)
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
   const double ell = l + 0.5;
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell / fK;
   const double z = 1.0/a - 1.0;
 
@@ -1971,8 +1971,8 @@ double int_for_C_gg_tomo_limber(double a, void* params)
     if(include_RSD_GG == 1)
     {
       const double chi_a_min = chi(limits.a_min);
-      const double chi_0 = f_K(ell/k);
-      const double chi_1 = f_K((ell + 1.0)/k);
+      const double chi_0 = ell/k;
+      const double chi_1 = (ell + 1.0)/k;
       if (chi_1 > chi_a_min)  return 0;
       
       const double a_0 = a_chi(chi_0);
@@ -2204,7 +2204,7 @@ double int_for_C_gk_tomo_limber(double a, void* params)
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell/fK;
   const double z = 1./a - 1.;
 
@@ -2234,8 +2234,8 @@ double int_for_C_gk_tomo_limber(double a, void* params)
   else
   {
     if (include_RSD_GK == 1) {
-      const double chi_0 = f_K(ell/k);
-      const double chi_1 = f_K((ell+1.)/k);
+      const double chi_0 = ell/k;
+      const double chi_1 = (ell+1.)/k;
       const double a_0 = a_chi(chi_0);
       const double a_1 = a_chi(chi_1);
       const double WRSD = W_RSD(ell, a_0, a_1, nl);
@@ -2412,7 +2412,7 @@ double int_for_C_ks_tomo_limber(double a, void* params)
   const double growfac_a = growfac(a);
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell/fK;
   const double PK = Pdelta(k,a);
 
@@ -2546,7 +2546,7 @@ double int_for_C_kk_limber(double a, void* params)
   
   struct chis chidchi = chi_all(a);
   const double ell = l + 0.5;
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell/fK;
   const double WK = W_k(a, fK);
   const double PK = Pdelta(k,a);
@@ -2644,7 +2644,7 @@ double int_for_C_gy_tomo_limber(double a, void* params)
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell/fK;
   const double z = 1./a - 1.;
 
@@ -2797,7 +2797,7 @@ double int_for_C_ys_tomo_limber(double a, void* params)
   const double growfac_a = growfac(a);
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k  = ell/fK;
   
   const double PK = p_my(k, a);
@@ -2929,7 +2929,7 @@ double int_for_C_ky_limber(double a, void* params)
 
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k = ell/fK;
   
   const double PK = p_my(k, a);
@@ -3024,7 +3024,7 @@ double int_for_C_yy_limber(double a, void *params)
 
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
-  const double fK = f_K(chidchi.chi);
+  const double fK = chidchi.chi;
   const double k  = ell/fK;
 
   const double PK = p_yy(k, a);
@@ -3609,11 +3609,11 @@ void C_cl_tomo(
     const double chi = chi_min/real_coverH0;
     const double a   = a_chi(chi);
     const double z   = 1. / a - 1.;
-    const double fK = f_K(chi);
+    const double fK = chi;
     (void) growfac_all(a);
     (void) hoverh0(a);
     for (int i=0; i<nbins; i++) {
-      (void) pf_photoz(z,i);
+      (void) nz_lens_photoz(z,i);
       (void) W_mag(a,fK,i);
       (void) gb1(z,i);
     }
@@ -3627,7 +3627,7 @@ void C_cl_tomo(
     const double a   = a_chi(chi);
     const double z   = 1. / a - 1.;
     const double hoverh0_a = hoverh0(a);
-    const double fK = f_K(chi);
+    const double fK = chi;
     struct growths growfac_a = growfac_all(a);
     const double D = growfac_a.D;
     const double f = growfac_a.f;
@@ -3639,7 +3639,7 @@ void C_cl_tomo(
         fx[i][2][j] = 0.;
       }
       else {
-        const double pf = pf_photoz(z,i);
+        const double pf = nz_lens_photoz(z,i);
         const double WM = W_mag(a, fK, i);
         fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
         fx[i][1][j] = -chi*pf*D*hoverh0_a*f;
