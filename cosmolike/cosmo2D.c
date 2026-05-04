@@ -1666,7 +1666,6 @@ void C_ss_tomo_limber_fill(
   for (int l = lmin; l < lmax; l++) { // inline interpol 1D
     const double r = (ln_ell[l] - a) * inv_dx;
     const int i = (int) floor(r);
-    //const int i = (int) r;
     const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
     const double t = r - ic;
     out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
