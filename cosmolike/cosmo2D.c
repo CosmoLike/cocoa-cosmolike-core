@@ -27,7 +27,7 @@
 #include "structs.h"
 #include "log.c/src/log.h"
 
-#define COSMO2D_NOT_USE_SIMD
+//#define COSMO2D_NOT_USE_SIMD
 
 #ifndef COSMO2D_NOT_USE_SIMD
 #include "simde/x86/avx2.h"
@@ -454,7 +454,6 @@ double xi_pm_tomo(
       log_fatal("NonLimber not implemented"); exit(1);
     }
 #ifdef COSMO2D_NOT_USE_SIMD
-    printf("niceeeee\n\n");
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
@@ -1667,6 +1666,7 @@ void C_ss_tomo_limber_fill(
   for (int l = lmin; l < lmax; l++) { // inline interpol 1D
     const double r = (ln_ell[l] - a) * inv_dx;
     const int i = (int) floor(r);
+    //const int i = (int) r;
     const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
     const double t = r - ic;
     out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
