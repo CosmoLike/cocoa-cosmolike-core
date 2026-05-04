@@ -2310,6 +2310,11 @@ double IP::get_chi2(vector datavector) const
       }
     }
   }
+  /*
+  const arma::Col<double> delta = this->sqzd_theory_data_vector(datavector) - 
+                                  this->data_masked_sqzd_;
+  const double chi2 = arma::dot(delta, this->inv_cov_masked_sqzd_ * delta);
+*/
   if (chi2 < 0.0) [[unlikely]] {
     critical("{}: chi2 = {} (invalid)", fname, chi2); exit(1);
   }

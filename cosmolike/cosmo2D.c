@@ -27,6 +27,8 @@
 #include "structs.h"
 #include "log.c/src/log.h"
 
+#define COSMO2D_NOT_USE_SIMD
+
 #ifndef COSMO2D_NOT_USE_SIMD
 #include "simde/x86/avx2.h"
 #include "simde/x86/fma.h"
@@ -45,7 +47,7 @@ static int include_RSD_GY = 0; // 0 or 1
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-
+#ifndef COSMO2D_NOT_USE_SIMD
 // -----------------------------------------------------------------------------
 // What is SIMD? How is the basic building block of SIMD?
 // A normal double variable holds 1 number (64 bits).
@@ -233,7 +235,7 @@ static inline double simd_array_sum(const double* restrict a, const int n)
   }
   return result;
 }
-
+#endif
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -452,6 +454,7 @@ double xi_pm_tomo(
       log_fatal("NonLimber not implemented"); exit(1);
     }
 #ifdef COSMO2D_NOT_USE_SIMD
+    printf("niceeeee\n\n");
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
