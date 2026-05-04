@@ -52,39 +52,33 @@ double W_mag(double a, double fK, int nz)
   return (1.5 * cosmology.Omega_m * fK / a) * g_lens(a, nz);
 }
 
-double W_gal(double a, int ni, double hoverh0) 
-{
+double W_gal(double a, int ni, double hoverh0) {
   if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni);
-    exit(1);
+    log_fatal("invalid bin input ni = %d", ni); exit(1);
   }
   const double z = 1. / a - 1;
-  return pf_photoz(z, ni) * hoverh0;
+  return nz_lens_photoz(z, ni) * hoverh0;
 }
 
 double W_source(double a, int ni, double hoverh0)
 {
   if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni);
-    exit(1);
+    log_fatal("invalid bin input ni = %d", ni); exit(1);
   }
   const double z = 1.0 / a - 1.0;
-  return zdistr_photoz(z, ni) * hoverh0;
+  return nz_source_photoz(z, ni) * hoverh0;
 }
 
 double f_rsd(double a) 
 {
   if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
   const double z = 1.0 / a - 1.0;
   return f_growth(z);
@@ -93,22 +87,19 @@ double f_rsd(double a)
 double W_RSD(double l, double a0, double a1, int ni) 
 {
   if (!(a0>0) || !(a0<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
   if (!(a1>0) || !(a1<1)) {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
+    log_fatal("a>0 and a<1 not true"); exit(1);
   }
   if (ni < -1 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni);
-    exit(1);
+    log_fatal("invalid bin input ni = %d", ni); exit(1);
   }
   double w = (1 + 8. * l) / ((2. * l + 1.) * (2. * l + 1.)) *
-    pf_photoz(1. / a0 - 1., ni) * hoverh0(a0) * f_rsd(a0);
+    nz_lens_photoz(1. / a0 - 1., ni) * hoverh0(a0) * f_rsd(a0);
   
   w -= 4. / (2 * l + 3.) * sqrt((2 * l + 1.) / (2 * l + 3.)) *
-    pf_photoz(1. / a1 - 1., ni) * hoverh0(a1) * f_rsd(a1);
+    nz_lens_photoz(1./a1 - 1., ni) * hoverh0(a1) * f_rsd(a1);
   
   return w;
 }
