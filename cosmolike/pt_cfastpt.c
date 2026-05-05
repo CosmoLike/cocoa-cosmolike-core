@@ -669,7 +669,7 @@ void get_FPT_IA(void)
     const long Ncut = floor(3. / dL);     // transition index from exact to asymptotic
   
     double* exps = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
-    if (exps == NULL) {
+    if (NULL == exps) {
       log_fatal("malloc failed"); exit(1);
     }
     for (int i = 0; i < 2*FPTIA.N-1; i++) {
@@ -704,6 +704,10 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     {
       double* f = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+      if (NULL == f) {
+        log_fatal("malloc failed"); exit(1);
+      }
+
       int i;
 
       // Region 1: r << 1 (asymptotic expansion for small r)
@@ -744,6 +748,10 @@ void get_FPT_IA(void)
 
       // Convolve Pin with the kernel f, then extract and normalize
       double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
+      if (NULL == g) {
+        log_fatal("malloc failed"); exit(1);
+      }
+
       fftconvolve_real(Pin, f, FPTIA.N, 2*FPTIA.N-1, g);
       
       // P_deltaE2(k) = 2 * k^3 / (896 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
@@ -788,6 +796,9 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     {
       double* f = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+      if (NULL == f) {
+        log_fatal("malloc failed"); exit(1);
+      }
       int i;
 
       // Region 1: r << 1 (asymptotic expansion for small r)
@@ -836,7 +847,10 @@ void get_FPT_IA(void)
 
       // Convolve Pin with the kernel f, then extract and normalize
       double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
-
+      if (NULL == f) {
+        log_fatal("malloc failed"); exit(1);
+      }
+      
       fftconvolve_real(Pin, f, FPTIA.N, 2*FPTIA.N-1, g);
       
       // P_B(k) = 4 * k^3 / (2 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
