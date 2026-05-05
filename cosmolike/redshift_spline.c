@@ -471,8 +471,17 @@ double nz_source_photoz(double zz, const int nj)
         const double z = table[ntomo+1][k];  
         NORM[i] += zdistr_histo_n(z, i) * dz_histo;
       }
+      if (!(NORM[i] > 0.0)) {
+        log_fatal("zero/negative n(z) normalization for source bin %d", i); 
+        exit(1);
+      }
       norm += NORM[i];
-    }  
+    }
+    if (!(norm > 0.0)) {
+      log_fatal("zero/negative total n(z) normalization"); 
+      exit(1);
+    }
+
     #pragma omp parallel for
     for (int k=0; k<nzbins; k++) { 
       table[0][k] = 0; // store normalization in table[0][:]
@@ -545,7 +554,7 @@ double zmean_source(int ni)
   // where n_i = nz_source_photoz (already normalized to unit integral).
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
-  static gsl_integration_glfixed_table* w;
+  static gsl_integration_glfixed_table* w = NULL;
 
   if (table == NULL || 
       fdiff2(cache[0], Ntable.random) ||
@@ -679,7 +688,15 @@ double nz_lens_photoz(double zz, int nj)
         const double z = table[ntomo+1][k];  
         NORM[i] += pf_histo_n(z, i) * dz_histo;
       }
+      if (!(NORM[i] > 0.0)) {
+        log_fatal("zero/negative n(z) normalization for source bin %d", i); 
+        exit(1);
+      }
       norm += NORM[i];
+    }
+    if (!(norm > 0.0)) {
+      log_fatal("zero/negative total n(z) normalization"); 
+      exit(1);
     }
 
     #pragma omp parallel for
@@ -781,7 +798,7 @@ double zmean(const int ni)
   // pf_photoz includes a stretch factor that breaks unit normalization.
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
-  static gsl_integration_glfixed_table* w;
+  static gsl_integration_glfixed_table* w = NULL;
 
   if (table == NULL || 
       fdiff2(cache[0], Ntable.random) ||
@@ -810,6 +827,10 @@ double zmean(const int ni)
       const double den = gsl_integration_glfixed(&F, 
                                           redshift.clustering_zdist_zmin[i], 
                                           redshift.clustering_zdist_zmax[i], w);
+      if (!(den > 0.0)) {
+        log_fatal("zmean denominator is non-positive (lens bin %d)", i);
+        exit(1);
+      }
       table[i] = num/den;
     }
     cache[0] = Ntable.random;
@@ -867,7 +888,11 @@ double g_tomo(double ainput, const int ni) {
       for (int i=0; i<Na; i++) {
         const double a = amin + i*da;
         Pint[j][i] = nz_source_photoz(1./a-1., j) / (a * a);
-        Qint[j][i] = Pint[j][i] / chi(amin+i*da);
+        const double c = chi(amin + i*da);
+        if (!(c > 0.0)) {
+          log_fatal("division by zero (chi = 0)"); exit(1);
+        }
+        Qint[j][i] = Pint[j][i] / c;
       }
     }
     #pragma omp parallel for schedule(static,1)
@@ -937,7 +962,13 @@ double g2_tomo(double a, int ni)
     (void) nz_source_photoz(0.0, 0); // warm cache before threading
 
     double chia[Na];
-    for (int i = 0; i < Na; i++) chia[i] = chi(amin + i * da);
+    for (int i = 0; i < Na; i++) {
+      const double c = chi(amin + i * da);
+      if (!(c > 0.0)) {
+        log_fatal("division by zero (chi = 0)"); exit(1);
+      }
+      chia[i] = c;
+    }
 
     #pragma omp parallel for collapse(2)
     for (int j = 0; j < redshift.shear_nbin; j++) {
