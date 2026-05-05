@@ -2730,7 +2730,7 @@ double C_ks_tomo_limber_nointerp(const double l, const int ni, const int init)
     cache[0] = Ntable.random;
   }
   
-  double ar[3] = {(double) ni, l};
+  double ar[2] = {(double) ni, l};
   const double amin = amin_source(ni);
   const double amax = amax_source(ni);
   if (!(amin>0) || !(amin<1) || !(amax>0) || !(amax<1)) {
@@ -3326,7 +3326,7 @@ double C_yy_limber_nointerp(const double l, const int init)
     cache[0] = Ntable.random;
   }
 
-  double ar[2] = {l};
+  double ar[1] = {l};
   const double amin = limits.a_min;
   const double amax = 1.0 - 1.e-5;
 
