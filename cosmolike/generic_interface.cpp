@@ -952,7 +952,8 @@ void set_IA_PS(
   const double coverH0cube = coverH0*coverH0*coverH0;
   
   int cache_update = 0;
-  if (FPTIA.N != N ||
+  if (NULL == FPTIA.tab ||
+      FPTIA.N != N ||
       fdiff(FPTIA.k_min, kmin * coverH0 ) || 
       fdiff(FPTIA.k_max, kmax * coverH0) || 
       fdiff(FPTIA.k_cutoff, cutoff * coverH0)) {
@@ -1019,7 +1020,8 @@ void set_bias_PS(
   const double coverH0cube = coverH0*coverH0*coverH0;
 
   int cache_update = 0;
-  if (FPTbias.N != N ||
+  if (NULL == FPTbias.tab ||
+      FPTbias.N != N ||
       fdiff(FPTbias.k_min, kmin * coverH0) || 
       fdiff(FPTbias.k_max, kmax * coverH0) || 
       fdiff(FPTbias.k_cutoff, cutoff * coverH0) ||
