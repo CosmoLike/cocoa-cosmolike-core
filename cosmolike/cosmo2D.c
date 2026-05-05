@@ -1436,8 +1436,8 @@ double C_ss_tomo_limber_nointerp(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL; 
-  if (ni < -1 || ni > redshift.shear_nbin -1 || 
-      nj < -1 || nj > redshift.shear_nbin -1) {
+  if (ni < 0 || ni > redshift.shear_nbin -1 || 
+      nj < 0 || nj > redshift.shear_nbin -1) {
     log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj); exit(1);
   }
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
