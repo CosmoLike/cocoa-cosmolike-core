@@ -565,7 +565,7 @@ double int_for_C_ss_EE_tomo_limber_cpp(
     const int nj
   )
 {
-  double ar[4] = {(double) ni, (double) nj, l, 1};
+  double ar[5] = {(double) ni, (double) nj, l, 1, 0};
   return int_for_C_ss_tomo_limber(a, (void*) ar); 
 }
 
@@ -609,7 +609,7 @@ double int_for_C_ss_BB_tomo_limber_cpp(
     const int nj
   )
 {
-  double ar[4] = {(double) ni, (double) nj, l, 0};
+  double ar[5] = {(double) ni, (double) nj, l, 0, 0};
   return int_for_C_ss_tomo_limber(a, (void*) ar); 
 }
 

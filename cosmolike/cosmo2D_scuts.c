@@ -513,7 +513,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(const double k)
     }
   }
   const double lnk = log(k);
-  if (lnk > lim[0] || lnk < lim[1]) {
+  if (lnk > lim[0] && lnk < lim[1]) {
     double*** cx = (double***) malloc3d(2, NSIZE, Ntable.LMAX);
     for (int nz=0; nz<NSIZE; nz++) {
       for (int l=0; l<lmin; l++) {
