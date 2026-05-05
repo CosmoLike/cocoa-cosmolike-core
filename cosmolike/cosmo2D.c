@@ -49,6 +49,21 @@ static int include_RSD_GY = 0; // 0 or 1
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 #ifndef COSMO2D_NOT_USE_SIMD
+  #if defined(__aarch64__) || defined(_M_ARM64)
+    #ifndef SIMDE_ARM_NEON_A64V8_NATIVE
+      #warning "SIMDe: NEON is being EMULATED — something is wrong"
+    #endif
+  #else
+    #ifndef SIMDE_X86_AVX2_NATIVE
+      #warning "SIMDe: AVX2 is being EMULATED (no -mavx2 flag?)"
+    #endif
+    #ifndef SIMDE_X86_FMA_NATIVE
+      #warning "SIMDe: FMA is being EMULATED (no -mfma flag?)"
+    #endif
+  #endif
+#endif
+
+#ifndef COSMO2D_NOT_USE_SIMD
 // -----------------------------------------------------------------------------
 // What is SIMD? How is the basic building block of SIMD?
 // A normal double variable holds 1 number (64 bits).
@@ -237,6 +252,7 @@ static inline double simd_array_sum(const double* restrict a, const int n)
   return result;
 }
 #endif
+
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -258,8 +274,7 @@ double beam_cmb(const int l) {
 
 double w_pixel(const int l) {
   if (0 == cmb.healpixwin_ncls) {
-    log_fatal("cmb.healpixwin_ncls not initialized");
-    exit(1);
+    log_fatal("cmb.healpixwin_ncls not initialized"); exit(1);
   }
   return (l < cmb.healpixwin_ncls) ? cmb.healpixwin[l] : 0.0;
 }
@@ -303,6 +318,30 @@ void C_gs_tomo_limber_fill(
     double* RESTRICT out
   );
 
+void C_gg_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  );
+
+void C_gk_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  );
+
+void C_ks_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  );
+
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -330,6 +369,10 @@ double xi_pm_tomo(
   }
 
   const int NSIZE = tomo.shear_Npowerspectra;
+  if (NSIZE <= 0) {
+    log_fatal("cosmic shear requested but tomo.shear_Npowerspectra = %d", NSIZE);
+    exit(1);
+  }
 
   if (NULL == Glpm || 
       NULL == xipm || 
@@ -530,6 +573,10 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
   }
 
   const int NSIZE = tomo.ggl_Npowerspectra;
+  if (NSIZE <= 0) {
+    log_fatal("ggl requested but tomo.ggl_Npowerspectra == %d", NSIZE);
+    exit(1);
+  }
 
   if (NULL == Pl || 
       NULL == w_vec || 
@@ -703,6 +750,10 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
   }
 
   const int NSIZE = tomo.clustering_Npowerspectra;
+  if (NSIZE <= 0) {
+    log_fatal("wgg requested but tomo.clustering_Npowerspectra = %d", NSIZE);
+    exit(1);
+  }
 
   if (NULL == Pl || 
       NULL == w_vec || 
@@ -791,22 +842,17 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
           Cl[nz][l] = C_gg_tomo_limber_nointerp((double) l, nz, nz, 0);
         }
       }
-      
-      #pragma omp parallel for collapse(2) schedule(static,1)
-      for (int nz=0; nz<NSIZE; nz++) {
-        for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
-          Cl[nz][l] = C_gg_tomo_limber((double) l, nz, nz);
-        }
+      #pragma omp parallel for schedule(static)
+      for (int nz = 0; nz < NSIZE; nz++) {
+        C_gg_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
     else {
       const double tolerance = 0.01;
       C_cl_tomo(Cl, tolerance);
-      #pragma omp parallel for collapse(2) schedule(static,1)
+      #pragma omp parallel for schedule(static)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
-        for (int l=limits.LMAX_NOLIMBER; l<Ntable.LMAX; l++) {
-          Cl[nz][l] = C_gg_tomo_limber(l, nz, nz);
-        }
+        C_gg_tomo_limber_fill(nz, limits.LMAX_NOLIMBER, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
 
@@ -869,7 +915,10 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
   static double** Pl = NULL;
   static double* w_vec = NULL;
   static double** Cl = NULL; 
+  static double* cmbf = NULL; // CMB filter
+  static double* lnell = NULL;
   static uint64_t cache[MAX_SIZE_ARRAYS];
+  
 
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
@@ -877,7 +926,11 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
   }
 
   const int NSIZE = redshift.clustering_nbin;
-  
+  if (NSIZE <= 0) {
+    log_fatal("wgk requested but redshift.clustering_nbin = %d", NSIZE);
+    exit(1);
+  }
+
   if (NULL == Pl ||
       NULL == w_vec || 
       NULL == Cl || 
@@ -888,6 +941,17 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
 
     if (w_vec != NULL) free(w_vec);
     w_vec = calloc1d(NSIZE*Ntable.Ntheta);
+
+    if (cmbf != NULL) free(cmbf);
+    cmbf = (double*) malloc1d(Ntable.LMAX); // CMB filter
+
+    if (lnell != NULL) {
+      free(lnell);
+    }
+    lnell = (double*) malloc1d(Ntable.LMAX + 1);
+    for (int l = 1; l <= Ntable.LMAX; l++) {
+      lnell[l] = log((double) l);
+    }
 
     double*** P = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX+1);
     double** Pmin  = P[0]; double** Pmax  = P[1];
@@ -938,6 +1002,14 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       fdiff2(cache[4], nuisance.random_galaxy_bias) ||
       fdiff2(cache[5], cmb.random))
   { 
+    #pragma omp parallel for
+    for (int l=0; l<Ntable.LMAX; l++) {
+      double f = beam_cmb(l);
+      if (cmb.healpixwin_ncls > 0) {
+        f *= w_pixel(l);
+      }
+      cmbf[l] = f;
+    }
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
       for (int l=0; l<lmin; l++) {
@@ -949,22 +1021,36 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
-          Cl[nz][l] = 
-              C_gk_tomo_limber_nointerp((double) l, nz, 0)*beam_cmb((double) l);
-          if (cmb.healpixwin_ncls > 0) {
-            Cl[nz][l] *= w_pixel((double) l);
-          }
+          Cl[nz][l] = C_gk_tomo_limber_nointerp((double) l, nz, 0)*cmbf[l];
         }
+      }
+#ifdef COSMO2D_NOT_USE_SIMD
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<NSIZE; nz++) {
+        C_gk_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
       }
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
-          Cl[nz][l] = C_gk_tomo_limber((double) l, nz)*beam_cmb((double) l);
-          if (cmb.healpixwin_ncls > 0) {
-            Cl[nz][l] *= w_pixel((double) l);
-          }
+          Cl[nz][l] *= cmbf[l]; // multiply by CMB beam filter
         }
       }
+#else
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<NSIZE; nz++) {
+        C_gk_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
+        int l = limits.LMIN_tab;
+        for (; l <= Ntable.LMAX - 4; l += 4) {
+          simde__m256d vcl = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
+          simde__m256d vcf = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
+          simde__m256d vres = simde_mm256_mul_pd(vcl, vcf);    // Cl * cmbf
+          simde_mm256_storeu_pd(Cl[nz] + l, vres);             // store back
+        }
+        for (; l < Ntable.LMAX; l++) { // Scalar tail
+          Cl[nz][l] *= cmbf[l];
+        }
+      }
+#endif       
     }
     else {
       log_fatal("NonLimber not implemented");
@@ -1023,6 +1109,8 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
   static double** Pl = NULL;
   static double* w_vec = NULL;
   static double** Cl = NULL; 
+  static double* cmbf = NULL; // CMB filter
+  static double* lnell = NULL;
   static uint64_t cache[MAX_SIZE_ARRAYS];
   
   if (0 == Ntable.Ntheta) {
@@ -1030,6 +1118,10 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
   }
 
   const int NSIZE = redshift.shear_nbin;
+  if (NSIZE <= 0) {
+    log_fatal("wks requested but redshift.shear_nbin = %d", NSIZE);
+    exit(1);
+  }
 
   if (Pl == NULL || 
       w_vec == NULL || 
@@ -1041,7 +1133,18 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 
     if (w_vec != NULL) free(w_vec);
     w_vec = calloc1d(NSIZE*Ntable.Ntheta);
-    
+
+    if (cmbf != NULL) free(cmbf);
+    cmbf = (double*) malloc1d(Ntable.LMAX); // CMB filter
+
+    if (lnell != NULL) {
+      free(lnell);
+    }
+    lnell = (double*) malloc1d(Ntable.LMAX + 1);
+    for (int l = 1; l <= Ntable.LMAX; l++) {
+      lnell[l] = log((double) l);
+    }
+
     double*** P = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX + 1);
     double** Pmin  = P[0]; double** Pmax  = P[1];
 
@@ -1066,7 +1169,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
     const int lmin = 1;
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=0; l<lmin; l++) {
-        Pl[i][0] = 0.0;
+        Pl[i][l] = 0.0;
       }
     }
 
@@ -1093,6 +1196,14 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       fdiff2(cache[4], Ntable.random) ||
       fdiff2(cache[5], cmb.random))
   {
+    #pragma omp parallel for
+    for (int l=0; l<Ntable.LMAX; l++) {
+      double f = beam_cmb(l);
+      if (cmb.healpixwin_ncls > 0) {
+        f *= w_pixel(l);
+      }
+      cmbf[l] = f;
+    }
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
       for (int l=0; l<lmin; l++) {
@@ -1104,22 +1215,36 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         for (int l=lmin; l<limits.LMIN_tab; l++) {
-          Cl[nz][l] = 
-              C_ks_tomo_limber_nointerp((double) l, nz, 0)*beam_cmb((double) l);
-          if (cmb.healpixwin_ncls > 0) {
-            Cl[nz][l] *= w_pixel((double) l);
-          }
+          Cl[nz][l] = C_ks_tomo_limber_nointerp((double) l, nz, 0)*cmbf[l];
         }
+      }
+#ifdef COSMO2D_NOT_USE_SIMD
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<NSIZE; nz++) {
+        C_ks_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
       }
       #pragma omp parallel for collapse(2) schedule(static,1)
       for (int nz=0; nz<NSIZE; nz++) {
         for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
-          Cl[nz][l] = C_ks_tomo_limber((double) l, nz)*beam_cmb((double) l);
-          if (cmb.healpixwin_ncls > 0) {
-            Cl[nz][l] *= w_pixel((double) l);
-          }
+          Cl[nz][l] *= cmbf[l]; // multiply by CMB beam filter
         }
       }
+#else
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<NSIZE; nz++) {
+        C_ks_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
+        int l = limits.LMIN_tab;
+        for (; l <= Ntable.LMAX - 4; l += 4) {
+          simde__m256d vcl  = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
+          simde__m256d vcf  = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
+          simde__m256d vres = simde_mm256_mul_pd(vcl, vcf);      // Cl * cmbf
+          simde_mm256_storeu_pd(Cl[nz] + l, vres);               // store back
+        }
+        for (; l < Ntable.LMAX; l++) { // Scalar tail
+          Cl[nz][l] *= cmbf[l];
+        }
+      }
+#endif
     } 
     else {
       log_fatal("NonLimber not implemented");
@@ -1337,14 +1462,22 @@ static double int_for_C_ss_tomo_limber_core(
           tt  = 0.0;
           ta  = 0.0;
           mix = 0.0;
-        } else {
+        } 
+        else {
           const double r = (lnk - lim[0]) / lim[2];
           const int i = (int) floor(r);
-          const double w = r - i;
-          const int i1 = (i + 1 >= FPTIA.N) ? FPTIA.N - 1 : i + 1;
-          tt  = g4 * (w * (FPTIA.tab[1][i1] - FPTIA.tab[1][i]) + FPTIA.tab[1][i]);
-          ta  = g4 * (w * (FPTIA.tab[5][i1] - FPTIA.tab[5][i]) + FPTIA.tab[5][i]);
-          mix = g4 * (w * (FPTIA.tab[9][i1] - FPTIA.tab[9][i]) + FPTIA.tab[9][i]);
+          if (i + 1 >= FPTIA.N) {
+            tt  = g4 * FPTIA.tab[1][FPTIA.N - 1];
+            ta  = g4 * FPTIA.tab[5][FPTIA.N - 1];
+            mix = g4 * FPTIA.tab[9][FPTIA.N - 1];
+          }
+          else {
+            const double w = r - i;
+            const int i1 = (i + 1 >= FPTIA.N) ? FPTIA.N - 1 : i + 1;
+            tt  = g4 * (w * (FPTIA.tab[1][i1] - FPTIA.tab[1][i]) + FPTIA.tab[1][i]);
+            ta  = g4 * (w * (FPTIA.tab[5][i1] - FPTIA.tab[5][i]) + FPTIA.tab[5][i]);
+            mix = g4 * (w * (FPTIA.tab[9][i1] - FPTIA.tab[9][i]) + FPTIA.tab[9][i]);
+          }
         }        
         ans = WS1*WS2*(C11*C12*bta1*bta2*ta 
                        - 5.*(C11*bta1*C22+C12*bta2*C21)*mix 
@@ -1524,13 +1657,16 @@ double C_ss_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    for (int k=0; k<tomo.shear_Npowerspectra; k++) { // init static vars
+    // init static vars begin --------------------------------------------------
+    { 
+      const int k = 0;
       const double Z1NZ = Z1(k);
       const double Z2NZ = Z2(k);
       (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 1, 1); // EE
       (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 0, 1); // BB  
     }
-
+    // init static vars ends ---------------------------------------------------
+    
     // ------------------------------------------------------------------
     // optimization: - compute cosmo quantities and prefactor only once.
     //                 (why once? amin and amax are nl and ns independent)
@@ -1541,8 +1677,8 @@ double C_ss_tomo_limber(
     
     cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
     
-    double lx[nell];
-    double ell_prefactor[nell];
+    double* lx = (double*) malloc1d(nell);
+    double* ell_prefactor = (double*) malloc1d(nell);
     for (int i = 0; i < nell; i++) {
       lx[i] = exp(lim[0] + i * lim[2]);
       const double ell = lx[i] + 0.5;
@@ -1610,6 +1746,8 @@ double C_ss_tomo_limber(
       }
     }
     
+    free(lx);
+    free(ell_prefactor);
     free(W);
     free(PK);
     free_cosmo_nodes(&cn);
@@ -1658,6 +1796,7 @@ void C_ss_tomo_limber_fill(
   const double a = ss_.lim[0];
   const int n = ss_.nell;
 
+#ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol 1D
     const double r = (ln_ell[l] - a) * inv_dx;
     const int i = (int) floor(r);
@@ -1666,6 +1805,78 @@ void C_ss_tomo_limber_fill(
     out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
     out_BB[l] = tab_BB[ic] + t * (tab_BB[ic + 1] - tab_BB[ic]);
   }
+#else
+  // -------------------------------------------------------------------------
+  // SIMD linear interpolation (two tables, same indices)
+  // -------------------------------------------------------------------------
+  const simde__m256d va       = simde_mm256_set1_pd(a);
+  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const simde__m256d vzero    = simde_mm256_setzero_pd();
+  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const simde__m128i vone     = simde_mm_set1_epi32(1); // this is [1 | 1 | 1 | 1]
+
+  int l = lmin;
+  for (; l <= lmax - 4; l += 4) {
+    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
+    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+
+    // LINE: const int i = floor(r); (but not the cast to int)
+    simde__m256d vfloor = simde_mm256_floor_pd(vr);
+
+    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
+    //   restrict to valid table range [0, n-2]. Example with n = 100
+    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
+    //   First: max(floor, 0)
+    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
+    //                   ^fixed
+    //   Last: min(result, n-2 = 98)
+    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
+    //                                               ^fixed
+    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
+    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
+
+    // LINE: cast from double to int!
+    // Convert indices from double → int32
+    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
+    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
+
+    //   Gather takes an array of indices and loads one element per lane
+    //   i32gather_pd(base_ptr, index_register, scale)
+    //     - base_ptr:       starting address of the table (tab_EE or tab_BB)
+    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
+    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
+    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
+
+    // Gather from EE table: tab_EE[ic] and tab_EE[ic+1]
+    simde__m256d vtab0_EE = simde_mm256_i32gather_pd(tab_EE, vidx, 8);
+    simde__m256d vtab1_EE = simde_mm256_i32gather_pd(tab_EE, vidx1, 8);
+
+    // Gather from BB table: tab_BB[ic] and tab_BB[ic+1] (same indices, different table)
+    simde__m256d vtab0_BB = simde_mm256_i32gather_pd(tab_BB, vidx, 8);
+    simde__m256d vtab1_BB = simde_mm256_i32gather_pd(tab_BB, vidx1, 8);
+
+    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
+    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
+
+    simde__m256d vdiff_EE   = simde_mm256_sub_pd(vtab1_EE, vtab0_EE); // tab_EE slope
+    simde__m256d vresult_EE = simde_mm256_fmadd_pd(vt, vdiff_EE, vtab0_EE); // interp EE
+
+    simde__m256d vdiff_BB   = simde_mm256_sub_pd(vtab1_BB, vtab0_BB); // tab_BB slope
+    simde__m256d vresult_BB = simde_mm256_fmadd_pd(vt, vdiff_BB, vtab0_BB); // interp BB
+
+    simde_mm256_storeu_pd(out_EE + l, vresult_EE); // store EE results
+    simde_mm256_storeu_pd(out_BB + l, vresult_BB); // store BB results
+  }
+  for (; l < lmax; l++) { // Scalar tail
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
+    out_BB[l] = tab_BB[ic] + t * (tab_BB[ic + 1] - tab_BB[ic]);
+  }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1861,6 +2072,10 @@ static double int_for_C_gs_tomo_limber_core(
   return ans*(dchida/(fK*fK))*ell_prefactor2;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_for_C_gs_tomo_limber(double a, void* params)
 {
   if (!(a>0) || !(a<1)) {
@@ -2037,10 +2252,16 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       const double amax = amax_lens(ZLNZ);
       cn_all[ZLNZ] = create_cosmo_nodes(amin, amax, w);
     }
+    for (int q=1; q<redshift.clustering_nbin; q++) {
+      if (cn_all[q].npts != cn_all[0].npts) {
+        log_fatal("inconsistent quadrature size"); exit(1);
+      }
+    }
 
-    double lx[nell];
-    double ell_prefactor[nell];
-    double ell_prefactor2[nell];
+    double* lx = (double*) malloc1d(nell);
+    double* ell_prefactor = (double*) malloc1d(nell);
+    double* ell_prefactor2 = (double*) malloc1d(nell);
+    #pragma omp parallel for
     for (int i = 0; i < nell; i++) {
       lx[i] = exp(lim[0] + i * lim[2]);
       const double ell = lx[i] + 0.5;
@@ -2050,7 +2271,9 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     }
 
     // precompute P(k,z)
-    double*** PK = (double***) malloc3d(redshift.clustering_nbin, nell, cn_all[0].npts);
+    double*** PK = (double***) malloc3d(redshift.clustering_nbin, 
+                                        nell, 
+                                        cn_all[0].npts);
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int q = 0; q < redshift.clustering_nbin; q++) {
       for (int i = 0; i < nell; i++) {
@@ -2063,7 +2286,9 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     }
 
     // precompute lens weights 
-    double*** WXL = (double***) malloc3d(2, redshift.clustering_nbin, cn_all[0].npts);
+    double*** WXL = (double***) malloc3d(2, 
+                                         redshift.clustering_nbin, 
+                                         cn_all[0].npts);
     #pragma omp parallel for schedule(static,1)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       for (int p = 0; p < cn_all[0].npts; p++) {
@@ -2074,15 +2299,19 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     }
 
     // precompute source weights
-    double**** WXS = (double****) malloc4d(2, redshift.clustering_nbin, 
-                                          redshift.shear_nbin, cn_all[0].npts);
+    double**** WXS = (double****) malloc4d(2, 
+                                           redshift.clustering_nbin, 
+                                           redshift.shear_nbin, 
+                                           cn_all[0].npts);
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       for (int zs = 0; zs < redshift.shear_nbin; zs++) {
         for (int p = 0; p < cn_all[0].npts; p++) {
           const cosmo_nodes* cn = &cn_all[zl];
-          WXS[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
-          WXS[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
+          WXS[0][zl][zs][p] = 
+                            W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
+          WXS[1][zl][zs][p] = 
+                      W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
         }
       }
     }
@@ -2118,6 +2347,9 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       }
     }
 
+    free(lx);
+    free(ell_prefactor);
+    free(ell_prefactor2);
     free(WXL);
     free(WXS);
     free(PK);
@@ -2175,7 +2407,8 @@ void C_gs_tomo_limber_fill(
   const double inv_dx = 1.0 / gs_.lim[2];
   const double a = gs_.lim[0];
   const int n = gs_.nell;
- 
+
+#ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol1D
     const double r = (ln_ell[l] - a) * inv_dx;
     const int i = (int) floor(r);
@@ -2183,6 +2416,68 @@ void C_gs_tomo_limber_fill(
     const double t = r - ic;
     out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
   }
+#else
+  // -------------------------------------------------------------------------
+  // SIMD linear interpolation
+  // ------------------------------------------------------------------------- 
+  const simde__m256d va       = simde_mm256_set1_pd(a);
+  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const simde__m256d vzero    = simde_mm256_setzero_pd();
+  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const simde__m128i vone     = simde_mm_set1_epi32(1); // this is [1 | 1 | 1 | 1]
+
+  int l = lmin;
+  for (; l <= lmax - 4; l += 4) {
+    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
+    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell,va),vinv_dx);
+ 
+    // LINE: const int i = floor(r); (but not the cast to int)
+    simde__m256d vfloor = simde_mm256_floor_pd(vr);
+  
+    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
+    //   restrict to valid table range [0, n-2]. Example with n = 100
+    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
+    //   First: max(floor, 0)
+    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
+    //                   ^fixed
+    //   Last: min(result, n-2 = 98)
+    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
+    //                                               ^fixed
+    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero); // max(floor, 0)
+    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
+
+    // LINE: cast from double to int!
+    // Convert indices from double → int32
+    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
+    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic); 
+ 
+    //   Gather takes an array of indices and loads one element per lane
+    //   i32gather_pd(base_ptr, index_register, scale)
+    //     - base_ptr:       starting address of the table (tab)
+    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
+    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
+    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
+    
+    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
+    
+    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
+  
+    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
+    simde__m256d vdiff = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
+    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
+    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
+
+    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+  }
+  for (; l < lmax; l++) { // Scalar tail
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -2388,6 +2683,13 @@ double C_gg_tomo_limber_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// so C_gg_tomo_limber_fill can see C_gg_tomo_limber data
+static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double C_gg_tomo_limber(const double l, const int ni, const int nj)
 { // cross redshift bin not supported
   static uint64_t cache[MAX_SIZE_ARRAYS];
@@ -2404,6 +2706,12 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.0);
     if (table != NULL) free(table);
     table = (double**) malloc2d(NSIZE, nell);
+    
+    gg_.tab    = table;
+    gg_.lim[0] = lim[0];
+    gg_.lim[1] = lim[1];
+    gg_.lim[2] = lim[2];
+    gg_.nell   = nell;
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -2450,6 +2758,93 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
     exit(1);
   }  
   return interpol1d(table[q], nell, lim[0], lim[1], lim[2], lnl);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+void C_gg_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  )
+{
+  const double* RESTRICT tab = gg_.tab[nz];
+  const double inv_dx = 1.0 / gg_.lim[2];
+  const double a = gg_.lim[0];
+  const int n = gg_.nell;
+#ifdef COSMO2D_NOT_USE_SIMD
+  for (int l = lmin; l < lmax; l++) { // inline interpol1D
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#else
+  // -------------------------------------------------------------------------
+  // SIMD linear interpolation
+  // -------------------------------------------------------------------------
+  const simde__m256d va       = simde_mm256_set1_pd(a);
+  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const simde__m256d vzero    = simde_mm256_setzero_pd();
+  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const simde__m128i vone     = simde_mm_set1_epi32(1); // [1 | 1 | 1 | 1]
+ 
+  int l = lmin;
+  for (; l <= lmax - 4; l += 4) {
+    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
+    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+ 
+    // LINE: const int i = floor(r); (but not the cast to int)
+    simde__m256d vfloor = simde_mm256_floor_pd(vr);
+ 
+    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
+    //   restrict to valid table range [0, n-2]. Example with n = 100
+    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
+    //   First: max(floor, 0)
+    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
+    //                   ^fixed
+    //   Last: min(result, n-2 = 98)
+    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
+    //                                               ^fixed
+    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
+    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
+ 
+    // LINE: cast from double to int!
+    // Convert indices from double → int32
+    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
+    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
+ 
+    //   Gather takes an array of indices and loads one element per lane
+    //   i32gather_pd(base_ptr, index_register, scale)
+    //     - base_ptr:       starting address of the table (tab)
+    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
+    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
+    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
+ 
+    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
+ 
+    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
+ 
+    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
+    simde__m256d vdiff   = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
+    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
+    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
+    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+  }
+  for (; l < lmax; l++) { // Scalar tail
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -2557,6 +2952,11 @@ double int_for_C_gk_tomo_limber(double a, void* params)
   return ((res + oneloop)*chidchi.dchida/(fK*fK))*ell_prefactor;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+
 double C_gk_tomo_limber_nointerp(const double l, const int ni, const int init)
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
@@ -2606,6 +3006,17 @@ double C_gk_tomo_limber_nointerp(const double l, const int ni, const int init)
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// so C_gk_tomo_limber_fill can see C_gk_tomo_limber data
+static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double C_gk_tomo_limber(const double l, const int ni)
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
@@ -2620,6 +3031,12 @@ double C_gk_tomo_limber(const double l, const int ni)
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
     if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_ell);
+
+    gk_.tab    = table;
+    gk_.lim[0] = lim[0];
+    gk_.lim[1] = lim[1];
+    gk_.lim[2] = lim[2];
+    gk_.nell   = nell;
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -2668,6 +3085,96 @@ double C_gk_tomo_limber(const double l, const int ni)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+void C_gk_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  )
+{
+  const double* RESTRICT tab = gk_.tab[nz];
+  const double inv_dx = 1.0 / gk_.lim[2];
+  const double a = gk_.lim[0];
+  const int n = gk_.nell;
+#ifdef COSMO2D_NOT_USE_SIMD
+  for (int l = lmin; l < lmax; l++) { // inline interpol1D
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#else
+  // -------------------------------------------------------------------------
+  // SIMD linear interpolation
+  // -------------------------------------------------------------------------
+  const simde__m256d va       = simde_mm256_set1_pd(a);
+  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const simde__m256d vzero    = simde_mm256_setzero_pd();
+  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const simde__m128i vone     = simde_mm_set1_epi32(1); // [1 | 1 | 1 | 1]
+ 
+  int l = lmin;
+  for (; l <= lmax - 4; l += 4) {
+    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
+    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+ 
+    // LINE: const int i = floor(r); (but not the cast to int)
+    simde__m256d vfloor = simde_mm256_floor_pd(vr);
+ 
+    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
+    //   restrict to valid table range [0, n-2]. Example with n = 100
+    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
+    //   First: max(floor, 0)
+    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
+    //                   ^fixed
+    //   Last: min(result, n-2 = 98)
+    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
+    //                                               ^fixed
+    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
+    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
+ 
+    // LINE: cast from double to int!
+    // Convert indices from double → int32
+    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
+    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
+ 
+    //   Gather takes an array of indices and loads one element per lane
+    //   i32gather_pd(base_ptr, index_register, scale)
+    //     - base_ptr:       starting address of the table (tab)
+    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
+    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
+    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
+ 
+    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
+ 
+    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
+ 
+    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
+    simde__m256d vdiff   = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
+    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
+    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
+    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+  }
+  for (; l < lmax; l++) { // Scalar tail
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double int_for_C_ks_tomo_limber(double a, void* params)
 {
   if (!(a>0) || !(a<1)) {
@@ -2702,6 +3209,10 @@ double int_for_C_ks_tomo_limber(double a, void* params)
 
   return (res*PK*chidchi.dchida/(fK*fK))*ell_prefactor1*ell_prefactor2;
 }
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
 double C_ks_tomo_limber_nointerp(const double l, const int ni, const int init)
 {
@@ -2745,6 +3256,17 @@ double C_ks_tomo_limber_nointerp(const double l, const int ni, const int init)
   return res;  
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// so C_ks_tomo_limber_fill can see C_ks_tomo_limber data
+static struct { double** tab; double lim[3]; int nell; } ks_ = {0};
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 double C_ks_tomo_limber(double l, int ni)
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
@@ -2760,6 +3282,12 @@ double C_ks_tomo_limber(double l, int ni)
 
     if (table != NULL) free(table);
     table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_ell);
+
+    ks_.tab    = table;
+    ks_.lim[0] = lim[0];
+    ks_.lim[1] = lim[1];
+    ks_.lim[2] = lim[2];
+    ks_.nell   = nell;
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -2803,6 +3331,96 @@ double C_ks_tomo_limber(double l, int ni)
   return interpol1d(table[q], Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+void C_ks_tomo_limber_fill(
+    const int nz,
+    const int lmin,
+    const int lmax,
+    const double* RESTRICT ln_ell,
+    double* RESTRICT out
+  )
+{
+  const double* RESTRICT tab = ks_.tab[nz];
+  const double inv_dx = 1.0 / ks_.lim[2];
+  const double a = ks_.lim[0];
+  const int n = ks_.nell;
+#ifdef COSMO2D_NOT_USE_SIMD
+  for (int l = lmin; l < lmax; l++) { // inline interpol1D
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#else
+  // -------------------------------------------------------------------------
+  // SIMD linear interpolation
+  // -------------------------------------------------------------------------
+  const simde__m256d va       = simde_mm256_set1_pd(a);
+  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const simde__m256d vzero    = simde_mm256_setzero_pd();
+  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const simde__m128i vone     = simde_mm_set1_epi32(1); // [1 | 1 | 1 | 1]
+ 
+  int l = lmin;
+  for (; l <= lmax - 4; l += 4) {
+    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
+    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+ 
+    // LINE: const int i = floor(r); (but not the cast to int)
+    simde__m256d vfloor = simde_mm256_floor_pd(vr);
+ 
+    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
+    //   restrict to valid table range [0, n-2]. Example with n = 100
+    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
+    //   First: max(floor, 0)
+    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
+    //                   ^fixed
+    //   Last: min(result, n-2 = 98)
+    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
+    //                                               ^fixed
+    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
+    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
+ 
+    // LINE: cast from double to int!
+    // Convert indices from double → int32
+    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
+    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
+ 
+    //   Gather takes an array of indices and loads one element per lane
+    //   i32gather_pd(base_ptr, index_register, scale)
+    //     - base_ptr:       starting address of the table (tab)
+    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
+    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
+    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
+ 
+    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
+ 
+    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
+ 
+    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
+    simde__m256d vdiff   = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
+    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
+    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
+    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+  }
+  for (; l < lmax; l++) { // Scalar tail
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -3482,6 +4100,10 @@ void cfftlog_ells_p1(
       }
       const int halfN = N[j][2]/2;
       const int kmax = (int) (halfN * cww);
+      if (kmax <= 0) {
+        log_fatal("kmax <= 0 in c-window");
+        exit(1);
+      }
       for(int k=0; k<(kmax+1); k++) { // window for right-side
         const double W = (double)(k)/kmax - sin(2.*M_PI*k/kmax)/(2.*M_PI);
         toutfwd[i*SIZE2+j][N[j][2]/2-k] *= W;
@@ -3526,6 +4148,7 @@ void cfftlog_ells_p2(
 ) 
 {
   static int cache[MAX_SIZE_ARRAYS];
+  static int cached_N2[MAX_SIZE_ARRAYS]; // track N[j][2] for FFTW plan validity
   static fftw_complex** outfwd = NULL;
   static double** outbcw = NULL;
   static double complex*** gl = NULL;
@@ -3556,11 +4179,16 @@ void cfftlog_ells_p2(
   const double complex clogpi = clog(M_PI);
   const double ln2pio2 = 0.5*log(2*M_PI);
 
-  if (outfwd == NULL   || 
+  int rebuild = (outfwd == NULL   || 
       NTHREADS != cache[0] ||
       Nmax != cache[1] || 
       BLOCK > cache[2] || 
-      SIZE2 != cache[3]) 
+      SIZE2 != cache[3]);
+  for (int j=0; j<SIZE2 && !rebuild; j++) {
+    if (cached_N2[j] != N[j][2]) rebuild = 1;
+  }
+
+  if (rebuild) 
   {
     if (gl != NULL) free((void*) gl);
     gl = (double complex***) malloc3d_complex(SIZE2, BLOCK, Nmax/2+1);
@@ -3585,14 +4213,22 @@ void cfftlog_ells_p2(
 
     if (base_j != NULL) free((void*) base_j);
     base_j = (double*) malloc(sizeof(double) * SIZE2);
-    for(int j=0; j<SIZE2; j++) {
-      base_j[j] = x0 / exp(2 * N[j][0] * dlnx);
-    }
 
     cache[0] = NTHREADS;
     cache[1] = Nmax;
     cache[2] = BLOCK; 
     cache[3] = SIZE2;
+    for (int j=0; j<SIZE2; j++) {
+      cached_N2[j] = N[j][2];
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------  
+
+  for(int j=0; j<SIZE2; j++) {
+    base_j[j] = x0 / exp(2 * N[j][0] * dlnx); // x depends on cosmo (chi_min/max)
   }
 
   // ---------------------------------------------------------------------------
@@ -3785,6 +4421,11 @@ void cfftlog_ells_p2(
         }
         break;
       }
+      default:
+      {
+        log_fatal("unsupported derivative = %d", cfg[j].derivative);
+        exit(1);
+      }
     }
   } 
   // ---------------------------------------------------------------------------
@@ -3792,6 +4433,7 @@ void cfftlog_ells_p2(
   // ---------------------------------------------------------------------------
 #ifndef COSMO2D_NOT_USE_SIMD 
   double** x_pow_nu = (double**) malloc2d(SIZE2, Nx);
+  #pragma omp parallel for collapse(2) schedule(static,1)
   for (int j=0; j<SIZE2; j++) {
     for (int q=0; q<Nx; q++) {
       x_pow_nu[j][q] = pow(x[Nx - 1 - q], cfg[j].nu);
@@ -3851,11 +4493,29 @@ void cfftlog_ells_p2(
         // Using the fact that y[i][k][q] = (k + 1.) / x[Nx -1 -q];
         const double prefactor = 
                     sqrtpi / (4.0 * N[j][2] * pow((double)(k + 1), cfg[j].nu));
-        for (int q = 0; q<Nx; q++) {
-          Fy[i][j][k][q] = outbcw[id][N[j][0] + q] * prefactor * x_pow_nu[j][q];
-        }
-#endif
         
+        double* RESTRICT Fy_ijk = Fy[i][j][k];
+        const double* RESTRICT ob = outbcw[id] + N[j][0];
+        const double* RESTRICT xnu = x_pow_nu[j];
+        
+        simde__m256d vpre = simde_mm256_set1_pd(prefactor); // [pf | pf | pf | pf]
+        
+        int q = 0;
+        for (; q <= Nx - 4; q += 4) {
+          simde__m256d vob  = simde_mm256_loadu_pd(ob + q);  // ob[q..q+3]
+          simde__m256d vxnu = simde_mm256_loadu_pd(xnu + q); // xnu[q..q+3]
+          // Two multiplies: (ob * prefactor) * xnu
+          //   first:  vtmp = [ ob[q]*pf | ob[q+1]*pf | ... | ... ]
+          //   second: vres = [vtmp[0]*xnu[q] | vtmp[1]*xnu[q+1] | ... | ...  ]
+          simde__m256d vtmp = simde_mm256_mul_pd(vob, vpre);
+          simde__m256d vres = simde_mm256_mul_pd(vtmp, vxnu);
+          // Store 4 results back to Fy_ijk[q..q+3]
+          simde_mm256_storeu_pd(Fy_ijk + q, vres);
+        }
+        for (; q < Nx; q++) { // Scalar tail
+          Fy_ijk[q] = ob[q] * prefactor * xnu[q];
+        }    
+#endif  
       }
     }
   }
@@ -4079,10 +4739,14 @@ void C_cl_tomo(
                       -C_gg_tomo_limber_linpsopt_nointerp((double) k, i, i, 1, 0);
       }
       const int L = kk - 1; // check convergeence
-      const double dev = Cl[i][L] / C_gg_tomo_limber_nointerp(L, i, i, 0) - 1.0;
-      if (fabs(dev) < tol) {
-        converged[i] = 1;
-        LMAX[i] = kk;
+      
+      const double denom = C_gg_tomo_limber_nointerp((double) L, i, i, 0);
+      if (fabs(denom) > 1e-300) {
+        const double dev = Cl[i][L] / denom - 1.0;
+        if (isfinite(dev) && fabs(dev) < tol) {
+          converged[i] = 1;
+          LMAX[i] = kk;
+        }
       }
     }
 
