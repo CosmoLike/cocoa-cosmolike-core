@@ -183,7 +183,7 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(const arma::Col<double> k,
   for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
     const double Z1NZ = Z1(nz);
     const double Z2NZ = Z2(nz);
-    (void) dC_ss_dlnk_tomo_limber_nointerp(k(0), l(0), Z1NZ, Z2NZ, 0); // EE
+    (void) dC_ss_dlnk_tomo_limber_nointerp(k(0), l(0), Z1NZ, Z2NZ, 1); // EE
     (void) C_ss_tomo_limber_nointerp(l(0), Z1NZ, Z2NZ, 1, 1);
     (void) dC_ss_dlnk_tomo_limber_nointerp(k(0), l(0), Z1NZ, Z2NZ, 0); // BB
     (void) C_ss_tomo_limber_nointerp(l(0), Z1NZ, Z2NZ, 1, 1);
