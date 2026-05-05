@@ -230,6 +230,8 @@ void f_z(double z_real, double *z_imag, double complex *fz, long N) {
 // 4. Eliminated the separate output array 'c' — the backward FFT writes
 //    directly into the caller's 'out' buffer via fftw_execute_dft_c2r.
 // ---------------------------------------------------------------------------
+
+// Not thread-safe: uses static buffers/plans.
 void fftconvolve_real(double *in1, double *in2, long N1, long N2, double *out) {
   //---------------------------------------------------------------------------
   // STATIC CACHE: buffers and plans persist across calls.

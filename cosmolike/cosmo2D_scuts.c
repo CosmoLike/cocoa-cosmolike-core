@@ -62,7 +62,7 @@ double dC_ss_dlnk_tomo_limber_nointerp(
   const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
   // Second: compute dCXY/dlnk
   double ans = 0.0;
-  if (a > amin || a < amax) {
+  if (a > amin && a < amax) {
     double ar[5] = {(double) ni, 
                     (double) nj, 
                     l, 
@@ -513,7 +513,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(const double k)
     }
   }
   const double lnk = log(k);
-  if (lnk > lim[0] || lnk < lim[1]) {
+  if (lnk > lim[0] && lnk < lim[1]) {
     double*** cx = (double***) malloc3d(2, NSIZE, Ntable.LMAX);
     for (int nz=0; nz<NSIZE; nz++) {
       for (int l=0; l<lmin; l++) {

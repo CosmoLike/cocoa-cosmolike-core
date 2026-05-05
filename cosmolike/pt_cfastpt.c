@@ -667,7 +667,11 @@ void get_FPT_IA(void)
     // Next section is gonna need the following definitions
     const double dL = log(k[1] / k[0]);  // log-spacing of k grid
     const long Ncut = floor(3. / dL);     // transition index from exact to asymptotic
-    double exps[2*FPTIA.N-1];
+  
+    double* exps = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+    if (NULL == exps) {
+      log_fatal("malloc failed"); exit(1);
+    }
     for (int i = 0; i < 2*FPTIA.N-1; i++) {
       // Precompute r = k'/k ratios for all convolution offsets
       exps[i] = exp(-dL * (i - FPTIA.N + 1));
@@ -699,7 +703,11 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     {
-      double f[2*FPTIA.N-1];
+      double* f = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+      if (NULL == f) {
+        log_fatal("malloc failed"); exit(1);
+      }
+
       int i;
 
       // Region 1: r << 1 (asymptotic expansion for small r)
@@ -739,7 +747,11 @@ void get_FPT_IA(void)
       f[FPTIA.N-1] = 96.;
 
       // Convolve Pin with the kernel f, then extract and normalize
-      double g[3*FPTIA.N-2];
+      double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
+      if (NULL == g) {
+        log_fatal("malloc failed"); exit(1);
+      }
+
       fftconvolve_real(Pin, f, FPTIA.N, 2*FPTIA.N-1, g);
       
       // P_deltaE2(k) = 2 * k^3 / (896 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
@@ -747,6 +759,9 @@ void get_FPT_IA(void)
         double ki3 = k[i] * k[i] * k[i];
         FPTIA.tab[3][i] = 2. * ki3 / (896.*M_PI*M_PI) * Pin[i] * g[FPTIA.N-1+i] * dL;
       }
+
+      free(g);
+      free(f);
     }
 
     // -----------------------------------------------------------------------
@@ -780,7 +795,10 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     {
-      double f[2*FPTIA.N-1];
+      double* f = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+      if (NULL == f) {
+        log_fatal("malloc failed"); exit(1);
+      }
       int i;
 
       // Region 1: r << 1 (asymptotic expansion for small r)
@@ -828,7 +846,11 @@ void get_FPT_IA(void)
       f[FPTIA.N-1] = -1./42.;
 
       // Convolve Pin with the kernel f, then extract and normalize
-      double g[3*FPTIA.N-2];
+      double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
+      if (NULL == f) {
+        log_fatal("malloc failed"); exit(1);
+      }
+      
       fftconvolve_real(Pin, f, FPTIA.N, 2*FPTIA.N-1, g);
       
       // P_B(k) = 4 * k^3 / (2 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
@@ -838,8 +860,12 @@ void get_FPT_IA(void)
         double ki3 = k[i] * k[i] * k[i];
         FPTIA.tab[7][i] = 4. * ki3 / (2.*M_PI*M_PI) * Pin[i] * g[FPTIA.N-1+i] * dL;
       }
+
+      free(g);
+      free(f);
     }
 
+    free(exps);
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

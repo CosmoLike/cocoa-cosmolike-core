@@ -243,6 +243,7 @@ void reset_cmb_struct(void)
   cmb.healpixwin_ncls = 0;
   if (cmb.healpixwin != NULL) {
     free(cmb.healpixwin);
+    cmb.healpixwin = NULL;
   }
   cmb.alpha_Hartlap_cov_kkkk = 1.0;
   cmb.nbp_kk = 0;
@@ -250,9 +251,11 @@ void reset_cmb_struct(void)
   cmb.lmaxbp_kk = 0;
   if (cmb.theory_offset_kk != NULL) {
     free(cmb.theory_offset_kk);
+    cmb.theory_offset_kk = NULL;
   }
   if (cmb.binning_matrix_kk != NULL) {
     free(cmb.binning_matrix_kk);
+    cmb.binning_matrix_kk = NULL;
   }
 }
 
