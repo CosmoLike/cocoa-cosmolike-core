@@ -62,7 +62,7 @@ double dC_ss_dlnk_tomo_limber_nointerp(
   const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
   // Second: compute dCXY/dlnk
   double ans = 0.0;
-  if (a > amin || a < amax) {
+  if (a > amin && a < amax) {
     double ar[5] = {(double) ni, 
                     (double) nj, 
                     l, 
