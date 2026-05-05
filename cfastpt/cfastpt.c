@@ -113,6 +113,7 @@ void J_abJ1J2Jk(
   // Cached padded size and derived constants
   static long s_N = 0;
   static long s_Ntotal;       // next_fft_size(2*N + 1) (convolution output size)
+  static int s_Nterms_alloc = 0;
   static long s_c2r_size;     // 2N
   static long s_Ncut;         // number of c_window tapering points
   static long s_eta_len;      // halfN + 1 (positive-frequency count)
@@ -195,7 +196,7 @@ void J_abJ1J2Jk(
   // Everything here is reused on all subsequent calls since only fx
   // (the power spectrum) changes between cosmology evaluations.
   // ---------------------------------------------------------------------------
-  if (s_N != N) 
+  if ((s_N != N) || (s_Nterms_alloc != Nterms))
   {
     if (NULL != s_eta_m) { 
       free(s_eta_m); 
@@ -236,6 +237,8 @@ void J_abJ1J2Jk(
     // -------------------------------------------------------------------------
     s_N = N;
     
+    s_Nterms_alloc = Nterms; // make sure the number of terms (in IA) is the same
+
     // Pad c2c convolution size to the next FFT-friendly number (only small
     // prime factors). E.g., 10201 = 101^2 → 10240 = 2^11 × 5, giving 3-5x
     // faster FFTs. Safe because the extra entries are time-domain zeros that
