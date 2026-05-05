@@ -471,8 +471,17 @@ double nz_source_photoz(double zz, const int nj)
         const double z = table[ntomo+1][k];  
         NORM[i] += zdistr_histo_n(z, i) * dz_histo;
       }
+      if (!(NORM[i] > 0.0)) {
+        log_fatal("zero/negative n(z) normalization for source bin %d", i); 
+        exit(1);
+      }
       norm += NORM[i];
-    }  
+    }
+    if (!(norm > 0.0)) {
+      log_fatal("zero/negative total n(z) normalization"); 
+      exit(1);
+    }
+
     #pragma omp parallel for
     for (int k=0; k<nzbins; k++) { 
       table[0][k] = 0; // store normalization in table[0][:]
@@ -545,7 +554,7 @@ double zmean_source(int ni)
   // where n_i = nz_source_photoz (already normalized to unit integral).
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
-  static gsl_integration_glfixed_table* w;
+  static gsl_integration_glfixed_table* w = NULL;
 
   if (table == NULL || 
       fdiff2(cache[0], Ntable.random) ||
@@ -679,7 +688,15 @@ double nz_lens_photoz(double zz, int nj)
         const double z = table[ntomo+1][k];  
         NORM[i] += pf_histo_n(z, i) * dz_histo;
       }
+      if (!(NORM[i] > 0.0)) {
+        log_fatal("zero/negative n(z) normalization for source bin %d", i); 
+        exit(1);
+      }
       norm += NORM[i];
+    }
+    if (!(norm > 0.0)) {
+      log_fatal("zero/negative total n(z) normalization"); 
+      exit(1);
     }
 
     #pragma omp parallel for
@@ -781,7 +798,7 @@ double zmean(const int ni)
   // pf_photoz includes a stretch factor that breaks unit normalization.
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
-  static gsl_integration_glfixed_table* w;
+  static gsl_integration_glfixed_table* w = NULL;
 
   if (table == NULL || 
       fdiff2(cache[0], Ntable.random) ||

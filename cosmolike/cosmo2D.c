@@ -671,9 +671,9 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
   }
-  if (ni < -1 || 
+  if (ni < 0 || 
       ni > redshift.clustering_nbin - 1 || 
-      nj < -1 || 
+      nj < 0 || 
       nj > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
     exit(1);
@@ -848,9 +848,9 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
   }
-  if (ni < -1 || 
+  if (ni < 0 || 
       ni > redshift.clustering_nbin - 1 || 
-      nj < -1 || 
+      nj < 0 || 
       nj > redshift.clustering_nbin - 1)
   {
     log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
@@ -895,7 +895,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     if (w_vec != NULL) free(w_vec);
     w_vec = calloc1d(NSIZE*Ntable.Ntheta);
 
-    double*** P = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX + 1);
+    double*** P = (double***) malloc3d(2, Ntable.Ntheta, Ntable.LMAX+1);
     double** Pmin  = P[0]; double** Pmax  = P[1];
 
     double xmin[Ntable.Ntheta];
@@ -909,7 +909,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
 
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
-      for (int l=0; l<Ntable.LMAX; l++) {
+      for (int l=0; l<(Ntable.LMAX+1); l++) {
         bin_avg r = set_bin_average(i,l);
         Pmin[i][l] = r.Pmin;
         Pmax[i][l] = r.Pmax;
@@ -1004,7 +1004,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = cmb.random;
   }
-  if (ni < -1 || ni > redshift.clustering_nbin - 1) {
+  if (ni < 0 || ni > redshift.clustering_nbin-1) {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
     exit(1); 
   }
@@ -1062,7 +1062,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<Ntable.Ntheta; i++) {
-      for (int l=0; l<Ntable.LMAX; l++) {
+      for (int l=0; l<(Ntable.LMAX+1); l++) {
         bin_avg r = set_bin_average(i,l);
         Pmin[i][l] = r.Pmin;
         Pmax[i][l] = r.Pmax;
@@ -1164,7 +1164,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
     log_fatal("error in selecting bin number nt = %d (max %d)", nt, Ntable.Ntheta);
     exit(1); 
   }
-  if (ni < -1 || ni > redshift.shear_nbin - 1) {
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.shear_nbin);
     exit(1);
   }
@@ -1887,7 +1887,6 @@ double int_for_C_gs_tomo_limber(double a, void* params)
   const double growfac_a = growfac(a);
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
   const double ell = l + 0.5;
   const double fK = chidchi.chi;
   const double k = ell/fK;
@@ -2125,6 +2124,8 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       }
     }
 
+    free(WXL);
+    free(WXS);
     free(PK);
     for (int ZLNZ = 0; ZLNZ < nbin; ZLNZ++) {
       free_cosmo_nodes(&cn_all[ZLNZ]);
@@ -3378,7 +3379,7 @@ double C_yy_limber(double l)
   if (lnl > lim[1]) {
     log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
-  return interpol1d(table, Ntable.N_ell, lim[0], lim[0], lim[2], lnl);
+  return interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
 
 // ----------------------------------------------------------------------------
