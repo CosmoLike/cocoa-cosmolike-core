@@ -126,7 +126,7 @@ arma::Mat<double> read_table(const std::string file_name)
       result(0,j) = std::stod(words[j]);
   }
 
-  #pragma omp parallel for
+  #pragma omp parallel for schedule(static)
   for (size_t i=1; i<lines.size(); i++)
   {
     std::vector<std::string> words;
@@ -885,7 +885,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
   }
   tomo.N_ggl_exclude = int(nsize/2);  
   debug("{}: {} ggl pairs excluded", fname, tomo.N_ggl_exclude);
-  #pragma omp parallel for
+  #pragma omp parallel for schedule(static)
   for(int i=0; i<nsize; i++) {
     if (std::isnan(ggl_exclude(i))) {
       critical(errnance2, fname, i, errnance); exit(1);
@@ -1125,7 +1125,15 @@ void set_distances(vector io_z, vector io_chi)
     }
     cosmology.chi = (double**) malloc2d(2, cosmology.chi_nz);
 
-    #pragma omp parallel for
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
+    cosmology.chi_z_nseg = detect_uniform_segments(
+        io_z.memptr(), cosmology.chi_nz, 1e-9, MAX_GRID_SEGMENTS,
+        cosmology.chi_z_seg_start, cosmology.chi_z_seg_len,
+        cosmology.chi_z_seg_xmin,  cosmology.chi_z_seg_inv_dx,
+        "chi z");
+#endif
+
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.chi_nz; i++) {
       if (std::isnan(io_z(i)) || std::isnan(io_chi(i))) [[unlikely]] {
         critical("{}: {}", fname, errnanit);
@@ -1169,9 +1177,24 @@ void set_growth(vector io_z, vector io_G)
   if (1 == cache_update || 1 == force_cache_update_test)
   {
     cosmology.G_nz = static_cast<int>(io_z.n_elem);
+
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM    
+    // -----------------------------------------------------------------
+    // Validate grid uniformity and precompute direct-index metadata.
+    // f_growth, growfac, norm_growfac, norm_growfac_all use these
+    // fields to skip the per-call binary search on z.
+    // -----------------------------------------------------------------
+    cosmology.G_z_nseg = detect_uniform_segments(
+        io_z.memptr(), cosmology.G_nz, 1e-9, MAX_GRID_SEGMENTS,
+        cosmology.G_z_seg_start, cosmology.G_z_seg_len,
+        cosmology.G_z_seg_xmin,  cosmology.G_z_seg_inv_dx,
+        "G z");
+#endif
+
     if (cosmology.G != NULL) { free(cosmology.G); }
     cosmology.G = (double**) malloc2d(2, cosmology.G_nz);
-    #pragma omp parallel for
+    
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.G_nz; i++) {
       if (std::isnan(io_z(i)) || std::isnan(io_G(i))) [[unlikely]] {
         critical("{}: {}", fname, errnanit); exit(1);
@@ -1196,7 +1219,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   static constexpr std::string_view fname = "set_linear_power_spectrum"sv;
   debug("{}: {}", fname, errbegins);
   if (io_z.n_elem*io_log10k.n_elem != io_lnP.n_elem) [[unlikely]] {
-    critical(errorsz1d, fname, erriiwz, io_z.n_elem*io_z.n_elem, io_lnP.n_elem); 
+    critical(errorsz1d,fname,erriiwz,io_z.n_elem*io_log10k.n_elem,io_lnP.n_elem); 
     exit(1);
   }
   
@@ -1231,28 +1254,59 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 
   jump:
 
-  if (1 == cache_update || 1 == force_cache_update_test) {
+  if (1 == cache_update || 1 == force_cache_update_test) 
+  {
     cosmology.lnPL_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnPL_nz = static_cast<int>(io_z.n_elem);
-
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+    // -------------------------------------------------------------------------
+    // Validate grid uniformity and precompute direct-index metadata.
+    // p_lin uses these fields to skip the per-call binary search on log10k & z
+    // -------------------------------------------------------------------------
+    {
+      // log10k axis: required to be a single uniform segment.
+      int    s_start[MAX_GRID_SEGMENTS], s_len[MAX_GRID_SEGMENTS];
+      double s_xmin[MAX_GRID_SEGMENTS],  s_inv_dx[MAX_GRID_SEGMENTS];
+      int nseg = detect_uniform_segments(io_log10k.memptr(),
+                                         cosmology.lnPL_nk,
+                                         1e-9, MAX_GRID_SEGMENTS,
+                                         s_start, s_len, s_xmin, s_inv_dx,
+                                         "lnPL log10k");
+      if (nseg != 1) [[unlikely]] {
+        critical("{}: lnPL log10k expected single uniform segment, got {}",
+                 fname, nseg);
+        exit(1);
+      }
+      cosmology.lnPL_log10k_min    = s_xmin[0];
+      cosmology.lnPL_log10k_inv_dx = s_inv_dx[0];
+    }
+    {
+      // z axis: piecewise-uniform allowed (1..MAX_GRID_SEGMENTS segments).
+      cosmology.lnPL_z_nseg = detect_uniform_segments(
+          io_z.memptr(), cosmology.lnPL_nz, 1e-9, MAX_GRID_SEGMENTS,
+          cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
+          cosmology.lnPL_z_seg_xmin,  cosmology.lnPL_z_seg_inv_dx,
+          "lnPL z");
+    }
+#endif
     if (cosmology.lnPL != NULL) { free(cosmology.lnPL); }
     cosmology.lnPL = (double**) malloc2d(cosmology.lnPL_nk+1,cosmology.lnPL_nz+1);
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.lnPL_nk; i++) {
       if (std::isnan(io_log10k(i))) [[unlikely]] {
         critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnPL[i][cosmology.lnPL_nz] = io_log10k(i);
     }
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int j=0; j<cosmology.lnPL_nz; j++) {
       if (std::isnan(io_z(j))) [[unlikely]] {
         critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnPL[cosmology.lnPL_nk][j] = io_z(j);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<cosmology.lnPL_nk; i++) {
       for (int j=0; j<cosmology.lnPL_nz; j++) {
         if (std::isnan(io_lnP(i*cosmology.lnPL_nz+j))) [[unlikely]] {
@@ -1263,6 +1317,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     }
     cosmology.random = RandomNumber::get_instance().get();
   }
+
   debug("{}: {}", fname, errends);
 }
 
@@ -1278,7 +1333,7 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   static constexpr std::string_view fname = "set_non_linear_power_spectrum"sv;
   debug("{}: {}", fname, errbegins);
   if (io_z.n_elem*io_log10k.n_elem != io_lnP.n_elem) [[unlikely]] {
-    critical(errorsz1d, fname, erriiwz, io_z.n_elem*io_z.n_elem, io_lnP.n_elem); 
+    critical(errorsz1d,fname,erriiwz,io_z.n_elem*io_log10k.n_elem,io_lnP.n_elem); 
     exit(1);
   }
 
@@ -1314,27 +1369,59 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 
   jump:
 
-  if (1 == cache_update || 1 == force_cache_update_test) {
+  if (1 == cache_update || 1 == force_cache_update_test) 
+  {
     cosmology.lnP_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnP_nz = static_cast<int>(io_z.n_elem);
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+    // -------------------------------------------------------------------------
+    // Validate grid uniformity and precompute direct-index metadata.
+    // p_lin uses these fields to skip the per-call binary search on log10k & z
+    // -------------------------------------------------------------------------
+    {
+      // log10k axis: required to be a single uniform segment.
+      int    s_start[MAX_GRID_SEGMENTS], s_len[MAX_GRID_SEGMENTS];
+      double s_xmin[MAX_GRID_SEGMENTS],  s_inv_dx[MAX_GRID_SEGMENTS];
+      int nseg = detect_uniform_segments(io_log10k.memptr(),
+                                         cosmology.lnP_nk,
+                                         1e-9, MAX_GRID_SEGMENTS,
+                                         s_start, s_len, s_xmin, s_inv_dx,
+                                         "lnP log10k");
+      if (nseg != 1) [[unlikely]] {
+        critical("{}: lnP log10k expected single uniform segment, got {}",
+                 fname, nseg);
+        exit(1);
+      }
+      cosmology.lnP_log10k_min    = s_xmin[0];
+      cosmology.lnP_log10k_inv_dx = s_inv_dx[0];
+    }
+    {
+      // z axis: piecewise-uniform allowed (1..MAX_GRID_SEGMENTS segments).
+      cosmology.lnP_z_nseg = detect_uniform_segments(
+          io_z.memptr(), cosmology.lnP_nz, 1e-9, MAX_GRID_SEGMENTS,
+          cosmology.lnP_z_seg_start, cosmology.lnP_z_seg_len,
+          cosmology.lnP_z_seg_xmin,  cosmology.lnP_z_seg_inv_dx,
+          "lnP z");
+    }
+#endif
     if (cosmology.lnP != NULL) { free(cosmology.lnP); }
     cosmology.lnP = (double**) malloc2d(cosmology.lnP_nk+1,cosmology.lnP_nz+1);
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.lnP_nk; i++) {
       if (std::isnan(io_log10k(i))) [[unlikely]] {
         critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnP[i][cosmology.lnP_nz] = io_log10k(i);
     }
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int j=0; j<cosmology.lnP_nz; j++) {
       if (std::isnan(io_z(j))) [[unlikely]] {
         critical("{}: {}", fname, errnanit); exit(1);
       }
       cosmology.lnP[cosmology.lnP_nk][j] = io_z(j);
     }
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<cosmology.lnP_nk; i++) {
       for (int j=0; j<cosmology.lnP_nz; j++) {
         if (std::isnan(io_lnP(i*cosmology.lnP_nz+j))) [[unlikely]] {
@@ -2161,7 +2248,7 @@ void IP::set_inv_cov(std::string cov_filename)
   {
     case 3:
     {
-      #pragma omp parallel for
+      #pragma omp parallel for schedule(static)
       for (int i=0; i<static_cast<int>(table.n_rows); i++) {
         const int j = static_cast<int>(table(i,0));
         const int k = static_cast<int>(table(i,1));
@@ -2178,7 +2265,7 @@ void IP::set_inv_cov(std::string cov_filename)
     }
     case 4:
     {
-      #pragma omp parallel for
+      #pragma omp parallel for schedule(static)
       for (int i=0; i<static_cast<int>(table.n_rows); i++) {
         const int j = static_cast<int>(table(i,0));
         const int k = static_cast<int>(table(i,1));
@@ -2195,7 +2282,7 @@ void IP::set_inv_cov(std::string cov_filename)
     }
     case 10:
     {
-      #pragma omp parallel for
+      #pragma omp parallel for schedule(static)
       for (int i=0; i<static_cast<int>(table.n_rows); i++) {
         const int j = static_cast<int>(table(i,0));
         const int k = static_cast<int>(table(i,1));
@@ -2226,7 +2313,7 @@ void IP::set_inv_cov(std::string cov_filename)
         fname, this->ndata_, cmb.get_nbins_kk_bandpower()); exit(1);
     }
     const double hartlap_factor = cmb.get_alpha_Hartlap_cov_kkkk();
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i=N5x2pt; i<this->ndata_; i++) {
       for (int j=N5x2pt; j<this->ndata_; j++) {
         this->cov_masked_(i,j) /= hartlap_factor;
@@ -2246,7 +2333,7 @@ void IP::set_inv_cov(std::string cov_filename)
   // apply mask again to make sure numerical errors in matrix inversion don't 
   // cause problems. Also, set diagonal elements corresponding to datavector
   // elements outside mask to 0, so that they don't contribute to chi2
-  #pragma omp parallel for
+  #pragma omp parallel for schedule(static)
   for (int i=0; i<this->ndata_; i++) {
     this->inv_cov_masked_(i,i) *= this->get_mask(i)*this->get_mask(i);
     for (int j=0; j<i; j++) {
@@ -2255,7 +2342,7 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   };
   
-  #pragma omp parallel for collapse(2)
+  #pragma omp parallel for collapse(2) schedule(static)
   for(int i=0; i<this->ndata_; i++)
   {
     for(int j=0; j<this->ndata_; j++)
@@ -2301,6 +2388,7 @@ double IP::get_chi2(vector datavector) const
   if (static_cast<int>(datavector.n_elem) != like.Ndata) [[unlikely]] { 
     critical(errorsz1d, fname, erriiwz, datavector.n_elem, like.Ndata); exit(1);
   }
+  /*
   double chi2 = 0.0;
   #pragma omp parallel for collapse (2) reduction(+:chi2) schedule(static)
   for (int i=0; i<like.Ndata; i++) {
@@ -2312,11 +2400,11 @@ double IP::get_chi2(vector datavector) const
       }
     }
   }
-  /*
+  */
   const arma::Col<double> delta = this->sqzd_theory_data_vector(datavector) - 
                                   this->data_masked_sqzd_;
   const double chi2 = arma::dot(delta, this->inv_cov_masked_sqzd_ * delta);
-*/
+
   if (chi2 < 0.0) [[unlikely]] {
     critical("{}: chi2 = {} (invalid)", fname, chi2); exit(1);
   }
@@ -2528,7 +2616,7 @@ void IPCMB::set_kk_binning_mat(std::string binned_matrix_filename)
   }
   this->params_->binning_matrix_kk = (double**) malloc2d(nbp, ncl);
     
-  #pragma omp parallel for
+  #pragma omp parallel for schedule(static)
   for (int i=0; i<nbp; i++) {
     for (int j=0; j<ncl; j++) {
       this->params_->binning_matrix_kk[i][j] = table(i,j);

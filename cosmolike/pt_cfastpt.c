@@ -590,7 +590,15 @@ void get_FPT_IA(void)
     // After the J_abJ1J2Jk_ar call, Fy_ptrs[i][j] = result for term i at k-point j.
     // -----------------------------------------------------------------------
     double *Fy_flat  = (double*) malloc(sizeof(double) * Ntotal * FPTIA.N);
+    if (NULL == Fy_flat) {
+      log_fatal("malloc failed");
+      exit(1);
+    }
     double **Fy_ptrs = (double**) malloc(sizeof(double*) * Ntotal);
+    if (NULL == Fy_ptrs) {
+      log_fatal("malloc failed");
+      exit(1);
+    }
     for (int i = 0; i < Ntotal; i++) {
       Fy_ptrs[i] = Fy_flat + i * FPTIA.N;
     }
@@ -847,7 +855,7 @@ void get_FPT_IA(void)
 
       // Convolve Pin with the kernel f, then extract and normalize
       double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
-      if (NULL == f) {
+      if (NULL == g) {
         log_fatal("malloc failed"); exit(1);
       }
       

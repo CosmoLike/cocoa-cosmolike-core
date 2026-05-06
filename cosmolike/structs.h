@@ -7,6 +7,11 @@
 extern "C" {
 #endif
 
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+// Maximum number of piecewise-uniform segments tracked for grid metadata
+#define MAX_GRID_SEGMENTS 10
+#endif
+
 #define CHAR_MAX_SIZE 1024
 #define MAX_SIZE_ARRAYS 20
 
@@ -159,6 +164,18 @@ typedef struct
   int lnP_nk;
   int lnP_nz;
   double** lnP;
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+  // Direct-index lookup metadata
+  // log10k axis is required to be a single uniform segment.
+  // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
+  double  lnP_log10k_min;
+  double  lnP_log10k_inv_dx;
+  int     lnP_z_nseg;
+  int     lnP_z_seg_start[MAX_GRID_SEGMENTS];
+  int     lnP_z_seg_len[MAX_GRID_SEGMENTS];
+  double  lnP_z_seg_xmin[MAX_GRID_SEGMENTS];
+  double  lnP_z_seg_inv_dx[MAX_GRID_SEGMENTS];
+#endif
   // ---------------------------------------------------
   // ---------------------------------------------------
   // LINEAR MATTER POWER SPECTRUM
@@ -170,6 +187,18 @@ typedef struct
   int lnPL_nk;
   int lnPL_nz;
   double** lnPL;
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
+  // Direct-index lookup metadata.
+  // log10k axis is required to be a single uniform segment.
+  // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
+  double  lnPL_log10k_min;
+  double  lnPL_log10k_inv_dx;
+  int     lnPL_z_nseg;
+  int     lnPL_z_seg_start [MAX_GRID_SEGMENTS];
+  int     lnPL_z_seg_len   [MAX_GRID_SEGMENTS];
+  double  lnPL_z_seg_xmin  [MAX_GRID_SEGMENTS];
+  double  lnPL_z_seg_inv_dx[MAX_GRID_SEGMENTS];
+#endif
   // ---------------------------------------------------
   // ---------------------------------------------------
   // DISTANCE
@@ -179,15 +208,34 @@ typedef struct
   // chi = chi[1,j<chi_nz]
   int chi_nz;
   double** chi;
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+  // Direct-index lookup metadata for the z axis (chi[0]).
+  // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
+  int     chi_z_nseg;
+  int     chi_z_seg_start [MAX_GRID_SEGMENTS];
+  int     chi_z_seg_len   [MAX_GRID_SEGMENTS];
+  double  chi_z_seg_xmin  [MAX_GRID_SEGMENTS];
+  double  chi_z_seg_inv_dx[MAX_GRID_SEGMENTS];
+#endif
   // ---------------------------------------------------
   // ---------------------------------------------------
   // GROWTH FACTOR
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // z   = G[0,j<chi_nz]
-  // chi = G[1,j<chi_nz]
+  // z = G[0,j<chi_nz]
+  // G = G[1,j<chi_nz]
   int G_nz;
   double** G;
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
+  // Direct-index lookup metadata for the z axis (G[0]).
+  // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
+  // Used by f_growth, growfac, norm_growfac, norm_growfac_all.
+  int     G_z_nseg;
+  int     G_z_seg_start [MAX_GRID_SEGMENTS];
+  int     G_z_seg_len   [MAX_GRID_SEGMENTS];
+  double  G_z_seg_xmin  [MAX_GRID_SEGMENTS];
+  double  G_z_seg_inv_dx[MAX_GRID_SEGMENTS];
+#endif
 } cosmopara;
 
 typedef struct

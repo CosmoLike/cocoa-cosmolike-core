@@ -28,6 +28,91 @@
 #include "log.c/src/log.h"
 #include <complex.h>
 
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+// ---------------------------------------------------------------------------
+// Detect uniform or piecewise-uniform structure in a 1D grid.
+//
+// A "segment" is a maximal contiguous range of x[] with constant spacing
+// (within relative tolerance rtol). A perfectly uniform linspace gives 1
+// segment; np.concatenate of two linspaces with different spacings gives 2.
+//
+// Returns the number of segments found (>= 1). Aborts if x is not strictly
+// increasing, or if the number of segments would exceed max_seg.
+//
+// Caller provides 4 output arrays of length >= max_seg. On return, the first
+// nseg entries describe each segment for direct-index lookup:
+//
+//     start[s]   = index in x[] where segment s begins
+//     len[s]     = number of points in segment s
+//     xmin[s]    = x[start[s]]
+//     inv_dx[s]  = 1 / spacing within segment s     (multiply, don't divide)
+//
+// To find the bucket of a query value q in segment s:
+//     idx = start[s] + (int)((q - xmin[s]) * inv_dx[s]);
+// ---------------------------------------------------------------------------
+int detect_uniform_segments(const double *x, int n, double rtol, int max_seg,
+                            int *start, int *len, double *xmin, double *inv_dx,
+                            const char *name)
+{
+  if (n < 2) {
+    log_fatal("%s: need at least two grid points, got n=%d", name, n);
+    exit(EXIT_FAILURE);
+  }
+
+  int nseg  = 0; // number of segments closed out so far
+  int begin = 0; // index where the current segment started
+  
+  double dx = x[1] - x[0]; // reference spacing of the current segment
+  if (dx <= 0.0) {
+    log_fatal("%s: not strictly increasing at first interval", name);
+    exit(EXIT_FAILURE);
+  }
+
+  // Walk pairs (x[i], x[i+1]) and close out a segment whenever the spacing
+  // changes, or we hit the end of the array. The (i == n-1) guard handles
+  // the final segment without a duplicated close-out block after the loop.
+  for (int i = 1; i < n; i++) {
+    // At i == n-1, x[i+1] doesn't exist; reuse dx so is_break fires from
+    // the end-of-array condition, not from a phantom spacing comparison.
+    const double d = (i < n - 1) ? x[i+1] - x[i] : dx;
+
+    if (d <= 0.0) {
+        log_fatal("%s: not strictly increasing at i=%d", name, i);
+        exit(EXIT_FAILURE);
+    }
+
+    // Break the segment if (a) we've reached the end of the array, or
+    // (b) the spacing has changed by more than rtol relative to the
+    // segment's reference spacing dx.
+    const int is_break = (i == n - 1) || (fabs(d - dx) > rtol * fabs(dx));
+
+    if (is_break) {
+      if (nseg >= max_seg) {
+        log_fatal("%s: more than %d segments detected at i=%d "
+                  "(d=%.6e, ref=%.6e)", name, max_seg, i, d, dx);
+        exit(EXIT_FAILURE);
+      }
+
+      // Record the segment that just ended.
+      // Note: when i == n-1 we extend through index n-1 (n - begin
+      // points); otherwise we stop at index i (i - begin + 1 points,
+      // because index i is shared with the next segment as its start).
+      start[nseg]  = begin;
+      len[nseg]    = (i == n - 1) ? n - begin : i - begin + 1;
+      xmin[nseg]   = x[begin];
+      inv_dx[nseg] = 1.0 / dx;
+      nseg++;
+
+      // Begin the next segment at i, with the just-measured spacing
+      // as its new reference. (Irrelevant if i == n-1, harmless.)
+      begin = i;
+      dx    = d;
+    }
+  }
+
+  return nseg;
+}
+#endif
 gsl_interp* malloc_gsl_interp(const int n)
 {
   gsl_interp* result;

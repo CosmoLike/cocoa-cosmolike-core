@@ -91,6 +91,12 @@ void cdgamma(fftw_complex x, fftw_complex *res);
 
 void hankel_kernel_FT_3D(double x, fftw_complex *res, double *arg, int argc);
 
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+int detect_uniform_segments(const double *x, int n, double rtol, int max_seg,
+                            int *start, int *len, double *xmin, double *inv_dx,
+                            const char *name);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
