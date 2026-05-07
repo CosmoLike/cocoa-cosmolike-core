@@ -61,7 +61,6 @@ static int include_RSD_GY = 0; // 0 or 1
       #warning "SIMDe: FMA is being EMULATED (no -mfma flag?)"
     #endif
   #endif
-
 typedef simde__m256d v4d;   // 4 doubles, AVX2-width
 typedef simde__m128d v2d;   // 2 doubles (SSE2)
 typedef simde__m128i v4i;   // 4 int32s (SSE2) — used for SIMD gather indices
@@ -82,164 +81,20 @@ typedef simde__m128i v4i;   // 4 int32s (SSE2) — used for SIMD gather indices
 //   box_b = [ 5.0 | 6.0 | 7.0 | 8.0 ]
 //   result = [ 6.0 | 8.0 | 10.0 | 12.0 ]   (one instruction!)
 // -----------------------------------------------------------------------------
-
-static inline double simd_horizontal_sum(v4d four_lanes)
+static inline double simd_horizontal_sum(simde__m256d four_lanes)
 { // Takes a 4-lane register and sums all 4 values into a single double
   double tmp[4]; // Store the 4 lanes into a regular C array
   simde_mm256_storeu_pd(tmp, four_lanes);
   return tmp[0] + tmp[1] + tmp[2] + tmp[3];
 }
 
-// -----------------------------------------------------------------------------
-// simd_dot_product
-// -----------------------------------------------------------------------------
-//
-// Computes:   result = a[0]*b[0] + a[1]*b[1] + ... + a[n-1]*b[n-1]
-//
-//   We use two 4-lane accumulator registers, A and B:
-//
-//     accum_A = [0, 0, 0, 0]      accum_B = [0, 0, 0, 0]
-//
-//   Iteration 1 processing 8 elements:
-//     Load a[0..3] and b[0..3] into 4-lane registers.
-//     accum_A += a[0..3] * b[0..3]    (fused multiply-add)
-//
-//     Load a[4..7] and b[4..7] into 4-lane registers.
-//     accum_B += a[4..7] * b[4..7]    (into the SECOND accumulator)
-//
-//   No more groups of 8 left, so go to scalar tail
-// -----------------------------------------------------------------------------
-static inline double simd_dot_product(
-    const double* restrict a,
-    const double* restrict b,
-    const int n
-  )
-{
-  // Two independent accumulators, each holding 4 partial sums, init to [0,0,0,0]
-  v4d accum_A = simde_mm256_setzero_pd();
-  v4d accum_B = simde_mm256_setzero_pd();
- 
-  int l = 0; // l must survive past the loop (for scalar tail)
-
-  for (; l<= n-8; l+=8) { // Main loop: process 8 doubles per iteration
-    // Load 4 consecutive doubles from a[] and b[], multiply and acc. into accum_A:
-    accum_A = simde_mm256_fmadd_pd(
-        simde_mm256_loadu_pd(a + l),       // load a[l..l+3]
-        simde_mm256_loadu_pd(b + l),       // load b[l..l+3]
-        accum_A
-      ); // add to running sum
-    
-    // Same for the next 4 doubles, into the independent accumulator accum_B:
-    accum_B = simde_mm256_fmadd_pd(
-        simde_mm256_loadu_pd(a + l + 4),   // load a[l+4..l+7]
-        simde_mm256_loadu_pd(b + l + 4),   // load b[l+4..l+7]
-        accum_B
-      ); // add to running sum
-  }
-
-  // Reduce partial sums to a scalar
-  double result = simd_horizontal_sum(accum_A) + simd_horizontal_sum(accum_B);
-  
-  // Scalar tail: remaining 0-7 elements one at a time
-  for (; l < n; l++) { 
-    result += a[l] * b[l];
-  }
-  return result;
-}
-
-// -----------------------------------------------------------------------------
-// simd_xipm_dot_product
-// -----------------------------------------------------------------------------
-// Computes 2 dot products at the same time: the xi+/xi- correlation functions
-//
-//   xi_plus  = sum_l  Gplus[l] * (Cl_EE[l] + Cl_BB[l])
-//   xi_minus = sum_l  Gminus[l] * (Cl_EE[l] - Cl_BB[l])
-//
-//   We maintain 4 accumulator registers:
-//     plus_accum_A  = [0, 0, 0, 0]    \  two for xi+ (latency hiding)
-//     plus_accum_B  = [0, 0, 0, 0]    /
-//     minus_accum_A = [0, 0, 0, 0]    \  two for xi- (latency hiding)
-//     minus_accum_B = [0, 0, 0, 0]    /
-// -----------------------------------------------------------------------------
-static inline void simd_xipm_dot_product(
-    const double* restrict cl_ee,    // EE power spectrum (offset to lmin)
-    const double* restrict cl_bb,    // BB power spectrum (offset to lmin)
-    const double* restrict gl_plus,  // G_l^+ filter (offset to lmin)
-    const double* restrict gl_minus, // G_l^- filter (offset to lmin)
-    const int n,                     // number of multipoles = LMAX - lmin
-    double* restrict out_xi_plus,    // output: xi+
-    double* restrict out_xi_minus    // output: xi-
-  )     
-{
-  // Two accumulators: A and B for xi+, A and B for xi-.
-  v4d plus_accum_A  = simde_mm256_setzero_pd();  // [0, 0, 0, 0]
-  v4d plus_accum_B  = simde_mm256_setzero_pd();
-  
-  // Two accumulators: A and B for xi-.
-  v4d minus_accum_A = simde_mm256_setzero_pd();
-  v4d minus_accum_B = simde_mm256_setzero_pd();
- 
-  int l = 0;
- 
-  for (; l <= n - 8; l += 8) { // Main loop: 8 multipoles per iteration
-    // Load 4 values from each input array into 4-lane registers.
-    v4d ee_lanes = simde_mm256_loadu_pd(cl_ee + l);
-    v4d bb_lanes = simde_mm256_loadu_pd(cl_bb + l);
-    
-    v4d gp_lanes = simde_mm256_loadu_pd(gl_plus + l);
-    v4d gm_lanes = simde_mm256_loadu_pd(gl_minus + l);
- 
-    
-    v4d ee_plus_bb  = simde_mm256_add_pd(ee_lanes, bb_lanes);
-    v4d ee_minus_bb = simde_mm256_sub_pd(ee_lanes, bb_lanes);
-    
-    // Accumulate:  plus_accum_A[i] += G+[l+i] * (EE[l+i] + BB[l+i])
-    plus_accum_A = simde_mm256_fmadd_pd(gp_lanes, ee_plus_bb, plus_accum_A);
-    
-    // Accumulate:  minus_accum_A[i] += G-[l+i] * (EE[l+i] - BB[l+i])
-    minus_accum_A = simde_mm256_fmadd_pd(gm_lanes, ee_minus_bb, minus_accum_A);
- 
-    // Same operations, but accumulating into the B registers. 
-    ee_lanes = simde_mm256_loadu_pd(cl_ee + l + 4);
-    bb_lanes = simde_mm256_loadu_pd(cl_bb + l + 4);
-    
-    gp_lanes = simde_mm256_loadu_pd(gl_plus + l + 4);
-    gm_lanes = simde_mm256_loadu_pd(gl_minus + l + 4);
- 
-    ee_plus_bb  = simde_mm256_add_pd(ee_lanes, bb_lanes);
-    ee_minus_bb = simde_mm256_sub_pd(ee_lanes, bb_lanes);
-
-    // Accumulate:  plus_accum_B[i] += G+[l+i] * (EE[l+i] + BB[l+i])
-    plus_accum_B  = simde_mm256_fmadd_pd(gp_lanes, ee_plus_bb, plus_accum_B);
-
-    // Accumulate:  minus_accum_B[i] += G-[l+i] * (EE[l+i] - BB[l+i])
-    minus_accum_B = simde_mm256_fmadd_pd(gm_lanes, ee_minus_bb, minus_accum_B);
-  }
- 
-  // Reduce each 4-lane accumulator to a single scalar
-  double xip = simd_horizontal_sum(plus_accum_A) + simd_horizontal_sum(plus_accum_B);
-  double xim = simd_horizontal_sum(minus_accum_A) + simd_horizontal_sum(minus_accum_B);
- 
-  for (; l < n; l++) { // Scalar tail: remaining 0-7 multipoles, one at a time
-    xip += gl_plus[l]  * (cl_ee[l] + cl_bb[l]);
-    xim += gl_minus[l] * (cl_ee[l] - cl_bb[l]);
-  }
-  *out_xi_plus = xip;
-  *out_xi_minus = xim;
-}
-
-// -----------------------------------------------------------------------------
-// simd_array_sum
-// -----------------------------------------------------------------------------
 static inline double simd_array_sum(const double* restrict a, const int n)
 { // Computes:   result = a[0] + a[1] + ... + a[n-1]
-  
   // Two independent accumulators, each holding 4 partial sums, init to [0,0,0,0]
   v4d accum_A = simde_mm256_setzero_pd();
   v4d accum_B = simde_mm256_setzero_pd();
  
   int q = 0;
- 
   for (; q <= n - 8; q += 8) { // Main loop: process 8 doubles per iteration
     accum_A = simde_mm256_add_pd(accum_A, simde_mm256_loadu_pd(a + q));
     accum_B = simde_mm256_add_pd(accum_B, simde_mm256_loadu_pd(a + q + 4));
@@ -501,50 +356,31 @@ double xi_pm_tomo(
     else {
       log_fatal("NonLimber not implemented"); exit(1);
     }
-
-#ifdef COSMO2D_NOT_USE_SIMD
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
         const int q = nz * Ntable.Ntheta + i;
+        const double* restrict c0 = Cl[0][nz];
+        const double* restrict c1 = Cl[1][nz];
+        const double* restrict gp = Glpm[0][i];
+        const double* restrict gm = Glpm[1][i];
         double sum0 = 0.0;
         double sum1 = 0.0;
+        #pragma omp simd reduction(+:sum0, sum1)
         for (int l=lmin; l<Ntable.LMAX; l++) {
-          const double c0 = Cl[0][nz][l];
-          const double c1 = Cl[1][nz][l];
-          sum0 += Glpm[0][i][l] * (c0 + c1);
-          sum1 += Glpm[1][i][l] * (c0 - c1);
+          sum0 += gp[l] * (c0[l] + c1[l]);
+          sum1 += gm[l] * (c0[l] - c1[l]);
         }
         xipm[0][q] = sum0;
         xipm[1][q] = sum1;
       }
     }
-#else
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const int q = nz * Ntable.Ntheta + i;
-        double sum0, sum1;
-        simd_xipm_dot_product(
-          Cl[0][nz]  + lmin,   // EE spectrum, starting at lmin
-          Cl[1][nz]  + lmin,   // BB spectrum, starting at lmin
-          Glpm[0][i] + lmin,   // G_l^+ filter
-          Glpm[1][i] + lmin,   // G_l^- filter
-          Ntable.LMAX - lmin,  // number of multipoles
-          &sum0, &sum1);
-        xipm[0][q] = sum0;
-        xipm[1][q] = sum1;
-      }
-    }
-#endif
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
   }
-
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
     log_fatal("error in selecting bin number nt = %d", nt); exit(1); 
   }
@@ -685,28 +521,19 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-
-#ifdef COSMO2D_NOT_USE_SIMD
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
+        const double* restrict pl = Pl[i];
+        const double* restrict cl = Cl[nz];
         double sum = 0.0;
+        #pragma omp simd reduction(+:sum)
         for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += Pl[i][l] * Cl[nz][l];
+          sum += pl[l] * cl[l];
         }
-        w_vec[nz * Ntable.Ntheta + i] = sum;
+        w_vec[nz*Ntable.Ntheta+i] = sum;
       }
     }
-#else
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        w_vec[nz * Ntable.Ntheta + i] =
-          simd_dot_product(Pl[i] + lmin, Cl[nz] + lmin, Ntable.LMAX - lmin);
-      }
-    }  
-#endif
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_photoz_clustering;
@@ -868,28 +695,19 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         C_gg_tomo_limber_fill(nz, limits.LMAX_NOLIMBER, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
-
-#ifdef COSMO2D_NOT_USE_SIMD
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
+        const double* restrict pl = Pl[i];
+        const double* restrict cl = Cl[nz];
         double sum = 0.0;
+        #pragma omp simd reduction(+:sum)
         for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += Pl[i][l]*Cl[nz][l];
+          sum += pl[l] * cl[l];
         }
         w_vec[nz*Ntable.Ntheta + i] = sum;
       }
     }
-#else
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        w_vec[nz*Ntable.Ntheta + i] =
-          simd_dot_product(Pl[i] + lmin, Cl[nz] + lmin, Ntable.LMAX - lmin);
-      }
-    }
-#endif
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
@@ -1031,7 +849,6 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
     } 
     (void) C_gk_tomo_limber((double) limits.LMIN_tab + 1, 0); // init static vars
     if (1 == limber) {
-#ifdef COSMO2D_NOT_USE_SIMD
       #pragma omp parallel
       {
         #pragma omp for collapse(2) schedule(static) nowait
@@ -1043,68 +860,29 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
         #pragma omp for schedule(static) nowait
         for (int nz=0; nz<NSIZE; nz++) {
           C_gk_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
-        }
-        #pragma omp for collapse(2) schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++) {
           for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
             Cl[nz][l] *= cmbf[l]; // multiply by CMB beam filter
           }
         }
       }
-#else
-      #pragma omp parallel
-      {
-        #pragma omp for collapse(2) schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++) {
-          for (int l=lmin; l<limits.LMIN_tab; l++) {
-            Cl[nz][l] = C_gk_tomo_limber_nointerp((double) l, nz, 0)*cmbf[l];
-          }
-        }
-        #pragma omp for schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++) {
-          C_gk_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
-          
-          // begin SIMD - multiply by CMB beam filter
-          int l = limits.LMIN_tab;
-          for (; l <= Ntable.LMAX - 4; l += 4) {
-            v4d vcl = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
-            v4d vcf = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
-            v4d vres = simde_mm256_mul_pd(vcl, vcf);    // Cl * cmbf
-            simde_mm256_storeu_pd(Cl[nz] + l, vres);             // store back
-          }
-          for (; l < Ntable.LMAX; l++) { // Scalar tail
-            Cl[nz][l] *= cmbf[l];
-          }
-          // end SIMD - multiply by CMB beam filter
-        }
-      }
-#endif
     }
     else {
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-#ifdef COSMO2D_NOT_USE_SIMD
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
-        double sum = 0;
+        const double* restrict pl = Pl[i];
+        const double* restrict cl = Cl[nz];
+        double sum = 0.0;
+        #pragma omp simd reduction(+:sum)
         for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += Pl[i][l]*Cl[nz][l];
+          sum += pl[l] * cl[l];
         }
         w_vec[nz*Ntable.Ntheta+i] = sum;
       }
     }
-#else
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        w_vec[nz*Ntable.Ntheta+i] =
-          simd_dot_product(Pl[i] + lmin, Cl[nz] + lmin, Ntable.LMAX - lmin);
-      }
-    }
-#endif
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
@@ -1239,10 +1017,7 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       }
     } 
     (void) C_ks_tomo_limber((double) limits.LMIN_tab + 1, 0); // init static vars
-    if (1 == limber) {      
-      
-      
-#ifdef COSMO2D_NOT_USE_SIMD
+    if (1 == limber) {
       #pragma omp parallel
       {
         #pragma omp for collapse(2) schedule(static) nowait
@@ -1254,66 +1029,29 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
         #pragma omp for schedule(static) nowait
         for (int nz=0; nz<NSIZE; nz++) {
           C_ks_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
-        }
-        #pragma omp for collapse(2) schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++) {
           for (int l=limits.LMIN_tab; l<Ntable.LMAX; l++) {
             Cl[nz][l] *= cmbf[l]; // multiply by CMB beam filter
           }
         }
       }
-#else
-      #pragma omp parallel
-      {
-        #pragma omp for collapse(2) schedule(static) nowait
-        for (int nz=0; nz<redshift.shear_nbin; nz++) {
-          for (int l=lmin; l<limits.LMIN_tab; l++) {
-            Cl[nz][l] = C_ks_tomo_limber_nointerp((double) l, nz, 0)*cmbf[l];
-          }
-        }
-        #pragma omp for schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++) {
-          C_ks_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
-          int l = limits.LMIN_tab;
-          for (; l <= Ntable.LMAX - 4; l += 4) {
-            v4d vcl  = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
-            v4d vcf  = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
-            v4d vres = simde_mm256_mul_pd(vcl, vcf);      // Cl * cmbf
-            simde_mm256_storeu_pd(Cl[nz] + l, vres);               // store back
-          }
-          for (; l < Ntable.LMAX; l++) { // Scalar tail
-            Cl[nz][l] *= cmbf[l];
-          }
-        }
-      }
-#endif
     } 
     else {
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-
-#ifdef COSMO2D_NOT_USE_SIMD
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
-        double sum = 0;
+        const double* restrict pl = Pl[i];
+        const double* restrict cl = Cl[nz];
+        double sum = 0.0;
+        #pragma omp simd reduction(+:sum)
         for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += Pl[i][l]*Cl[nz][l];
+          sum += pl[l] * cl[l];
         }
         w_vec[nz*Ntable.Ntheta+i] = sum;
       }
     }
-#else
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        w_vec[nz*Ntable.Ntheta+i] =
-          simd_dot_product(Pl[i] + lmin, Cl[nz] + lmin, Ntable.LMAX - lmin);
-      }
-    }
-#endif
-
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -2478,6 +2216,12 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
   static int nell;
   static double lim[3];
   static gsl_integration_glfixed_table* w = NULL;
+  static double* lx = NULL;
+  static double* ell_prefactor = NULL;
+  static double* ell_prefactor2 = NULL;
+  static double*** PK = NULL;
+  static double*** WXL = NULL;
+  static double**** WXS = NULL;
 
   if (NULL == table || fdiff2(cache[6], Ntable.random)) {
     nell   = Ntable.N_ell;
@@ -2503,6 +2247,34 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
                          (3 == hdi) ? 256 : 512;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
+
+    if (lx != NULL) free(lx);
+    lx = (double*) malloc1d(nell);
+    
+    if (ell_prefactor != NULL) free(ell_prefactor);
+    ell_prefactor = (double*) malloc1d(nell);
+
+    if (ell_prefactor2 != NULL) free(ell_prefactor2);
+    ell_prefactor2 = (double*) malloc1d(nell);
+
+    #pragma omp parallel for
+    for (int i = 0; i < nell; i++) {
+      lx[i] = exp(lim[0] + i * lim[2]);
+      const double ell = lx[i] + 0.5;
+      ell_prefactor[i] = lx[i]*(lx[i]+1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
+      const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
+      ell_prefactor2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
+    }
+
+    if (PK != NULL) free(PK);
+    PK = (double***) malloc3d(redshift.clustering_nbin, nell, (int) w->n);
+
+    if (WXL != NULL) free(WXL);
+    WXL = (double***) malloc3d(2, redshift.clustering_nbin, (int) w->n);
+    
+    if (WXS != NULL) free(WXS);
+    WXS = (double****) malloc4d(2, redshift.clustering_nbin, 
+                                redshift.shear_nbin, (int) w->n);
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -2537,60 +2309,28 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       }
     }
 
-    double* lx = (double*) malloc1d(nell);
-    double* ell_prefactor = (double*) malloc1d(nell);
-    double* ell_prefactor2 = (double*) malloc1d(nell);
-    #pragma omp parallel for
-    for (int i = 0; i < nell; i++) {
-      lx[i] = exp(lim[0] + i * lim[2]);
-      const double ell = lx[i] + 0.5;
-      ell_prefactor[i] = lx[i]*(lx[i]+1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
-      const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
-      ell_prefactor2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
-    }
-
-    // precompute P(k,z)
-    double*** PK = (double***) malloc3d(redshift.clustering_nbin, 
-                                        nell, 
-                                        cn_all[0].npts);
+    // -------------------------------------------------------------------------
+    // optimization: pre-compute cosmo quantities and prefactors and IA kernels
+    // -------------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
-    for (int q = 0; q < redshift.clustering_nbin; q++) {
-      for (int i = 0; i < nell; i++) {
-        for (int p = 0; p < cn_all[0].npts; p++) {
-          const double ell = lx[i] + 0.5;
-          const double k = ell / cn_all[q].data[CN_FK][p];
-          PK[q][i][p] = Pdelta(k, cn_all[q].data[CN_A][p]);
-        }
-      }
-    }
-
-    // precompute lens weights 
-    double*** WXL = (double***) malloc3d(2, 
-                                         redshift.clustering_nbin, 
-                                         cn_all[0].npts);
-    #pragma omp parallel for schedule(static)
-    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+    for (int zl=0; zl<redshift.clustering_nbin; zl++) {
       for (int p = 0; p < cn_all[0].npts; p++) {
         const cosmo_nodes* cn = &cn_all[zl];
+
+        for (int i = 0; i < nell; i++) { // precompute P(k,z)
+          const double ell = lx[i] + 0.5;
+          const double k = ell / cn->data[CN_FK][p];
+          PK[zl][i][p] = Pdelta(k, cn->data[CN_A][p]);
+        }
+
+        // precompute lens weights 
         WXL[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
         WXL[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
-      }
-    }
 
-    // precompute source weights
-    double**** WXS = (double****) malloc4d(2, 
-                                           redshift.clustering_nbin, 
-                                           redshift.shear_nbin, 
-                                           cn_all[0].npts);
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-      for (int zs = 0; zs < redshift.shear_nbin; zs++) {
-        for (int p = 0; p < cn_all[0].npts; p++) {
-          const cosmo_nodes* cn = &cn_all[zl];
-          WXS[0][zl][zs][p] = 
-                            W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
-          WXS[1][zl][zs][p] = 
-                      W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
+        // precompute source weights
+        for (int zs = 0; zs < redshift.shear_nbin; zs++) {
+          WXS[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
+          WXS[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
         }
       }
     }
@@ -2626,12 +2366,6 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       }
     }
 
-    free(lx);
-    free(ell_prefactor);
-    free(ell_prefactor2);
-    free(WXL);
-    free(WXS);
-    free(PK);
     for (int ZLNZ = 0; ZLNZ < nbin; ZLNZ++) {
       free_cosmo_nodes(&cn_all[ZLNZ]);
     }
@@ -3010,9 +2744,11 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
   return interpol1d(table[q], nell, lim[0], lim[1], lim[2], lnl);
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// optimization: real-space 2pt interpolates ~100,000 ells. The vectorized fill
+// is faster than per-ell lookups. GCC cannot auto-vectorize the indirect 
+// table access (gather), so we provide an explicit AVX2 path using i32gather_pd
+// -----------------------------------------------------------------------------
 
 void C_gg_tomo_limber_fill(
     const int nz,
@@ -3302,9 +3038,11 @@ double C_gk_tomo_limber(const double l, const int ni)
   return interpol1d(table[q], nell, lim[0], lim[1], lim[2], lnl);
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// optimization: real-space 2pt interpolates ~100,000 ells. The vectorized fill
+// is faster than per-ell lookups. GCC cannot auto-vectorize the indirect 
+// table access (gather), so we provide an explicit AVX2 path using i32gather_pd
+// -----------------------------------------------------------------------------
 
 void C_gk_tomo_limber_fill(
     const int nz,
@@ -3523,9 +3261,11 @@ double C_ks_tomo_limber(double l, int ni)
   return interpol1d(table[q], Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// optimization: real-space 2pt interpolates ~100,000 ells. The vectorized fill
+// is faster than per-ell lookups. GCC cannot auto-vectorize the indirect 
+// table access (gather), so we provide an explicit AVX2 path using i32gather_pd
+// -----------------------------------------------------------------------------
 
 void C_ks_tomo_limber_fill(
     const int nz,
