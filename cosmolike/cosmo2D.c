@@ -62,6 +62,9 @@ static int include_RSD_GY = 0; // 0 or 1
     #endif
   #endif
 
+typedef simde__m256d v4d;   // 4 doubles, AVX2-width
+typedef simde__m128d v2d;   // 2 doubles (SSE2)
+typedef simde__m128i v4i;   // 4 int32s (SSE2) — used for SIMD gather indices
 // -----------------------------------------------------------------------------
 // What is SIMD? How is the basic building block of SIMD?
 // A normal double variable holds 1 number (64 bits).
@@ -80,7 +83,7 @@ static int include_RSD_GY = 0; // 0 or 1
 //   result = [ 6.0 | 8.0 | 10.0 | 12.0 ]   (one instruction!)
 // -----------------------------------------------------------------------------
 
-static inline double simd_horizontal_sum(simde__m256d four_lanes)
+static inline double simd_horizontal_sum(v4d four_lanes)
 { // Takes a 4-lane register and sums all 4 values into a single double
   double tmp[4]; // Store the 4 lanes into a regular C array
   simde_mm256_storeu_pd(tmp, four_lanes);
@@ -113,8 +116,8 @@ static inline double simd_dot_product(
   )
 {
   // Two independent accumulators, each holding 4 partial sums, init to [0,0,0,0]
-  simde__m256d accum_A = simde_mm256_setzero_pd();
-  simde__m256d accum_B = simde_mm256_setzero_pd();
+  v4d accum_A = simde_mm256_setzero_pd();
+  v4d accum_B = simde_mm256_setzero_pd();
  
   int l = 0; // l must survive past the loop (for scalar tail)
 
@@ -169,26 +172,26 @@ static inline void simd_xipm_dot_product(
   )     
 {
   // Two accumulators: A and B for xi+, A and B for xi-.
-  simde__m256d plus_accum_A  = simde_mm256_setzero_pd();  // [0, 0, 0, 0]
-  simde__m256d plus_accum_B  = simde_mm256_setzero_pd();
+  v4d plus_accum_A  = simde_mm256_setzero_pd();  // [0, 0, 0, 0]
+  v4d plus_accum_B  = simde_mm256_setzero_pd();
   
   // Two accumulators: A and B for xi-.
-  simde__m256d minus_accum_A = simde_mm256_setzero_pd();
-  simde__m256d minus_accum_B = simde_mm256_setzero_pd();
+  v4d minus_accum_A = simde_mm256_setzero_pd();
+  v4d minus_accum_B = simde_mm256_setzero_pd();
  
   int l = 0;
  
   for (; l <= n - 8; l += 8) { // Main loop: 8 multipoles per iteration
     // Load 4 values from each input array into 4-lane registers.
-    simde__m256d ee_lanes = simde_mm256_loadu_pd(cl_ee + l);
-    simde__m256d bb_lanes = simde_mm256_loadu_pd(cl_bb + l);
+    v4d ee_lanes = simde_mm256_loadu_pd(cl_ee + l);
+    v4d bb_lanes = simde_mm256_loadu_pd(cl_bb + l);
     
-    simde__m256d gp_lanes = simde_mm256_loadu_pd(gl_plus + l);
-    simde__m256d gm_lanes = simde_mm256_loadu_pd(gl_minus + l);
+    v4d gp_lanes = simde_mm256_loadu_pd(gl_plus + l);
+    v4d gm_lanes = simde_mm256_loadu_pd(gl_minus + l);
  
     
-    simde__m256d ee_plus_bb  = simde_mm256_add_pd(ee_lanes, bb_lanes);
-    simde__m256d ee_minus_bb = simde_mm256_sub_pd(ee_lanes, bb_lanes);
+    v4d ee_plus_bb  = simde_mm256_add_pd(ee_lanes, bb_lanes);
+    v4d ee_minus_bb = simde_mm256_sub_pd(ee_lanes, bb_lanes);
     
     // Accumulate:  plus_accum_A[i] += G+[l+i] * (EE[l+i] + BB[l+i])
     plus_accum_A = simde_mm256_fmadd_pd(gp_lanes, ee_plus_bb, plus_accum_A);
@@ -232,8 +235,8 @@ static inline double simd_array_sum(const double* restrict a, const int n)
 { // Computes:   result = a[0] + a[1] + ... + a[n-1]
   
   // Two independent accumulators, each holding 4 partial sums, init to [0,0,0,0]
-  simde__m256d accum_A = simde_mm256_setzero_pd();
-  simde__m256d accum_B = simde_mm256_setzero_pd();
+  v4d accum_A = simde_mm256_setzero_pd();
+  v4d accum_B = simde_mm256_setzero_pd();
  
   int q = 0;
  
@@ -1064,9 +1067,9 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
           // begin SIMD - multiply by CMB beam filter
           int l = limits.LMIN_tab;
           for (; l <= Ntable.LMAX - 4; l += 4) {
-            simde__m256d vcl = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
-            simde__m256d vcf = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
-            simde__m256d vres = simde_mm256_mul_pd(vcl, vcf);    // Cl * cmbf
+            v4d vcl = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
+            v4d vcf = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
+            v4d vres = simde_mm256_mul_pd(vcl, vcf);    // Cl * cmbf
             simde_mm256_storeu_pd(Cl[nz] + l, vres);             // store back
           }
           for (; l < Ntable.LMAX; l++) { // Scalar tail
@@ -1273,9 +1276,9 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
           C_ks_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
           int l = limits.LMIN_tab;
           for (; l <= Ntable.LMAX - 4; l += 4) {
-            simde__m256d vcl  = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
-            simde__m256d vcf  = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
-            simde__m256d vres = simde_mm256_mul_pd(vcl, vcf);      // Cl * cmbf
+            v4d vcl  = simde_mm256_loadu_pd(Cl[nz] + l); // Cl[nz][l..l+3]
+            v4d vcf  = simde_mm256_loadu_pd(cmbf + l);   // cmbf[l..l+3]
+            v4d vres = simde_mm256_mul_pd(vcl, vcf);      // Cl * cmbf
             simde_mm256_storeu_pd(Cl[nz] + l, vres);               // store back
           }
           for (; l < Ntable.LMAX; l++) { // Scalar tail
@@ -1405,6 +1408,7 @@ void free_cosmo_nodes(cosmo_nodes* cn) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
 inline double int_for_C_ss_tomo_limber_nla_core(
     const double PK,
     const double WK1, 
@@ -1415,10 +1419,10 @@ inline double int_for_C_ss_tomo_limber_nla_core(
     const double C12
   )
 {
-  const double ans  =   WK1*WK2*PK 
-                      - WS1*WK2*C11*PK 
-                      - WS2*WK1*C12*PK
-                      + WS1*WS2*C11*C12*PK;
+  const double ans  = (  WK1*WK2 
+                        - WS1*WK2*C11 
+                        - WS2*WK1*C12
+                        + WS1*WS2*C11*C12)*PK;
   return ans;
 }
 
@@ -1476,6 +1480,20 @@ inline double int_for_C_ss_tomo_limber_tatt_BB_core(
   return ans;
 }
 
+// ---------------------------------------------------------------------------
+// Legacy scalar integrand: combines IA-model branching, FPTIA interpolation,
+// and Limber arithmetic in one per-point function. Not vectorizable because
+// the switch on nuisance.IA_MODEL sits inside the per-quadrature-point loop.
+//
+// Kept for:
+//   - C_ss_tomo_limber_nointerp (single-point evaluations at boundaries)
+//   - Reference / cross-check against the optimized path
+//   - Backwards-compat callers
+//
+// NOT used by the hot-path C_ss_tomo_limber, which inverts the loop/switch
+// nesting and precomputes FPTIA kernels per (zl, i, p) so the inner loop
+// becomes pure arithmetic suitable for vectorization.
+// ---------------------------------------------------------------------------
 static double int_for_C_ss_tomo_limber_core(
     const double a,
     const double fK,
@@ -1602,9 +1620,19 @@ static double int_for_C_ss_tomo_limber_core(
 }
 
 // ---------------------------------------------------------------------------
+// GSL-compatible wrapper around int_for_C_ss_tomo_limber_core. Has the
+// signature `double f(double a, void* params)` required by the GSL adaptive
+// integrator. Unpacks (n1, n2, l, EE, deriv) from params, evaluates all
+// cosmology / IA / weight quantities at the single point `a`, and forwards
+// to the scalar integrand.
+//
+// Used by:
+//   - GSL adaptive integration in C_ss_tomo_limber_nointerp (single-l calls)
+//   - Boundary checks
+//
+// NOT used by the hot-path C_ss_tomo_limber, which uses fixed-grid
+// Gauss-Legendre quadrature with precomputed per-(i,p) tables instead.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 double int_for_C_ss_tomo_limber(double a, void* params)
 {
   if (!(a>0) || !(a<1)) {
@@ -1724,8 +1752,8 @@ double C_ss_tomo_limber(
   static double lim[3];
   static int nell;
   static gsl_integration_glfixed_table* w = NULL;
-  static double** PK = NULL;
-  static double*** WKS = NULL;
+  static double** PK = NULL;   // Matter Power Spectrum
+  static double*** WKS = NULL; // WK / WS
   static double* lx = NULL;
   static double* ell_prefactor = NULL;
   static double*** CXY = NULL; // IA: C1X, C2X, BTAX 
@@ -1787,10 +1815,12 @@ double C_ss_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    // ------------------------------------------------------------------------
-    // optimization: - compute cosmo quantities and prefactors only once.
+    // -------------------------------------------------------------------------
+    // optimization: - pre-compute cosmo quantities and prefactors
     //                 (why once? amin and amax are nl and ns independent)
-    //               - compute WS only nsource times (not ns(ns-1)/2 !) 
+    //               - compute WS only nsource times (not ns(ns-1)/2!) 
+    //               - pre-compute intrinsic alignment amplitude and kernels
+    // This is all possible because we know exactly the integration points
     // ------------------------------------------------------------------------
     const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
     const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
@@ -1806,7 +1836,7 @@ double C_ss_tomo_limber(
         (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 1, 1); // EE
         (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 0, 1); // BB
       } 
-      { // init static vars
+      {
         const int b=0;
         const int p=0;
         WKS[0][b][p] = W_kappa(cn.data[CN_A][p], cn.data[CN_FK][p], b);
@@ -1822,6 +1852,9 @@ double C_ss_tomo_limber(
       }
     } // init static vars ends -------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // optimization: pre-compute cosmo quantities and prefactors and IA kernels
+    // -------------------------------------------------------------------------
     #pragma omp parallel for schedule(static)
     for (int p=0; p<cn.npts; p++) {
       const double a  = cn.data[CN_A][p];
@@ -1831,42 +1864,32 @@ double C_ss_tomo_limber(
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
 
       for (int b=0; b<redshift.shear_nbin; b++) {
-        // precompute: WS (only  need to be computed ns times)
+        // precompute: WS (only  need to be computed ns times) -----------------
         WKS[0][b][p] = W_kappa(a, fK, b);
         WKS[1][b][p] = W_source(a, b, hoh0);
-        // precompute intrinsic aligment amplitudes
+        // precompute: intrinsic aligment amplitudes ---------------------------
         CXY[0][b][p] = IA_A1_Z1(a, growfac_a, b);
         CXY[1][b][p] = IA_A2_Z1(a, growfac_a, b);
         CXY[2][b][p] = IA_BTA_Z1(a, growfac_a, b);
       }
-      // precompute P(k,z) (matter power spectrum)
-      for (int i=0; i<nell; i++)  { 
+      for (int i=0; i<nell; i++) { 
         const double ell = lx[i] + 0.5;
         const double k = ell / fK;
+        const double lnk = log(k);
+
+        // precompute: P(k,z) (matter power spectrum) --------------------------
         PK[i][p] = Pdelta(k, cn.data[CN_A][p]);
-      }
-    }
-    //precompute IA TATT KERNELS
-    if(nuisance.IA_MODEL == IA_MODEL_TATT) {
-      #pragma omp parallel for schedule(static)
-      for (int p=0; p<cn.npts; p++) { 
-        const double fK = cn.data[CN_FK][p];
-        const double growfac_a = cn.data[CN_GROWFAC][p];
-        const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-        for (int i=0; i<nell; i++)  { 
-          const double ell = lx[i] + 0.5;
-          const double k = ell / fK;
-          const double lnk = log(k);
+      
+        //precompute: IA TATT KERNELS ------------------------------------------
+        if(nuisance.IA_MODEL == IA_MODEL_TATT) {          
           if (lnk < limTATT[0] || lnk > limTATT[1]) {
-            // EE
-            KIA[0][i][p] = 0.0; // tt
-            KIA[1][i][p] = 0.0; // ta_dE1
-            KIA[2][i][p] = 0.0; // ta_dE2
-            KIA[3][i][p] = 0.0; // ta
-            KIA[4][i][p] = 0.0; // mixA
-            KIA[5][i][p] = 0.0; // mixB
-            KIA[6][i][p] = 0.0; // mixEE
-            // BB
+            KIA[0][i][p] = 0.0; // tt     (EE)
+            KIA[1][i][p] = 0.0; // ta_dE1 (EE)
+            KIA[2][i][p] = 0.0; // ta_dE2 (EE)
+            KIA[3][i][p] = 0.0; // ta     (EE)
+            KIA[4][i][p] = 0.0; // mixA   (EE)
+            KIA[5][i][p] = 0.0; // mixB   (EE)
+            KIA[6][i][p] = 0.0; // mixEE  (EE)
             KIA[7][i][p] = 0.0; // tt  (BB)
             KIA[8][i][p] = 0.0; // ta  (BB)
             KIA[9][i][p] = 0.0; // mix (BB)
@@ -1891,7 +1914,7 @@ double C_ss_tomo_limber(
             else {
               const double dr = r - b;
               // EE
-              KIA[0][i][p] = g4 *(dr*(FPTIA.tab[0][b+1]-FPTIA.tab[0][b])+FPTIA.tab[0][b]);
+              KIA[0][i][p] = g4*(dr*(FPTIA.tab[0][b+1]-FPTIA.tab[0][b])+FPTIA.tab[0][b]);
               KIA[1][i][p] = g4*(dr*(FPTIA.tab[2][b+1]-FPTIA.tab[2][b])+FPTIA.tab[2][b]);
               KIA[2][i][p] = g4*(dr*(FPTIA.tab[3][b+1]-FPTIA.tab[3][b])+FPTIA.tab[3][b]);
               KIA[3][i][p] = g4*(dr*(FPTIA.tab[4][b+1]-FPTIA.tab[4][b])+FPTIA.tab[4][b]);
@@ -1907,14 +1930,16 @@ double C_ss_tomo_limber(
         }
       }
     }
-
+    // -------------------------------------------------------------------------
+    // MAIN LOOP - To enable better vectorization, IA switch is outside the loop
+    // -------------------------------------------------------------------------
     switch(nuisance.IA_MODEL) 
     {
       case IA_MODEL_TATT:
       {
         #pragma omp parallel for collapse(2) schedule(static)
-        for (int i = 0; i < nell; i++) {
-          for (int k = 0; k < tomo.shear_Npowerspectra; k++) {
+        for (int i=0; i<nell; i++) {
+          for (int k=0; k<tomo.shear_Npowerspectra; k++) {
             const int Z1NZ = Z1(k);
             const int Z2NZ = Z2(k);
             if (Z1NZ < 0 || Z1NZ > redshift.shear_nbin - 1 || 
@@ -1924,6 +1949,7 @@ double C_ss_tomo_limber(
             }
             double sum_EE = 0.0;
             double sum_BB = 0.0;
+            #pragma omp simd reduction(+:sum_EE, sum_BB)
             for (int p = 0; p < cn.npts; p++) {
               const double a = cn.data[CN_A][p];
               const double fK = cn.data[CN_FK][p];
@@ -1950,13 +1976,15 @@ double C_ss_tomo_limber(
               const double mixB = KIA[5][i][p];
               const double mixEE = KIA[6][i][p];
               
+              const double amp = (dchida/(fK*fK))*ell_prefactor[i];
+
+              // EE 
               const double ansEE = 
                 int_for_C_ss_tomo_limber_tatt_EE_core(PK[i][p],WK1,WK2,WS1,
                                                       WS2,C11,C12,C21,C22,
                                                       bta1,bta2,tt,ta_dE1,
                                                       ta_dE2,ta,mixA,mixB,mixEE);
-              const double resEE = ansEE*(dchida/(fK*fK))*ell_prefactor[i];
-
+              // BB 
               const double ttbb = KIA[7][i][p];
               const double tabb = KIA[8][i][p];
               const double mixbb = KIA[9][i][p];
@@ -1964,11 +1992,9 @@ double C_ss_tomo_limber(
               const double ansBB = 
                 int_for_C_ss_tomo_limber_tatt_BB_core(PK[i][p],WK1,WK2,WS1,
                                                       WS2,C11,C12,C21,C22,bta1,
-                                                      bta2,ttbb,tabb,mixbb);
-              const double resBB = ansBB*(dchida/(fK*fK))*ell_prefactor[i];
-              
-              sum_EE += resEE * wt;
-              sum_BB += resBB * wt;
+                                                      bta2,ttbb,tabb,mixbb);             
+              sum_EE += ansEE*amp*wt;
+              sum_BB += ansBB*amp*wt;
             }
             table[0][k][i] = sum_EE;
             table[1][k][i] = sum_BB;
@@ -1979,8 +2005,8 @@ double C_ss_tomo_limber(
       case IA_MODEL_NLA:
       { 
         #pragma omp parallel for collapse(2) schedule(static)
-        for (int i = 0; i < nell; i++) {
-          for (int k = 0; k < tomo.shear_Npowerspectra; k++) {
+        for (int i=0; i<nell; i++) {
+          for (int k=0; k<tomo.shear_Npowerspectra; k++) {
             const int Z1NZ = Z1(k);
             const int Z2NZ = Z2(k);
             if (Z1NZ < 0 || Z1NZ > redshift.shear_nbin - 1 || 
@@ -1988,9 +2014,10 @@ double C_ss_tomo_limber(
               log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",Z1NZ, Z2NZ); 
               exit(1);
             }
+
             double sum_EE = 0.0;
+            #pragma omp simd reduction(+:sum_EE)
             for (int p = 0; p < cn.npts; p++) {
-              const double a = cn.data[CN_A][p];
               const double fK = cn.data[CN_FK][p];
               const double dchida = cn.data[CN_DCHIDA][p];
               const double wt = cn.data[CN_WT][p];
@@ -2006,8 +2033,7 @@ double C_ss_tomo_limber(
               const double ans = int_for_C_ss_tomo_limber_nla_core(PK[i][p],WK1,
                                                                    WK2,WS1,WS2,
                                                                    C11,C12);
-              const double res = ans*(dchida/(fK*fK))*ell_prefactor[i];
-              sum_EE += res * wt;
+              sum_EE += ans*(dchida/(fK*fK))*ell_prefactor[i]*wt;
             }
             table[0][k][i] = sum_EE;
             table[1][k][i] = 0.0;
@@ -2053,6 +2079,11 @@ double C_ss_tomo_limber(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ----------------------------------------------------------------------------
+// optimization: real-space 2pt interpolates ~100,000 ells. The vectorized fill
+// is faster than per-ell lookups. GCC cannot auto-vectorize the indirect 
+// table access (gather), so we provide an explicit AVX2 path using i32gather_pd
+// -----------------------------------------------------------------------------
 void C_ss_tomo_limber_fill(
     const int nz, 
     const int lmin, 
@@ -2067,78 +2098,54 @@ void C_ss_tomo_limber_fill(
   const double inv_dx = 1.0 / ss_.lim[2];
   const double a = ss_.lim[0];
   const int n = ss_.nell;
-
 #ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol 1D
     const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
-    const double t = r - ic;
+    const double i = floor(r);
+    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
+    const int ic = (int) rc;
+    const double t = r - rc;
     out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
     out_BB[l] = tab_BB[ic] + t * (tab_BB[ic + 1] - tab_BB[ic]);
   }
 #else
-  // -------------------------------------------------------------------------
-  // SIMD linear interpolation (two tables, same indices)
-  // -------------------------------------------------------------------------
-  const simde__m256d va       = simde_mm256_set1_pd(a);
-  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const simde__m256d vzero    = simde_mm256_setzero_pd();
-  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const simde__m128i vone     = simde_mm_set1_epi32(1); // this is [1 | 1 | 1 | 1]
+  const v4d va = simde_mm256_set1_pd(a);
+  const v4d vinv_dx = simde_mm256_set1_pd(inv_dx);
+  const v4d vzero = simde_mm256_setzero_pd();
+  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const v4i vone = simde_mm_set1_epi32(1); // this is [1 | 1 | 1 | 1]
 
   int l = lmin;
   for (; l <= lmax - 4; l += 4) {
-    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
-    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx); // double r
+    v4d vi = simde_mm256_floor_pd(vr); // const int i = floor(r) (but no cast)
+    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi,vzero),vmax_idx); // ic (as double)
+    v4d vt = simde_mm256_sub_pd(vr, vicdb); // t = r - ic;
 
-    // LINE: const int i = floor(r); (but not the cast to int)
-    simde__m256d vfloor = simde_mm256_floor_pd(vr);
-
-    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
-    //   restrict to valid table range [0, n-2]. Example with n = 100
-    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
-    //   First: max(floor, 0)
-    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
-    //                   ^fixed
-    //   Last: min(result, n-2 = 98)
-    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
-    //                                               ^fixed
-    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
-    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
-
-    // LINE: cast from double to int!
-    // Convert indices from double → int32
-    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
-    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
-
-    //   Gather takes an array of indices and loads one element per lane
+    v4i vic = simde_mm256_cvttpd_epi32(vicdb); // cast from double to int
+    v4i vicp1 = simde_mm_add_epi32(vic, vone); // this is ic+1
+    
+    // Gather takes an array of indices and loads one element per lane
     //   i32gather_pd(base_ptr, index_register, scale)
     //     - base_ptr:       starting address of the table (tab_EE or tab_BB)
     //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
     //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
-    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
+    // Gather is the operation that prevents auto-vectorization w/o SIMDE
+    v4d vtab0_EE = simde_mm256_i32gather_pd(tab_EE, vic, 8);   // tab_EE[ic]
+    v4d vtab1_EE = simde_mm256_i32gather_pd(tab_EE, vicp1, 8); // tab_EE[ic+1]
 
-    // Gather from EE table: tab_EE[ic] and tab_EE[ic+1]
-    simde__m256d vtab0_EE = simde_mm256_i32gather_pd(tab_EE, vidx, 8);
-    simde__m256d vtab1_EE = simde_mm256_i32gather_pd(tab_EE, vidx1, 8);
+    v4d vslope_EE   = simde_mm256_sub_pd(vtab1_EE, vtab0_EE);    // tab_EE slope
+    v4d vout_EE = simde_mm256_fmadd_pd(vt, vslope_EE, vtab0_EE); // interp EE
 
-    // Gather from BB table: tab_BB[ic] and tab_BB[ic+1] (same indices, different table)
-    simde__m256d vtab0_BB = simde_mm256_i32gather_pd(tab_BB, vidx, 8);
-    simde__m256d vtab1_BB = simde_mm256_i32gather_pd(tab_BB, vidx1, 8);
+    // Gather from BB table
+    v4d vtab0_BB = simde_mm256_i32gather_pd(tab_BB, vic, 8);   // tab_BB[ic]
+    v4d vtab1_BB = simde_mm256_i32gather_pd(tab_BB, vicp1, 8); // tab_BB[ic+1]
+    v4d vslope_BB = simde_mm256_sub_pd(vtab1_BB, vtab0_BB);       // tab_BB slope
+    v4d vout_BB  = simde_mm256_fmadd_pd(vt, vslope_BB, vtab0_BB); // interp BB
 
-    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
-    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
-
-    simde__m256d vdiff_EE   = simde_mm256_sub_pd(vtab1_EE, vtab0_EE); // tab_EE slope
-    simde__m256d vresult_EE = simde_mm256_fmadd_pd(vt, vdiff_EE, vtab0_EE); // interp EE
-
-    simde__m256d vdiff_BB   = simde_mm256_sub_pd(vtab1_BB, vtab0_BB); // tab_BB slope
-    simde__m256d vresult_BB = simde_mm256_fmadd_pd(vt, vdiff_BB, vtab0_BB); // interp BB
-
-    simde_mm256_storeu_pd(out_EE + l, vresult_EE); // store EE results
-    simde_mm256_storeu_pd(out_BB + l, vresult_BB); // store BB results
+    simde_mm256_storeu_pd(out_EE + l, vout_EE); // store EE results
+    simde_mm256_storeu_pd(out_BB + l, vout_BB); // store BB results
   }
   for (; l < lmax; l++) { // Scalar tail
     const double r = (ln_ell[l] - a) * inv_dx;
@@ -2663,10 +2670,11 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
   return res;
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
+// ----------------------------------------------------------------------------
+// optimization: real-space 2pt interpolates ~100,000 ells. The vectorized fill
+// is faster than per-ell lookups. GCC cannot auto-vectorize the indirect 
+// table access (gather), so we provide an explicit AVX2 path using i32gather_pd
+// -----------------------------------------------------------------------------
 void C_gs_tomo_limber_fill(
     const int nz,
     const int lmin,
@@ -2683,64 +2691,34 @@ void C_gs_tomo_limber_fill(
 #ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol1D
     const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double i = floor(r);
+    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
+    const int ic = (int) rc;
     const double t = r - ic;
     out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
   }
 #else
-  // -------------------------------------------------------------------------
-  // SIMD linear interpolation
-  // ------------------------------------------------------------------------- 
-  const simde__m256d va       = simde_mm256_set1_pd(a);
-  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const simde__m256d vzero    = simde_mm256_setzero_pd();
-  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const simde__m128i vone     = simde_mm_set1_epi32(1); // this is [1 | 1 | 1 | 1]
+  const v4d va       = simde_mm256_set1_pd(a);
+  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const v4d vzero    = simde_mm256_setzero_pd();
+  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const v4i vone     = simde_mm_set1_epi32(1);
 
   int l = lmin;
   for (; l <= lmax - 4; l += 4) {
-    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
-    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell,va),vinv_dx);
- 
-    // LINE: const int i = floor(r); (but not the cast to int)
-    simde__m256d vfloor = simde_mm256_floor_pd(vr);
-  
-    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
-    //   restrict to valid table range [0, n-2]. Example with n = 100
-    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
-    //   First: max(floor, 0)
-    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
-    //                   ^fixed
-    //   Last: min(result, n-2 = 98)
-    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
-    //                                               ^fixed
-    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero); // max(floor, 0)
-    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
-
-    // LINE: cast from double to int!
-    // Convert indices from double → int32
-    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
-    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic); 
- 
-    //   Gather takes an array of indices and loads one element per lane
-    //   i32gather_pd(base_ptr, index_register, scale)
-    //     - base_ptr:       starting address of the table (tab)
-    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
-    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
-    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
-    
-    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
-    
-    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
-  
-    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
-    simde__m256d vdiff = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
-    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
-    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
-
-    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+    v4d vi = simde_mm256_floor_pd(vr);
+    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
+    v4d vt = simde_mm256_sub_pd(vr, vicdb);
+    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
+    v4i vicp1 = simde_mm_add_epi32(vic, vone);
+    // Gather: indirect load that prevents GCC auto-vectorization
+    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
+    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
+    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
+    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
+    simde_mm256_storeu_pd(out + l, vresult);
   }
   for (; l < lmax; l++) { // Scalar tail
     const double r = (ln_ell[l] - a) * inv_dx;
@@ -3051,63 +3029,34 @@ void C_gg_tomo_limber_fill(
 #ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol1D
     const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double i = floor(r);
+    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
+    const int ic = (int) rc;
     const double t = r - ic;
     out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
   }
 #else
-  // -------------------------------------------------------------------------
-  // SIMD linear interpolation
-  // -------------------------------------------------------------------------
-  const simde__m256d va       = simde_mm256_set1_pd(a);
-  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const simde__m256d vzero    = simde_mm256_setzero_pd();
-  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const simde__m128i vone     = simde_mm_set1_epi32(1); // [1 | 1 | 1 | 1]
- 
+  const v4d va       = simde_mm256_set1_pd(a);
+  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const v4d vzero    = simde_mm256_setzero_pd();
+  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const v4i vone     = simde_mm_set1_epi32(1);
+
   int l = lmin;
   for (; l <= lmax - 4; l += 4) {
-    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
-    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
- 
-    // LINE: const int i = floor(r); (but not the cast to int)
-    simde__m256d vfloor = simde_mm256_floor_pd(vr);
- 
-    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
-    //   restrict to valid table range [0, n-2]. Example with n = 100
-    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
-    //   First: max(floor, 0)
-    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
-    //                   ^fixed
-    //   Last: min(result, n-2 = 98)
-    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
-    //                                               ^fixed
-    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
-    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
- 
-    // LINE: cast from double to int!
-    // Convert indices from double → int32
-    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
-    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
- 
-    //   Gather takes an array of indices and loads one element per lane
-    //   i32gather_pd(base_ptr, index_register, scale)
-    //     - base_ptr:       starting address of the table (tab)
-    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
-    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
-    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
- 
-    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
- 
-    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
- 
-    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
-    simde__m256d vdiff   = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
-    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
-    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
-    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+    v4d vi = simde_mm256_floor_pd(vr);
+    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
+    v4d vt = simde_mm256_sub_pd(vr, vicdb);
+    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
+    v4i vicp1 = simde_mm_add_epi32(vic, vone);
+    // Gather: indirect load that prevents GCC auto-vectorization
+    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
+    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
+    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
+    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
+    simde_mm256_storeu_pd(out + l, vresult);
   }
   for (; l < lmax; l++) { // Scalar tail
     const double r = (ln_ell[l] - a) * inv_dx;
@@ -3372,63 +3321,34 @@ void C_gk_tomo_limber_fill(
 #ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol1D
     const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double i = floor(r);
+    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
+    const int ic = (int) rc;
     const double t = r - ic;
     out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
   }
 #else
-  // -------------------------------------------------------------------------
-  // SIMD linear interpolation
-  // -------------------------------------------------------------------------
-  const simde__m256d va       = simde_mm256_set1_pd(a);
-  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const simde__m256d vzero    = simde_mm256_setzero_pd();
-  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const simde__m128i vone     = simde_mm_set1_epi32(1); // [1 | 1 | 1 | 1]
- 
+  const v4d va       = simde_mm256_set1_pd(a);
+  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const v4d vzero    = simde_mm256_setzero_pd();
+  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const v4i vone     = simde_mm_set1_epi32(1);
+
   int l = lmin;
   for (; l <= lmax - 4; l += 4) {
-    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
-    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
- 
-    // LINE: const int i = floor(r); (but not the cast to int)
-    simde__m256d vfloor = simde_mm256_floor_pd(vr);
- 
-    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
-    //   restrict to valid table range [0, n-2]. Example with n = 100
-    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
-    //   First: max(floor, 0)
-    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
-    //                   ^fixed
-    //   Last: min(result, n-2 = 98)
-    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
-    //                                               ^fixed
-    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
-    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
- 
-    // LINE: cast from double to int!
-    // Convert indices from double → int32
-    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
-    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
- 
-    //   Gather takes an array of indices and loads one element per lane
-    //   i32gather_pd(base_ptr, index_register, scale)
-    //     - base_ptr:       starting address of the table (tab)
-    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
-    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
-    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
- 
-    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
- 
-    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
- 
-    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
-    simde__m256d vdiff   = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
-    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
-    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
-    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+    v4d vi = simde_mm256_floor_pd(vr);
+    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
+    v4d vt = simde_mm256_sub_pd(vr, vicdb);
+    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
+    v4i vicp1 = simde_mm_add_epi32(vic, vone);
+    // Gather: indirect load that prevents GCC auto-vectorization
+    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
+    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
+    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
+    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
+    simde_mm256_storeu_pd(out + l, vresult);
   }
   for (; l < lmax; l++) { // Scalar tail
     const double r = (ln_ell[l] - a) * inv_dx;
@@ -3622,63 +3542,34 @@ void C_ks_tomo_limber_fill(
 #ifdef COSMO2D_NOT_USE_SIMD
   for (int l = lmin; l < lmax; l++) { // inline interpol1D
     const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double i = floor(r);
+    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
+    const int ic = (int) rc;
     const double t = r - ic;
     out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
   }
 #else
-  // -------------------------------------------------------------------------
-  // SIMD linear interpolation
-  // -------------------------------------------------------------------------
-  const simde__m256d va       = simde_mm256_set1_pd(a);
-  const simde__m256d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const simde__m256d vzero    = simde_mm256_setzero_pd();
-  const simde__m256d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const simde__m128i vone     = simde_mm_set1_epi32(1); // [1 | 1 | 1 | 1]
- 
+  const v4d va       = simde_mm256_set1_pd(a);
+  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const v4d vzero    = simde_mm256_setzero_pd();
+  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const v4i vone     = simde_mm_set1_epi32(1);
+
   int l = lmin;
   for (; l <= lmax - 4; l += 4) {
-    // LINE: const double r = (ln_ell[l] - a) * inv_dx;
-    simde__m256d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    simde__m256d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
- 
-    // LINE: const int i = floor(r); (but not the cast to int)
-    simde__m256d vfloor = simde_mm256_floor_pd(vr);
- 
-    // LINE: i < 0 ? 0 : (i >= n - 1 ? n - 2 : i) (still as doubles: not cast to int)
-    //   restrict to valid table range [0, n-2]. Example with n = 100
-    //     vfloor   = [ -2.0  |  42.0  |  98.0  |  130.0  ]
-    //   First: max(floor, 0)
-    //     after max = [  0.0  |  42.0  |  98.0  |  130.0  ]
-    //                   ^fixed
-    //   Last: min(result, n-2 = 98)
-    //     after min = [  0.0  |  42.0  |  98.0  |   98.0  ]
-    //                                               ^fixed
-    simde__m256d vic_lo = simde_mm256_max_pd(vfloor, vzero);    // max(floor, 0)
-    simde__m256d vic    = simde_mm256_min_pd(vic_lo, vmax_idx); // min(result, n-2)
- 
-    // LINE: cast from double to int!
-    // Convert indices from double → int32
-    //   cvttpd_epi32 truncates 4dbls into 4 int32s in a 128-bit register:
-    simde__m128i vidx = simde_mm256_cvttpd_epi32(vic);
- 
-    //   Gather takes an array of indices and loads one element per lane
-    //   i32gather_pd(base_ptr, index_register, scale)
-    //     - base_ptr:       starting address of the table (tab)
-    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
-    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
-    simde__m256d vtab0 = simde_mm256_i32gather_pd(tab, vidx, 8);
- 
-    simde__m128i vidx1 = simde_mm_add_epi32(vidx, vone); // this is ic+1
- 
-    simde__m256d vtab1 = simde_mm256_i32gather_pd(tab, vidx1, 8); // this is tab[ic+1]
- 
-    // out = tab[ic] + t * (tab[ic+1] - tab[ic])
-    simde__m256d vdiff   = simde_mm256_sub_pd(vtab1, vtab0); // tab[ic+1]-tab[ic]
-    simde__m256d vt = simde_mm256_sub_pd(vr, vic); // t = r - ic;
-    simde__m256d vresult = simde_mm256_fmadd_pd(vt, vdiff, vtab0); // fused multiply-add
-    simde_mm256_storeu_pd(out + l, vresult); // store interp results back into mem
+    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+    v4d vi = simde_mm256_floor_pd(vr);
+    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
+    v4d vt = simde_mm256_sub_pd(vr, vicdb);
+    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
+    v4i vicp1 = simde_mm_add_epi32(vic, vone);
+    // Gather: indirect load that prevents GCC auto-vectorization
+    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
+    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
+    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
+    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
+    simde_mm256_storeu_pd(out + l, vresult);
   }
   for (; l < lmax; l++) { // Scalar tail
     const double r = (ln_ell[l] - a) * inv_dx;
@@ -4817,17 +4708,17 @@ void cfftlog_ells_p2(
         const double* RESTRICT ob = outbcw[id] + N[j][0];
         const double* RESTRICT xnu = x_pow_nu[j];
         
-        simde__m256d vpre = simde_mm256_set1_pd(prefactor); // [pf | pf | pf | pf]
+        v4d vpre = simde_mm256_set1_pd(prefactor); // [pf | pf | pf | pf]
         
         int q = 0;
         for (; q <= Nx - 4; q += 4) {
-          simde__m256d vob  = simde_mm256_loadu_pd(ob + q);  // ob[q..q+3]
-          simde__m256d vxnu = simde_mm256_loadu_pd(xnu + q); // xnu[q..q+3]
+          v4d vob  = simde_mm256_loadu_pd(ob + q);  // ob[q..q+3]
+          v4d vxnu = simde_mm256_loadu_pd(xnu + q); // xnu[q..q+3]
           // Two multiplies: (ob * prefactor) * xnu
           //   first:  vtmp = [ ob[q]*pf | ob[q+1]*pf | ... | ... ]
           //   second: vres = [vtmp[0]*xnu[q] | vtmp[1]*xnu[q+1] | ... | ...  ]
-          simde__m256d vtmp = simde_mm256_mul_pd(vob, vpre);
-          simde__m256d vres = simde_mm256_mul_pd(vtmp, vxnu);
+          v4d vtmp = simde_mm256_mul_pd(vob, vpre);
+          v4d vres = simde_mm256_mul_pd(vtmp, vxnu);
           // Store 4 results back to Fy_ijk[q..q+3]
           simde_mm256_storeu_pd(Fy_ijk + q, vres);
         }

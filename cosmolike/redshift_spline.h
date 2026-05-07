@@ -32,15 +32,19 @@ int test_kmax(double l, int zl);
 // test whether source bin zs is behind lens bin zl
 int test_zoverlap(int zl, int zs); 
 
-int ZL(int Nbin); // find zlens bin of tomo combination (galaxy-galaxy lensing)
+// ----------------------------------------------------------------------------
+// not exactly true (attribute pure) - but once we init static vars, they are
+// ----------------------------------------------------------------------------
 
-int ZS(int Nbin); // find zsource bin of tomo combination (galaxy-galaxy lensing)
+int ZL(int Nbin) __attribute__((pure)); // find zlens bin of tomo combination (galaxy-galaxy lensing)
 
-int N_ggl(int zl, int zs); // find tomo bin number tomography combination
+int ZS(int Nbin) __attribute__((pure)); // find zsource bin of tomo combination (galaxy-galaxy lensing)
 
-int Z1(int Nbin); // find z1 bin of tomo combination (cosmic shear)
+int N_ggl(int zl, int zs) __attribute__((pure)); // find tomo bin number tomography combination
 
-int Z2(int Nbin); // find z2 bin of tomo combination (cosmic shear)
+int Z1(int Nbin) __attribute__((pure)); // find z1 bin of tomo combination (cosmic shear)
+
+int Z2(int Nbin) __attribute__((pure)); // find z1 bin of tomo combination (cosmic shear)
 
 // find tomo bin number tomography combination (cosmic shear)
 int N_shear(int z1, int z2); 

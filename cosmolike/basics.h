@@ -77,10 +77,20 @@ double interpol1d(
   const double a, 
   const double b, 
   const double dx, 
-  const double x); 
+  const double x) __attribute__((pure)); 
 
-double interpol2d(double **f, int nx, double ax, double bx, double dx, double x,
-  int ny, double ay, double by, double dy, double y);
+double interpol2d(
+  double **f, 
+  int nx, 
+  double ax,
+  double bx, 
+  double dx, 
+  double x,
+  int ny, 
+  double ay, 
+  double by, 
+  double dy, 
+  double y) __attribute__((pure));
 
 int line_count(char *filename);
 
