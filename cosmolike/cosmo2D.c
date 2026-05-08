@@ -99,9 +99,7 @@ static inline double simd_array_sum(const double* restrict a, const int n)
     accum_A = simde_mm256_add_pd(accum_A, simde_mm256_loadu_pd(a + q));
     accum_B = simde_mm256_add_pd(accum_B, simde_mm256_loadu_pd(a + q + 4));
   }
- 
   double result = simd_horizontal_sum(accum_A) + simd_horizontal_sum(accum_B);
- 
   for (; q < n; q++) { // Scalar tail: remaining 0-7 elements, one at a time
     result += a[q];
   }
@@ -116,6 +114,8 @@ static inline double simd_array_sum(const double* restrict a, const int n)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+
+#define LERP(arr, b, dr) ((dr)*((arr)[(b)+1] - (arr)[(b)]) + (arr)[(b)])
 
 #ifdef __APPLE__
   #define cosmo_sincos(x, s, c) __sincos((x), (s), (c))
@@ -148,6 +148,74 @@ static inline double wtime(void) {
   clock_gettime(CLOCK_MONOTONIC, &t);
   return t.tv_sec + 1e-9 * t.tv_nsec;
 }
+
+// ---------------------------------------------------------------------------
+// Generic Limber table interpolation with optional SIMD (AVX2) acceleration.
+// Interpolates ntab tables simultaneously at the same ell values, sharing
+// the index arithmetic across all tables. The inner loop over q is unrolled
+// by the compiler when ntab is a compile-time constant (1 for GGL, 2 for SS).
+// ---------------------------------------------------------------------------
+static inline void limber_fill_interp(
+    const int ntab,
+    const double** restrict tab,
+    double** restrict out,
+    const int lmin,
+    const int lmax,
+    const double* restrict ln_ell,
+    const double a,
+    const double inv_dx,
+    const int n
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  for (int l = lmin; l < lmax; l++) {
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const double i = floor(r);
+    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
+    const int ic = (int) rc;
+    const double t = r - rc;
+    for (int q = 0; q < ntab; q++) {
+      out[q][l] = tab[q][ic] + t * (tab[q][ic + 1] - tab[q][ic]);
+    }
+  }
+#else
+  const v4d va       = simde_mm256_set1_pd(a);
+  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
+  const v4d vzero    = simde_mm256_setzero_pd();
+  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
+  const v4i vone     = simde_mm_set1_epi32(1);
+  int l = lmin;
+  for (; l <= lmax - 4; l += 4) {
+    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
+    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
+    v4d vi = simde_mm256_floor_pd(vr);
+    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
+    v4d vt = simde_mm256_sub_pd(vr, vicdb);
+    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
+    v4i vicp1 = simde_mm_add_epi32(vic, vone);
+    for (int q = 0; q < ntab; q++) {
+      v4d v0 = simde_mm256_i32gather_pd(tab[q], vic, 8);
+      v4d v1 = simde_mm256_i32gather_pd(tab[q], vicp1, 8);
+      simde_mm256_storeu_pd(out[q] + l,
+        simde_mm256_fmadd_pd(vt, simde_mm256_sub_pd(v1, v0), v0));
+    }
+  }
+  for (; l < lmax; l++) {
+    const double r = (ln_ell[l] - a) * inv_dx;
+    const int i = (int) floor(r);
+    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
+    const double t = r - ic;
+    for (int q = 0; q < ntab; q++) {
+      out[q][l] = tab[q][ic] + t * (tab[q][ic + 1] - tab[q][ic]);
+    }
+  }
+#endif
+}
+
+// FPTIA.tab index → KIA index mapping
+static const int SS_IA_SRC[] = {0, 2, 3, 4, 6, 7, 8, 1, 5, 9}; 
+static const int GS_IA_SRC[] = {6, 7, 2, 3}; // KIA[2..5] ← FPTIA.tab
+static const int GS_BIAS_SRC[] = {0, 2, 5};  // KIA[6..8] ← FPTbias.tab
 
 // -------------------------------------------------------------------------
 // optimization: real 2pt computes C_xy_tomo_limber so many times that the  
@@ -1155,7 +1223,7 @@ inline double int_for_C_ss_tomo_limber_nla_core(
     const double WS2,
     const double C11,
     const double C12
-  )
+  ) // inline necessary for vectorization
 {
   const double ans  = (  WK1*WK2 
                         - WS1*WK2*C11 
@@ -1183,7 +1251,7 @@ inline double int_for_C_ss_tomo_limber_tatt_EE_core(
     const double mixA,
     const double mixB,
     const double mixEE
-  )
+  ) // inline necessary for vectorization
 {
   const double ans = WK1*WK2*PK 
               - WS1*WK2*(C11*PK + C11*bta1*(ta_dE1+ta_dE2) - 5*C21*(mixA+mixB))
@@ -1210,7 +1278,8 @@ inline double int_for_C_ss_tomo_limber_tatt_BB_core(
     const double bta2,
     const double tt, 
     const double ta, 
-    const double mix) 
+    const double mix
+  ) // inline necesary for vectorization 
 {
   const double ans = WS1*WS2*(C11*C12*bta1*bta2*ta 
                        - 5.*(C11*bta1*C22+C12*bta2*C21)*mix 
@@ -1219,157 +1288,18 @@ inline double int_for_C_ss_tomo_limber_tatt_BB_core(
 }
 
 // ---------------------------------------------------------------------------
-// Legacy scalar integrand: combines IA-model branching, FPTIA interpolation,
-// and Limber arithmetic in one per-point function. Not vectorizable because
-// the switch on nuisance.IA_MODEL sits inside the per-quadrature-point loop.
-//
-// Kept for:
-//   - C_ss_tomo_limber_nointerp (single-point evaluations at boundaries)
-//   - Reference / cross-check against the optimized path
-//   - Backwards-compat callers
-//
-// NOT used by the hot-path C_ss_tomo_limber, which inverts the loop/switch
-// nesting and precomputes FPTIA kernels per (zl, i, p) so the inner loop
-// becomes pure arithmetic suitable for vectorization.
-// ---------------------------------------------------------------------------
-static double int_for_C_ss_tomo_limber_core(
-    const double a,
-    const double fK,
-    const double PK,
-    const double growfac_a,
-    const double dchida,
-    const double ell_prefactor,
-    const double l,
-    const double WK1, 
-    const double WK2,
-    const double WS1, 
-    const double WS2,
-    const double C11,
-    const double C12,
-    const double C21,
-    const double C22,
-    const double bta1,
-    const double bta2,
-    const int EE,
-    const int deriv
-  )
-{
-  const double ell = l + 0.5;
-  const double k = ell/fK;
-  
-  double ans = 1.0;
-  switch(nuisance.IA_MODEL) 
-  {
-    case IA_MODEL_TATT:
-    {
-      if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
-        get_FPT_IA();
-      }
-      const double lnk = log(k);
-      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-      
-      double lim[3];
-      lim[0] = log(FPTIA.k_min);
-      lim[1] = log(FPTIA.k_max);
-      lim[2] = (lim[1] - lim[0])/FPTIA.N;
-
-      if (1 == EE) {
-        double tt, ta_dE1, ta_dE2, ta, mixA, mixB, mixEE;
-        if (lnk < lim[0] || lnk > lim[1]) {
-          tt = 0.0; ta_dE1 = 0.0; ta_dE2 = 0.0; ta = 0.0;
-          mixA = 0.0; mixB = 0.0; mixEE = 0.0;
-        }
-        else {
-          const double r = (lnk - lim[0]) / lim[2];
-          const int i = (int)floor(r);
-          if (i + 1 >= FPTIA.N) {
-            tt     = g4 * FPTIA.tab[0][FPTIA.N - 1];
-            ta_dE1 = g4 * FPTIA.tab[2][FPTIA.N - 1];
-            ta_dE2 = g4 * FPTIA.tab[3][FPTIA.N - 1];
-            ta     = g4 * FPTIA.tab[4][FPTIA.N - 1];
-            mixA   = g4 * FPTIA.tab[6][FPTIA.N - 1];
-            mixB   = g4 * FPTIA.tab[7][FPTIA.N - 1];
-            mixEE  = g4 * FPTIA.tab[8][FPTIA.N - 1];
-          }
-          else {
-            const double w = r - i;
-            tt = g4 *(w*(FPTIA.tab[0][i+1]-FPTIA.tab[0][i])+FPTIA.tab[0][i]);
-            ta_dE1 = g4*(w*(FPTIA.tab[2][i+1]-FPTIA.tab[2][i])+FPTIA.tab[2][i]);
-            ta_dE2 = g4*(w*(FPTIA.tab[3][i+1]-FPTIA.tab[3][i])+FPTIA.tab[3][i]);
-            ta = g4*(w*(FPTIA.tab[4][i+1]-FPTIA.tab[4][i])+FPTIA.tab[4][i]);
-            mixA = g4*(w*(FPTIA.tab[6][i+1]-FPTIA.tab[6][i])+FPTIA.tab[6][i]);
-            mixB = g4*(w*(FPTIA.tab[7][i+1]-FPTIA.tab[7][i])+FPTIA.tab[7][i]);
-            mixEE  = g4*(w*(FPTIA.tab[8][i+1]-FPTIA.tab[8][i])+FPTIA.tab[8][i]);
-          }
-        }
-        ans = int_for_C_ss_tomo_limber_tatt_EE_core(PK,WK1,WK2,WS1,WS2,C11,C12,
-                                                    C21,C22,bta1,bta2,tt,ta_dE1,
-                                                    ta_dE2,ta,mixA,mixB,mixEE);
-      }
-      else  { 
-        double tt, ta, mix;
-        if (lnk < lim[0] || lnk > lim[1]) {
-          tt  = 0.0;
-          ta  = 0.0;
-          mix = 0.0;
-        } 
-        else {
-          const double r = (lnk - lim[0]) / lim[2];
-          const int i = (int) floor(r);
-          if (i + 1 >= FPTIA.N) {
-            tt  = g4 * FPTIA.tab[1][FPTIA.N - 1];
-            ta  = g4 * FPTIA.tab[5][FPTIA.N - 1];
-            mix = g4 * FPTIA.tab[9][FPTIA.N - 1];
-          }
-          else {
-            const double w = r - i;
-            const int i1 = (i + 1 >= FPTIA.N) ? FPTIA.N - 1 : i + 1;
-            tt  = g4*(w*(FPTIA.tab[1][i1]-FPTIA.tab[1][i])+FPTIA.tab[1][i]);
-            ta  = g4*(w*(FPTIA.tab[5][i1]-FPTIA.tab[5][i])+FPTIA.tab[5][i]);
-            mix = g4*(w*(FPTIA.tab[9][i1]-FPTIA.tab[9][i])+FPTIA.tab[9][i]);
-          } 
-        }  
-        ans = int_for_C_ss_tomo_limber_tatt_BB_core(PK,WK1,WK2,WS1,WS2,C11,C12,
-                                                    C21,C22,bta1,bta2,tt,ta,mix);
-      }
-      break;
-    }
-    case IA_MODEL_NLA:
-    { 
-      if (1 == EE) { 
-        ans = int_for_C_ss_tomo_limber_nla_core(PK,WK1,WK2,WS1,WS2,C11,C12);
-      }
-      else {
-        ans = 0.0;
-      }
-      break;
-    }
-    default: {
-      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL); 
-      exit(1);
-    }
-  }
-  if (0 == deriv) {
-    return ans*(dchida/(fK*fK))*ell_prefactor;
-  } 
-  else { // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
-    return ans*(dchida/fK)*ell_prefactor;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// GSL-compatible wrapper around int_for_C_ss_tomo_limber_core. Has the
-// signature `double f(double a, void* params)` required by the GSL adaptive
-// integrator. Unpacks (n1, n2, l, EE, deriv) from params, evaluates all
-// cosmology / IA / weight quantities at the single point `a`, and forwards
-// to the scalar integrand.
+// GSL-compatible Legacy scalar integrand: combines IA-model branching, 
+// FPTIA interpolation, and Limber arithmetic in one per-point function. 
+// Not vectorizable because the switch on nuisance.IA_MODEL sits inside 
+// the per-quadrature-point loop.
 //
 // Used by:
 //   - GSL adaptive integration in C_ss_tomo_limber_nointerp (single-l calls)
 //   - Boundary checks
 //
-// NOT used by the hot-path C_ss_tomo_limber, which uses fixed-grid
-// Gauss-Legendre quadrature with precomputed per-(i,p) tables instead.
+// NOT used by the hot-path C_ss_tomo_limber, which inverts the loop/switch
+// nesting and precomputes FPTIA kernels per (zl, i, p) so the inner loop
+// becomes pure arithmetic suitable for vectorization.
 // ---------------------------------------------------------------------------
 double int_for_C_ss_tomo_limber(double a, void* params)
 {
@@ -1381,7 +1311,8 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   const int n2 = (int) ar[1]; // second source bin 
   if (n1 < 0 || n1 > redshift.shear_nbin - 1 || 
       n2 < 0 || n2 > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", n1,n2); exit(1);
+    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", n1,n2); 
+    exit(1);
   }
   const double l = ar[2];
   const int EE = (int) ar[3];
@@ -1413,10 +1344,69 @@ double int_for_C_ss_tomo_limber(double a, void* params)
   const double bta1 = IA_AX[0];
   const double bta2 = IA_AX[1];
 
-  return int_for_C_ss_tomo_limber_core(a, fK, PK, growfac_a, chidchi.dchida,
-                                       ell_prefactor, l,
-                                       WK1, WK2, WS1, WS2, C11, C12,
-                                       C21,C22, bta1, bta2, EE, deriv);
+  double ans = 1.0;
+  switch(nuisance.IA_MODEL) 
+  {
+    case IA_MODEL_TATT:
+    {
+      if (0 == nuisance.IA_code) {
+        get_FPT_IA();
+      }
+      const double ell = l + 0.5;
+      const double k = ell/fK;
+      const double lnk = log(k);
+      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
+
+      double lim[3];
+      lim[0] = log(FPTIA.k_min);
+      lim[1] = log(FPTIA.k_max);
+      lim[2] = (lim[1] - lim[0])/FPTIA.N;
+
+      double K[10] = {0};
+      if (lnk >= lim[0] && lnk <= lim[1]) {
+        const double r = (lnk - lim[0]) / lim[2];
+        const int b = (int) floor(r);
+        const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+        const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+        for (int m=0; m<10; m++) {
+          K[m] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
+        }
+      }
+
+      if (1 == EE) {
+        ans = int_for_C_ss_tomo_limber_tatt_EE_core(PK,WK1,WK2,WS1,WS2,C11,C12,
+                                                    C21,C22,bta1,bta2,
+                                                    K[0],K[1],K[2],K[3],
+                                                    K[4],K[5],K[6]);
+      }
+      else {
+        ans = int_for_C_ss_tomo_limber_tatt_BB_core(PK,WK1,WK2,WS1,WS2,C11,C12,
+                                                    C21,C22,bta1,bta2,
+                                                    K[7],K[8],K[9]);
+      }
+      break;
+    }
+    case IA_MODEL_NLA:
+    { 
+      if (1 == EE) { 
+        ans = int_for_C_ss_tomo_limber_nla_core(PK,WK1,WK2,WS1,WS2,C11,C12);
+      }
+      else {
+        ans = 0.0;
+      }
+      break;
+    }
+    default: {
+      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL); 
+      exit(1);
+    }
+  }
+  if (0 == deriv) {
+    return ans*(chidchi.dchida/(fK*fK))*ell_prefactor;
+  } 
+  else { // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
+    return ans*(chidchi.dchida/fK)*ell_prefactor;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,16 +1476,13 @@ double C_ss_tomo_limber(
   )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double*** table;
+  static double*** table = NULL;
   static double lim[3];
   static int nell;
   static gsl_integration_glfixed_table* w = NULL;
-  static double** PK = NULL;   // Matter Power Spectrum
-  static double*** WKS = NULL; // WK / WS
-  static double* lx = NULL;
-  static double* ell_prefactor = NULL;
-  static double*** CXY = NULL; // IA: C1X, C2X, BTAX 
-  static double*** KIA = NULL; // IA TATT KERNELS
+  static double*** WC = NULL;   // WK, WS, C1X, C2X, BTAX 
+  static double** lx = NULL;    // l, ell_prefactor
+  static double*** KIA = NULL;  // IA TATT KERNELS (i=0,..,9), Pk(i=10)
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) 
   {
@@ -1506,7 +1493,8 @@ double C_ss_tomo_limber(
     
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
-  
+    memset(table[0][0], 0, 2*tomo.shear_Npowerspectra*nell*sizeof(double));
+
     ss_.tab = table; 
     ss_.lim[0] = lim[0]; 
     ss_.lim[1] = lim[1]; 
@@ -1521,30 +1509,25 @@ double C_ss_tomo_limber(
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
-    if (PK != NULL) free(PK);
-    PK = (double**) malloc2d(nell, (int) w->n);
-
-    if (WKS != NULL) free(WKS);
-    WKS = (double***) malloc3d(2, redshift.shear_nbin, (int) w->n);
-
     if (lx != NULL) free(lx);
-    lx = (double*) malloc1d(nell);
-    
-    if (ell_prefactor != NULL) free(ell_prefactor);
-    ell_prefactor = (double*) malloc1d(nell);
-    
-    for (int i = 0; i < nell; i++) {
-      lx[i] = exp(lim[0] + i * lim[2]);
-      const double ell = lx[i] + 0.5;
-      const double ell4 = ell * ell * ell * ell;
-      ell_prefactor[i] = lx[i]*(lx[i]-1.)*(lx[i]+1.)*(lx[i]+2.)/ell4;
-    }
+    lx = (double**) malloc2d(2, nell);
 
-    if (CXY != NULL) free(CXY); // IA: C1X, C2X, BTAX 
-    CXY = (double***) malloc3d(3, redshift.shear_nbin, (int) w->n);
-  
-    if (KIA != NULL) free(KIA); // IA TATT KERNELS
-    KIA = (double***) malloc3d(10, nell, (int) w->n);
+    if (WC != NULL) free(WC); // WK, WS, C1X, C2X, BTAX
+    const int nWC = 5;
+    WC = (double***) malloc3d(nWC, redshift.shear_nbin, (int) w->n);
+    memset(WC[0][0],0,nWC*redshift.shear_nbin*(w->n)*sizeof(double));
+
+    if (KIA != NULL) free(KIA); // IA TATT KERNELS (10), PK (11)
+    const int nKIA = 11;
+    KIA = (double***) malloc3d(nKIA, nell, (int) w->n);
+    memset(KIA[0][0],0,nKIA*nell*(w->n)*sizeof(double));
+
+    for (int i = 0; i<nell; i++) {
+      lx[0][i] = exp(lim[0] + i * lim[2]);
+      const double ell = lx[0][i] + 0.5;
+      const double ell4 = ell * ell * ell * ell;
+      lx[1][i] = lx[0][i]*(lx[0][i]-1.)*(lx[0][i]+1.)*(lx[0][i]+2.)/ell4;
+    }
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -1577,8 +1560,8 @@ double C_ss_tomo_limber(
       {
         const int b=0;
         const int p=0;
-        WKS[0][b][p] = W_kappa(cn.data[CN_A][p], cn.data[CN_FK][p], b);
-        WKS[1][b][p] = W_source(cn.data[CN_A][p], b, cn.data[CN_HOVERH0][p]); 
+        (void) W_kappa(cn.data[CN_A][p], cn.data[CN_FK][p], b);
+        (void) W_source(cn.data[CN_A][p], b, cn.data[CN_HOVERH0][p]); 
       } 
       if (nuisance.IA_MODEL == IA_MODEL_TATT) {
         if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
@@ -1600,69 +1583,26 @@ double C_ss_tomo_limber(
       const double hoh0 = cn.data[CN_HOVERH0][p];
       const double growfac_a = cn.data[CN_GROWFAC][p];
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-
       for (int b=0; b<redshift.shear_nbin; b++) {
-        // precompute: WS (only  need to be computed ns times) -----------------
-        WKS[0][b][p] = W_kappa(a, fK, b);
-        WKS[1][b][p] = W_source(a, b, hoh0);
-        // precompute: intrinsic aligment amplitudes ---------------------------
-        CXY[0][b][p] = IA_A1_Z1(a, growfac_a, b);
-        CXY[1][b][p] = IA_A2_Z1(a, growfac_a, b);
-        CXY[2][b][p] = IA_BTA_Z1(a, growfac_a, b);
+        WC[0][b][p] = W_kappa(a, fK, b);
+        WC[1][b][p] = W_source(a, b, hoh0);
+        WC[2][b][p] = IA_A1_Z1(a, growfac_a, b);
+        WC[3][b][p] = IA_A2_Z1(a, growfac_a, b);
+        WC[4][b][p] = IA_BTA_Z1(a, growfac_a, b);
       }
       for (int i=0; i<nell; i++) { 
-        const double ell = lx[i] + 0.5;
+        const double ell = lx[0][i] + 0.5;
         const double k = ell / fK;
         const double lnk = log(k);
-
-        // precompute: P(k,z) (matter power spectrum) --------------------------
-        PK[i][p] = Pdelta(k, cn.data[CN_A][p]);
-      
-        //precompute: IA TATT KERNELS ------------------------------------------
-        if(nuisance.IA_MODEL == IA_MODEL_TATT) {          
-          if (lnk < limTATT[0] || lnk > limTATT[1]) {
-            KIA[0][i][p] = 0.0; // tt     (EE)
-            KIA[1][i][p] = 0.0; // ta_dE1 (EE)
-            KIA[2][i][p] = 0.0; // ta_dE2 (EE)
-            KIA[3][i][p] = 0.0; // ta     (EE)
-            KIA[4][i][p] = 0.0; // mixA   (EE)
-            KIA[5][i][p] = 0.0; // mixB   (EE)
-            KIA[6][i][p] = 0.0; // mixEE  (EE)
-            KIA[7][i][p] = 0.0; // tt  (BB)
-            KIA[8][i][p] = 0.0; // ta  (BB)
-            KIA[9][i][p] = 0.0; // mix (BB)
-          }
-          else {
+        KIA[10][i][p] = Pdelta(k, a);
+        if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+          if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
             const double r = (lnk - limTATT[0]) / limTATT[2];
             const int b = (int) floor(r);
-            if (b+1 >= FPTIA.N) {
-              // EE
-              KIA[0][i][p] = g4*FPTIA.tab[0][FPTIA.N-1];
-              KIA[1][i][p] = g4*FPTIA.tab[2][FPTIA.N-1];
-              KIA[2][i][p] = g4*FPTIA.tab[3][FPTIA.N-1];
-              KIA[3][i][p] = g4*FPTIA.tab[4][FPTIA.N-1];
-              KIA[4][i][p] = g4*FPTIA.tab[6][FPTIA.N-1];
-              KIA[5][i][p] = g4*FPTIA.tab[7][FPTIA.N-1];
-              KIA[6][i][p] = g4*FPTIA.tab[8][FPTIA.N-1];
-              // BB
-              KIA[7][i][p] = g4*FPTIA.tab[1][FPTIA.N-1];
-              KIA[8][i][p] = g4*FPTIA.tab[5][FPTIA.N-1];
-              KIA[9][i][p] = g4*FPTIA.tab[9][FPTIA.N-1];
-            }
-            else {
-              const double dr = r - b;
-              // EE
-              KIA[0][i][p] = g4*(dr*(FPTIA.tab[0][b+1]-FPTIA.tab[0][b])+FPTIA.tab[0][b]);
-              KIA[1][i][p] = g4*(dr*(FPTIA.tab[2][b+1]-FPTIA.tab[2][b])+FPTIA.tab[2][b]);
-              KIA[2][i][p] = g4*(dr*(FPTIA.tab[3][b+1]-FPTIA.tab[3][b])+FPTIA.tab[3][b]);
-              KIA[3][i][p] = g4*(dr*(FPTIA.tab[4][b+1]-FPTIA.tab[4][b])+FPTIA.tab[4][b]);
-              KIA[4][i][p] = g4*(dr*(FPTIA.tab[6][b+1]-FPTIA.tab[6][b])+FPTIA.tab[6][b]);
-              KIA[5][i][p] = g4*(dr*(FPTIA.tab[7][b+1]-FPTIA.tab[7][b])+FPTIA.tab[7][b]);
-              KIA[6][i][p] = g4*(dr*(FPTIA.tab[8][b+1]-FPTIA.tab[8][b])+FPTIA.tab[8][b]);
-              // BB
-              KIA[7][i][p] = g4*(dr*(FPTIA.tab[1][b+1]-FPTIA.tab[1][b])+FPTIA.tab[1][b]);
-              KIA[8][i][p] = g4*(dr*(FPTIA.tab[5][b+1]-FPTIA.tab[5][b])+FPTIA.tab[5][b]);
-              KIA[9][i][p] = g4*(dr*(FPTIA.tab[9][b+1]-FPTIA.tab[9][b])+FPTIA.tab[9][b]);
+            const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+            const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+            for (int m=0; m<10; m++) {
+              KIA[m][i][p] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
             }
           }
         }
@@ -1685,54 +1625,49 @@ double C_ss_tomo_limber(
               log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",Z1NZ, Z2NZ); 
               exit(1);
             }
+            const double* restrict fK     = cn.data[CN_FK];
+            const double* restrict dchida = cn.data[CN_DCHIDA];
+            const double* restrict wt     = cn.data[CN_WT];
+            const double* restrict PK     = KIA[10][i];
+            const double* restrict WK1    = WC[0][Z1NZ];
+            const double* restrict WK2    = WC[0][Z2NZ];
+            const double* restrict WS1    = WC[1][Z1NZ];
+            const double* restrict WS2    = WC[1][Z2NZ];
+            const double* restrict C11    = WC[2][Z1NZ];
+            const double* restrict C12    = WC[2][Z2NZ];
+            const double* restrict C21    = WC[3][Z1NZ];
+            const double* restrict C22    = WC[3][Z2NZ];
+            const double* restrict bta1   = WC[4][Z1NZ];
+            const double* restrict bta2   = WC[4][Z2NZ];
+            const double* restrict tt     = KIA[0][i];
+            const double* restrict ta_dE1 = KIA[1][i];
+            const double* restrict ta_dE2 = KIA[2][i];
+            const double* restrict ta     = KIA[3][i];
+            const double* restrict mixA   = KIA[4][i];
+            const double* restrict mixB   = KIA[5][i];
+            const double* restrict mixEE  = KIA[6][i];
+            const double* restrict ttbb   = KIA[7][i];
+            const double* restrict tabb   = KIA[8][i];
+            const double* restrict mixbb  = KIA[9][i];
+            const double ell_prefactor    = lx[1][i];
             double sum_EE = 0.0;
             double sum_BB = 0.0;
             #pragma omp simd reduction(+:sum_EE, sum_BB)
             for (int p = 0; p < cn.npts; p++) {
-              const double a = cn.data[CN_A][p];
-              const double fK = cn.data[CN_FK][p];
-              const double dchida = cn.data[CN_DCHIDA][p];
-              const double wt = cn.data[CN_WT][p];
-              
-              const double WK1 = WKS[0][Z1NZ][p];
-              const double WK2 = WKS[0][Z2NZ][p];
-              const double WS1 = WKS[1][Z1NZ][p];
-              const double WS2 = WKS[1][Z2NZ][p];
-
-              const double C11 = CXY[0][Z1NZ][p]; 
-              const double C12 = CXY[0][Z2NZ][p];
-              const double C21 = CXY[1][Z1NZ][p];
-              const double C22 = CXY[1][Z2NZ][p];
-              const double bta1 = CXY[2][Z1NZ][p];
-              const double bta2 = CXY[2][Z2NZ][p];
-           
-              const double tt = KIA[0][i][p];
-              const double ta_dE1 = KIA[1][i][p];
-              const double ta_dE2 = KIA[2][i][p];
-              const double ta = KIA[3][i][p];
-              const double mixA = KIA[4][i][p];
-              const double mixB = KIA[5][i][p];
-              const double mixEE = KIA[6][i][p];
-              
-              const double amp = (dchida/(fK*fK))*ell_prefactor[i];
-
-              // EE 
+              const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_prefactor;
               const double ansEE = 
-                int_for_C_ss_tomo_limber_tatt_EE_core(PK[i][p],WK1,WK2,WS1,
-                                                      WS2,C11,C12,C21,C22,
-                                                      bta1,bta2,tt,ta_dE1,
-                                                      ta_dE2,ta,mixA,mixB,mixEE);
-              // BB 
-              const double ttbb = KIA[7][i][p];
-              const double tabb = KIA[8][i][p];
-              const double mixbb = KIA[9][i][p];
-              
+                int_for_C_ss_tomo_limber_tatt_EE_core(PK[p],WK1[p],WK2[p],WS1[p],
+                                                      WS2[p],C11[p],C12[p],C21[p],C22[p],
+                                                      bta1[p],bta2[p],tt[p],ta_dE1[p],
+                                                      ta_dE2[p],ta[p],mixA[p],mixB[p],
+                                                      mixEE[p]);
               const double ansBB = 
-                int_for_C_ss_tomo_limber_tatt_BB_core(PK[i][p],WK1,WK2,WS1,
-                                                      WS2,C11,C12,C21,C22,bta1,
-                                                      bta2,ttbb,tabb,mixbb);             
-              sum_EE += ansEE*amp*wt;
-              sum_BB += ansBB*amp*wt;
+                int_for_C_ss_tomo_limber_tatt_BB_core(PK[p],WK1[p],WK2[p],WS1[p],
+                                                      WS2[p],C11[p],C12[p],C21[p],C22[p],
+                                                      bta1[p],bta2[p],ttbb[p],tabb[p],
+                                                      mixbb[p]);
+              sum_EE += ansEE*amp*wt[p];
+              sum_BB += ansBB*amp*wt[p];
             }
             table[0][k][i] = sum_EE;
             table[1][k][i] = sum_BB;
@@ -1753,28 +1688,27 @@ double C_ss_tomo_limber(
               exit(1);
             }
 
+            const double* restrict fK     = cn.data[CN_FK];
+            const double* restrict dchida = cn.data[CN_DCHIDA];
+            const double* restrict wt     = cn.data[CN_WT];
+            const double* restrict PK     = KIA[10][i];
+            const double* restrict WK1    = WC[0][Z1NZ];
+            const double* restrict WK2    = WC[0][Z2NZ];
+            const double* restrict WS1    = WC[1][Z1NZ];
+            const double* restrict WS2    = WC[1][Z2NZ];
+            const double* restrict C11    = WC[2][Z1NZ];
+            const double* restrict C12    = WC[2][Z2NZ];
+            const double ell_prefactor    = lx[1][i];
+            
             double sum_EE = 0.0;
             #pragma omp simd reduction(+:sum_EE)
             for (int p = 0; p < cn.npts; p++) {
-              const double fK = cn.data[CN_FK][p];
-              const double dchida = cn.data[CN_DCHIDA][p];
-              const double wt = cn.data[CN_WT][p];
-              
-              const double WK1 = WKS[0][Z1NZ][p];
-              const double WK2 = WKS[0][Z2NZ][p];
-              const double WS1 = WKS[1][Z1NZ][p];
-              const double WS2 = WKS[1][Z2NZ][p];
-
-              const double C11 = CXY[0][Z1NZ][p]; 
-              const double C12 = CXY[0][Z2NZ][p];
-
-              const double ans = int_for_C_ss_tomo_limber_nla_core(PK[i][p],WK1,
-                                                                   WK2,WS1,WS2,
-                                                                   C11,C12);
-              sum_EE += ans*(dchida/(fK*fK))*ell_prefactor[i]*wt;
+              const double ans = int_for_C_ss_tomo_limber_nla_core(PK[p],WK1[p],
+                                                                   WK2[p],WS1[p],WS2[p],
+                                                                   C11[p],C12[p]);
+              sum_EE += ans*(dchida[p]/(fK[p]*fK[p]))*ell_prefactor*wt[p];
             }
             table[0][k][i] = sum_EE;
-            table[1][k][i] = 0.0;
           }
         }
         break;
@@ -1785,7 +1719,7 @@ double C_ss_tomo_limber(
         exit(1);
       }
     }
-   
+
     free_cosmo_nodes(&cn);
 
     cache[0] = cosmology.random;
@@ -1813,87 +1747,20 @@ double C_ss_tomo_limber(
   return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 // ----------------------------------------------------------------------------
 // optimization: real-space 2pt interpolates ~100,000 ells. The vectorized fill
 // is faster than per-ell lookups. GCC cannot auto-vectorize the indirect 
 // table access (gather), so we provide an explicit AVX2 path using i32gather_pd
 // -----------------------------------------------------------------------------
 void C_ss_tomo_limber_fill(
-    const int nz, 
-    const int lmin, 
-    const int lmax,
+    const int nz, const int lmin, const int lmax,
     const double* restrict ln_ell,
-    double* restrict out_EE,
-    double* restrict out_BB
-  )
+    double* restrict out_EE, double* restrict out_BB)
 {
-  const double* restrict tab_EE = ss_.tab[0][nz];
-  const double* restrict tab_BB = ss_.tab[1][nz];
-  const double inv_dx = 1.0 / ss_.lim[2];
-  const double a = ss_.lim[0];
-  const int n = ss_.nell;
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int l = lmin; l < lmax; l++) { // inline interpol 1D
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const double i = floor(r);
-    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
-    const int ic = (int) rc;
-    const double t = r - rc;
-    out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
-    out_BB[l] = tab_BB[ic] + t * (tab_BB[ic + 1] - tab_BB[ic]);
-  }
-#else
-  const v4d va = simde_mm256_set1_pd(a);
-  const v4d vinv_dx = simde_mm256_set1_pd(inv_dx);
-  const v4d vzero = simde_mm256_setzero_pd();
-  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const v4i vone = simde_mm_set1_epi32(1); // this is [1 | 1 | 1 | 1]
-
-  int l = lmin;
-  for (; l <= lmax - 4; l += 4) {
-    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx); // double r
-    v4d vi = simde_mm256_floor_pd(vr); // const int i = floor(r) (but no cast)
-    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi,vzero),vmax_idx); // ic (as double)
-    v4d vt = simde_mm256_sub_pd(vr, vicdb); // t = r - ic;
-
-    v4i vic = simde_mm256_cvttpd_epi32(vicdb); // cast from double to int
-    v4i vicp1 = simde_mm_add_epi32(vic, vone); // this is ic+1
-    
-    // Gather takes an array of indices and loads one element per lane
-    //   i32gather_pd(base_ptr, index_register, scale)
-    //     - base_ptr:       starting address of the table (tab_EE or tab_BB)
-    //     - index_register: 4 int32 indices packed in a 128-bit register (vidx)
-    //     - scale:          byte stride per index unit: 8 because sizeof(dbl)=8
-    // Gather is the operation that prevents auto-vectorization w/o SIMDE
-    v4d vtab0_EE = simde_mm256_i32gather_pd(tab_EE, vic, 8);   // tab_EE[ic]
-    v4d vtab1_EE = simde_mm256_i32gather_pd(tab_EE, vicp1, 8); // tab_EE[ic+1]
-
-    v4d vslope_EE   = simde_mm256_sub_pd(vtab1_EE, vtab0_EE);    // tab_EE slope
-    v4d vout_EE = simde_mm256_fmadd_pd(vt, vslope_EE, vtab0_EE); // interp EE
-
-    // Gather from BB table
-    v4d vtab0_BB = simde_mm256_i32gather_pd(tab_BB, vic, 8);   // tab_BB[ic]
-    v4d vtab1_BB = simde_mm256_i32gather_pd(tab_BB, vicp1, 8); // tab_BB[ic+1]
-    v4d vslope_BB = simde_mm256_sub_pd(vtab1_BB, vtab0_BB);       // tab_BB slope
-    v4d vout_BB  = simde_mm256_fmadd_pd(vt, vslope_BB, vtab0_BB); // interp BB
-
-    simde_mm256_storeu_pd(out_EE + l, vout_EE); // store EE results
-    simde_mm256_storeu_pd(out_BB + l, vout_BB); // store BB results
-  }
-  for (; l < lmax; l++) { // Scalar tail
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
-    const double t = r - ic;
-    out_EE[l] = tab_EE[ic] + t * (tab_EE[ic + 1] - tab_EE[ic]);
-    out_BB[l] = tab_BB[ic] + t * (tab_BB[ic + 1] - tab_BB[ic]);
-  }
-#endif
+  const double* tab[2] = { ss_.tab[0][nz], ss_.tab[1][nz] };
+  double* dst[2] = { out_EE, out_BB };
+  limber_fill_interp(2, tab, dst, lmin, lmax, ln_ell,
+                     ss_.lim[0], 1.0/ss_.lim[2], ss_.nell);
 }
 
 // ---------------------------------------------------------------------------
@@ -1904,189 +1771,84 @@ void C_ss_tomo_limber_fill(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-static double int_for_C_gs_tomo_limber_core(
-    const double a,
-    const double fK,
+inline double int_for_C_gs_tomo_limber_bias_oneloop_core(
+    const double k,
     const double PK,
-    const double growfac_a,
-    const double hoverh0,
-    const double dchida,
-    const double ell_prefactor,
-    const double ell_prefactor2,
-    const double l,
-    const int nl, 
-    const int ns,
+    const double g4,
+    const double b2,
+    const double bs2,
+    const double b3,
+    const double bk,
+    const double d1d2,
+    const double d1s2,
+    const double d1p3
+  ) // inline necessary for vectorization
+{
+   return 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
+}
+
+inline double int_for_C_gs_tomo_limber_nla_core(
+    const double PK,
     const double WK, 
     const double WS,
-    const double WGAL, 
+    const double WGAL,
     const double WMAG,
-    const int nonlinear_bias
-  ) 
+    const double WRSD,
+    const double C1,
+    const double b1,
+    const double bmag,
+    const double oneloop,
+    const double bmag_ell_prefactor
+  ) // inline necessary for vectorization
 {
-  const double ell = l + 0.5;
-  const double z = 1.0/a - 1.0;
-  const double b1 = gb1(z, nl);
-  const double bmag = gbmag(z, nl);
+  // First term: delta_g_D x (delta_kappa + delta_IA)
+  //             Here one-loop bias should only multiply
+  //             linear part of IA (otherwise it is 2-loop)
+  // Second Term: delta_RSD x (delta_kappa + delta_IA) (RSD)
+  // Third Term:  delta_mu  x (delta_kappa + delta_IA) (magnification)
+  // Where galaxy bias shows up? delta_g_D = b(z) x delta_m
+  // For RSD delta_RSD \propto velocity divergence (not galaxy)
+  // For delta_mu - magnification depends on matter
+  const double ft = WGAL*b1*(WK*PK - WS*C1*PK) + WGAL*oneloop*(WK-WS*C1);
+  const double st = WRSD*(WK*PK - WS*C1*PK);
+  const double tt = WMAG*bmag_ell_prefactor*bmag*(WK*PK - WS*C1*PK);
+  return ft + st + tt;
+}
 
-  double ans;
-
-  switch(nuisance.IA_MODEL)
-  {
-    case IA_MODEL_TATT:
-    {
-      if (1 == include_HOD_GX) {
-        log_fatal("HOD NOT IMPLEMENTED");
-        exit(1);
-      }
-
-      if (0 == nuisance.IA_code){
-        get_FPT_IA();
-      }
-      
-      const double k = ell/fK;
-      const double lnk = log(k);
-      double lim[3];
-      lim[0] = log(FPTIA.k_min);
-      lim[1] = log(FPTIA.k_max);
-      lim[2] = (lim[1] - lim[0])/FPTIA.N;
-      
-      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-
-      double mixA, mixB, ta_dE1, ta_dE2;
-      if (lnk < lim[0] || lnk > lim[1]) {
-        mixA = 0.0; mixB = 0.0; ta_dE1 = 0.0; ta_dE2 = 0.0;
-      }
-      else {
-        const double r = (lnk - lim[0]) / lim[2];
-        const int i = (int) floor(r);
-        if (i + 1 >= FPTIA.N)
-        {
-          mixA   = g4 * FPTIA.tab[6][FPTIA.N - 1];
-          mixB   = g4 * FPTIA.tab[7][FPTIA.N - 1];
-          ta_dE1 = g4 * FPTIA.tab[2][FPTIA.N - 1];
-          ta_dE2 = g4 * FPTIA.tab[3][FPTIA.N - 1];
-        }
-        else {
-          const double t = r - i;
-          mixA   = g4 * (t * (FPTIA.tab[6][i+1] - FPTIA.tab[6][i]) + FPTIA.tab[6][i]);
-          mixB   = g4 * (t * (FPTIA.tab[7][i+1] - FPTIA.tab[7][i]) + FPTIA.tab[7][i]);
-          ta_dE1 = g4 * (t * (FPTIA.tab[2][i+1] - FPTIA.tab[2][i]) + FPTIA.tab[2][i]);
-          ta_dE2 = g4 * (t * (FPTIA.tab[3][i+1] - FPTIA.tab[3][i]) + FPTIA.tab[3][i]);
-        }
-      }
-
-      double WRSD = 0.0;
-      if (1 == include_RSD_GS) {
-        const double chi_0 = ell/k;
-        const double chi_1 = (ell+1.)/k;
-        const double a_0 = a_chi(chi_0);
-        const double a_1 = a_chi(chi_1);
-        WRSD = W_RSD(ell, a_0, a_1, nl);
-      }
-
-      double oneloop = 0.0;
-      if (1 == nonlinear_bias)
-      { 
-        if (0 == nuisance.IA_code){
-          get_FPT_bias();
-        }
-        
-        lim[0] = log(FPTbias.k_min);
-        lim[1] = log(FPTbias.k_max);
-        lim[2] = (lim[1] - lim[0])/FPTbias.N;
-
-        const double d1d2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double d1s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(FPTbias.tab[2], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-
-        const double b2 = gb2(z, nl);
-        const double bs2 = gbs2(z, nl);
-        const double b3 = gb3(z, nl);
-        const double bk = gbK(z, nl);
-
-        oneloop = 0.5*g4*(b2 * d1d2 + bs2 * d1s2 + b3 * d1p3) + (bk * k * k * PK);
-      }
-      
-
-      const double C1ZS  = IA_A1_Z1(a, growfac_a, ns);
-      const double btazs = IA_BTA_Z1(a, growfac_a, ns);
-      const double C2ZS  = IA_A2_Z1(a, growfac_a, ns);
-
-      // TODO: IS THIS CONSISTENT (WRSD, ONELOOP AND IA CROSS TERMS)?
-      ans =  WK*((WGAL*b1+WMAG*ell_prefactor*bmag+WRSD)*PK+WGAL*oneloop) 
-            -WS*(WGAL*b1+WMAG*ell_prefactor*bmag)*( C1ZS*PK
-                                                    + C1ZS*btazs*(ta_dE1+ta_dE2) 
-                                                    - 5*C2ZS*(mixA+mixB));
-      break;
-    }
-    case IA_MODEL_NLA:
-    {
-      if (include_HOD_GX == 1) {
-        log_fatal("HOD NOT IMPLEMENTED");
-        exit(1);
-      }
-
-      double WRSD = 0.0;
-      if (1 == include_RSD_GS) {
-        const double k = ell/fK;
-        const double chi_0 = ell/k;
-        const double chi_1 = (ell+1.)/k;
-        const double a_0 = a_chi(chi_0);
-        const double a_1 = a_chi(chi_1);
-        WRSD = W_RSD(ell, a_0, a_1, nl);
-      }
-
-      double oneloop = 0.0;
-      
-      if (1 == nonlinear_bias) {
-        if (0 == nuisance.IA_code){
-          get_FPT_bias();
-        }
-        
-        const double k = ell/fK;
-        const double lnk = log(k);
-        double lim[3];
-        lim[0] = log(FPTbias.k_min);
-        lim[1] = log(FPTbias.k_max);
-        lim[2] = (lim[1] - lim[0])/FPTbias.N;
-
-        const double d1d2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(FPTbias.tab[0], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double d1s2 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(FPTbias.tab[2], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-        
-        const double d1p3 = (lnk<lim[0] || lnk>lim[1]) ? 0.0 :
-          interpol1d(FPTbias.tab[5], FPTbias.N, lim[0], lim[1], lim[2], lnk);
-
-        const double b2 = gb2(z, nl);
-        const double bs2 = gbs2(z, nl);
-        const double b3 = gb3(z, nl);
-        const double bk = gbK(z, nl);
-        
-        const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-
-        oneloop = 0.5*g4*(b2*d1d2 + bs2*d1s2 + b3*d1p3) + (bk * k * k * PK);
-      }
-          
-      const double C1ZS = IA_A1_Z1(a, growfac_a, ns);
-
-      ans = (WK - WS*C1ZS)*((WGAL*b1 + WMAG*ell_prefactor*bmag + WRSD)*PK 
-                            + WGAL*oneloop);
-      break;
-    }
-    default:
-    {
-      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL);
-      exit(1);
-    }
-  }
-  return ans*(dchida/(fK*fK))*ell_prefactor2;
+inline double int_for_C_gs_tomo_limber_tatt_core(
+    const double PK,
+    const double WK, 
+    const double WS,
+    const double WGAL,
+    const double WMAG,
+    const double WRSD, 
+    const double C1,
+    const double C2,
+    const double BTA,
+    const double ta_dE1,
+    const double ta_dE2,
+    const double mixA,
+    const double mixB,
+    const double b1,
+    const double bmag,
+    const double oneloop,
+    const double bmag_ell_prefactor
+  ) // inline necessary for vectorization
+{
+  // First term: delta_g_D x (delta_kappa + delta_IA)
+  //             Here one-loop bias should only multiply
+  //             linear part of IA (otherwise it is 2-loop)
+  // Second Term: delta_RSD x (delta_kappa + delta_IA) (RSD)
+  // Third Term:  delta_mu  x (delta_kappa + delta_IA) (magnification)
+  // Where galaxy bias shows up? delta_g_D = b(z) x delta_m
+  // For RSD delta_RSD \propto velocity divergence (not galaxy)
+  // For delta_mu - magnification depends on matter
+  const double IATATT = C1*BTA*(ta_dE1 + ta_dE2) - 5.0*C2*(mixA + mixB);
+  const double IA = C1*PK + IATATT;
+  const double ft = WGAL*b1*(WK*PK - WS*IA) + WGAL*oneloop*(WK - WS*C1); 
+  const double st = WRSD*(WK*PK - WS*IA);
+  const double tt = (WMAG*bmag_ell_prefactor*bmag)*(WK*PK - WS*IA);
+  return ft + st + tt;
 }
 
 // ---------------------------------------------------------------------------
@@ -2095,6 +1857,10 @@ static double int_for_C_gs_tomo_limber_core(
 
 double int_for_C_gs_tomo_limber(double a, void* params)
 {
+  if (include_HOD_GX == 1) {
+    log_fatal("HOD NOT IMPLEMENTED");
+    exit(1);
+  }
   if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true");
     exit(1);
@@ -2111,6 +1877,7 @@ double int_for_C_gs_tomo_limber(double a, void* params)
   const int nonlinear_bias = ar[3];
   
   const double growfac_a = growfac(a);
+  const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
   struct chis chidchi = chi_all(a);
   const double hoverh0 = hoverh0v2(a, chidchi.dchida);
   const double ell = l + 0.5;
@@ -2128,11 +1895,93 @@ double int_for_C_gs_tomo_limber(double a, void* params)
   const double WGAL = W_gal(a, nl, hoverh0);
   const double WMAG = W_mag(a, fK, nl);
 
-  return int_for_C_gs_tomo_limber_core(a, fK, PK, growfac_a, hoverh0,
-                                       chidchi.dchida, ell_prefactor, 
-                                       ell_prefactor2, l,
-                                       nl, ns, WK, WS, WGAL, WMAG, 
-                                       nonlinear_bias);
+  double WRSD = 0.0;
+  if (1 == include_RSD_GS) {
+    const double k = ell/fK;
+    const double chi_0 = ell/k;
+    const double chi_1 = (ell+1.)/k;
+    const double a_0 = a_chi(chi_0);
+    const double a_1 = a_chi(chi_1);
+    WRSD = W_RSD(ell, a_0, a_1, nl);
+  }
+
+  const double b1 = gb1(z, nl);
+  const double bmag = gbmag(z, nl);
+
+  const double C1  = IA_A1_Z1(a, growfac_a, ns);
+  const double C2  = IA_A2_Z1(a, growfac_a, ns);
+  const double BTA = IA_BTA_Z1(a, growfac_a, ns);
+
+  if (1 == include_HOD_GX) {
+    log_fatal("HOD NOT IMPLEMENTED");
+    exit(1);
+  }
+
+  double b1l = 0.0;
+  if (1 == nonlinear_bias) {
+    if (0 == nuisance.IA_code) get_FPT_bias();
+    const double lnk = log(k);
+    double lim[3];
+    lim[0] = log(FPTbias.k_min);
+    lim[1] = log(FPTbias.k_max);
+    lim[2] = (lim[1] - lim[0])/FPTbias.N;
+    double d1d2 = 0.0, d1s2 = 0.0, d1p3 = 0.0;
+    if (lnk >= lim[0] && lnk <= lim[1]) {
+      const double r = (lnk - lim[0]) / lim[2];
+      const int b = (int) floor(r);
+      const double dr = (b+1 >= FPTbias.N) ? 0.0 : r - b;
+      const int idx = (b+1 >= FPTbias.N) ? FPTbias.N - 2 : b;
+      d1d2 = LERP(FPTbias.tab[0], idx, dr);
+      d1s2 = LERP(FPTbias.tab[2], idx, dr);
+      d1p3 = LERP(FPTbias.tab[5], idx, dr);
+    }
+    const double b2 = gb2(z, nl);
+    const double bs2 = gbs2(z, nl);
+    const double b3 = gb3(z, nl);
+    const double bk = gbK(z, nl);
+    b1l = int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK,g4,b2,bs2,b3,
+                                                     bk,d1d2,d1s2,d1p3);
+  }
+
+  double ans;
+  switch(nuisance.IA_MODEL)
+  {
+    case IA_MODEL_TATT:
+    {
+      if (0 == nuisance.IA_code) get_FPT_IA();
+      const double lnk = log(k);
+      double lim[3];
+      lim[0] = log(FPTIA.k_min);
+      lim[1] = log(FPTIA.k_max);
+      lim[2] = (lim[1] - lim[0])/FPTIA.N;
+      double K[4] = {0};
+      if (lnk >= lim[0] && lnk <= lim[1]) {
+        const double r = (lnk - lim[0]) / lim[2];
+        const int b = (int) floor(r);
+        const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+        const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+        for (int m=0; m<4; m++) {
+          K[m] = g4*LERP(FPTIA.tab[GS_IA_SRC[m]], idx, dr);
+        }
+      }
+      ans = int_for_C_gs_tomo_limber_tatt_core(PK,WK,WS,WGAL,WMAG,WRSD,C1,C2,
+                                               BTA,K[2],K[3],K[0],K[1],b1,
+                                               bmag,b1l,ell_prefactor);
+      break;
+    }
+    case IA_MODEL_NLA:
+    {
+      ans = int_for_C_gs_tomo_limber_nla_core(PK,WK,WS,WGAL,WMAG,WRSD,C1,
+                                              b1,bmag,b1l,ell_prefactor);
+      break;
+    }
+    default:
+    {
+      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL);
+      exit(1);
+    }
+  } 
+  return ans*(chidchi.dchida/(fK*fK))*ell_prefactor2;
 }
 
 // ---------------------------------------------------------------------------
@@ -2216,13 +2065,11 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
   static int nell;
   static double lim[3];
   static gsl_integration_glfixed_table* w = NULL;
-  static double* lx = NULL;
-  static double* ell_prefactor = NULL;
-  static double* ell_prefactor2 = NULL;
-  static double*** PK = NULL;
-  static double*** WXL = NULL;
-  static double**** WXS = NULL;
-
+  static double** lx = NULL; // l, ell_prefactor, ell_prefactor2
+  static double*** WB = NULL; // WGAL, WMAG, B1, BMAG, B2, BS2, B3, BK
+  static double**** WC = NULL; // WK, WS, C1X, C2X, BTAX
+  static double**** KIA = NULL; // PK, WRSD, IA TATT KERNELS
+  
   if (NULL == table || fdiff2(cache[6], Ntable.random)) {
     nell   = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
@@ -2233,6 +2080,7 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       free(table);
     }
     table = (double**) malloc2d(tomo.ggl_Npowerspectra, nell);
+    memset(table[0], 0, tomo.ggl_Npowerspectra*nell*sizeof(double));
 
     gs_.tab    = table;
     gs_.lim[0] = lim[0];
@@ -2249,32 +2097,30 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     w = malloc_gslint_glfixed(szint);
 
     if (lx != NULL) free(lx);
-    lx = (double*) malloc1d(nell);
+    lx = (double**) malloc2d(3, nell);
     
-    if (ell_prefactor != NULL) free(ell_prefactor);
-    ell_prefactor = (double*) malloc1d(nell);
+    if (WB != NULL) free(WB); // WGAL, WMAG, B1, BMAG, B2, BS2, B3, BK 
+    WB = (double***) malloc3d(10, redshift.clustering_nbin, (int) w->n);
+    memset(WB[0][0], 0, 10*redshift.clustering_nbin*(w->n)*sizeof(double));
 
-    if (ell_prefactor2 != NULL) free(ell_prefactor2);
-    ell_prefactor2 = (double*) malloc1d(nell);
+    if (WC != NULL) free(WC); // WK, WS, C1X, C2X, BTAX
+    WC = (double****) malloc4d(5, redshift.clustering_nbin, 
+                                  redshift.shear_nbin, (int) w->n);
+    memset(WC[0][0][0],0,5*redshift.clustering_nbin*
+                         redshift.shear_nbin*(w->n)*sizeof(double));
+
+    if (KIA != NULL) free(KIA); // PK, WRSD, IA TATT KERNELS
+    KIA = (double****) malloc4d(10, redshift.clustering_nbin, nell, (int) w->n);
+    memset(KIA[0][0][0],0,10*redshift.clustering_nbin*nell*(w->n)*sizeof(double));
 
     #pragma omp parallel for
     for (int i = 0; i < nell; i++) {
-      lx[i] = exp(lim[0] + i * lim[2]);
-      const double ell = lx[i] + 0.5;
-      ell_prefactor[i] = lx[i]*(lx[i]+1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
-      const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
-      ell_prefactor2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
+      lx[0][i] = exp(lim[0] + i * lim[2]);
+      const double ell = lx[0][i] + 0.5;
+      lx[1][i] = lx[0][i]*(lx[0][i]+1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
+      const double tmp = (lx[0][i]-1.)*lx[0][i]*(lx[0][i]+1.)*(lx[0][i]+2.);
+      lx[2][i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
     }
-
-    if (PK != NULL) free(PK);
-    PK = (double***) malloc3d(redshift.clustering_nbin, nell, (int) w->n);
-
-    if (WXL != NULL) free(WXL);
-    WXL = (double***) malloc3d(2, redshift.clustering_nbin, (int) w->n);
-    
-    if (WXS != NULL) free(WXS);
-    WXS = (double****) malloc4d(2, redshift.clustering_nbin, 
-                                redshift.shear_nbin, (int) w->n);
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -2286,12 +2132,6 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       fdiff2(cache[6], Ntable.random) ||
       fdiff2(cache[7], nuisance.random_galaxy_bias))
   {
-    for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static vars     
-      (void) C_gs_tomo_limber_nointerp(exp(lim[0]), ZL(k), ZS(k), 1);
-    }
-    
-    const int nonlinear_bias = has_b2_galaxies();
-
     // ------------------------------------------------------------------
     // optimization: amin and amax are dependent of redshift bin
     //               we can compute cosmo quantities and nlens times. 
@@ -2309,60 +2149,194 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       }
     }
 
+    const int nonlinear_bias = has_b2_galaxies();
+    double limTATT[3];
+    double limbias[3];
+    { // init static vars begin ------------------------------------------------
+      for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static vars     
+        (void) C_gs_tomo_limber_nointerp(exp(lim[0]), ZL(k), ZS(k), 1);
+      }
+      {
+        const int i = 0;
+        const int zl = 0;
+        const int p = 0;
+        const cosmo_nodes* cn = &cn_all[zl];
+        (void) W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
+        (void) W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
+        (void) gb1(0.1, zl);
+        (void) gbmag(0.1, zl);
+        if (1 == nonlinear_bias) {
+          (void) gb2(0.1, zl);
+          (void) gbs2(0.1, zl);
+          (void) gb3(0.1, zl);
+          (void) gbK(0.1, zl);
+        }
+        if (1 == include_RSD_GS) {
+          (void) a_chi(0.9);
+          (void) W_RSD(100, 0.9, 0.95, zl);
+        } 
+      }
+      if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+        if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
+          get_FPT_IA();
+        }
+        limTATT[0] = log(FPTIA.k_min);
+        limTATT[1] = log(FPTIA.k_max);
+        limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
+      }
+      if (1 == nonlinear_bias) { 
+        if (0 == nuisance.IA_code){
+          get_FPT_bias();
+        }
+        limbias[0] = log(FPTbias.k_min);
+        limbias[1] = log(FPTbias.k_max);
+        limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
+      }
+    } // init static vars ends -------------------------------------------------
+
     // -------------------------------------------------------------------------
-    // optimization: pre-compute cosmo quantities and prefactors and IA kernels
+    // optimization: pre-compute cosmo quantities and prefactors and IA/bias
     // -------------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int zl=0; zl<redshift.clustering_nbin; zl++) {
       for (int p = 0; p < cn_all[0].npts; p++) {
         const cosmo_nodes* cn = &cn_all[zl];
-
-        for (int i = 0; i < nell; i++) { // precompute P(k,z)
-          const double ell = lx[i] + 0.5;
-          const double k = ell / cn->data[CN_FK][p];
-          PK[zl][i][p] = Pdelta(k, cn->data[CN_A][p]);
-        }
+        const double a  =  cn->data[CN_A][p];
+        const double z  = 1.0/a - 1.0;
+        const double growfac_a = cn->data[CN_GROWFAC][p];
 
         // precompute lens weights 
-        WXL[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
-        WXL[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
+        WB[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
+        WB[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
+
+        // precompute galaxy biases
+        WB[2][zl][p] = gb1(z, zl);
+        WB[3][zl][p] = gbmag(z, zl);
+        if (1 == nonlinear_bias) {
+          WB[4][zl][p] = gb2(z, zl);
+          WB[5][zl][p] = gbs2(z, zl);
+          WB[6][zl][p] = gb3(z, zl);
+          WB[7][zl][p] = gbK(z, zl);
+        } 
 
         // precompute source weights
         for (int zs = 0; zs < redshift.shear_nbin; zs++) {
-          WXS[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
-          WXS[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
+          WC[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
+          WC[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
+          // precompute: intrinsic aligment amplitudes -------------------------
+          WC[2][zl][zs][p] = IA_A1_Z1(a, growfac_a, zs);
+          WC[3][zl][zs][p] = IA_A2_Z1(a, growfac_a, zs);
+          WC[4][zl][zs][p] = IA_BTA_Z1(a, growfac_a, zs);
         }
       }
     }
 
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int zl=0; zl<redshift.clustering_nbin; zl++) {
+      for (int p = 0; p < cn_all[0].npts; p++) {
+        for (int i = 0; i < nell; i++) { 
+          const cosmo_nodes* cn = &cn_all[zl];
+          const double a  =  cn->data[CN_A][p];
+          const double fK = cn->data[CN_FK][p];
+          const double ell = lx[0][i] + 0.5;
+          const double k = ell / fK;
+          const double lnk = log(k);
+          KIA[0][zl][i][p] = Pdelta(k, a);
+          if (1 == include_RSD_GS) {
+            const double chi_0 = ell/k;
+            const double chi_1 = (ell + 1.0)/k;
+            const double a_0 = a_chi(chi_0);
+            const double a_1 = a_chi(chi_1);
+            KIA[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
+          }
+          if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+            if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
+              const double r = (lnk - limTATT[0]) / limTATT[2];
+              const int b = (int) floor(r);
+              const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+              const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+              for (int m=0; m<4; m++) {
+                KIA[2+m][zl][i][p] = LERP(FPTIA.tab[GS_IA_SRC[m]], idx, dr);
+              }
+            }
+          }
+          if (1 == nonlinear_bias) {
+            if (lnk >= limbias[0] && lnk <= limbias[1]) {
+              const double r = (lnk - limbias[0]) / limbias[2];
+              const int b = (int) floor(r);
+              const double dr = (b+1 >= FPTbias.N) ? 0.0 : r - b;
+              const int idx = (b+1 >= FPTbias.N) ? FPTbias.N - 2 : b;
+              for (int m=0; m<3; m++) {
+                KIA[6+m][zl][i][p] = LERP(FPTbias.tab[GS_BIAS_SRC[m]], idx, dr);
+              }
+            }
+          }
+        } 
+      }
+    }
     #pragma omp parallel for collapse(2) schedule(static)
-    for (int k = 0; k<tomo.ggl_Npowerspectra; k++) {
+    for (int j=0; j<tomo.ggl_Npowerspectra; j++) {
       for (int i = 0; i<nell; i++) {
-        const int ZLNZ = ZL(k);
-        const int ZSNZ = ZS(k);
+        const int ZLNZ = ZL(j);
+        const int ZSNZ = ZS(j);
         const cosmo_nodes* cn = &cn_all[ZLNZ];
         
+        const double ell = lx[0][i] + 0.5;
+        const double ell_prefactor  = lx[1][i];
+        const double ell_prefactor2 = lx[2][i];
+
+        const double* restrict fK      = cn->data[CN_FK];
+        const double* restrict growfac = cn->data[CN_GROWFAC];
+        const double* restrict dchida  = cn->data[CN_DCHIDA];
+        const double* restrict wt      = cn->data[CN_WT];
+
+        const double* restrict WK      = WC[0][ZLNZ][ZSNZ];
+        const double* restrict WS      = WC[1][ZLNZ][ZSNZ];
+        const double* restrict C1      = WC[2][ZLNZ][ZSNZ];
+        const double* restrict C2      = WC[3][ZLNZ][ZSNZ];
+        const double* restrict BTA     = WC[4][ZLNZ][ZSNZ];
+
+        const double* restrict WRSD    = KIA[1][ZLNZ][i];
+        const double* restrict WGAL    = WB[0][ZLNZ];
+        const double* restrict WMAG    = WB[1][ZLNZ];
+        const double* restrict b1      = WB[2][ZLNZ];
+        const double* restrict bmag    = WB[3][ZLNZ];
+        const double* restrict b2      = WB[4][ZLNZ];
+        const double* restrict bs2     = WB[5][ZLNZ];
+        const double* restrict b3      = WB[6][ZLNZ];
+        const double* restrict bk      = WB[7][ZLNZ];
+
+        const double* restrict PK      = KIA[0][ZLNZ][i];
+        const double* restrict mixA    = KIA[2][ZLNZ][i];
+        const double* restrict mixB    = KIA[3][ZLNZ][i];
+        const double* restrict ta_dE1  = KIA[4][ZLNZ][i];
+        const double* restrict ta_dE2  = KIA[5][ZLNZ][i];
+        const double* restrict d1d2    = KIA[6][ZLNZ][i];
+        const double* restrict d1s2    = KIA[7][ZLNZ][i];
+        const double* restrict d1p3    = KIA[8][ZLNZ][i];
+
         double sum = 0.0;
-        for (int p = 0; p<cn_all[0].npts; p++) {
-          const double a = cn->data[CN_A][p];
-          const double fK = cn->data[CN_FK][p];
-          const double growfac_a = cn->data[CN_GROWFAC][p];
-          const double hoverh0 = cn->data[CN_HOVERH0][p];
-          const double dchida = cn->data[CN_DCHIDA][p];
-          const double wt = cn->data[CN_WT][p];
-
-          const double WK   = WXS[0][ZLNZ][ZSNZ][p];
-          const double WS   = WXS[1][ZLNZ][ZSNZ][p];
-          const double WGAL = WXL[0][ZLNZ][p];
-          const double WMAG = WXL[1][ZLNZ][p];
-
-          sum += int_for_C_gs_tomo_limber_core(a, fK, PK[ZLNZ][i][p], growfac_a, 
-                                               hoverh0, dchida, ell_prefactor[i], 
-                                               ell_prefactor2[i], lx[i], ZLNZ,
-                                               ZSNZ, WK, WS, WGAL, WMAG, 
-                                               nonlinear_bias) * wt;
+        #pragma omp simd reduction(+:sum)
+        for (int p = 0; p < cn_all[0].npts; p++) {
+          const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+          
+          const double k = ell / fK[p];
+          
+          const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_prefactor2;
+          
+          const double b1l = 
+              int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
+                b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
+          
+          const double ans = 
+              int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
+                WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
+                g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
+                b1[p],bmag[p],b1l,ell_prefactor);
+          
+          sum += ans*amp*wt[p];
         }
-        table[k][i] = sum;
+        table[j][i] = sum;
       }
     }
 
@@ -2410,58 +2384,13 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
 // table access (gather), so we provide an explicit AVX2 path using i32gather_pd
 // -----------------------------------------------------------------------------
 void C_gs_tomo_limber_fill(
-    const int nz,
-    const int lmin,
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out
-  )
-{ 
-  const double* RESTRICT tab = gs_.tab[nz];
-  const double inv_dx = 1.0 / gs_.lim[2];
-  const double a = gs_.lim[0];
-  const int n = gs_.nell;
-
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int l = lmin; l < lmax; l++) { // inline interpol1D
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const double i = floor(r);
-    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
-    const int ic = (int) rc;
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#else
-  const v4d va       = simde_mm256_set1_pd(a);
-  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const v4d vzero    = simde_mm256_setzero_pd();
-  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const v4i vone     = simde_mm_set1_epi32(1);
-
-  int l = lmin;
-  for (; l <= lmax - 4; l += 4) {
-    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
-    v4d vi = simde_mm256_floor_pd(vr);
-    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
-    v4d vt = simde_mm256_sub_pd(vr, vicdb);
-    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
-    v4i vicp1 = simde_mm_add_epi32(vic, vone);
-    // Gather: indirect load that prevents GCC auto-vectorization
-    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
-    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
-    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
-    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
-    simde_mm256_storeu_pd(out + l, vresult);
-  }
-  for (; l < lmax; l++) { // Scalar tail
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#endif
+    const int nz, const int lmin, const int lmax,
+    const double* restrict ln_ell, double* restrict out)
+{
+  const double* tab[1] = { gs_.tab[nz] };
+  double* dst[1] = { out };
+  limber_fill_interp(1, tab, dst, lmin, lmax, ln_ell,
+                     gs_.lim[0], 1.0/gs_.lim[2], gs_.nell);
 }
 
 // ---------------------------------------------------------------------------
@@ -2722,8 +2651,7 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
-      nj < 0 || nj > redshift.clustering_nbin - 1)
-  {
+      nj < 0 || nj > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",ni,nj); exit(1);
   }
   if (ni != nj) {
@@ -2751,57 +2679,13 @@ double C_gg_tomo_limber(const double l, const int ni, const int nj)
 // -----------------------------------------------------------------------------
 
 void C_gg_tomo_limber_fill(
-    const int nz,
-    const int lmin,
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out
-  )
+    const int nz, const int lmin, const int lmax,
+    const double* restrict ln_ell, double* restrict out)
 {
-  const double* RESTRICT tab = gg_.tab[nz];
-  const double inv_dx = 1.0 / gg_.lim[2];
-  const double a = gg_.lim[0];
-  const int n = gg_.nell;
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int l = lmin; l < lmax; l++) { // inline interpol1D
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const double i = floor(r);
-    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
-    const int ic = (int) rc;
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#else
-  const v4d va       = simde_mm256_set1_pd(a);
-  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const v4d vzero    = simde_mm256_setzero_pd();
-  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const v4i vone     = simde_mm_set1_epi32(1);
-
-  int l = lmin;
-  for (; l <= lmax - 4; l += 4) {
-    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
-    v4d vi = simde_mm256_floor_pd(vr);
-    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
-    v4d vt = simde_mm256_sub_pd(vr, vicdb);
-    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
-    v4i vicp1 = simde_mm_add_epi32(vic, vone);
-    // Gather: indirect load that prevents GCC auto-vectorization
-    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
-    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
-    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
-    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
-    simde_mm256_storeu_pd(out + l, vresult);
-  }
-  for (; l < lmax; l++) { // Scalar tail
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#endif
+  const double* tab[1] = { gg_.tab[nz] };
+  double* dst[1] = { out };
+  limber_fill_interp(1, tab, dst, lmin, lmax, ln_ell,
+                     gg_.lim[0], 1.0/gg_.lim[2], gg_.nell);
 }
 
 // ---------------------------------------------------------------------------
@@ -2872,6 +2756,7 @@ double int_for_C_gk_tomo_limber(double a, void* params)
     const double PK = Pdelta(k,a);
     res *= PK;
   }
+
   double oneloop = 0.0;
   if (1 == nonlinear_bias) {
     if (0 == nuisance.IA_code){
@@ -3045,57 +2930,13 @@ double C_gk_tomo_limber(const double l, const int ni)
 // -----------------------------------------------------------------------------
 
 void C_gk_tomo_limber_fill(
-    const int nz,
-    const int lmin,
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out
-  )
+    const int nz, const int lmin, const int lmax,
+    const double* restrict ln_ell, double* restrict out)
 {
-  const double* RESTRICT tab = gk_.tab[nz];
-  const double inv_dx = 1.0 / gk_.lim[2];
-  const double a = gk_.lim[0];
-  const int n = gk_.nell;
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int l = lmin; l < lmax; l++) { // inline interpol1D
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const double i = floor(r);
-    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
-    const int ic = (int) rc;
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#else
-  const v4d va       = simde_mm256_set1_pd(a);
-  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const v4d vzero    = simde_mm256_setzero_pd();
-  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const v4i vone     = simde_mm_set1_epi32(1);
-
-  int l = lmin;
-  for (; l <= lmax - 4; l += 4) {
-    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
-    v4d vi = simde_mm256_floor_pd(vr);
-    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
-    v4d vt = simde_mm256_sub_pd(vr, vicdb);
-    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
-    v4i vicp1 = simde_mm_add_epi32(vic, vone);
-    // Gather: indirect load that prevents GCC auto-vectorization
-    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
-    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
-    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
-    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
-    simde_mm256_storeu_pd(out + l, vresult);
-  }
-  for (; l < lmax; l++) { // Scalar tail
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#endif
+  const double* tab[1] = { gk_.tab[nz] };
+  double* dst[1] = { out };
+  limber_fill_interp(1, tab, dst, lmin, lmax, ln_ell,
+                     gk_.lim[0], 1.0/gk_.lim[2], gk_.nell);
 }
 
 // ---------------------------------------------------------------------------
@@ -3268,57 +3109,13 @@ double C_ks_tomo_limber(double l, int ni)
 // -----------------------------------------------------------------------------
 
 void C_ks_tomo_limber_fill(
-    const int nz,
-    const int lmin,
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out
-  )
+    const int nz, const int lmin, const int lmax,
+    const double* restrict ln_ell, double* restrict out)
 {
-  const double* RESTRICT tab = ks_.tab[nz];
-  const double inv_dx = 1.0 / ks_.lim[2];
-  const double a = ks_.lim[0];
-  const int n = ks_.nell;
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int l = lmin; l < lmax; l++) { // inline interpol1D
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const double i = floor(r);
-    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
-    const int ic = (int) rc;
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#else
-  const v4d va       = simde_mm256_set1_pd(a);
-  const v4d vinv_dx  = simde_mm256_set1_pd(inv_dx);
-  const v4d vzero    = simde_mm256_setzero_pd();
-  const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2));
-  const v4i vone     = simde_mm_set1_epi32(1);
-
-  int l = lmin;
-  for (; l <= lmax - 4; l += 4) {
-    v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
-    v4d vi = simde_mm256_floor_pd(vr);
-    v4d vicdb = simde_mm256_min_pd(simde_mm256_max_pd(vi, vzero), vmax_idx);
-    v4d vt = simde_mm256_sub_pd(vr, vicdb);
-    v4i vic = simde_mm256_cvttpd_epi32(vicdb);
-    v4i vicp1 = simde_mm_add_epi32(vic, vone);
-    // Gather: indirect load that prevents GCC auto-vectorization
-    v4d vtab0 = simde_mm256_i32gather_pd(tab, vic, 8);
-    v4d vtab1 = simde_mm256_i32gather_pd(tab, vicp1, 8);
-    v4d vslope = simde_mm256_sub_pd(vtab1, vtab0);
-    v4d vresult = simde_mm256_fmadd_pd(vt, vslope, vtab0);
-    simde_mm256_storeu_pd(out + l, vresult);
-  }
-  for (; l < lmax; l++) { // Scalar tail
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const int i = (int) floor(r);
-    const int ic = i < 0 ? 0 : (i >= n - 1 ? n - 2 : i);
-    const double t = r - ic;
-    out[l] = tab[ic] + t * (tab[ic + 1] - tab[ic]);
-  }
-#endif
+  const double* tab[1] = { ks_.tab[nz] };
+  double* dst[1] = { out };
+  limber_fill_interp(1, tab, dst, lmin, lmax, ln_ell,
+                     ks_.lim[0], 1.0/ks_.lim[2], ks_.nell);
 }
 
 // ---------------------------------------------------------------------------
@@ -4669,8 +4466,10 @@ void C_cl_tomo(
           const double ell_prefactor = k * (k + 1.);
           const double ty    = y[i][k][q];
           const double k1cH0 = ty*real_coverH0;
+          // check gbmag(0,i) (first argument)
+          const double bmag = gbmag(0.,i);
           const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
-                           gbmag(0.,i)*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
+                           bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
           vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
         }
       }
