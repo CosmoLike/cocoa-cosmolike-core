@@ -42,22 +42,74 @@ static int include_RSD_GY = 0; // 0 or 1
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // BASIC DEFINITIONS & DECLARATIONS
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-double beam_cmb(const int l) {
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// CMB beam transfer function (Gaussian approximation).
+//
+// Models the smoothing of the CMB convergence map by the instrument beam
+// as a Gaussian in harmonic space:
+//   B_l = exp(-l*(l+1)*sigma^2)
+// where sigma = FWHM / sqrt(16*ln(2)) converts the beam full-width at
+// half-maximum to the Gaussian width parameter.
+//
+// Returns 0 outside the multipole range [lmink_wxk, lmaxk_wxk] used for
+// the CMB lensing cross-correlations (gk, ks, kk).
+// ---------------------------------------------------------------------------
+double beam_cmb(
+    const int l  // multipole moment
+  )
   const double s = cmb.fwhm/sqrt(16.0*log(2.0));
   return ((l<cmb.lmink_wxk) || (l>cmb.lmaxk_wxk)) ? 0.0 : exp(-l*(l+1.0)*s*s);
 }
 
-double w_pixel(const int l) {
+// ---------------------------------------------------------------------------
+// HEALPix pixel window function.
+//
+// Returns the precomputed HEALPix pixel window function at multipole l,
+// which accounts for the finite pixel size of the CMB convergence map.
+// The window function is loaded at initialization into cmb.healpixwin[]
+// with cmb.healpixwin_ncls entries (typically lmax+1).
+//
+// Returns 0 for l >= healpixwin_ncls (beyond the precomputed range).
+// ---------------------------------------------------------------------------
+double w_pixel(
+    const int l  // multipole moment
+  )
   if (0 == cmb.healpixwin_ncls) {
     log_fatal("cmb.healpixwin_ncls not initialized"); exit(1);
   }
   return (l < cmb.healpixwin_ncls) ? cmb.healpixwin[l] : 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// HEALPix pixel window function.
+//
+// Returns the precomputed HEALPix pixel window function at multipole l,
+// which accounts for the finite pixel size of the CMB convergence map.
+// The window function is loaded at initialization into cmb.healpixwin[]
+// with cmb.healpixwin_ncls entries (typically lmax+1).
+//
+// Returns 0 for l >= healpixwin_ncls (beyond the precomputed range).
+// ---------------------------------------------------------------------------
+double w_pixel(
+    const int l  // multipole moment
+  )
 static int has_b2_galaxies(void) {
   int res = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) 
@@ -66,6 +118,24 @@ static int has_b2_galaxies(void) {
   return res;
 }
 
+// ---------------------------------------------------------------------------
+// SIMD type aliases for readability.
+//
+// All SIMD code goes through SIMDe (SIMD Everywhere), which provides
+// portable intrinsics that compile to native AVX2/SSE2 on x86 and fall
+// back to scalar emulation on other architectures (ARM, POWER, etc.).
+//
+// The short aliases keep the vectorized fill/dot-product code readable
+// without repeating the simde__ prefix on every variable declaration.
+//
+//   v4d  = 256-bit register holding 4 doubles (AVX2)
+//          used for the main arithmetic in limber_fill_interp, xipm dot products
+//   v2d  = 128-bit register holding 2 doubles (SSE2)
+//          used for horizontal reduction (sum the 4 lanes of a v4d down to scalar)
+//   v4i  = 128-bit register holding 4 int32s (SSE2)
+//          used as index registers for AVX2 gather instructions (i32gather_pd)
+//          which load 4 non-contiguous doubles from a table in one instruction
+// ---------------------------------------------------------------------------
 #ifndef COSMO2D_NOT_USE_SIMD
 typedef simde__m256d v4d;   // 4 doubles, AVX2-width
 typedef simde__m128d v2d;   // 2 doubles (SSE2)
@@ -74,20 +144,53 @@ typedef simde__m128i v4i;   // 4 int32s (SSE2) — used for SIMD gather indices
 
 // ---------------------------------------------------------------------------
 // Generic Limber table interpolation with optional SIMD (AVX2) acceleration.
-// Interpolates ntab tables simultaneously at the same ell values, sharing
-// the index arithmetic across all tables. The inner loop over q is unrolled
-// by the compiler when ntab is a compile-time constant (1 for GGL, 2 for SS).
+//
+// Interpolates ntab precomputed C_l tables simultaneously at multipoles
+// l = lmin..lmax-1, sharing the index arithmetic (log-space position,
+// clamping, fractional offset) across all tables.
+//
+// The tables are log-spaced grids: tab[q][i] = C_l at l_i = exp(a + i*dx),
+// where a = lim[0], dx = lim[2], and n = nell grid points. Given ln(l),
+// the interpolation finds the enclosing grid cell and does linear interp:
+//   r = (ln_ell[l] - a) * inv_dx       (fractional grid position)
+//   ic = clamp(floor(r), 0, n-2)       (grid index, clamped to valid range)
+//   t = r - ic                          (fractional offset within cell)
+//   out[q][l] = tab[q][ic] + t * (tab[q][ic+1] - tab[q][ic])
+//
+// SIMD path (AVX2):
+//   Processes 4 ells per iteration using 256-bit vector arithmetic.
+//   The table access uses i32gather_pd (AVX2 gather instruction) because
+//   the grid indices ic are data-dependent — different ells map to different
+//   table positions, so contiguous vector loads are not possible. GCC cannot
+//   auto-vectorize this pattern, which is why we use explicit intrinsics.
+//   A scalar tail handles the remaining lmax % 4 elements.
+//
+// The inner loop over q (number of tables) is unrolled by the compiler
+// when ntab is a compile-time constant at the call site:
+//   ntab = 1: GGL (C_gs), GG (C_gg), GK (C_gk), KS (C_ks)
+//   ntab = 2: SS (C_ss, EE + BB simultaneously)
+//
+// Parameters:
+//   ntab   - number of tables to interpolate simultaneously
+//   tab    - input tables tab[ntab][n], precomputed C_l on log-spaced grid
+//   out    - output arrays out[ntab][>=lmax], written at indices lmin..lmax-1
+//   lmin   - first multipole to fill (inclusive)
+//   lmax   - last multipole to fill (exclusive)
+//   ln_ell - precomputed log(l) array, indexed by l (ln_ell[l] = log(l))
+//   a      - log(l_min) of the interpolation grid (= lim[0])
+//   inv_dx - reciprocal of grid spacing (= 1/lim[2])
+//   n      - number of grid points in the interpolation table (= nell)
 // ---------------------------------------------------------------------------
 static inline void limber_fill_interp(
-    const int ntab,
-    const double** restrict tab,
-    double** restrict out,
-    const int lmin,
-    const int lmax,
-    const double* restrict ln_ell,
-    const double a,
-    const double inv_dx,
-    const int n
+    const int ntab,                    // number of tables (1 or 2)
+    const double** restrict tab,       // input tables [ntab][n]
+    double** restrict out,             // output arrays [ntab][>=lmax]
+    const int lmin,                    // first multipole (inclusive)
+    const int lmax,                    // last multipole (exclusive)
+    const double* restrict ln_ell,     // log(l) array, indexed by l
+    const double a,                    // log(l_min) of the grid
+    const double inv_dx,               // 1 / grid spacing in log(l)
+    const int n                        // number of grid points
   )
 {
 #ifdef COSMO2D_NOT_USE_SIMD
@@ -1586,7 +1689,7 @@ inline double int_for_C_ss_tomo_limber_tatt_BB_core(
 }
 
 // ---------------------------------------------------------------------------
-// Scalar integrand for C_ss (LEGACY): combines IA-model branching, FPTIA
+// Scalar integrand for C_ss: combines IA-model branching, FPTIA
 // interpolation, and Limber arithmetic in one per-point function.
 //
 // Not vectorizable (via SIMD) because the switch on nuisance.IA_MODEL sits 
@@ -1719,6 +1822,72 @@ double int_for_C_ss_tomo_limber(
 }
 
 // ---------------------------------------------------------------------------
+// Single-ell shear-shear C_l via GSL fixed-order Gauss-Legendre quadrature.
+//
+// Uses the legacy scalar integrand int_for_C_ss_tomo_limber directly,
+// evaluating all cosmological functions per quadrature point. Much slower
+// than C_ss_tomo_limber (which precomputes everything) or the batch version
+// (which shares precomputed arrays across ell values), but self-contained
+// and does not require prior initialization of the interpolation table.
+//
+// Used by:
+//   - Jupyter notebook single-point diagnostics
+//   - Backward compatibility with callers that expect the scalar interface
+//
+// Parameters:
+//   l    - multipole moment
+//   ni   - first source redshift bin index
+//   nj   - second source redshift bin index
+//   EE   - 1 for E-mode power spectrum, 0 for B-mode
+//   init - 1: warm up static variables inside int_for_C_ss_tomo_limber
+//             by evaluating the integrand once at amin (returns that value)
+//          0: compute and return the full Gauss-Legendre integral
+// ---------------------------------------------------------------------------
+double C_ss_tomo_limber_nointerp(
+    const double l, 
+    const int ni, 
+    const int nj, 
+    const int EE, 
+    const int init
+  ) // slow - use the batch version - here just for jupyter notebook.
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL; 
+  if (ni < 0 || ni > redshift.shear_nbin -1 || 
+      nj < 0 || nj > redshift.shear_nbin -1) {
+    log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj); exit(1);
+  }
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 64 : 
+                         (1 == hdi) ? 96 : 
+                         (2 == hdi) ? 128 : 
+                         (3 == hdi) ? 256 : 512; // predefined GSL tables
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+  double ar[5] = {(double) ni, 
+                  (double) nj, 
+                  l, 
+                  (double) EE, 
+                  (double) 0};
+  double res = 0.0;
+  const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
+  const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
+  if (1 == init) {
+    res = int_for_C_ss_tomo_limber(amin, (void*) ar);
+  }
+  else {
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_for_C_ss_tomo_limber;
+    res = gsl_integration_glfixed(&F, amin, amax, w);
+  }
+  return res;   
+}
+
+// ---------------------------------------------------------------------------
 // Core workhorse for all shear-shear C_l computations (both the interp table
 // in C_ss_tomo_limber and the low-ell batch in C_ss_tomo_limber_nointerp_batch).
 //
@@ -1821,7 +1990,7 @@ static void C_ss_tomo_limber_work(
       WC[3][b][p] = IA_A2_Z1(a, gf, b);
       WC[4][b][p] = IA_BTA_Z1(a, gf, b);
     }
-    for (int i = 0; i < nell; i++) {
+    for (int i = 0; i<nell; i++) {
       const double ell = lx[i] + 0.5;
       const double k = ell / fK;
       const double lnk = log(k);
@@ -1907,50 +2076,37 @@ static void C_ss_tomo_limber_work(
 }
 
 // ---------------------------------------------------------------------------
-// Batch computation of shear-shear C_l at integer multipoles l = lmin..lmax-1
-// for all tomographic pairs simultaneously.
+// Batch computation of shear-shear C_l at arbitrary multipole values.
 //
-// Replaces the old pattern of calling C_ss_tomo_limber_nointerp in a loop:
-//   for (nz = 0; nz < NSIZE; nz++)
-//     for (l = lmin; l < lmax; l++)
-//       Cl[0][nz][l] = C_ss_tomo_limber_nointerp(l, Z1(nz), Z2(nz), 1, 0);
-//       Cl[1][nz][l] = C_ss_tomo_limber_nointerp(l, Z1(nz), Z2(nz), 0, 0);
+// Unlike C_ss_tomo_limber_nointerp_batch (which takes a contiguous integer
+// range lmin..lmax-1 and writes into Cl[k][l] indexed by multipole), this
+// version takes an arbitrary array of ell values and writes results into
+// output arrays indexed 0..nell-1. This avoids the offset issue and allows
+// non-integer or non-contiguous ell values.
 //
-// The old approach called the scalar integrand per (l, nz), recomputing
-// W_kappa, W_source, IA amplitudes, and Pdelta at every quadrature point
-// for every ell. This function shares all that work:
-//   - cosmo_nodes (chi, growfac, hoverh0) computed once
-//   - radial weights (WK, WS) computed once per (bin, quadrature point)
-//   - IA amplitudes computed once per (bin, quadrature point)
-//   - P_delta(k,a) computed once per (ell, quadrature point)
-//   - TATT kernels computed once per (ell, quadrature point)
-// Then the Limber integral is evaluated for all (ell, tomo-pair) combinations
-// via C_ss_tomo_limber_work with SIMD-vectorized inner loops.
-//
-// Used by xi_pm_tomo to fill the low-ell range (l = 1..LMIN_tab) where the
-// interpolation table from C_ss_tomo_limber does not cover.
+// Designed for the fourier-space likelihood (roman_fourier) which evaluates
+// C_l at a sparse set of ell values (like.ell[]).
 //
 // Parameters:
-//   lmin  - first multipole (inclusive)
-//   lmax  - one past last multipole (exclusive), so ell = lmin, lmin+1, ..., lmax-1
-//   NSIZE - number of tomographic shear power spectra (= shear_Npowerspectra)
-//   Cl    - output array [2][NSIZE][>=lmax]: Cl[0] = EE, Cl[1] = BB
-//           only indices Cl[0..1][0..NSIZE-1][lmin..lmax-1] are written
-//           NULL is accepted when init = 1
-//   init  - if 1, only warm up static variables (no allocation, no computation)
-//           if 0, perform full batch computation
+//   ells    - array of multipole values, length nell (need not be integers)
+//   nell    - number of multipole values
+//   NSIZE   - number of tomographic shear power spectra (= shear_Npowerspectra)
+//   out_EE  - output array [NSIZE][nell], indexed as out_EE[nz][i], NULL if init=1
+//   out_BB  - output array [NSIZE][nell], indexed as out_BB[nz][i], NULL if init=1
+//   init    - if 1, only warm up static variables (no allocation, no computation)
+//             if 0, perform full batch computation
 // ---------------------------------------------------------------------------
-void C_ss_tomo_limber_nointerp_batch(
-    const int lmin,   // first multipole (inclusive)
-    const int lmax,   // last multipole (exclusive)
-    const int NSIZE,  // number of tomo shear power spectra
-    double*** Cl,     // output [2][NSIZE][>=lmax]: EE and BB, NULL if init=1
-    const int init    // 1 = warm up statics only, 0 = full computation
+void C_ss_tomo_limber_nointerp_ells(
+    const double* ells,   // array of multipole values (length nell)
+    const int nell,       // number of multipole values
+    const int NSIZE,      // number of tomo shear power spectra
+    double** out_EE,      // output EE [NSIZE][nell], NULL if init=1
+    double** out_BB,      // output BB [NSIZE][nell], NULL if init=1
+    const int init        // 1 = warm up statics only, 0 = full computation
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
   static uint64_t cache[MAX_SIZE_ARRAYS];
-
   if (NULL == w || fdiff2(cache[0], Ntable.random)) 
   {
     const int hdi = abs(Ntable.high_def_integration);
@@ -1965,94 +2121,78 @@ void C_ss_tomo_limber_nointerp_batch(
 
   const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
   const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
-  
+
   cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 
-  const double lx0 = (double) lmin;
-  C_ss_tomo_limber_work(&cn, &lx0, 1, NSIZE, NULL, 1); // init only
+  const double lx0 = (nell > 0 && ells != NULL) ? ells[0] : 2.0;
+  C_ss_tomo_limber_work(&cn, &lx0, 1, NSIZE, NULL, 1);
 
   if (1 == init) {
     free_cosmo_nodes(&cn);
     return;
   }
 
-  const int nell = lmax - lmin;
   if (nell <= 0) {
-    log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
+    log_fatal("nell = %d <= 0", nell);
     exit(1);
-  }
-
-  double* lx = (double*) malloc1d(nell);
-  for (int i = 0; i < nell; i++) {
-    lx[i] = (double)(lmin + i);
   }
 
   double*** tmp = (double***) malloc3d(2, NSIZE, nell);
   memset(tmp[0][0], 0, 2*NSIZE*nell*sizeof(double));
 
-  C_ss_tomo_limber_work(&cn, lx, nell, NSIZE, tmp, 0);
+  C_ss_tomo_limber_work(&cn, ells, nell, NSIZE, tmp, 0);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
-      Cl[0][k][lmin+i] = tmp[0][k][i];
-      Cl[1][k][lmin+i] = tmp[1][k][i];
+      out_EE[k][i] = tmp[0][k][i];
+      out_BB[k][i] = tmp[1][k][i];
     }
   }
 
   free(tmp);
-  free(lx);
   free_cosmo_nodes(&cn);
 }
 
 // ---------------------------------------------------------------------------
-// Single-ell wrapper around C_ss_tomo_limber_nointerp_batch.
-//
-// Computes C_l^EE or C_l^BB for one (l, ni, nj) combination by calling the
-// batch function for a single multipole and extracting the requested bin pair.
-// This allocates a temporary [2][NSIZE][1] array on every non-init call, so
-// it is much slower than the batch version — use C_ss_tomo_limber_nointerp_batch
-// when computing multiple ell values.
-//
-// Kept for:
-//   - Jupyter notebook single-point diagnostics
-//   - Backward compatibility with callers that expect the scalar interface
-//
-// Parameters:
-//   l    - multipole moment (cast to int internally for the batch call)
-//   ni   - first source redshift bin index
-//   nj   - second source redshift bin index
-//   EE   - 1 for E-mode power spectrum, 0 for B-mode
-//   init - 1: warm up static variables only (returns 0.0, no allocation)
-//          0: compute and return C_l for the requested (ni, nj, EE)
+// Batch computation at integer multipoles lmin..lmax-1.
+// Thin wrapper around C_XY_tomo_limber_nointerp_ells.
 // ---------------------------------------------------------------------------
-double C_ss_tomo_limber_nointerp(
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE, 
+void C_ss_tomo_limber_nointerp_batch(
+    const int lmin,
+    const int lmax,
+    const int NSIZE,
+    double*** Cl,
     const int init
-  ) // slow - use the batch version - here just for jupyter notebook.
+  )
 {
-  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
-      nj < 0 || nj > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj);
+  if (1 == init) {
+    C_ss_tomo_limber_nointerp_ells(NULL, 0, NSIZE, NULL, NULL, 1);
+    return;
+  }
+  const int nell = lmax - lmin;
+  if (nell <= 0) {
+    log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
     exit(1);
   }
-  if (1 == init) {
-    C_ss_tomo_limber_nointerp_batch((int) l, (int) l + 1,
-                                    tomo.shear_Npowerspectra, NULL, 1);
-    return 0.0;
+  double* lx = (double*) malloc1d(nell);
+  for (int i = 0; i < nell; i++) {
+    lx[i] = (double)(lmin + i);
   }
-  double*** tmp = (double***) malloc3d(2, tomo.shear_Npowerspectra, 1);
-  memset(tmp[0][0], 0, 2*tomo.shear_Npowerspectra*sizeof(double));
+  double** tmp_EE = (double**) malloc2d(NSIZE, nell);
+  double** tmp_BB = (double**) malloc2d(NSIZE, nell);
 
-  C_ss_tomo_limber_nointerp_batch((int) l, (int) l + 1,
-                                  tomo.shear_Npowerspectra, tmp, 0);
+  C_ss_tomo_limber_nointerp_ells(lx, nell, NSIZE, tmp_EE, tmp_BB, 0);
 
-  const int q = N_shear(ni, nj);
-  const double res = (1 == EE) ? tmp[0][q][0] : tmp[1][q][0];
-  free(tmp);
-  return res;
+  for (int k = 0; k < NSIZE; k++) {
+    for (int i = 0; i < nell; i++) {
+      Cl[0][k][lmin+i] = tmp_EE[k][i];
+      Cl[1][k][lmin+i] = tmp_BB[k][i];
+    }
+  }
+
+  free(tmp_EE);
+  free(tmp_BB);
+  free(lx);
 }
 
 // ---------------------------------------------------------------------------
@@ -2384,7 +2524,7 @@ inline double int_for_C_gs_tomo_limber_tatt_core(
 }
 
 // ---------------------------------------------------------------------------
-// Scalar integrand for C_gs (galaxy-galaxy lensing) LEGACY: combines IA-model
+// Scalar integrand for C_gs (galaxy-galaxy lensing): combines IA-model
 // branching, one-loop galaxy bias, FPTIA/FPTbias interpolation, and Limber
 // arithmetic in one per-quadrature-point function.
 //
@@ -2531,6 +2671,78 @@ double int_for_C_gs_tomo_limber(
     }
   } 
   return ans*(chidchi.dchida/(fK*fK))*ell_prefactor2;
+}
+
+// ---------------------------------------------------------------------------
+// Single-ell galaxy-shear C_l via GSL fixed-order Gauss-Legendre quadrature.
+//
+// Uses the legacy scalar integrand int_for_C_gs_tomo_limber directly,
+// evaluating all cosmological functions per quadrature point. Much slower
+// than C_gs_tomo_limber (which precomputes everything) or the batch version
+// (which shares precomputed arrays across ell values), but self-contained
+// and does not require prior initialization of the interpolation table.
+//
+// Used by:
+//   - Jupyter notebook single-point diagnostics
+//   - Backward compatibility with callers that expect the scalar interface
+// ---------------------------------------------------------------------------
+double C_gs_tomo_limber_nointerp(
+    const double l, 
+    const int nl, 
+    const int ns,
+    const int init
+  )
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static gsl_integration_glfixed_table* w = NULL;
+  
+  if (nl < 0 || 
+      nl > redshift.clustering_nbin -1 || 
+      ns < 0 || 
+      ns > redshift.shear_nbin -1)
+  {
+    log_fatal("invalid bin input (ni, nj) = (%d, %d)", nl, ns);
+    exit(1);
+  }
+
+  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 64 : 
+                         (1 == hdi) ? 96 : 
+                         (2 == hdi) ? 128 : 
+                         (3 == hdi) ? 256 : 512; // predefined GSL tables
+    if (w != NULL)  {
+      gsl_integration_glfixed_table_free(w);
+    }
+    w = malloc_gslint_glfixed(szint);
+    cache[0] = Ntable.random;
+  }
+
+  double ar[4] = {(double) nl, (double) ns, l, has_b2_galaxies()};
+  
+  const double amin = amin_lens(nl);
+  const double amax = amax_lens(nl);
+  
+  if (!(amin>0) || !(amin<1) || !(amax>0) || !(amax<1)) {
+    log_fatal("0 < amin/amax < 1 not true");
+    exit(1);
+  }
+  if (!(amin < amax)) {
+    log_fatal("amin < amax not true");
+    exit(1);
+  }
+
+  double res;
+  if (init == 1) {
+    res = int_for_C_gs_tomo_limber(amin, (void*) ar);
+  }
+  else {    
+    gsl_function F;
+    F.params = (void*) ar;
+    F.function = int_for_C_gs_tomo_limber;
+    res = gsl_integration_glfixed(&F, amin, amax, w);
+  }
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -2813,37 +3025,30 @@ static void C_gs_tomo_limber_work(
 }
 
 // ---------------------------------------------------------------------------
-// Batch computation of galaxy-shear C_l at integer multipoles l = lmin..lmax-1
-// for all tomographic pairs simultaneously.
+// Batch computation of galaxy-shear C_l at arbitrary multipole values.
 //
-// Replaces the old pattern of calling C_gs_tomo_limber_nointerp in a loop:
-//   for (nz = 0; nz < NSIZE; nz++)
-//     for (l = lmin; l < lmax; l++)
-//       Cl[nz][l] = C_gs_tomo_limber_nointerp(l, ZL(nz), ZS(nz), 0);
-//
-// Uses C_gs_tomo_limber_work with integer-spaced ell values, sharing all
-// precomputed cosmo_nodes, radial weights, IA amplitudes, and bias parameters.
+// Same design as C_ss_tomo_limber_nointerp_ells but for galaxy-shear.
+// Takes an arbitrary array of ell values and writes results into output
+// arrays indexed 0..nell-1.
 //
 // Parameters:
-//   lmin  - first multipole (inclusive)
-//   lmax  - last multipole (exclusive), ell = lmin, lmin+1, ..., lmax-1
-//   NSIZE - number of ggl power spectra (= ggl_Npowerspectra)
-//   Cl    - output array [NSIZE][>=lmax], only Cl[0..NSIZE-1][lmin..lmax-1] written
-//           NULL is accepted when init = 1
-//   init  - if 1, only warm up static variables (no allocation, no computation)
-//           if 0, perform full batch computation
+//   ells    - array of multipole values, length nell (need not be integers)
+//   nell    - number of multipole values
+//   NSIZE   - number of ggl power spectra (= ggl_Npowerspectra)
+//   out     - output array [NSIZE][nell], indexed as out[nz][i], NULL if init=1
+//   init    - if 1, only warm up static variables
+//             if 0, perform full batch computation
 // ---------------------------------------------------------------------------
-void C_gs_tomo_limber_nointerp_batch(
-    const int lmin,   // first multipole (inclusive)
-    const int lmax,   // last multipole (exclusive)
-    const int NSIZE,  // number of ggl power spectra
-    double** Cl,      // output [NSIZE][>=lmax], NULL if init=1
-    const int init    // 1 = warm up statics only, 0 = full computation
+void C_gs_tomo_limber_nointerp_ells(
+    const double* ells,   // array of multipole values (length nell)
+    const int nell,       // number of multipole values
+    const int NSIZE,      // number of ggl power spectra
+    double** out,         // output [NSIZE][nell], NULL if init=1
+    const int init        // 1 = warm up statics only, 0 = full computation
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
   static uint64_t cache[MAX_SIZE_ARRAYS];
-
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 64 :
@@ -2867,8 +3072,7 @@ void C_gs_tomo_limber_nointerp_batch(
     }
   }
 
-  // single-ell init for _work warmup
-  const double lx0 = (double) lmin;
+  const double lx0 = (nell > 0 && ells != NULL) ? ells[0] : 2.0;
   const double ep0 = lx0*(lx0+1.)/((lx0+0.5)*(lx0+0.5));
   const double tmp0 = (lx0-1.)*lx0*(lx0+1.)*(lx0+2.);
   const double ep20 = (tmp0 > 0) ? sqrt(tmp0)/((lx0+0.5)*(lx0+0.5)) : 0.0;
@@ -2881,36 +3085,32 @@ void C_gs_tomo_limber_nointerp_batch(
     return;
   }
 
-  const int nell = lmax - lmin;
   if (nell <= 0) {
-    log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
+    log_fatal("nell = %d <= 0", nell);
     exit(1);
   }
 
-  double* lx  = (double*) malloc1d(nell);
   double* ep  = (double*) malloc1d(nell);
   double* ep2 = (double*) malloc1d(nell);
   for (int i = 0; i < nell; i++) {
-    lx[i] = (double)(lmin + i);
-    const double ell = lx[i] + 0.5;
-    ep[i] = lx[i]*(lx[i]+1.)/(ell*ell);
-    const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
+    const double ell = ells[i] + 0.5;
+    ep[i] = ells[i]*(ells[i]+1.)/(ell*ell);
+    const double tmp = (ells[i]-1.)*ells[i]*(ells[i]+1.)*(ells[i]+2.);
     ep2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
   }
 
   double** tmp_table = (double**) malloc2d(NSIZE, nell);
   memset(tmp_table[0], 0, NSIZE*nell*sizeof(double));
 
-  C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, tmp_table, 0);
+  C_gs_tomo_limber_work(cn_all, ells, ep, ep2, nell, tmp_table, 0);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
-      Cl[k][lmin+i] = tmp_table[k][i];
+      out[k][i] = tmp_table[k][i];
     }
   }
 
   free(tmp_table);
-  free(lx);
   free(ep);
   free(ep2);
   for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
@@ -2919,39 +3119,44 @@ void C_gs_tomo_limber_nointerp_batch(
 }
 
 // ---------------------------------------------------------------------------
-// Single-ell wrapper around C_gs_tomo_limber_nointerp_batch.
-// Kept for backward compatibility and Jupyter notebook diagnostics.
-// See C_ss_tomo_limber_nointerp for the same pattern.
+// Batch computation at integer multipoles lmin..lmax-1.
+// Thin wrapper around C_XY_tomo_limber_nointerp_ells.
 // ---------------------------------------------------------------------------
-double C_gs_tomo_limber_nointerp(
-    const double l,   // multipole moment
-    const int nl,     // lens redshift bin
-    const int ns,     // source redshift bin
-    const int init    // 1 = warm up statics only, 0 = compute
+void C_gs_tomo_limber_nointerp_batch(
+    const int lmin,
+    const int lmax,
+    const int NSIZE,
+    double** Cl,
+    const int init
   )
 {
-  if (nl < 0 || nl > redshift.clustering_nbin - 1 ||
-      ns < 0 || ns > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input (nl, ns) = (%d, %d)", nl, ns);
+  if (1 == init) {
+    C_gs_tomo_limber_nointerp_ells(NULL, 0, NSIZE, NULL, 1);
+    return;
+  }
+  const int nell = lmax - lmin;
+  if (nell <= 0) {
+    log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
     exit(1);
   }
-  if (1 == init) {
-    C_gs_tomo_limber_nointerp_batch((int) l, (int) l + 1,
-                                    tomo.ggl_Npowerspectra, NULL, 1);
-    return 0.0;
+  double* lx = (double*) malloc1d(nell);
+  for (int i = 0; i < nell; i++) {
+    lx[i] = (double)(lmin + i);
   }
-  double** tmp = (double**) malloc2d(tomo.ggl_Npowerspectra, 1);
-  memset(tmp[0], 0, tomo.ggl_Npowerspectra*sizeof(double));
 
-  C_gs_tomo_limber_nointerp_batch((int) l, (int) l + 1,
-                                  tomo.ggl_Npowerspectra, tmp, 0);
+  double** tmp = (double**) malloc2d(NSIZE, nell);
 
-  const int q = N_ggl(nl, ns);
-  const double res = tmp[q][0];
+  C_gs_tomo_limber_nointerp_ells(lx, nell, NSIZE, tmp, 0);
+
+  for (int k = 0; k < NSIZE; k++) {
+    for (int i = 0; i < nell; i++) {
+      Cl[k][lmin+i] = tmp[k][i];
+    }
+  }
+
   free(tmp);
-  return res;
+  free(lx);
 }
-
 
 // ---------------------------------------------------------------------------
 // Shared state between C_gs_tomo_limber (which builds the interpolation table)

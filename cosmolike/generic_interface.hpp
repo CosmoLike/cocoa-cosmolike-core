@@ -978,45 +978,76 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
 
   if constexpr (0 == M) {
-    if (1 == like.shear_shear) {    
-      for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-        const int z1 = Z1(nz);
-        const int z2 = Z2(nz);
-        for (int i=0; i<Nlen[N]; i++) {
-          int index = start + Nlen[N]*nz + i;
-          if constexpr (N == 0) {
+    if (1 == like.shear_shear) {
+      if constexpr (N == 0) {
+        for (int nz = 0; nz < tomo.shear_Npowerspectra; nz++) {
+          const int z1 = Z1(nz);
+          const int z2 = Z2(nz);
+          for (int i = 0; i < Ntable.Ntheta; i++) {
+            int index = start + Ntable.Ntheta*nz + i;
             if (survey.get_mask(index)) {
               dv(index) = xi_pm_tomo(1, i, z1, z2, 1);
             }  
-            index += Nlen[N]*tomo.shear_Npowerspectra;
+            index += Ntable.Ntheta*tomo.shear_Npowerspectra;
             if (survey.get_mask(index)) {
               dv(index) = xi_pm_tomo(-1, i, z1, z2, 1);
             } 
           }
-          else {
-            if (survey.get_mask(index) && (like.ell[i]<like.lmax_shear)) {
-              dv(index) = C_ss_tomo_limber_nointerp(like.ell[i], z1, z2, 1, 0);
+        }
+      }
+      else {
+        double** out_EE = (double**) malloc2d(tomo.shear_Npowerspectra, like.Ncl);
+        double** out_BB = (double**) malloc2d(tomo.shear_Npowerspectra, like.Ncl);
+
+        C_ss_tomo_limber_nointerp_ells(like.ell, like.Ncl,
+                                       tomo.shear_Npowerspectra,
+                                       out_EE, out_BB, 0);
+
+        for (int nz = 0; nz < tomo.shear_Npowerspectra; nz++) {
+          for (int i = 0; i < like.Ncl; i++) {
+            const int index = start + like.Ncl*nz + i;
+            if (survey.get_mask(index) && (like.ell[i] < like.lmax_shear)) {
+              dv(index) = out_EE[nz][i];
             }
           }
         }
+
+        free(out_EE);
+        free(out_BB);
       }
       add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }
   else if constexpr (1 == M) {
     if (1 == like.shear_pos) {
-      for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
-        const int zl = ZL(nz);
-        const int zs = ZS(nz);
-        for (int i=0; i<Nlen[N]; i++) {
-          const int index = start + Nlen[N]*nz + i;
-          if (survey.get_mask(index)) {
-            if constexpr (0 == N)
-              dv(index) = w_gammat_tomo(i,zl,zs,1);
-            else
-              dv(index) = C_gs_tomo_limber_nointerp(like.ell[i], zl, zs, 0);
+      if constexpr (0 == N) {
+        for (int nz = 0; nz < tomo.ggl_Npowerspectra; nz++) {
+          const int zl = ZL(nz);
+          const int zs = ZS(nz);
+          for (int i = 0; i < Ntable.Ntheta; i++) {
+            const int index = start + Ntable.Ntheta*nz + i;
+            if (survey.get_mask(index)) {
+              dv(index) = w_gammat_tomo(i, zl, zs, 1);
+            }
           }
         }
+      }
+      else {
+        double** out = (double**) malloc2d(tomo.ggl_Npowerspectra, like.Ncl);
+
+        C_gs_tomo_limber_nointerp_ells(like.ell, like.Ncl,
+                                       tomo.ggl_Npowerspectra, out, 0);
+
+        for (int nz = 0; nz < tomo.ggl_Npowerspectra; nz++) {
+          for (int i = 0; i < like.Ncl; i++) {
+            const int index = start + like.Ncl*nz + i;
+            if (survey.get_mask(index)) {
+              dv(index) = out[nz][i];
+            }
+          }
+        }
+
+        free(out);
       }
       add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
