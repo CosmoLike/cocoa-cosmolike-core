@@ -28,8 +28,6 @@
 #include "structs.h"
 #include "log.c/src/log.h"
 
-//#define COSMO2D_NOT_USE_SIMD
-
 #ifndef COSMO2D_NOT_USE_SIMD
 #include "simde/x86/avx2.h"
 #include "simde/x86/fma.h"
@@ -44,85 +42,10 @@ static int include_RSD_GY = 0; // 0 or 1
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-// SIMD FUNCTIONS
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-#ifndef COSMO2D_NOT_USE_SIMD
-  #if defined(__aarch64__) || defined(_M_ARM64)
-    #ifndef SIMDE_ARM_NEON_A64V8_NATIVE
-      #warning "SIMDe: NEON is being EMULATED — something is wrong"
-    #endif
-  #else
-    #ifndef SIMDE_X86_AVX2_NATIVE
-      #warning "SIMDe: AVX2 is being EMULATED (no -mavx2 flag?)"
-    #endif
-    #ifndef SIMDE_X86_FMA_NATIVE
-      #warning "SIMDe: FMA is being EMULATED (no -mfma flag?)"
-    #endif
-  #endif
-typedef simde__m256d v4d;   // 4 doubles, AVX2-width
-typedef simde__m128d v2d;   // 2 doubles (SSE2)
-typedef simde__m128i v4i;   // 4 int32s (SSE2) — used for SIMD gather indices
-// -----------------------------------------------------------------------------
-// What is SIMD? How is the basic building block of SIMD?
-// A normal double variable holds 1 number (64 bits).
-// A simde__m256d holds 4 doubles side-by-side (256 bits = 4 x 64).
-//
-// Think of it as a box with 4 slots ("lanes"):
-//
-//   simde__m256d box = [ slot0 | slot1 | slot2 | slot3 ]
-//                        64 bit  64 bit  64 bit  64 bit
-//                      <----------- 256 bits ---------->
-//
-// When you add two such boxes, all 4 slots are added in parallel:
-//
-//   box_a = [ 1.0 | 2.0 | 3.0 | 4.0 ]
-//   box_b = [ 5.0 | 6.0 | 7.0 | 8.0 ]
-//   result = [ 6.0 | 8.0 | 10.0 | 12.0 ]   (one instruction!)
-// -----------------------------------------------------------------------------
-static inline double simd_horizontal_sum(simde__m256d four_lanes)
-{ // Takes a 4-lane register and sums all 4 values into a single double
-  double tmp[4]; // Store the 4 lanes into a regular C array
-  simde_mm256_storeu_pd(tmp, four_lanes);
-  return tmp[0] + tmp[1] + tmp[2] + tmp[3];
-}
-
-static inline double simd_array_sum(const double* restrict a, const int n)
-{ // Computes:   result = a[0] + a[1] + ... + a[n-1]
-  // Two independent accumulators, each holding 4 partial sums, init to [0,0,0,0]
-  v4d accum_A = simde_mm256_setzero_pd();
-  v4d accum_B = simde_mm256_setzero_pd();
- 
-  int q = 0;
-  for (; q <= n - 8; q += 8) { // Main loop: process 8 doubles per iteration
-    accum_A = simde_mm256_add_pd(accum_A, simde_mm256_loadu_pd(a + q));
-    accum_B = simde_mm256_add_pd(accum_B, simde_mm256_loadu_pd(a + q + 4));
-  }
-  double result = simd_horizontal_sum(accum_A) + simd_horizontal_sum(accum_B);
-  for (; q < n; q++) { // Scalar tail: remaining 0-7 elements, one at a time
-    result += a[q];
-  }
-  return result;
-}
-#endif
-
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
-// ----------------------------------------------------------------------------
 // BASIC DEFINITIONS & DECLARATIONS
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-
-#define LERP(arr, b, dr) ((dr)*((arr)[(b)+1] - (arr)[(b)]) + (arr)[(b)])
-
-#ifdef __APPLE__
-  #define cosmo_sincos(x, s, c) __sincos((x), (s), (c))
-#else
-  #define cosmo_sincos(x, s, c) sincos((x), (s), (c))
-#endif
-
 double beam_cmb(const int l) {
   const double s = cmb.fwhm/sqrt(16.0*log(2.0));
   return ((l<cmb.lmink_wxk) || (l>cmb.lmaxk_wxk)) ? 0.0 : exp(-l*(l+1.0)*s*s);
@@ -143,11 +66,11 @@ static int has_b2_galaxies(void) {
   return res;
 }
 
-static inline double wtime(void) {
-  struct timespec t;
-  clock_gettime(CLOCK_MONOTONIC, &t);
-  return t.tv_sec + 1e-9 * t.tv_nsec;
-}
+#ifndef COSMO2D_NOT_USE_SIMD
+typedef simde__m256d v4d;   // 4 doubles, AVX2-width
+typedef simde__m128d v2d;   // 2 doubles (SSE2)
+typedef simde__m128i v4i;   // 4 int32s (SSE2) — used for SIMD gather indices
+#endif
 
 // ---------------------------------------------------------------------------
 // Generic Limber table interpolation with optional SIMD (AVX2) acceleration.
@@ -237,6 +160,7 @@ void C_ss_tomo_limber_nointerp_batch(
     double*** Cl,
     const int init
   );
+
 // -------------------------------------------------------------------------
 // optimization: real 2pt computes C_xy_tomo_limber so many times that the  
 //               overhead to calls to logl/N_shear/interpol1d is quite expensive
@@ -247,6 +171,14 @@ void C_gs_tomo_limber_fill(
     const int lmax,
     const double* RESTRICT ln_ell,
     double* RESTRICT out
+  );
+
+void C_gs_tomo_limber_nointerp_batch(
+    const int lmin,   // first multipole (inclusive)
+    const int lmax,   // last multipole (exclusive)
+    const int NSIZE,  // number of ggl power spectra
+    double** Cl,      // output [NSIZE][>=lmax], NULL if init=1
+    const int init    // 1 = warm up statics only, 0 = full computation
   );
 
 void C_gg_tomo_limber_fill(
@@ -276,17 +208,67 @@ void C_ks_tomo_limber_fill(
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Correlation Functions (real Space) - Full Sky - bin average
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Shear-shear real-space two-point correlation functions xi_+(theta) and
+// xi_-(theta) with bin-averaged Hankel transform.
+//
+// Computes xi_pm by summing the angular power spectrum C_l against
+// bin-averaged Legendre polynomial kernels Gl_pm:
+//
+//   xi_+(theta_i) = sum_l Gl_+(i,l) * [C_l^EE + C_l^BB]
+//   xi_-(theta_i) = sum_l Gl_-(i,l) * [C_l^EE - C_l^BB]
+//
+// The Gl_pm kernels are precomputed from associated Legendre polynomials
+// and their derivatives (Pmin, Pmax, dPmin, dPmax) evaluated at the angular
+// bin edges (xmin = cos(theta_max), xmax = cos(theta_min)). This replaces 
+// the naive point-evaluation J_0/J_4 Hankel transform with an exact bin average.
+//
+// The C_l array is filled in two stages:
+//   1. Low-ell (l = 1..LMIN_tab): direct quadrature via _nointerp (or batch)
+//   2. High-ell (l = LMIN_tab..LMAX): fast interpolation from the cached
+//      log-spaced table via C_ss_tomo_limber_fill with AVX2 gather
+//
+// The final Hankel sum over ~100k multipoles is SIMD-vectorized via
+// #pragma omp simd with dual reduction accumulators for xi_+ and xi_-.
+//
+// Cache invalidation: recomputes when cosmology, shear photo-z, IA, shear
+// redshift distribution, or Ntable settings change. The Gl_pm kernels only
+// depend on angular binning (Ntable.Ntheta, Ntable.LMAX) and are rebuilt
+// when Ntable.random changes.
+//
+// Parameters:
+//   pm     - 1 for xi_+, 0 for xi_-
+//   nt     - angular bin index (0..Ntable.Ntheta-1)
+//   ni     - first source redshift bin
+//   nj     - second source redshift bin
+//   limber - 1 for full Limber (only supported option; 0 exits with error)
+//
+// Returns:
+//   xi_+(theta_nt) or xi_-(theta_nt) for the (ni, nj) tomographic pair
+// ---------------------------------------------------------------------------
 double xi_pm_tomo(
-    const int pm, 
-    const int nt, 
-    const int ni, 
-    const int nj, 
-    const int limber
+    const int pm,     // 1 = xi_+, 0 = xi_-
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni,     // first source redshift bin
+    const int nj,     // second source redshift bin
+    const int limber  // 1 = Limber (required), 0 = not implemented
   )
 {  
   static double*** Glpm = NULL; //Glpm[0] = Gl+, Glpm[1] = Gl-
@@ -358,6 +340,66 @@ double xi_pm_tomo(
         Glpm[1][i][l] = 0.0;
       }
     }
+    // -----------------------------------------------------------------------
+    // Bin-averaged Hankel transform kernels Gl_pm for xi_+(theta), xi_-(theta).
+    //
+    // MOTIVATION:
+    //   The standard shear 2pt functions are defined at a single angle:
+    //     xi_+(theta) = sum_l (2l+1)/(4pi) * C_l * d^l_{2,2}(cos(theta))
+    //     xi_-(theta) = sum_l (2l+1)/(4pi) * C_l * d^l_{2,-2}(cos(theta))
+    //   where d^l_{2,m'} are reduced Wigner d-matrix elements for spin-2
+    //   fields. In practice, data is binned in angular bins [theta_min, theta_max].
+    //   Using a point evaluation at the bin center introduces discretization
+    //   error. The bin-averaged kernel integrates the exact kernel over the bin:
+    //
+    //     Gl_pm(i,l) = integral_{theta_min}^{theta_max} kernel_l_pm(theta) sin(theta) dtheta
+    //                  ---------------------------------------------------------------
+    //                  integral_{theta_min}^{theta_max} sin(theta) dtheta
+    //
+    //   Substituting x = cos(theta), dx = -sin(theta) dtheta, and noting
+    //   xmin = cos(theta_max), xmax = cos(theta_min) (cosine reverses order):
+    //
+    //     Gl_pm(i,l) = 1/(xmin - xmax) * integral_{xmax}^{xmin} kernel_l_pm(x) dx
+    //
+    // THE KERNEL:
+    //   The Wigner d-matrices for spin-2 fields can be decomposed into
+    //   Legendre polynomials P_l(x) and their derivatives dP_l/dx.
+    //   The spin-2 prefactor gives an overall 1/[l(l+1)]^2, so:
+    //
+    //     prefactor = (2l+1) / (2*pi * l^2 * (l+1)^2)
+    //               = [(2l+1)/(4*pi)] * [1/(l(l+1))^2]
+    //                  ~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
+    //                  Legendre norm     spin-2 factors (one per shear field)
+    //
+    // ANALYTIC BIN INTEGRATION:
+    //   The key insight is that all terms in the kernel — P_l(x), x*P_l(x),
+    //   P_l'(x), x*P_l'(x) — have closed-form antiderivatives via Legendre
+    //   recurrence relations:
+    //
+    //     integral P_l(x) dx = [P_{l+1}(x) - P_{l-1}(x)] / (2l+1)
+    //     integral x*P_l(x) dx  uses  x*P_l = [(l+1)*P_{l+1} + l*P_{l-1}] / (2l+1)
+    //     integral P_l'(x) dx = P_l(x)
+    //     integral x*P_l'(x) dx = x*P_l(x) - integral P_l(x) dx
+    //
+    //   So the bin-averaged kernel evaluates as differences of P_l and dP_l
+    //   at the two bin edges, which is what the precomputed arrays provide:
+    //     Pmin[i][l]  = P_l(xmin[i])       Pmax[i][l]  = P_l(xmax[i])
+    //     dPmin[i][l] = P_l'(xmin[i])      dPmax[i][l] = P_l'(xmax[i])
+    //
+    // XI_+ vs XI_-:
+    //   The two kernels differ only in the sign of the last two terms,
+    //   corresponding to the difference between d^l_{2,+2} and d^l_{2,-2}:
+    //     Gl_+: ... +2*(l-1)*(x*dP_l - P_l) - 2*(l+2)*dP_{l-1}
+    //     Gl_-: ... -2*(l-1)*(x*dP_l - P_l) + 2*(l+2)*dP_{l-1}
+    //   Physically, xi_+ = <E*E> + <B*B> and xi_- = <E*E> - <B*B>, so the
+    //   sign flip selects additive vs subtractive mixing of E/B modes.
+    //
+    // NOTATION in the code below:
+    //   Pmin[i][l±1], Pmax[i][l±1]   = P_{l±1} at bin edges
+    //   dPmin[i][l], dPmax[i][l]     = P_l' at bin edges
+    //   xmin[i], xmax[i]             = cos(theta_max), cos(theta_min)
+    //   (xmin - xmax) in denominator = bin width in cos(theta)
+    // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
@@ -403,37 +445,6 @@ double xi_pm_tomo(
         Cl[1][i][l] = 0.0;
       }
     }
-
-    /*
-    (void) C_ss_tomo_limber((double) limits.LMIN_tab+1,Z1(0),Z2(0),1); // init static vars
-    
-    if (1 == limber) {
-      #pragma omp parallel
-      {
-        #pragma omp for collapse(2) schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++)  {
-          for (int l=lmin; l<limits.LMIN_tab; l++) {
-            const int Z1NZ = Z1(nz);
-            const int Z2NZ = Z2(nz);
-            Cl[0][nz][l] = C_ss_tomo_limber_nointerp((double) l, Z1NZ, Z2NZ, 1, 0);
-            Cl[1][nz][l] = C_ss_tomo_limber_nointerp((double) l, Z1NZ, Z2NZ, 0, 0);
-          }
-        }
-        #pragma omp for schedule(static) nowait
-        for (int nz = 0; nz < NSIZE; nz++) {
-          C_ss_tomo_limber_fill(nz,
-                                limits.LMIN_tab, 
-                                Ntable.LMAX, 
-                                lnell,
-                                Cl[0][nz], 
-                                Cl[1][nz]);
-        }
-      }
-    }
-    else {
-      log_fatal("NonLimber not implemented"); exit(1);
-    }
-    */
     // init static vars
     (void) C_ss_tomo_limber((double) limits.LMIN_tab+1, Z1(0), Z2(0), 1);
     
@@ -489,10 +500,36 @@ double xi_pm_tomo(
 }
 
 // ---------------------------------------------------------------------------
+// Galaxy-shear (tangential shear) real-space two-point correlation function
+// gamma_t(theta) with bin-averaged Hankel transform.
+//
+// Computes gamma_t by summing the galaxy-shear angular power spectrum C_l^gs
+// against a bin-averaged Legendre polynomial kernel Pl:
+//
+//   gamma_t(theta_i) = sum_l Pl(i,l) * C_l^gs
+//
+// The kernel Pl encodes the bin-averaged P_2(cos(theta)) projection
+// (spin-2 field × spin-0 field), computed from associated Legendre
+// polynomials at the bin edges following Kilbinger+ (2017).
+//
+// The C_l array is filled in two stages:
+//   1. Low-ell (l = 1..LMIN_tab): direct quadrature via C_gs_tomo_limber_nointerp
+//   2. High-ell (l = LMIN_tab..LMAX): fast interpolation via C_gs_tomo_limber_fill
+//
+// The final Hankel sum is SIMD-vectorized via #pragma omp simd.
+//
+// Only lens-source pairs with redshift overlap contribute (test_zoverlap);
+// non-overlapping pairs return 0.
+//
+// Cache invalidation: recomputes when cosmology, photo-z (shear or clustering),
+// IA, redshift distributions, Ntable, or galaxy bias parameters change.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
+double w_gammat_tomo(
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni,     // lens redshift bin
+    const int nj,     // source redshift bin
+    const int limber  // 1 = Limber (required), 0 = not implemented
+  )
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
@@ -561,6 +598,48 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
         Pl[i][l] = 0.0;
       }
     }
+    // -----------------------------------------------------------------------
+    // Bin-averaged Hankel transform kernel Pl for gamma_t(theta) (tangential shear).
+    //
+    // MOTIVATION:
+    //   The galaxy-shear (GGL) correlation function is:
+    //     gamma_t(theta) = sum_l (2l+1)/(4pi*l*(l+1)) * C_l^gs * P_l^2(cos(theta))
+    //   where P_l^2(x) is the associated Legendre polynomial of degree l, order 2.
+    //   The prefactor 1/[l(l+1)] comes from the single spin-2 shear field
+    //   (contrast with xi_pm which has two spin-2 fields giving 1/[l(l+1)]^2).
+    //
+    //   As with xi_pm, we bin-average the kernel over [theta_min, theta_max]:
+    //
+    //     Pl(i,l) = 1/(xmin - xmax) * integral_{xmax}^{xmin} kernel_l(x) dx
+    //
+    //   where xmin = cos(theta_max), xmax = cos(theta_min).
+    //
+    // ANALYTIC BIN INTEGRATION:
+    //   The associated Legendre polynomial P_l^2(x) satisfies the recurrence:
+    //     P_l^2(x) = [(2l+1)*x*P_l - (l+2)*P_{l-1}^2] / (l-1)
+    //   and can be related to ordinary Legendre polynomials P_l(x) via:
+    //     P_l^2(x) = (1-x^2) * P_l''(x) = ... (complicated)
+    //   but the integral over a bin can be evaluated using the identity:
+    //
+    //     integral P_l^2(x) dx = (l+2/(2l+1)) * P_{l-1}(x)
+    //                          + (2-l) * x * P_l(x)
+    //                          - 2/(2l+1) * P_{l+1}(x)
+    //
+    //   which is derived from the Legendre recurrence relations. The
+    //   bin-averaged kernel is then the difference of these antiderivatives
+    //   evaluated at the bin edges, divided by (xmin - xmax).
+    //
+    // NOTATION:
+    //   Pmin[i][l] = P_l(xmin[i])       Pmax[i][l] = P_l(xmax[i])
+    //   xmin[i] = cos(theta_max)        xmax[i] = cos(theta_min)
+    //   (xmin - xmax) in denominator = bin width in cos(theta)
+    //
+    // PREFACTOR:
+    //   (2l+1) / (4*pi*l*(l+1))
+    //   = [(2l+1)/(4*pi)] * [1/(l*(l+1))]
+    //     ~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
+    //     Legendre norm       single spin-2 field factor
+    // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
@@ -592,21 +671,13 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
       }
     }
 
-    (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0)); // init static vars
+    (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
     
     if (1 == limber) {
-      #pragma omp parallel
-      {
-        #pragma omp for collapse(2) schedule(static) nowait
-        for (int nz=0; nz<NSIZE; nz++) {
-          for (int l=lmin; l<limits.LMIN_tab; l++) {
-            Cl[nz][l] = C_gs_tomo_limber_nointerp((double) l, ZL(nz), ZS(nz), 0);
-          }
-        }
-        #pragma omp for schedule(static) nowait
-        for (int nz = 0; nz < NSIZE; nz++) {
-          C_gs_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
-        }
+      C_gs_tomo_limber_nointerp_batch(lmin, limits.LMIN_tab, NSIZE, Cl, 0);
+      #pragma omp parallel for schedule(static)
+      for (int nz = 0; nz < NSIZE; nz++) {
+        C_gs_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
     else {
@@ -660,12 +731,37 @@ double w_gammat_tomo(const int nt, const int ni, const int nj, const int limber)
     return 0.0;
   }
 }
-//
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
-double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
+// ---------------------------------------------------------------------------
+// Galaxy clustering real-space two-point correlation function w(theta) with
+// bin-averaged Hankel transform.
+//
+// Computes w(theta) by summing the galaxy clustering angular power spectrum
+// C_l^gg against a bin-averaged Legendre polynomial kernel Pl:
+//
+//   w(theta_i) = sum_l Pl(i,l) * C_l^gg
+//
+// The kernel Pl encodes the bin-averaged P_0(cos(theta)) projection
+// (spin-0 × spin-0), computed from Legendre polynomials at the bin edges.
+//
+// The C_l array is filled via two paths depending on the limber flag:
+//   limber = 1: full Limber approximation
+//     1. Low-ell (l = 1..LMIN_tab): C_gg_tomo_limber_nointerp
+//     2. High-ell (l = LMIN_tab..LMAX): C_gg_tomo_limber_fill
+//   limber = 0: non-Limber FFTLog (C_cl_tomo) for l < LMAX_NOLIMBER,
+//     then Limber fill for l >= LMAX_NOLIMBER
+//
+// Only auto-correlations (ni = nj) are supported.
+//
+// Cache invalidation: recomputes when cosmology, clustering photo-z,
+// clustering redshift distribution, Ntable, or galaxy bias change.
+// ---------------------------------------------------------------------------
+double w_gg_tomo(
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni,     // first lens redshift bin
+    const int nj,     // second lens redshift bin (must equal ni)
+    const int limber  // 1 = full Limber, 0 = non-Limber FFTLog + Limber hybrid
+  )
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
@@ -734,6 +830,38 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
         Pl[i][l] = 0.0;
       }
     }
+    // -----------------------------------------------------------------------
+    // Bin-averaged Hankel transform kernel Pl for w(theta) (galaxy clustering).
+    //
+    // MOTIVATION:
+    //   The galaxy clustering correlation function is:
+    //     w(theta) = sum_l (2l+1)/(4*pi) * C_l^gg * P_l(cos(theta))
+    //   where P_l(x) is the ordinary Legendre polynomial (spin-0 × spin-0,
+    //   no 1/[l(l+1)] prefactor unlike the shear probes).
+    //
+    //   Bin-averaging over [theta_min, theta_max]:
+    //
+    //     Pl(i,l) = 1/(xmin - xmax) * integral_{xmax}^{xmin} P_l(x) dx
+    //
+    // ANALYTIC BIN INTEGRATION:
+    //   The Legendre recurrence relation gives a closed-form antiderivative:
+    //
+    //     integral P_l(x) dx = [P_{l+1}(x) - P_{l-1}(x)] / (2l+1)
+    //
+    //   The bin-averaged kernel is the difference at the two bin edges:
+    //
+    //     Pl(i,l) = [P_{l+1}(xmin) - P_{l+1}(xmax) - P_{l-1}(xmin) + P_{l-1}(xmax)]
+    //               / [(2l+1) * (xmin - xmax)]
+    //
+    //   The (2l+1) from the antiderivative cancels with the (2l+1)/(4*pi)
+    //   prefactor from the Legendre expansion, leaving just 1/(4*pi) as the
+    //   overall normalization.
+    //
+    // NOTATION:
+    //   Pmin[i][l] = P_l(xmin[i])       Pmax[i][l] = P_l(xmax[i])
+    //   xmin[i] = cos(theta_max)        xmax[i] = cos(theta_min)
+    //   (xmin - xmax) in denominator = bin width in cos(theta)
+    // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) { 
@@ -830,10 +958,30 @@ double w_gg_tomo(const int nt, const int ni, const int nj, const int limber)
 }
 
 // ---------------------------------------------------------------------------
+// Galaxy-CMB lensing real-space two-point correlation function with
+// bin-averaged Hankel transform.
+//
+// Computes the cross-correlation between the galaxy density field and the
+// CMB convergence map by summing C_l^gk against a bin-averaged Legendre
+// polynomial kernel (same kernel as w_gg — spin-0 × spin-0):
+//
+//   w_gk(theta_i) = sum_l Pl(i,l) * C_l^gk
+//
+// The C_l array is filled in two stages:
+//   1. Low-ell (l = 1..LMIN_tab): C_gk_tomo_limber_nointerp
+//   2. High-ell (l = LMIN_tab..LMAX): C_gk_tomo_limber_fill
+//
+// No intrinsic alignment contribution (CMB lensing kernel peaks at z ~ 2).
+// One lens bin index only (no source bin — the CMB is a single source plane).
+//
+// Cache invalidation: recomputes when cosmology, clustering photo-z,
+// clustering redshift distribution, Ntable, or galaxy bias change.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double w_gk_tomo(const int nt, const int ni, const int limber)
+double w_gk_tomo(
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni,     // lens redshift bin
+    const int limber  // 1 = Limber (required), 0 = not implemented
+  )
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
@@ -903,6 +1051,16 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
         Pl[i][l] = 0.0;
       }
     }
+    // -----------------------------------------------------------------------
+    // Bin-averaged Hankel transform kernel Pl for w_gk(theta) (galaxy-CMB lensing).
+    //
+    // Same kernel as galaxy clustering w(theta): both are spin-0 × spin-0
+    // correlations, so the projection uses ordinary Legendre polynomials P_l(x)
+    // with no 1/[l(l+1)] spin factor. The only difference is the C_l being
+    // summed against (C_l^gk instead of C_l^gg).
+    //
+    // See the w_gg kernel documentation for the derivation.
+    // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
@@ -999,10 +1157,30 @@ double w_gk_tomo(const int nt, const int ni, const int limber)
 }
 
 // ---------------------------------------------------------------------------
+// CMB lensing-shear real-space two-point correlation function with
+// bin-averaged Hankel transform.
+//
+// Computes the cross-correlation between the CMB convergence map and the
+// shear field by summing C_l^ks against a bin-averaged Legendre polynomial
+// kernel (same spin-2 kernel as gamma_t):
+//
+//   w_ks(theta_i) = sum_l Pl(i,l) * C_l^ks
+//
+// The C_l array is filled in two stages:
+//   1. Low-ell (l = 1..LMIN_tab): C_ks_tomo_limber_nointerp
+//   2. High-ell (l = LMIN_tab..LMAX): C_ks_tomo_limber_fill
+//
+// Includes NLA intrinsic alignment contribution (C1 * W_source × W_k_cmb).
+// One source bin index only (the CMB is a single lens plane).
+//
+// Cache invalidation: recomputes when cosmology, shear photo-z, IA,
+// shear redshift distribution, or Ntable change.
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double w_ks_tomo(const int nt, const int ni, const int limber)
+double w_ks_tomo(
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni,     // source redshift bin
+    const int limber  // 1 = Limber (required), 0 = not implemented
+  )
 {
   static double** Pl = NULL;
   static double* w_vec = NULL;
@@ -1071,6 +1249,18 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
       }
     }
 
+    // -----------------------------------------------------------------------
+    // Bin-averaged Hankel transform kernel Pl for w_ks(theta) (CMB lensing-shear).
+    //
+    // Same kernel as galaxy-shear gamma_t(theta): both correlate a spin-0
+    // field (CMB convergence here, galaxy density for GGL) with a spin-2
+    // shear field, so the projection uses P_l^2(x) (associated Legendre
+    // polynomial of order 2) with the single spin-2 prefactor 1/[l(l+1)].
+    // The only difference is the C_l being summed against (C_l^ks instead
+    // of C_l^gs).
+    //
+    // See the w_gammat kernel documentation for the derivation.
+    // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
@@ -1170,7 +1360,19 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // Limber Approximation (Angular Power Spectrum)
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -1185,25 +1387,63 @@ double w_ks_tomo(const int nt, const int ni, const int limber)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Precomputed cosmological quantities at Gauss-Legendre quadrature nodes.
+//
+// The Limber integral for angular power spectra is evaluated as a weighted
+// sum over quadrature points in scale factor a. Each point requires several
+// expensive cosmological functions (comoving distance, growth factor,
+// Hubble rate). Since these depend only on a (not on multipole l or
+// tomographic bin), they can be computed once and reused across all
+// (ell, bin-pair) combinations.
+//
+// This is the core data structure enabling the loop-inversion optimization
+// in C_ss_tomo_limber_work and C_gs_tomo_limber: instead of recomputing
+// chi(a), D(a), H(a)/H0 inside every per-ell integrand call, we evaluate
+// them once at all quadrature nodes and pass flat arrays to the vectorized
+// inner loops.
+//
+// Memory layout: data[CN_NPARAMS][npts], contiguous via malloc2d.
+// ---------------------------------------------------------------------------
 typedef struct {
-  int npts;
-  double** data;
+  int npts;       // number of Gauss-Legendre quadrature points (= w->n)
+  double** data;  // data[param][p]: cosmological quantities at each node
 } cosmo_nodes;
 
+// ---------------------------------------------------------------------------
+// Column indices into cosmo_nodes.data[param][p].
+// CN_NPARAMS is not a real parameter — it exploits enum auto-increment to
+// give the total number of columns, used to size the malloc2d allocation.
+// ---------------------------------------------------------------------------
 enum {
-  CN_A = 0,
-  CN_WT,
-  CN_FK,        // f_K
-  CN_GROWFAC,   // growfac;
-  CN_HOVERH0,   // hoverh0v2
-  CN_DCHIDA,    // chidchi.dchida
-  CN_NPARAMS    // trick to set automatically the number of parameters
+  CN_A = 0,     // scale factor a (quadrature abscissa in [amin, amax])
+  CN_WT,        // Gauss-Legendre quadrature weight
+  CN_FK,        // comoving distance chi(a) (= f_K for flat cosmology)
+  CN_GROWFAC,   // linear growth factor D(a) = growfac(a)
+  CN_HOVERH0,   // H(a)/H0 computed via hoverh0v2(a, dchi/da)
+  CN_DCHIDA,    // dchi/da from chi_all(a) — used in the Limber prefactor dchi/da / fK^2
+  CN_NPARAMS    // total number of columns (auto-set by enum)
 };
 
+// ---------------------------------------------------------------------------
+// Create cosmo_nodes by evaluating cosmological functions at all Gauss-Legendre
+// quadrature points in the scale factor range [amin, amax].
+//
+// The quadrature points and weights come from the GSL fixed-order table w,
+// which is shared with the Limber integration routines. The number of points
+// (typically 64-512 depending on Ntable.high_def_integration) controls the
+// accuracy of the numerical integration.
+//
+// Thread safety: the functions chi_all, growfac, and hoverh0v2 must have
+// their internal static interpolation tables initialized before this is
+// called in parallel. This is ensured by the init blocks in C_ss_tomo_limber_work
+// and C_gs_tomo_limber's caller.
+// ---------------------------------------------------------------------------
 cosmo_nodes create_cosmo_nodes(
-    const double amin,
-    const double amax,
-    const gsl_integration_glfixed_table* w)
+    const double amin,                      // minimum scale factor (integration lower bound)
+    const double amax,                      // maximum scale factor (integration upper bound)
+    const gsl_integration_glfixed_table* w  // GSL Gauss-Legendre table (provides nodes and weights)
+  )
 {
   cosmo_nodes cn;
   cn.npts = (int) w->n;
@@ -1234,12 +1474,18 @@ void free_cosmo_nodes(cosmo_nodes* cn) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // SS = SHEAR SHEAR
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 // NLA shear-shear integrand core (EE only, BB = 0 for NLA).
 // Pure arithmetic on preloaded scalars — no branches, no table lookups —
 // so GCC can vectorize the calling loop with #pragma omp simd.
@@ -1340,15 +1586,17 @@ inline double int_for_C_ss_tomo_limber_tatt_BB_core(
 }
 
 // ---------------------------------------------------------------------------
-// Scalar integrand for C_ss: combines IA-model branching, FPTIA
+// Scalar integrand for C_ss (LEGACY): combines IA-model branching, FPTIA
 // interpolation, and Limber arithmetic in one per-point function.
-// Not vectorizable because the switch on nuisance.IA_MODEL sits inside
-// the per-quadrature-point loop.
 //
-// Not used by the hot-path C_ss_tomo_limber (which uses C_ss_tomo_limber_work
-// with precomputed kernels and vectorized inner loops).
+// Not vectorizable (via SIMD) because the switch on nuisance.IA_MODEL sits 
+// inside the per-quadrature-point loop.
 //
-// Still used by:
+// Not used by the hot-path C_ss_tomo_limber (!!)
+// Hot-path employs C_ss_tomo_limber_work. Why? C_ss_tomo_limber_work uses
+// precomputed kernels and vectorized inner loops.
+//
+// This legacy scalar code is still used by:
 //   - cosmo2D_scuts (dC/dlnk scale-cut derivatives via the deriv parameter)
 //   - Jupyter notebooks for single-point diagnostic evaluations
 //
@@ -1518,7 +1766,10 @@ static void C_ss_tomo_limber_work(
     const int init          // 1 = warm up statics only, 0 = full computation
   )
 {
-  // warm up all functions that have static variables
+  // -----------------------------------------------------------------------
+  // Warm up all functions that lazily initialize internal static tables.
+  // Must be called single-threaded before any parallel region touches them.
+  // -----------------------------------------------------------------------
   {
     const double a    = cn->data[CN_A][0];
     const double fK   = cn->data[CN_FK][0];
@@ -1538,7 +1789,6 @@ static void C_ss_tomo_limber_work(
   if (1 == init) {
     return;
   }
-
   // -----------------------------------------------------------------------
   // Allocate precomputed arrays
   // -----------------------------------------------------------------------
@@ -1553,7 +1803,6 @@ static void C_ss_tomo_limber_work(
     limTATT[1] = log(FPTIA.k_max);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
   }
-
   // -----------------------------------------------------------------------
   // Precompute: radial weights per (bin, quadrature point) and
   //             P(k,a) + TATT kernels per (ell, quadrature point)
@@ -1590,7 +1839,6 @@ static void C_ss_tomo_limber_work(
       }
     }
   }
-
   // -----------------------------------------------------------------------
   // Main integration loop.
   // IA model switch is outside the inner loop so the SIMD reduction over
@@ -1821,7 +2069,6 @@ void C_ss_tomo_limber_nointerp_batch(
 //   init - 1: warm up static variables only (returns 0.0, no allocation)
 //          0: compute and return C_l for the requested (ni, nj, EE)
 // ---------------------------------------------------------------------------
-
 double C_ss_tomo_limber_nointerp(
     const double l, 
     const int ni, 
@@ -1851,10 +2098,6 @@ double C_ss_tomo_limber_nointerp(
   free(tmp);
   return res;
 }
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Shared state between C_ss_tomo_limber (which builds the interpolation table)
@@ -1988,287 +2231,6 @@ double C_ss_tomo_limber(
   return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
 }
 
-/*
-double C_ss_tomo_limber(
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE
-  )
-{
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double*** table = NULL;
-  static double lim[3];
-  static int nell;
-  static gsl_integration_glfixed_table* w = NULL;
-  static double*** WC = NULL;   // WK, WS, C1X, C2X, BTAX 
-  static double** lx = NULL;    // l, ell_prefactor
-  static double*** KIA = NULL;  // IA TATT KERNELS (i=0,..,9), Pk(i=10)
-
-  if (NULL == table || fdiff2(cache[4], Ntable.random)) 
-  {
-    nell = Ntable.N_ell;
-    lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
-    lim[1] = log(Ntable.LMAX + 1);
-    lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
-    
-    if (table != NULL) free(table);
-    table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
-    memset(table[0][0], 0, 2*tomo.shear_Npowerspectra*nell*sizeof(double));
-
-    ss_.tab = table; 
-    ss_.lim[0] = lim[0]; 
-    ss_.lim[1] = lim[1]; 
-    ss_.lim[2] = lim[2]; 
-    ss_.nell = nell;  
-
-    const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
-                         (1 == hdi) ? 96 :
-                         (2 == hdi) ? 128 :
-                         (3 == hdi) ? 256 : 512;
-    if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-
-    if (lx != NULL) free(lx);
-    lx = (double**) malloc2d(2, nell);
-
-    if (WC != NULL) free(WC); // WK, WS, C1X, C2X, BTAX
-    const int nWC = 5;
-    WC = (double***) malloc3d(nWC, redshift.shear_nbin, (int) w->n);
-    memset(WC[0][0],0,nWC*redshift.shear_nbin*(w->n)*sizeof(double));
-
-    if (KIA != NULL) free(KIA); // IA TATT KERNELS (10), PK (11)
-    const int nKIA = 11;
-    KIA = (double***) malloc3d(nKIA, nell, (int) w->n);
-    memset(KIA[0][0],0,nKIA*nell*(w->n)*sizeof(double));
-
-    for (int i = 0; i<nell; i++) {
-      lx[0][i] = exp(lim[0] + i * lim[2]);
-      const double ell = lx[0][i] + 0.5;
-      const double ell4 = ell * ell * ell * ell;
-      lx[1][i] = lx[0][i]*(lx[0][i]-1.)*(lx[0][i]+1.)*(lx[0][i]+2.)/ell4;
-    }
-  }
-
-  if (fdiff2(cache[0], cosmology.random) ||
-      fdiff2(cache[1], nuisance.random_photoz_shear) ||
-      fdiff2(cache[2], nuisance.random_ia) ||
-      fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
-  {
-    // -------------------------------------------------------------------------
-    // optimization: - pre-compute cosmo quantities and prefactors
-    //                 (why once? amin and amax are nl and ns independent)
-    //               - compute WS only nsource times (not ns(ns-1)/2!) 
-    //               - pre-compute intrinsic alignment amplitude and kernels
-    // This is all possible because we know exactly the integration points
-    // ------------------------------------------------------------------------
-    const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
-    const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
-    
-    cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
-    
-    double limTATT[3];
-    { // init static vars begin ------------------------------------------------
-      {
-        const int k = 0;
-        const double Z1NZ = Z1(k);
-        const double Z2NZ = Z2(k);
-        (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 1, 1); // EE
-        (void) C_ss_tomo_limber_nointerp(exp(lim[0]), Z1NZ, Z2NZ, 0, 1); // BB
-      } 
-      {
-        const int b=0;
-        const int p=0;
-        (void) W_kappa(cn.data[CN_A][p], cn.data[CN_FK][p], b);
-        (void) W_source(cn.data[CN_A][p], b, cn.data[CN_HOVERH0][p]); 
-      } 
-      if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-        if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
-          get_FPT_IA();
-        }
-        limTATT[0] = log(FPTIA.k_min);
-        limTATT[1] = log(FPTIA.k_max);
-        limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
-      }
-    } // init static vars ends -------------------------------------------------
-
-    // -------------------------------------------------------------------------
-    // optimization: pre-compute cosmo quantities and prefactors and IA kernels
-    // -------------------------------------------------------------------------
-    #pragma omp parallel for schedule(static)
-    for (int p=0; p<cn.npts; p++) {
-      const double a  = cn.data[CN_A][p];
-      const double fK = cn.data[CN_FK][p];
-      const double hoh0 = cn.data[CN_HOVERH0][p];
-      const double growfac_a = cn.data[CN_GROWFAC][p];
-      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-      for (int b=0; b<redshift.shear_nbin; b++) {
-        WC[0][b][p] = W_kappa(a, fK, b);
-        WC[1][b][p] = W_source(a, b, hoh0);
-        WC[2][b][p] = IA_A1_Z1(a, growfac_a, b);
-        WC[3][b][p] = IA_A2_Z1(a, growfac_a, b);
-        WC[4][b][p] = IA_BTA_Z1(a, growfac_a, b);
-      }
-      for (int i=0; i<nell; i++) { 
-        const double ell = lx[0][i] + 0.5;
-        const double k = ell / fK;
-        const double lnk = log(k);
-        KIA[10][i][p] = Pdelta(k, a);
-        if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-          if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
-            const double r = (lnk - limTATT[0]) / limTATT[2];
-            const int b = (int) floor(r);
-            const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
-            const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
-            for (int m=0; m<10; m++) {
-              KIA[m][i][p] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
-            }
-          }
-        }
-      }
-    }
-    // -------------------------------------------------------------------------
-    // MAIN LOOP - To enable better vectorization, IA switch is outside the loop
-    // -------------------------------------------------------------------------
-    switch(nuisance.IA_MODEL) 
-    {
-      case IA_MODEL_TATT:
-      {
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int i=0; i<nell; i++) {
-          for (int k=0; k<tomo.shear_Npowerspectra; k++) {
-            const int Z1NZ = Z1(k);
-            const int Z2NZ = Z2(k);
-            if (Z1NZ < 0 || Z1NZ > redshift.shear_nbin - 1 || 
-                Z2NZ < 0 || Z2NZ > redshift.shear_nbin - 1) {
-              log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",Z1NZ, Z2NZ); 
-              exit(1);
-            }
-            const double* restrict fK     = cn.data[CN_FK];
-            const double* restrict dchida = cn.data[CN_DCHIDA];
-            const double* restrict wt     = cn.data[CN_WT];
-            const double* restrict PK     = KIA[10][i];
-            const double* restrict WK1    = WC[0][Z1NZ];
-            const double* restrict WK2    = WC[0][Z2NZ];
-            const double* restrict WS1    = WC[1][Z1NZ];
-            const double* restrict WS2    = WC[1][Z2NZ];
-            const double* restrict C11    = WC[2][Z1NZ];
-            const double* restrict C12    = WC[2][Z2NZ];
-            const double* restrict C21    = WC[3][Z1NZ];
-            const double* restrict C22    = WC[3][Z2NZ];
-            const double* restrict bta1   = WC[4][Z1NZ];
-            const double* restrict bta2   = WC[4][Z2NZ];
-            const double* restrict tt     = KIA[0][i];
-            const double* restrict ta_dE1 = KIA[1][i];
-            const double* restrict ta_dE2 = KIA[2][i];
-            const double* restrict ta     = KIA[3][i];
-            const double* restrict mixA   = KIA[4][i];
-            const double* restrict mixB   = KIA[5][i];
-            const double* restrict mixEE  = KIA[6][i];
-            const double* restrict ttbb   = KIA[7][i];
-            const double* restrict tabb   = KIA[8][i];
-            const double* restrict mixbb  = KIA[9][i];
-            const double ell_prefactor    = lx[1][i];
-            double sum_EE = 0.0;
-            double sum_BB = 0.0;
-            #pragma omp simd reduction(+:sum_EE, sum_BB)
-            for (int p = 0; p < cn.npts; p++) {
-              const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_prefactor;
-              const double ansEE = 
-                int_for_C_ss_tomo_limber_tatt_EE_core(PK[p],WK1[p],WK2[p],WS1[p],
-                                                      WS2[p],C11[p],C12[p],C21[p],C22[p],
-                                                      bta1[p],bta2[p],tt[p],ta_dE1[p],
-                                                      ta_dE2[p],ta[p],mixA[p],mixB[p],
-                                                      mixEE[p]);
-              const double ansBB = 
-                int_for_C_ss_tomo_limber_tatt_BB_core(PK[p],WK1[p],WK2[p],WS1[p],
-                                                      WS2[p],C11[p],C12[p],C21[p],C22[p],
-                                                      bta1[p],bta2[p],ttbb[p],tabb[p],
-                                                      mixbb[p]);
-              sum_EE += ansEE*amp*wt[p];
-              sum_BB += ansBB*amp*wt[p];
-            }
-            table[0][k][i] = sum_EE;
-            table[1][k][i] = sum_BB;
-          }
-        }
-        break;
-      }
-      case IA_MODEL_NLA:
-      { 
-        #pragma omp parallel for collapse(2) schedule(static)
-        for (int i=0; i<nell; i++) {
-          for (int k=0; k<tomo.shear_Npowerspectra; k++) {
-            const int Z1NZ = Z1(k);
-            const int Z2NZ = Z2(k);
-            if (Z1NZ < 0 || Z1NZ > redshift.shear_nbin - 1 || 
-                Z2NZ < 0 || Z2NZ > redshift.shear_nbin - 1) {
-              log_fatal("error in selecting bin number (ni,nj) = [%d,%d]",Z1NZ, Z2NZ); 
-              exit(1);
-            }
-
-            const double* restrict fK     = cn.data[CN_FK];
-            const double* restrict dchida = cn.data[CN_DCHIDA];
-            const double* restrict wt     = cn.data[CN_WT];
-            const double* restrict PK     = KIA[10][i];
-            const double* restrict WK1    = WC[0][Z1NZ];
-            const double* restrict WK2    = WC[0][Z2NZ];
-            const double* restrict WS1    = WC[1][Z1NZ];
-            const double* restrict WS2    = WC[1][Z2NZ];
-            const double* restrict C11    = WC[2][Z1NZ];
-            const double* restrict C12    = WC[2][Z2NZ];
-            const double ell_prefactor    = lx[1][i];
-            
-            double sum_EE = 0.0;
-            #pragma omp simd reduction(+:sum_EE)
-            for (int p = 0; p < cn.npts; p++) {
-              const double ans = int_for_C_ss_tomo_limber_nla_core(PK[p],WK1[p],
-                                                                   WK2[p],WS1[p],WS2[p],
-                                                                   C11[p],C12[p]);
-              sum_EE += ans*(dchida[p]/(fK[p]*fK[p]))*ell_prefactor*wt[p];
-            }
-            table[0][k][i] = sum_EE;
-          }
-        }
-        break;
-      }
-      default: 
-      {
-        log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL); 
-        exit(1);
-      }
-    }
-
-    free_cosmo_nodes(&cn);
-
-    cache[0] = cosmology.random;
-    cache[1] = nuisance.random_photoz_shear;
-    cache[2] = nuisance.random_ia;
-    cache[3] = redshift.random_shear;
-    cache[4] = Ntable.random;
-  }
-  if (ni < 0 || ni > redshift.shear_nbin - 1 || 
-      nj < 0 || nj > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", ni,nj); exit(1);
-  }
-  const double lnl = log(l);
-  if (lnl < lim[0]) {
-    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
-  }
-  if (lnl > lim[1]) {
-    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
-  }
-  const int q = N_shear(ni, nj);
-  if (q < 0 || q > tomo.shear_Npowerspectra - 1) {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
-  }
-  return interpol1d((1==EE)?table[0][q]:table[1][q],nell,lim[0],lim[1],lim[2],lnl);
-}
-*/
-
 // ---------------------------------------------------------------------------
 // Fast batch interpolation of the shear-shear C_l table at integer multipoles.
 //
@@ -2308,7 +2270,13 @@ void C_ss_tomo_limber_fill(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // GS = GALAXY-SHEAR
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -2460,7 +2428,7 @@ inline double int_for_C_gs_tomo_limber_tatt_core(
 }
 
 // ---------------------------------------------------------------------------
-// Scalar integrand for C_gs (galaxy-galaxy lensing): combines IA-model
+// Scalar integrand for C_gs (galaxy-galaxy lensing) LEGACY: combines IA-model
 // branching, one-loop galaxy bias, FPTIA/FPTbias interpolation, and Limber
 // arithmetic in one per-quadrature-point function.
 //
@@ -2610,67 +2578,424 @@ double int_for_C_gs_tomo_limber(
 }
 
 // ---------------------------------------------------------------------------
+// Core workhorse for all galaxy-shear C_l computations (both the interpolation
+// table in C_gs_tomo_limber and the low-ell batch in C_gs_tomo_limber_nointerp_batch).
+//
+// Same design philosophy as C_ss_tomo_limber_work: precomputes all expensive
+// quantities on a fixed grid of quadrature points, then evaluates the Limber
+// integral for every (ell, tomo-pair) combination with SIMD-vectorized inner loops.
+//
+// Key difference from SS: galaxy-shear has DIFFERENT integration limits per
+// lens bin (amin_lens, amax_lens vary with nl), so cosmo_nodes are created
+// per lens bin (cn_all[clustering_nbin]) rather than a single global cn.
+//
+// Memory layout:
+//   WB[10][clustering_nbin][npts]: lens weights and galaxy bias parameters
+//     WB[0] = W_gal      (lens galaxy radial kernel)
+//     WB[1] = W_mag       (magnification lensing kernel)
+//     WB[2] = b1          (linear galaxy bias)
+//     WB[3] = bmag        (magnification bias coefficient)
+//     WB[4] = b2          (second-order galaxy bias, 0 if no oneloop)
+//     WB[5] = bs2         (tidal galaxy bias, 0 if no oneloop)
+//     WB[6] = b3          (third-order galaxy bias, 0 if no oneloop)
+//     WB[7] = bK          (higher-derivative bias, 0 if no oneloop)
+//     WB[8..9] = unused (allocated to 10 for alignment)
+//   WC[5][clustering_nbin][shear_nbin][npts]: source weights and IA amplitudes
+//     WC[0] = W_kappa     (lensing convergence kernel)
+//     WC[1] = W_source    (source galaxy distribution)
+//     WC[2] = IA_A1       (linear tidal alignment, C1)
+//     WC[3] = IA_A2       (quadratic tidal alignment, C2)
+//     WC[4] = IA_BTA      (density weighting of tidal field)
+//   KIA[10][clustering_nbin][nell][npts]: power spectrum, RSD, IA and bias kernels
+//     KIA[0]   = P_delta(k, a)
+//     KIA[1]   = W_RSD(ell, a0, a1, nl) (0 if RSD disabled)
+//     KIA[2..5] = TATT IA kernels (mixA, mixB, ta_dE1, ta_dE2), via GS_IA_SRC
+//     KIA[6..8] = one-loop bias kernels (d1d2, d1s2, d1p3), via GS_BIAS_SRC
+//     KIA[9]   = unused
+//
+// One-loop consistency: the inner loop calls _tatt_core which ensures
+//   - tree-level galaxy (b1*PK) multiplies the full IA (C1*PK + TATT terms)
+//   - one-loop galaxy (b1l from _bias_oneloop_core) multiplies only linear IA
+//   See the _tatt_core and _nla_core documentation for details.
+//
+// Parameters:
+//   cn_all - array of cosmo_nodes, one per lens bin [clustering_nbin]
+//   lx     - array of multipole values, length nell
+//   nell   - number of multipole values
+//   table  - output array [ggl_Npowerspectra][nell]
+//   init   - if 1, only warm up functions with static variables and return
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double C_gs_tomo_limber_nointerp(
-    const double l, 
-    const int nl, 
-    const int ns,
-    const int init
+static void C_gs_tomo_limber_work(
+    const cosmo_nodes* cn_all,  // quadrature nodes per lens bin [clustering_nbin]
+    const double* lx,           // multipole values (length nell)
+    const double* ell_prefactor,  // l*(l+1)/(l+0.5)^2 per ell (magnification)
+    const double* ell_prefactor2, // sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2 per ell
+    const int nell,             // number of multipole values
+    double** table,             // output [ggl_Npowerspectra][nell]
+    const int init              // 1 = warm up statics only, 0 = full computation
   )
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-  
-  if (nl < 0 || 
-      nl > redshift.clustering_nbin -1 || 
-      ns < 0 || 
-      ns > redshift.shear_nbin -1)
+  // -----------------------------------------------------------------------
+  // Warm up all functions that lazily initialize internal static tables.
+  // Must be called single-threaded before any parallel region touches them.
+  // -----------------------------------------------------------------------
+  const int nonlinear_bias = has_b2_galaxies();
   {
-    log_fatal("invalid bin input (ni, nj) = (%d, %d)", nl, ns);
-    exit(1);
+    const cosmo_nodes* cn = &cn_all[0];
+    const double a    = cn->data[CN_A][0];
+    const double fK   = cn->data[CN_FK][0];
+    const double hoh0 = cn->data[CN_HOVERH0][0];
+    const double gf   = cn->data[CN_GROWFAC][0];
+    const double ell  = lx[0] + 0.5;
+    (void) W_gal(a, 0, hoh0);
+    (void) W_mag(a, fK, 0);
+    (void) W_kappa(a, fK, 0);
+    (void) W_source(a, 0, hoh0);
+    (void) IA_A1_Z1(a, gf, 0);
+    (void) IA_A2_Z1(a, gf, 0);
+    (void) IA_BTA_Z1(a, gf, 0);
+    (void) Pdelta(ell/fK, a);
+    (void) gb1(0.1, 0);
+    (void) gbmag(0.1, 0);
+    if (1 == nonlinear_bias) {
+      (void) gb2(0.1, 0);
+      (void) gbs2(0.1, 0);
+      (void) gb3(0.1, 0);
+      (void) gbK(0.1, 0);
+    }
+    if (1 == include_RSD_GS) {
+      (void) a_chi(0.9);
+      (void) W_RSD(100, 0.9, 0.95, 0);
+    }
+    if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+      if (0 == nuisance.IA_code) get_FPT_IA();
+    }
+    if (1 == nonlinear_bias) {
+      if (0 == nuisance.IA_code) get_FPT_bias();
+    }
   }
+  if (1 == init) return;
+
+  // -----------------------------------------------------------------------
+  // Allocate precomputed arrays
+  // -----------------------------------------------------------------------
+  const int npts = cn_all[0].npts;
+
+  double*** WB = (double***) malloc3d(10, redshift.clustering_nbin, npts);
+  memset(WB[0][0], 0, 10*redshift.clustering_nbin*npts*sizeof(double));
+
+  double**** WC = (double****) malloc4d(5, redshift.clustering_nbin,
+                                        redshift.shear_nbin, npts);
+  memset(WC[0][0][0], 0, 5*redshift.clustering_nbin*
+                         redshift.shear_nbin*npts*sizeof(double));
+
+  double**** KIA = (double****) malloc4d(10, redshift.clustering_nbin, nell, npts);
+  memset(KIA[0][0][0], 0, 10*redshift.clustering_nbin*nell*npts*sizeof(double));
+
+  double limTATT[3];
+  double limbias[3];
+  if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+    if (0 == nuisance.IA_code) get_FPT_IA();
+    limTATT[0] = log(FPTIA.k_min);
+    limTATT[1] = log(FPTIA.k_max);
+    limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
+  }
+  if (1 == nonlinear_bias) {
+    if (0 == nuisance.IA_code) get_FPT_bias();
+    limbias[0] = log(FPTbias.k_min);
+    limbias[1] = log(FPTbias.k_max);
+    limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
+  }
+  // -----------------------------------------------------------------------
+  // Precompute: lens weights, galaxy biases, source weights, IA amplitudes
+  // -----------------------------------------------------------------------
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+    for (int p = 0; p < npts; p++) {
+      const cosmo_nodes* cn = &cn_all[zl];
+      const double a  = cn->data[CN_A][p];
+      const double z  = 1.0/a - 1.0;
+      const double growfac_a = cn->data[CN_GROWFAC][p];
+      WB[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
+      WB[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
+      WB[2][zl][p] = gb1(z, zl);
+      WB[3][zl][p] = gbmag(z, zl);
+      if (1 == nonlinear_bias) {
+        WB[4][zl][p] = gb2(z, zl);
+        WB[5][zl][p] = gbs2(z, zl);
+        WB[6][zl][p] = gb3(z, zl);
+        WB[7][zl][p] = gbK(z, zl);
+      }
+      for (int zs = 0; zs < redshift.shear_nbin; zs++) {
+        WC[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
+        WC[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
+        WC[2][zl][zs][p] = IA_A1_Z1(a, growfac_a, zs);
+        WC[3][zl][zs][p] = IA_A2_Z1(a, growfac_a, zs);
+        WC[4][zl][zs][p] = IA_BTA_Z1(a, growfac_a, zs);
+      }
+    }
+  }
+  // -----------------------------------------------------------------------
+  // Precompute: P(k,a), RSD, TATT kernels, one-loop bias kernels
+  // -----------------------------------------------------------------------
+  #pragma omp parallel for collapse(3) schedule(static)
+  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+    for (int p = 0; p < npts; p++) {
+      for (int i = 0; i < nell; i++) {
+        const cosmo_nodes* cn = &cn_all[zl];
+        const double a  = cn->data[CN_A][p];
+        const double fK = cn->data[CN_FK][p];
+        const double ell = lx[i] + 0.5;
+        const double k = ell / fK;
+        const double lnk = log(k);
+        KIA[0][zl][i][p] = Pdelta(k, a);
+        if (1 == include_RSD_GS) {
+          const double chi_0 = ell/k;
+          const double chi_1 = (ell + 1.0)/k;
+          const double a_0 = a_chi(chi_0);
+          const double a_1 = a_chi(chi_1);
+          KIA[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
+        }
+        if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+          if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
+            const double r = (lnk - limTATT[0]) / limTATT[2];
+            const int b = (int) floor(r);
+            const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+            const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+            for (int m = 0; m < 4; m++) {
+              KIA[2+m][zl][i][p] = LERP(FPTIA.tab[GS_IA_SRC[m]], idx, dr);
+            }
+          }
+        }
+        if (1 == nonlinear_bias) {
+          if (lnk >= limbias[0] && lnk <= limbias[1]) {
+            const double r = (lnk - limbias[0]) / limbias[2];
+            const int b = (int) floor(r);
+            const double dr = (b+1 >= FPTbias.N) ? 0.0 : r - b;
+            const int idx = (b+1 >= FPTbias.N) ? FPTbias.N - 2 : b;
+            for (int m = 0; m < 3; m++) {
+              KIA[6+m][zl][i][p] = LERP(FPTbias.tab[GS_BIAS_SRC[m]], idx, dr);
+            }
+          }
+        }
+      }
+    }
+  }
+  // -----------------------------------------------------------------------
+  // Main integration loop.
+  // Always calls _tatt_core (reduces to NLA when C2=BTA=0 via memset).
+  // restrict pointers hoisted for contiguous AVX2 loads.
+  //
+  // Ell prefactors (1812.05995 eqs 74-79):
+  //   ell_prefactor  = l*(l+1)/(l+0.5)^2       (magnification)
+  //   ell_prefactor2 = sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2  (shear field)
+  // -----------------------------------------------------------------------
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int j = 0; j < tomo.ggl_Npowerspectra; j++) {
+    for (int i = 0; i < nell; i++) {
+      const int ZLNZ = ZL(j);
+      const int ZSNZ = ZS(j);
+      const cosmo_nodes* cn = &cn_all[ZLNZ];
+
+      const double ell = lx[i] + 0.5;
+      const double ep  = ell_prefactor[i];
+      const double ep2 = ell_prefactor2[i];
+
+      const double* restrict fK      = cn->data[CN_FK];
+      const double* restrict growfac = cn->data[CN_GROWFAC];
+      const double* restrict dchida  = cn->data[CN_DCHIDA];
+      const double* restrict wt      = cn->data[CN_WT];
+
+      const double* restrict WK      = WC[0][ZLNZ][ZSNZ];
+      const double* restrict WS      = WC[1][ZLNZ][ZSNZ];
+      const double* restrict C1      = WC[2][ZLNZ][ZSNZ];
+      const double* restrict C2      = WC[3][ZLNZ][ZSNZ];
+      const double* restrict BTA     = WC[4][ZLNZ][ZSNZ];
+
+      const double* restrict WRSD    = KIA[1][ZLNZ][i];
+      const double* restrict WGAL    = WB[0][ZLNZ];
+      const double* restrict WMAG    = WB[1][ZLNZ];
+      const double* restrict b1      = WB[2][ZLNZ];
+      const double* restrict bmag    = WB[3][ZLNZ];
+      const double* restrict b2      = WB[4][ZLNZ];
+      const double* restrict bs2     = WB[5][ZLNZ];
+      const double* restrict b3      = WB[6][ZLNZ];
+      const double* restrict bk      = WB[7][ZLNZ];
+
+      const double* restrict PK      = KIA[0][ZLNZ][i];
+      const double* restrict mixA    = KIA[2][ZLNZ][i];
+      const double* restrict mixB    = KIA[3][ZLNZ][i];
+      const double* restrict ta_dE1  = KIA[4][ZLNZ][i];
+      const double* restrict ta_dE2  = KIA[5][ZLNZ][i];
+      const double* restrict d1d2    = KIA[6][ZLNZ][i];
+      const double* restrict d1s2    = KIA[7][ZLNZ][i];
+      const double* restrict d1p3    = KIA[8][ZLNZ][i];
+
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int p = 0; p < npts; p++) {
+        const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+        const double k = ell / fK[p];
+        const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
+        const double b1l =
+            int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
+              b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
+        const double ans =
+            int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
+              WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
+              g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
+              b1[p],bmag[p],b1l,ep);
+        sum += ans*amp*wt[p];
+      }
+      table[j][i] = sum;
+    }
+  }
+
+  free(WB);
+  free(WC);
+  free(KIA);
+}
+
+// ---------------------------------------------------------------------------
+// Batch computation of galaxy-shear C_l at integer multipoles l = lmin..lmax-1
+// for all tomographic pairs simultaneously.
+//
+// Replaces the old pattern of calling C_gs_tomo_limber_nointerp in a loop:
+//   for (nz = 0; nz < NSIZE; nz++)
+//     for (l = lmin; l < lmax; l++)
+//       Cl[nz][l] = C_gs_tomo_limber_nointerp(l, ZL(nz), ZS(nz), 0);
+//
+// Uses C_gs_tomo_limber_work with integer-spaced ell values, sharing all
+// precomputed cosmo_nodes, radial weights, IA amplitudes, and bias parameters.
+//
+// Parameters:
+//   lmin  - first multipole (inclusive)
+//   lmax  - last multipole (exclusive), ell = lmin, lmin+1, ..., lmax-1
+//   NSIZE - number of ggl power spectra (= ggl_Npowerspectra)
+//   Cl    - output array [NSIZE][>=lmax], only Cl[0..NSIZE-1][lmin..lmax-1] written
+//           NULL is accepted when init = 1
+//   init  - if 1, only warm up static variables (no allocation, no computation)
+//           if 0, perform full batch computation
+// ---------------------------------------------------------------------------
+void C_gs_tomo_limber_nointerp_batch(
+    const int lmin,   // first multipole (inclusive)
+    const int lmax,   // last multipole (exclusive)
+    const int NSIZE,  // number of ggl power spectra
+    double** Cl,      // output [NSIZE][>=lmax], NULL if init=1
+    const int init    // 1 = warm up statics only, 0 = full computation
+  )
+{
+  static gsl_integration_glfixed_table* w = NULL;
+  static uint64_t cache[MAX_SIZE_ARRAYS];
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 : 
-                         (1 == hdi) ? 96 : 
-                         (2 == hdi) ? 128 : 
-                         (3 == hdi) ? 256 : 512; // predefined GSL tables
-    if (w != NULL)  {
-      gsl_integration_glfixed_table_free(w);
-    }
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 96 :
+                         (2 == hdi) ? 128 :
+                         (3 == hdi) ? 256 : 512;
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
   }
 
-  double ar[4] = {(double) nl, (double) ns, l, has_b2_galaxies()};
-  
-  const double amin = amin_lens(nl);
-  const double amax = amax_lens(nl);
-  
-  if (!(amin>0) || !(amin<1) || !(amax>0) || !(amax<1)) {
-    log_fatal("0 < amin/amax < 1 not true");
-    exit(1);
+  cosmo_nodes cn_all[redshift.clustering_nbin];
+  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+    const double amin = amin_lens(zl);
+    const double amax = amax_lens(zl);
+    cn_all[zl] = create_cosmo_nodes(amin, amax, w);
   }
-  if (!(amin < amax)) {
-    log_fatal("amin < amax not true");
+  for (int q = 1; q < redshift.clustering_nbin; q++) {
+    if (cn_all[q].npts != cn_all[0].npts) {
+      log_fatal("inconsistent quadrature size"); exit(1);
+    }
+  }
+
+  // single-ell init for _work warmup
+  const double lx0 = (double) lmin;
+  const double ep0 = lx0*(lx0+1.)/((lx0+0.5)*(lx0+0.5));
+  const double tmp0 = (lx0-1.)*lx0*(lx0+1.)*(lx0+2.);
+  const double ep20 = (tmp0 > 0) ? sqrt(tmp0)/((lx0+0.5)*(lx0+0.5)) : 0.0;
+  C_gs_tomo_limber_work(cn_all, &lx0, &ep0, &ep20, 1, NULL, 1);
+
+  if (1 == init) {
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      free_cosmo_nodes(&cn_all[zl]);
+    }
+    return;
+  }
+
+  const int nell = lmax - lmin;
+  if (nell <= 0) {
+    log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
     exit(1);
   }
 
-  double res;
-  if (init == 1) {
-    res = int_for_C_gs_tomo_limber(amin, (void*) ar);
+  double* lx  = (double*) malloc1d(nell);
+  double* ep  = (double*) malloc1d(nell);
+  double* ep2 = (double*) malloc1d(nell);
+  for (int i = 0; i < nell; i++) {
+    lx[i] = (double)(lmin + i);
+    const double ell = lx[i] + 0.5;
+    ep[i] = lx[i]*(lx[i]+1.)/(ell*ell);
+    const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
+    ep2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
   }
-  else {    
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_C_gs_tomo_limber;
-    res = gsl_integration_glfixed(&F, amin, amax, w);
+
+  double** tmp_table = (double**) malloc2d(NSIZE, nell);
+  memset(tmp_table[0], 0, NSIZE*nell*sizeof(double));
+
+  C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, tmp_table, 0);
+
+  for (int k = 0; k < NSIZE; k++) {
+    for (int i = 0; i < nell; i++) {
+      Cl[k][lmin+i] = tmp_table[k][i];
+    }
   }
+
+  free(tmp_table);
+  free(lx);
+  free(ep);
+  free(ep2);
+  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+    free_cosmo_nodes(&cn_all[zl]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Single-ell wrapper around C_gs_tomo_limber_nointerp_batch.
+// Kept for backward compatibility and Jupyter notebook diagnostics.
+// See C_ss_tomo_limber_nointerp for the same pattern.
+// ---------------------------------------------------------------------------
+double C_gs_tomo_limber_nointerp(
+    const double l,   // multipole moment
+    const int nl,     // lens redshift bin
+    const int ns,     // source redshift bin
+    const int init    // 1 = warm up statics only, 0 = compute
+  )
+{
+  if (nl < 0 || nl > redshift.clustering_nbin - 1 ||
+      ns < 0 || ns > redshift.shear_nbin - 1) {
+    log_fatal("invalid bin input (nl, ns) = (%d, %d)", nl, ns);
+    exit(1);
+  }
+  if (1 == init) {
+    C_gs_tomo_limber_nointerp_batch((int) l, (int) l + 1,
+                                    tomo.ggl_Npowerspectra, NULL, 1);
+    return 0.0;
+  }
+  double** tmp = (double**) malloc2d(tomo.ggl_Npowerspectra, 1);
+  memset(tmp[0], 0, tomo.ggl_Npowerspectra*sizeof(double));
+
+  C_gs_tomo_limber_nointerp_batch((int) l, (int) l + 1,
+                                  tomo.ggl_Npowerspectra, tmp, 0);
+
+  const int q = N_ggl(nl, ns);
+  const double res = tmp[q][0];
+  free(tmp);
   return res;
 }
+
 
 // ---------------------------------------------------------------------------
 // Shared state between C_gs_tomo_limber (which builds the interpolation table)
@@ -2687,30 +3012,40 @@ double C_gs_tomo_limber_nointerp(
 static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 
 // ---------------------------------------------------------------------------
+// Galaxy-shear angular power spectrum C_l with interpolation.
+// See C_ss_tomo_limber for the same pattern. Uses C_gs_tomo_limber_work
+// with log-spaced ell values to build the cached interpolation table.
+//
+// Only lens-source pairs with redshift overlap contribute (test_zoverlap).
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear,
+//   nuisance.random_photoz_clustering, nuisance.random_ia,
+//   redshift.random_shear, redshift.random_clustering,
+//   Ntable.random, nuisance.random_galaxy_bias
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double C_gs_tomo_limber(const double l, const int ni, const int nj)
+double C_gs_tomo_limber(
+    const double l,   // multipole moment (continuous, interpolated)
+    const int ni,     // lens redshift bin
+    const int nj      // source redshift bin
+  )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static int nell;
   static double lim[3];
   static gsl_integration_glfixed_table* w = NULL;
-  static double** lx = NULL; // l, ell_prefactor, ell_prefactor2
-  static double*** WB = NULL; // WGAL, WMAG, B1, BMAG, B2, BS2, B3, BK
-  static double**** WC = NULL; // WK, WS, C1X, C2X, BTAX
-  static double**** KIA = NULL; // PK, WRSD, IA TATT KERNELS
-  
+  static double* lx = NULL;
+  static double* ep = NULL;
+  static double* ep2 = NULL;
+
   if (NULL == table || fdiff2(cache[6], Ntable.random)) {
     nell   = Ntable.N_ell;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.0);
 
-    if (table != NULL) {
-      free(table);
-    }
+    if (table != NULL) free(table);
     table = (double**) malloc2d(tomo.ggl_Npowerspectra, nell);
     memset(table[0], 0, tomo.ggl_Npowerspectra*nell*sizeof(double));
 
@@ -2729,29 +3064,18 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     w = malloc_gslint_glfixed(szint);
 
     if (lx != NULL) free(lx);
-    lx = (double**) malloc2d(3, nell);
-    
-    if (WB != NULL) free(WB); // WGAL, WMAG, B1, BMAG, B2, BS2, B3, BK 
-    WB = (double***) malloc3d(10, redshift.clustering_nbin, (int) w->n);
-    memset(WB[0][0], 0, 10*redshift.clustering_nbin*(w->n)*sizeof(double));
+    lx = (double*) malloc1d(nell);
+    if (ep != NULL) free(ep);
+    ep = (double*) malloc1d(nell);
+    if (ep2 != NULL) free(ep2);
+    ep2 = (double*) malloc1d(nell);
 
-    if (WC != NULL) free(WC); // WK, WS, C1X, C2X, BTAX
-    WC = (double****) malloc4d(5, redshift.clustering_nbin, 
-                                  redshift.shear_nbin, (int) w->n);
-    memset(WC[0][0][0],0,5*redshift.clustering_nbin*
-                         redshift.shear_nbin*(w->n)*sizeof(double));
-
-    if (KIA != NULL) free(KIA); // PK, WRSD, IA TATT KERNELS
-    KIA = (double****) malloc4d(10, redshift.clustering_nbin, nell, (int) w->n);
-    memset(KIA[0][0][0],0,10*redshift.clustering_nbin*nell*(w->n)*sizeof(double));
-
-    #pragma omp parallel for
     for (int i = 0; i < nell; i++) {
-      lx[0][i] = exp(lim[0] + i * lim[2]);
-      const double ell = lx[0][i] + 0.5;
-      lx[1][i] = lx[0][i]*(lx[0][i]+1.)/(ell*ell); // correction (1812.05995 eqs 74-79)
-      const double tmp = (lx[0][i]-1.)*lx[0][i]*(lx[0][i]+1.)*(lx[0][i]+2.);
-      lx[2][i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;  
+      lx[i] = exp(lim[0] + i * lim[2]);
+      const double ell = lx[i] + 0.5;
+      ep[i] = lx[i]*(lx[i]+1.)/(ell*ell);
+      const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
+      ep2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
     }
   }
 
@@ -2764,218 +3088,24 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
       fdiff2(cache[6], Ntable.random) ||
       fdiff2(cache[7], nuisance.random_galaxy_bias))
   {
-    // ------------------------------------------------------------------
-    // optimization: amin and amax are dependent of redshift bin
-    //               we can compute cosmo quantities and nlens times. 
-    // ------------------------------------------------------------------
-    const int nbin = redshift.clustering_nbin;
     cosmo_nodes cn_all[redshift.clustering_nbin];
-    for (int ZLNZ = 0; ZLNZ < redshift.clustering_nbin; ZLNZ++) {
-      const double amin = amin_lens(ZLNZ);
-      const double amax = amax_lens(ZLNZ);
-      cn_all[ZLNZ] = create_cosmo_nodes(amin, amax, w);
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      const double amin = amin_lens(zl);
+      const double amax = amax_lens(zl);
+      cn_all[zl] = create_cosmo_nodes(amin, amax, w);
     }
-    for (int q=1; q<redshift.clustering_nbin; q++) {
+    for (int q = 1; q < redshift.clustering_nbin; q++) {
       if (cn_all[q].npts != cn_all[0].npts) {
         log_fatal("inconsistent quadrature size"); exit(1);
       }
     }
 
-    const int nonlinear_bias = has_b2_galaxies();
-    double limTATT[3];
-    double limbias[3];
-    { // init static vars begin ------------------------------------------------
-      for (int k=0; k<tomo.ggl_Npowerspectra; k++) { // init static vars     
-        (void) C_gs_tomo_limber_nointerp(exp(lim[0]), ZL(k), ZS(k), 1);
-      }
-      {
-        const int i = 0;
-        const int zl = 0;
-        const int p = 0;
-        const cosmo_nodes* cn = &cn_all[zl];
-        (void) W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
-        (void) W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
-        (void) gb1(0.1, zl);
-        (void) gbmag(0.1, zl);
-        if (1 == nonlinear_bias) {
-          (void) gb2(0.1, zl);
-          (void) gbs2(0.1, zl);
-          (void) gb3(0.1, zl);
-          (void) gbK(0.1, zl);
-        }
-        if (1 == include_RSD_GS) {
-          (void) a_chi(0.9);
-          (void) W_RSD(100, 0.9, 0.95, zl);
-        } 
-      }
-      if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-        if (0 == nuisance.IA_code) { // call C-FAST-PT to compute IA terms
-          get_FPT_IA();
-        }
-        limTATT[0] = log(FPTIA.k_min);
-        limTATT[1] = log(FPTIA.k_max);
-        limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
-      }
-      if (1 == nonlinear_bias) { 
-        if (0 == nuisance.IA_code){
-          get_FPT_bias();
-        }
-        limbias[0] = log(FPTbias.k_min);
-        limbias[1] = log(FPTbias.k_max);
-        limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
-      }
-    } // init static vars ends -------------------------------------------------
+    C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, table, 0);
 
-    // -------------------------------------------------------------------------
-    // optimization: pre-compute cosmo quantities and prefactors and IA/bias
-    // -------------------------------------------------------------------------
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int zl=0; zl<redshift.clustering_nbin; zl++) {
-      for (int p = 0; p < cn_all[0].npts; p++) {
-        const cosmo_nodes* cn = &cn_all[zl];
-        const double a  =  cn->data[CN_A][p];
-        const double z  = 1.0/a - 1.0;
-        const double growfac_a = cn->data[CN_GROWFAC][p];
-
-        // precompute lens weights 
-        WB[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
-        WB[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
-
-        // precompute galaxy biases
-        WB[2][zl][p] = gb1(z, zl);
-        WB[3][zl][p] = gbmag(z, zl);
-        if (1 == nonlinear_bias) {
-          WB[4][zl][p] = gb2(z, zl);
-          WB[5][zl][p] = gbs2(z, zl);
-          WB[6][zl][p] = gb3(z, zl);
-          WB[7][zl][p] = gbK(z, zl);
-        } 
-
-        // precompute source weights
-        for (int zs = 0; zs < redshift.shear_nbin; zs++) {
-          WC[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
-          WC[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
-          // precompute: intrinsic aligment amplitudes -------------------------
-          WC[2][zl][zs][p] = IA_A1_Z1(a, growfac_a, zs);
-          WC[3][zl][zs][p] = IA_A2_Z1(a, growfac_a, zs);
-          WC[4][zl][zs][p] = IA_BTA_Z1(a, growfac_a, zs);
-        }
-      }
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      free_cosmo_nodes(&cn_all[zl]);
     }
 
-    #pragma omp parallel for collapse(3) schedule(static)
-    for (int zl=0; zl<redshift.clustering_nbin; zl++) {
-      for (int p = 0; p < cn_all[0].npts; p++) {
-        for (int i = 0; i < nell; i++) { 
-          const cosmo_nodes* cn = &cn_all[zl];
-          const double a  =  cn->data[CN_A][p];
-          const double fK = cn->data[CN_FK][p];
-          const double ell = lx[0][i] + 0.5;
-          const double k = ell / fK;
-          const double lnk = log(k);
-          KIA[0][zl][i][p] = Pdelta(k, a);
-          if (1 == include_RSD_GS) {
-            const double chi_0 = ell/k;
-            const double chi_1 = (ell + 1.0)/k;
-            const double a_0 = a_chi(chi_0);
-            const double a_1 = a_chi(chi_1);
-            KIA[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
-          }
-          if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-            if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
-              const double r = (lnk - limTATT[0]) / limTATT[2];
-              const int b = (int) floor(r);
-              const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
-              const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
-              for (int m=0; m<4; m++) {
-                KIA[2+m][zl][i][p] = LERP(FPTIA.tab[GS_IA_SRC[m]], idx, dr);
-              }
-            }
-          }
-          if (1 == nonlinear_bias) {
-            if (lnk >= limbias[0] && lnk <= limbias[1]) {
-              const double r = (lnk - limbias[0]) / limbias[2];
-              const int b = (int) floor(r);
-              const double dr = (b+1 >= FPTbias.N) ? 0.0 : r - b;
-              const int idx = (b+1 >= FPTbias.N) ? FPTbias.N - 2 : b;
-              for (int m=0; m<3; m++) {
-                KIA[6+m][zl][i][p] = LERP(FPTbias.tab[GS_BIAS_SRC[m]], idx, dr);
-              }
-            }
-          }
-        } 
-      }
-    }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int j=0; j<tomo.ggl_Npowerspectra; j++) {
-      for (int i = 0; i<nell; i++) {
-        const int ZLNZ = ZL(j);
-        const int ZSNZ = ZS(j);
-        const cosmo_nodes* cn = &cn_all[ZLNZ];
-        
-        const double ell = lx[0][i] + 0.5;
-        const double ell_prefactor  = lx[1][i];
-        const double ell_prefactor2 = lx[2][i];
-
-        const double* restrict fK      = cn->data[CN_FK];
-        const double* restrict growfac = cn->data[CN_GROWFAC];
-        const double* restrict dchida  = cn->data[CN_DCHIDA];
-        const double* restrict wt      = cn->data[CN_WT];
-
-        const double* restrict WK      = WC[0][ZLNZ][ZSNZ];
-        const double* restrict WS      = WC[1][ZLNZ][ZSNZ];
-        const double* restrict C1      = WC[2][ZLNZ][ZSNZ];
-        const double* restrict C2      = WC[3][ZLNZ][ZSNZ];
-        const double* restrict BTA     = WC[4][ZLNZ][ZSNZ];
-
-        const double* restrict WRSD    = KIA[1][ZLNZ][i];
-        const double* restrict WGAL    = WB[0][ZLNZ];
-        const double* restrict WMAG    = WB[1][ZLNZ];
-        const double* restrict b1      = WB[2][ZLNZ];
-        const double* restrict bmag    = WB[3][ZLNZ];
-        const double* restrict b2      = WB[4][ZLNZ];
-        const double* restrict bs2     = WB[5][ZLNZ];
-        const double* restrict b3      = WB[6][ZLNZ];
-        const double* restrict bk      = WB[7][ZLNZ];
-
-        const double* restrict PK      = KIA[0][ZLNZ][i];
-        const double* restrict mixA    = KIA[2][ZLNZ][i];
-        const double* restrict mixB    = KIA[3][ZLNZ][i];
-        const double* restrict ta_dE1  = KIA[4][ZLNZ][i];
-        const double* restrict ta_dE2  = KIA[5][ZLNZ][i];
-        const double* restrict d1d2    = KIA[6][ZLNZ][i];
-        const double* restrict d1s2    = KIA[7][ZLNZ][i];
-        const double* restrict d1p3    = KIA[8][ZLNZ][i];
-
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int p = 0; p < cn_all[0].npts; p++) {
-          const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
-          
-          const double k = ell / fK[p];
-          
-          const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_prefactor2;
-          
-          const double b1l = 
-              int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
-                b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
-          
-          const double ans = 
-              int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
-                WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
-                g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
-                b1[p],bmag[p],b1l,ell_prefactor);
-          
-          sum += ans*amp*wt[p];
-        }
-        table[j][i] = sum;
-      }
-    }
-
-    for (int ZLNZ = 0; ZLNZ < nbin; ZLNZ++) {
-      free_cosmo_nodes(&cn_all[ZLNZ]);
-    }
-    
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_photoz_clustering;
@@ -2986,13 +3116,13 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj)
     cache[7] = nuisance.random_galaxy_bias;
   }
 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
+  if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
       nj < 0 || nj > redshift.shear_nbin - 1) {
     log_fatal("error in selecting bin number (ni, nj) = [%d,%d]", ni, nj);
     exit(1);
   }
   double res = 0.0;
-  if (test_zoverlap(ni,nj)) {
+  if (test_zoverlap(ni, nj)) {
     const double lnl = log(l);
     if (lnl < lim[0]) {
       log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(lim[0]));
@@ -3042,6 +3172,15 @@ void C_gs_tomo_limber_fill(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // GG = GALAXY-GALAXY CLUSTERING
 // GK = GALAXY-CMB LENSING
 // KS = CMB LENSING-SHEAR
@@ -3059,6 +3198,15 @@ void C_gs_tomo_limber_fill(
 // The vectorized _fill functions (C_gg_tomo_limber_fill, etc.) ARE used
 // for the real-space Hankel transforms, sharing limber_fill_interp with
 // the SS and GS probes.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -4730,21 +4878,21 @@ void cfftlog_ells_p1(
 // or N[j][2] change — not on every cosmology evaluation.
 // ---------------------------------------------------------------------------
 void cfftlog_ells_p2(
-    double* const x,                                // chi grid values, length Nx (log-spaced, from p1)
-    int const Nx,                                   // number of chi grid points
-    config* const cfg,                              // FFTLog config per component (nu, derivative, N_pad)
-    int const LMAX,                                 // maximum multipole for convergence clipping
-    double* const* const* const y,                  // output wavenumber grid y[SIZE1][LMAX][Nx]
-    double* const* const* const* const Fy,          // output projected functions Fy[SIZE1][SIZE2][LMAX][Nx]
-    fftw_complex* const* const toutfwd,             // forward FFT coefficients from p1 [SIZE1*SIZE2][Nmax/2+1]
-    double* const* const eta_m,                     // Fourier frequencies from p1 [SIZE2][Nmax/2+1]
-    int const N[][3],                               // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
-    int const Nmax,                                 // max(N[j][2]) across all components
-    int const ks,                                   // first multipole in this block (inclusive)
-    int const ke,                                   // last multipole in this block (exclusive)
-    const int* const converged,                     // per-bin convergence flags [SIZE1]: skip bin if converged[i]=1
-    int const SIZE1,                                // number of lens redshift bins
-    int const SIZE2                                 // number of radial components (2 or 3)
+    double* const x,                        // chi grid values, length Nx (log-spaced, from p1)
+    int const Nx,                           // number of chi grid points
+    config* const cfg,                      // FFTLog config per component (nu, derivative, N_pad)
+    int const LMAX,                         // maximum multipole for convergence clipping
+    double* const* const* const y,          // output wavenumber grid y[SIZE1][LMAX][Nx]
+    double* const* const* const* const Fy,  // output projected functions Fy[SIZE1][SIZE2][LMAX][Nx]
+    fftw_complex* const* const toutfwd,     // forward FFT coefficients from p1 [SIZE1*SIZE2][Nmax/2+1]
+    double* const* const eta_m,             // Fourier frequencies from p1 [SIZE2][Nmax/2+1]
+    int const N[][3],                       // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
+    int const Nmax,                         // max(N[j][2]) across all components
+    int const ks,                           // first multipole in this block (inclusive)
+    int const ke,                           // last multipole in this block (exclusive)
+    const int* const converged,             // per-bin convergence flags [SIZE1]: skip bin if converged[i]=1
+    int const SIZE1,                        // number of lens redshift bins
+    int const SIZE2                         // number of radial components (2 or 3)
   )
 {
   static int cache[MAX_SIZE_ARRAYS];
@@ -5128,6 +5276,47 @@ void cfftlog_ells_p2(
   return;
 }
 
+// ---------------------------------------------------------------------------
+// Non-Limber galaxy clustering C_l via the FFTLog algorithm.
+//
+// At low multipoles (l < LMAX_NOLIMBER), the Limber approximation breaks
+// down for galaxy clustering because the lens galaxy redshift distributions
+// are narrow and the radial kernels oscillate on scales comparable to the
+// kernel width. This function computes the exact (non-Limber) projection
+// integral using FFTLog, which recasts the double-Bessel integral as a
+// convolution evaluable via FFT.
+//
+// The result is combined with the Limber C_l to give the full answer:
+//   Cl[i][l] = Cl_fftlog(P_lin) + Cl_limber(P_delta) - Cl_limber(P_lin)
+// The last two terms (computed via C_gg_tomo_limber_linpsopt_nointerp)
+// correct for the difference between the linear power spectrum used in
+// FFTLog and the nonlinear power spectrum used in the Limber integral.
+//
+// Algorithm overview:
+//   1. Build the log-spaced chi grid (chi_min..chi_max, dimensionless)
+//   2. Evaluate the three radial weight functions per lens bin:
+//        fx[i][0] = chi * n(z) * D(a) * (H/H0) * b1   (galaxy density)
+//        fx[i][1] = -chi * n(z) * D(a) * (H/H0) * f    (RSD velocity)
+//        fx[i][2] = (W_mag / fK / coverH0^2) * D        (magnification)
+//      The magnification component is skipped when bmag = 0 for all bins.
+//   3. Phase 1 (cfftlog_ells_p1): forward FFT of the radial functions
+//      (ell-independent, done once)
+//   4. Phase 2 (cfftlog_ells_p2): ell-dependent inverse transform,
+//      called in blocks of BLOCK=16 multipoles with early termination
+//   5. For each block, assemble the integrand:
+//        F = Fy_density + Fy_RSD + bmag * l*(l+1) * Fy_mag / y^2
+//      and integrate:
+//        Cl_fftlog = (2/pi) * dlnk * sum_q[ F^2 * (k*c/H0)^3 * P_lin(k) ]
+//   6. Combine: Cl = Cl_fftlog + Cl_limber(P_NL) - Cl_limber(P_lin)
+//   7. Convergence: after each block, check |Cl_nolimber/Cl_limber - 1| < tol.
+//      Once converged, fill remaining ells from the Limber table.
+//
+// Only auto-correlations (ni = nj) are supported.
+//
+// Parameters:
+//   Cl  - output array Cl[nbins][LMAX_NOLIMBER]: non-Limber C_l per lens bin
+//   tol - convergence tolerance for switching to Limber (typically 0.01)
+// ---------------------------------------------------------------------------
 void C_cl_tomo(
     double* const* const Cl,
     double tol
