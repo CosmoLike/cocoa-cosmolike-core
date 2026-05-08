@@ -1841,109 +1841,65 @@ static void C_ss_tomo_limber_work(
   }
   // -----------------------------------------------------------------------
   // Main integration loop.
-  // IA model switch is outside the inner loop so the SIMD reduction over
-  // quadrature points (p) sees only pure arithmetic — no branches.
+  // Always uses the TATT core function, which reduces identically to NLA
+  // when C2 = BTA = 0 (as enforced by the memset initialization of KIA).
+  // This avoids the IA model switch inside the loop, so the SIMD reduction
+  // over quadrature points (p) sees only pure arithmetic — no branches.
   // The restrict pointers are hoisted before the p-loop to eliminate
   // gather instructions and enable contiguous AVX2 vector loads.
   //
   // Ell prefactor: l*(l-1)*(l+1)*(l+2) / (l+0.5)^4
   //   = product of two shear-field prefactors (1812.05995 eqs 74-79)
   // -----------------------------------------------------------------------
-  switch (nuisance.IA_MODEL)
-  {
-    case IA_MODEL_TATT:
-    {
-      #pragma omp parallel for collapse(2) schedule(static)
-      for (int i = 0; i < nell; i++) {
-        for (int k = 0; k < NSIZE; k++) {
-          const int Z1NZ = Z1(k);
-          const int Z2NZ = Z2(k);
-          const double* restrict fK     = cn->data[CN_FK];
-          const double* restrict dchida = cn->data[CN_DCHIDA];
-          const double* restrict wt     = cn->data[CN_WT];
-          const double* restrict PK     = KIA[10][i];
-          const double* restrict WK1    = WC[0][Z1NZ];
-          const double* restrict WK2    = WC[0][Z2NZ];
-          const double* restrict WS1    = WC[1][Z1NZ];
-          const double* restrict WS2    = WC[1][Z2NZ];
-          const double* restrict C11    = WC[2][Z1NZ];
-          const double* restrict C12    = WC[2][Z2NZ];
-          const double* restrict C21    = WC[3][Z1NZ];
-          const double* restrict C22    = WC[3][Z2NZ];
-          const double* restrict bta1   = WC[4][Z1NZ];
-          const double* restrict bta2   = WC[4][Z2NZ];
-          const double* restrict tt     = KIA[0][i];
-          const double* restrict ta_dE1 = KIA[1][i];
-          const double* restrict ta_dE2 = KIA[2][i];
-          const double* restrict ta     = KIA[3][i];
-          const double* restrict mixA   = KIA[4][i];
-          const double* restrict mixB   = KIA[5][i];
-          const double* restrict mixEE  = KIA[6][i];
-          const double* restrict ttbb   = KIA[7][i];
-          const double* restrict tabb   = KIA[8][i];
-          const double* restrict mixbb  = KIA[9][i];
-          const double l = lx[i];
-          const double ell = l + 0.5;
-          const double ell4 = ell*ell*ell*ell;
-          const double ell_pf = l*(l-1.)*(l+1.)*(l+2.)/ell4;
-          double sEE = 0.0, sBB = 0.0;
-          #pragma omp simd reduction(+:sEE, sBB)
-          for (int p = 0; p < cn->npts; p++) {
-            const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_pf;
-            sEE += int_for_C_ss_tomo_limber_tatt_EE_core(
-                     PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
-                     C11[p],C12[p],C21[p],C22[p],bta1[p],bta2[p],
-                     tt[p],ta_dE1[p],ta_dE2[p],ta[p],
-                     mixA[p],mixB[p],mixEE[p]) * amp * wt[p];
-            sBB += int_for_C_ss_tomo_limber_tatt_BB_core(
-                     PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
-                     C11[p],C12[p],C21[p],C22[p],bta1[p],bta2[p],
-                     ttbb[p],tabb[p],mixbb[p]) * amp * wt[p];
-          }
-          table[0][k][i] = sEE;
-          table[1][k][i] = sBB;
-        }
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int i = 0; i < nell; i++) {
+    for (int k = 0; k < NSIZE; k++) {
+      const int Z1NZ = Z1(k);
+      const int Z2NZ = Z2(k);
+      const double* restrict fK     = cn->data[CN_FK];
+      const double* restrict dchida = cn->data[CN_DCHIDA];
+      const double* restrict wt     = cn->data[CN_WT];
+      const double* restrict PK     = KIA[10][i];
+      const double* restrict WK1    = WC[0][Z1NZ];
+      const double* restrict WK2    = WC[0][Z2NZ];
+      const double* restrict WS1    = WC[1][Z1NZ];
+      const double* restrict WS2    = WC[1][Z2NZ];
+      const double* restrict C11    = WC[2][Z1NZ];
+      const double* restrict C12    = WC[2][Z2NZ];
+      const double* restrict C21    = WC[3][Z1NZ];
+      const double* restrict C22    = WC[3][Z2NZ];
+      const double* restrict bta1   = WC[4][Z1NZ];
+      const double* restrict bta2   = WC[4][Z2NZ];
+      const double* restrict tt     = KIA[0][i];
+      const double* restrict ta_dE1 = KIA[1][i];
+      const double* restrict ta_dE2 = KIA[2][i];
+      const double* restrict ta     = KIA[3][i];
+      const double* restrict mixA   = KIA[4][i];
+      const double* restrict mixB   = KIA[5][i];
+      const double* restrict mixEE  = KIA[6][i];
+      const double* restrict ttbb   = KIA[7][i];
+      const double* restrict tabb   = KIA[8][i];
+      const double* restrict mixbb  = KIA[9][i];
+      const double l = lx[i];
+      const double ell = l + 0.5;
+      const double ell4 = ell*ell*ell*ell;
+      const double ell_pf = l*(l-1.)*(l+1.)*(l+2.)/ell4;
+      double sEE = 0.0, sBB = 0.0;
+      #pragma omp simd reduction(+:sEE, sBB)
+      for (int p = 0; p < cn->npts; p++) {
+        const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_pf;
+        sEE += int_for_C_ss_tomo_limber_tatt_EE_core(
+                 PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
+                 C11[p],C12[p],C21[p],C22[p],bta1[p],bta2[p],
+                 tt[p],ta_dE1[p],ta_dE2[p],ta[p],
+                 mixA[p],mixB[p],mixEE[p]) * amp * wt[p];
+        sBB += int_for_C_ss_tomo_limber_tatt_BB_core(
+                 PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
+                 C11[p],C12[p],C21[p],C22[p],bta1[p],bta2[p],
+                 ttbb[p],tabb[p],mixbb[p]) * amp * wt[p];
       }
-      break;
-    }
-    case IA_MODEL_NLA:
-    {
-      #pragma omp parallel for collapse(2) schedule(static)
-      for (int i = 0; i < nell; i++) {
-        for (int k = 0; k < NSIZE; k++) {
-          const int Z1NZ = Z1(k);
-          const int Z2NZ = Z2(k);
-          const double* restrict fK     = cn->data[CN_FK];
-          const double* restrict dchida = cn->data[CN_DCHIDA];
-          const double* restrict wt     = cn->data[CN_WT];
-          const double* restrict PK     = KIA[10][i];
-          const double* restrict WK1    = WC[0][Z1NZ];
-          const double* restrict WK2    = WC[0][Z2NZ];
-          const double* restrict WS1    = WC[1][Z1NZ];
-          const double* restrict WS2    = WC[1][Z2NZ];
-          const double* restrict C11    = WC[2][Z1NZ];
-          const double* restrict C12    = WC[2][Z2NZ];
-          const double l = lx[i];
-          const double ell = l + 0.5;
-          const double ell4 = ell*ell*ell*ell;
-          const double ell_pf = l*(l-1.)*(l+1.)*(l+2.)/ell4;
-          double sEE = 0.0;
-          #pragma omp simd reduction(+:sEE)
-          for (int p = 0; p < cn->npts; p++) {
-            sEE += int_for_C_ss_tomo_limber_nla_core(
-                     PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
-                     C11[p],C12[p])
-                   * (dchida[p]/(fK[p]*fK[p])) * ell_pf * wt[p];
-          }
-          table[0][k][i] = sEE;
-        }
-      }
-      break;
-    }
-    default:
-    {
-      log_fatal("IA_MODEL = %d not supported", nuisance.IA_MODEL);
-      exit(1);
+      table[0][k][i] = sEE;
+      table[1][k][i] = sBB;
     }
   }
   free(WC);
