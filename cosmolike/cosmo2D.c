@@ -74,6 +74,7 @@ static int include_RSD_GY = 0; // 0 or 1
 double beam_cmb(
     const int l  // multipole moment
   )
+{
   const double s = cmb.fwhm/sqrt(16.0*log(2.0));
   return ((l<cmb.lmink_wxk) || (l>cmb.lmaxk_wxk)) ? 0.0 : exp(-l*(l+1.0)*s*s);
 }
@@ -91,6 +92,7 @@ double beam_cmb(
 double w_pixel(
     const int l  // multipole moment
   )
+{
   if (0 == cmb.healpixwin_ncls) {
     log_fatal("cmb.healpixwin_ncls not initialized"); exit(1);
   }
@@ -98,18 +100,13 @@ double w_pixel(
 }
 
 // ---------------------------------------------------------------------------
-// HEALPix pixel window function.
+// Check whether any lens bin has nonzero second-order galaxy bias (b2).
 //
-// Returns the precomputed HEALPix pixel window function at multipole l,
-// which accounts for the finite pixel size of the CMB convergence map.
-// The window function is loaded at initialization into cmb.healpixwin[]
-// with cmb.healpixwin_ncls entries (typically lmax+1).
-//
-// Returns 0 for l >= healpixwin_ncls (beyond the precomputed range).
+// Returns 1 if one-loop galaxy bias corrections should be computed
+// (at least one bin has b2 != 0), 0 otherwise. Used to guard the
+// allocation and computation of FPTbias one-loop kernels (d1d2, d1s2, d1p3)
+// and the higher-derivative counterterm (bk*k^2*PK) in the GS and GG probes.
 // ---------------------------------------------------------------------------
-double w_pixel(
-    const int l  // multipole moment
-  )
 static int has_b2_galaxies(void) {
   int res = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) 
@@ -238,50 +235,70 @@ static inline void limber_fill_interp(
 #endif
 }
 
-// FPTIA.tab index → KIA index mapping
+// ---------------------------------------------------------------------------
+// Index mappings from FPTIA/FPTbias internal table ordering to the KIA
+// precomputed array ordering used by the vectorized inner loops.
+//
+// FPTIA.tab stores 10 one-loop IA kernels computed by C-FAST-PT in a fixed
+// order that reflects the mathematical structure of the perturbative expansion.
+// The KIA arrays reorder these for cache-friendly access per probe.
+//
+// SS (shear-shear): KIA[0..9] maps all 10 FPTIA kernels
+//   KIA[0]  ← FPTIA.tab[0]  tt      (tidal-tidal, EE)
+//   KIA[1]  ← FPTIA.tab[2]  ta_dE1  (tidal-density E-mode 1, EE)
+//   KIA[2]  ← FPTIA.tab[3]  ta_dE2  (tidal-density E-mode 2, EE)
+//   KIA[3]  ← FPTIA.tab[4]  ta      (tidal-alignment, EE)
+//   KIA[4]  ← FPTIA.tab[6]  mixA    (mixed A, EE)
+//   KIA[5]  ← FPTIA.tab[7]  mixB    (mixed B, EE)
+//   KIA[6]  ← FPTIA.tab[8]  mixEE   (mixed EE)
+//   KIA[7]  ← FPTIA.tab[1]  tt      (tidal-tidal, BB)
+//   KIA[8]  ← FPTIA.tab[5]  ta      (tidal-alignment, BB)
+//   KIA[9]  ← FPTIA.tab[9]  mix     (mixed, BB)
+//
+// GS (galaxy-shear): KIA[2..5] maps the 4 FPTIA kernels needed for GGL
+//   KIA[2]  ← FPTIA.tab[6]  mixA    (mixed A)
+//   KIA[3]  ← FPTIA.tab[7]  mixB    (mixed B)
+//   KIA[4]  ← FPTIA.tab[2]  ta_dE1  (tidal-density 1)
+//   KIA[5]  ← FPTIA.tab[3]  ta_dE2  (tidal-density 2)
+//   (GS has no BB mode — galaxy density is spin-0)
+//
+// GS_BIAS (galaxy-shear one-loop bias): KIA[6..8] maps FPTbias correlators
+//   KIA[6]  ← FPTbias.tab[0]  d1d2  (delta × delta_2 correlator)
+//   KIA[7]  ← FPTbias.tab[2]  d1s2  (delta × s_2 correlator)
+//   KIA[8]  ← FPTbias.tab[5]  d1p3  (delta × psi_3 correlator)
+//
+// These mappings are used with the LERP macro in the precompute loops:
+//   for (int m = 0; m < N; m++)
+//     KIA[offset+m][i][p] = g4 * LERP(FPTIA.tab[SRC[m]], idx, dr);
+// ---------------------------------------------------------------------------
 static const int SS_IA_SRC[] = {0, 2, 3, 4, 6, 7, 8, 1, 5, 9}; 
 static const int GS_IA_SRC[] = {6, 7, 2, 3}; // KIA[2..5] ← FPTIA.tab
 static const int GS_BIAS_SRC[] = {0, 2, 5};  // KIA[6..8] ← FPTbias.tab
 
 // -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
 // optimization: real 2pt computes C_xy_tomo_limber so many times that the  
 //               overhead to calls to logl/N_shear/interpol1d is quite expensive
 // -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+
 void C_ss_tomo_limber_fill(
-    const int nz, 
-    const int lmin, 
-    const int lmax,
-    const double* RESTRICT ln_ell,
-    double* RESTRICT out_EE,
-    double* RESTRICT out_BB
+    const int nz,                       // tomographic pair index (0..shear_Npowerspectra-1)
+    const int lmin,                     // first multipole to fill (inclusive)
+    const int lmax,                     // last multipole to fill (exclusive)
+    const double* restrict ln_ell,      // precomputed log(l) array, indexed by l
+    double* restrict out_EE,            // output EE C_l array, indexed by l
+    double* restrict out_BB             // output BB C_l array, indexed by l
   );
 
-void C_ss_tomo_limber_nointerp_batch(
-    const int lmin, 
-    const int lmax,
-    const int NSIZE, 
-    double*** Cl,
-    const int init
-  );
-
-// -------------------------------------------------------------------------
-// optimization: real 2pt computes C_xy_tomo_limber so many times that the  
-//               overhead to calls to logl/N_shear/interpol1d is quite expensive
-// -------------------------------------------------------------------------
 void C_gs_tomo_limber_fill(
     const int nz,
     const int lmin,
     const int lmax,
     const double* RESTRICT ln_ell,
     double* RESTRICT out
-  );
-
-void C_gs_tomo_limber_nointerp_batch(
-    const int lmin,   // first multipole (inclusive)
-    const int lmax,   // last multipole (exclusive)
-    const int NSIZE,  // number of ggl power spectra
-    double** Cl,      // output [NSIZE][>=lmax], NULL if init=1
-    const int init    // 1 = warm up statics only, 0 = full computation
   );
 
 void C_gg_tomo_limber_fill(
