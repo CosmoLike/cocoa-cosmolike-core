@@ -1875,10 +1875,9 @@ double C_ss_tomo_limber_nointerp(
   }
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 : 
-                         (1 == hdi) ? 96 : 
-                         (2 == hdi) ? 128 : 
-                         (3 == hdi) ? 256 : 512; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 128 :
+                         (1 == hdi) ? 256 :
+                         (2 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2126,10 +2125,9 @@ void C_ss_tomo_limber_nointerp_ells(
   if (NULL == w || fdiff2(cache[0], Ntable.random)) 
   {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
-                         (1 == hdi) ? 96 :
-                         (2 == hdi) ? 128 :
-                         (3 == hdi) ? 256 : 512;
+    const size_t szint = (0 == hdi) ? 128 :
+                         (1 == hdi) ? 256 :
+                         (2 == hdi) ? 512 : 1024;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2286,10 +2284,9 @@ double C_ss_tomo_limber(
     ss_.nell = nell;  
 
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
-                         (1 == hdi) ? 96 :
-                         (2 == hdi) ? 128 :
-                         (3 == hdi) ? 256 : 512;
+    const size_t szint = (0 == hdi) ? 128 :
+                         (1 == hdi) ? 256 :
+                         (2 == hdi) ? 512 : 1024;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -2723,10 +2720,9 @@ double C_gs_tomo_limber_nointerp(
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 : 
-                         (1 == hdi) ? 96 : 
-                         (2 == hdi) ? 128 : 
-                         (3 == hdi) ? 256 : 512; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 128 :
+                         (1 == hdi) ? 256 :
+                         (2 == hdi) ? 512 : 1024;; // predefined GSL tables
     if (w != NULL)  {
       gsl_integration_glfixed_table_free(w);
     }
@@ -2855,7 +2851,9 @@ static void C_gs_tomo_limber_work(
       if (0 == nuisance.IA_code) get_FPT_IA();
     }
     if (1 == nonlinear_bias) {
-      if (0 == nuisance.IA_code) get_FPT_bias();
+      if (0 == nuisance.IA_code) {
+        get_FPT_bias();
+      }
     }
   }
   if (1 == init) return;
@@ -3072,10 +3070,9 @@ void C_gs_tomo_limber_nointerp_ells(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
-                         (1 == hdi) ? 96 :
-                         (2 == hdi) ? 128 :
-                         (3 == hdi) ? 256 : 512;
+    const size_t szint = (0 == hdi) ? 128 :
+                         (1 == hdi) ? 256 :
+                         (2 == hdi) ? 512 : 1024;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -3238,10 +3235,9 @@ double C_gs_tomo_limber(
     gs_.nell   = nell;
 
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
-                         (1 == hdi) ? 96 :
-                         (2 == hdi) ? 128 :
-                         (3 == hdi) ? 256 : 512;
+    const size_t szint = (0 == hdi) ? 128 :
+                         (1 == hdi) ? 256 :
+                         (2 == hdi) ? 512 : 1024;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -3572,10 +3568,9 @@ double C_gg_tomo_limber_linpsopt_nointerp(
   }
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 : 
-                         (1 == hdi) ? 128 : 
-                         (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 128 : 
+                         (1 == hdi) ? 256 : 
+                         (2 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
