@@ -212,12 +212,7 @@ double simd_array_sum(
 gsl_interp* malloc_gsl_interp(const int n)
 {
   gsl_interp* result;
-  if (Ntable.photoz_interpolation_type == 0)
-    result = gsl_interp_alloc(gsl_interp_cspline, n);
-  else if (Ntable.photoz_interpolation_type == 1)
-    result = gsl_interp_alloc(gsl_interp_linear, n);
-  else
-    result = gsl_interp_alloc(gsl_interp_steffen, n);
+  result = gsl_interp_alloc(gsl_interp_cspline, n);
   if (result == NULL) {
     log_fatal("array allocation failed"); exit(1);
   }
@@ -242,14 +237,7 @@ gsl_interp* malloc_gsl_interp(const int n)
 gsl_spline* malloc_gsl_spline(const int n)
 {
   gsl_spline* result;
-
-  if (Ntable.photoz_interpolation_type == 0)
-    result = gsl_spline_alloc(gsl_interp_cspline, n);
-  else if (Ntable.photoz_interpolation_type == 1)
-    result = gsl_spline_alloc(gsl_interp_linear, n);
-  else
-    result = gsl_spline_alloc(gsl_interp_steffen, n);
-
+  result = gsl_spline_alloc(gsl_interp_cspline, n);
   if (result == NULL) {
     log_fatal("array allocation failed"); exit(1);
   }
@@ -881,6 +869,78 @@ double interpol1d(
   }
   return ans;
 }
+
+// ---------------------------------------------------------------------------
+// Natural cubic spline coefficients on a uniform grid.
+//
+// DERIVATION:
+//   A cubic spline S_i(x) = y_i + b_i·δ + c_i·δ^2 + d_i·δ^3 on each
+//   interval [x_i, x_{i+1}] (where δ = x − x_i) must satisfy:
+//     (1) interpolation:  S_i(x_i) = y_i
+//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_i+1)
+//     (3) C2 continuity:  S_i''(x_{i+1}) = S_{i+1}''(x_{i+1})
+//
+//   Condition (3) yields a tridiagonal system for the c_i coefficients
+//   (second derivatives / 2). For general spacing h_i = x_{i+1} − x_i:
+//
+//     h_{i-1} c_{i-1} + 2(h_{i-1} + h_i) c_i + h_i c_{i+1}
+//       = 3 [(y_{i+1} − y_i)/h_i − (y_i − y_{i-1})/h_{i-1}]
+//
+//   For a UNIFORM grid (h_i = dx for all i), this simplifies to:
+//
+//     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (3/dx)(y_{i-1} − 2y_i + y_{i+1})
+//
+//   Dividing through by dx gives the symmetric tridiagonal system:
+//
+//     [1  4  1] [c_1, ..., c_{n-2}]^T = (6/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
+//
+//   with natural boundary conditions c_0 = c_{n-1} = 0.
+//
+// ALGORITHM:
+//   Thomas algorithm (forward elimination + back substitution) for
+//   symmetric tridiagonal systems. Subdiagonal = superdiagonal = 1,
+//   diagonal = 4. The multiplier m_i = 1/(4 − m_{i-1}) converges
+//   quickly to 1/(4 − 1/(4 − ...)) ≈ 0.268 (the continued fraction).
+//
+//   Forward sweep:  c_i = (rhs_i − c_{i-1}) · m_i
+//   Back substitution:  c_i -= m_i · c_{i+1}
+//
+//   Cost: O(n) time, O(n) scratch space. Called once per cache rebuild.
+//
+// PARAMETERS:
+//   y  — function values on the uniform grid (length n)
+//   n  — number of grid points
+//   dx — uniform grid spacing
+//   c  — output: spline coefficients (length n), with c[0] = c[n-1] = 0
+// ---------------------------------------------------------------------------
+void spline_coeffs_uniform(
+    const double* restrict y,
+    const int n,
+    const double dx,
+    double* restrict c
+  )
+{
+  double* scratch = (double*) malloc(n * sizeof(double));
+  const double inv_dx2 = 3.0 / (dx * dx);
+
+  c[0] = 0.0;
+  scratch[0] = 0.0;
+
+  for (int i = 1; i < n - 1; i++) {
+    const double rhs = inv_dx2 * (y[i-1] - 2.0 * y[i] + y[i+1]);
+    const double m = 1.0 / (4.0 - scratch[i-1]);
+    c[i] = (rhs - c[i-1]) * m;
+    scratch[i] = m;
+  }
+  c[n-1] = 0.0;
+
+  for (int i = n - 2; i > 0; i--) {
+    c[i] -= scratch[i] * c[i+1];
+  }
+
+  free(scratch);
+}
+
 
 // ---------------------------------------------------------------------------
 // Count the number of non-empty lines in a text file.

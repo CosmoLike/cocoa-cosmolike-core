@@ -318,12 +318,16 @@ void init_accuracy_boost(
   if (0 == cache[3]) cache[3] = Ntable.NL_Nchi;
   Ntable.NL_Nchi = static_cast<int>(ceil(cache[3]*accuracy_boost));
 
+  if (0 == cache[4]) cache[4] = Ntable.nz_fine_sampling_factor;
+  Ntable.nz_fine_sampling_factor = 
+                                static_cast<int>(ceil(cache[4]*accuracy_boost));
   if (accuracy_boost>1) {
     Ntable.FPTboost = static_cast<int>(accuracy_boost-1.0);
   }
   else {
     Ntable.FPTboost = 0.0;
   }
+
   /*  
   Ntable.N_k_lin = 
     static_cast<int>(ceil(Ntable.N_k_lin*sampling_boost));
@@ -1104,8 +1108,7 @@ void set_distances(vector io_z, vector io_chi)
   }
 
   int cache_update = 0;
-  if (cosmology.chi_nz != static_cast<int>(io_z.n_elem) || 
-      NULL == cosmology.chi) {
+  if (cosmology.chi_nz != static_cast<int>(io_z.n_elem) || NULL == cosmology.chi) {
     cache_update = 1;
   }
   else {

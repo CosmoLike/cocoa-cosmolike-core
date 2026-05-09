@@ -260,22 +260,22 @@ void reset_cmb_struct(void)
 }
 
 void reset_Ntable_struct(void)
-{
-  Ntable.LMAX  = 50000;
-  Ntable.random = 0.0;
-  Ntable.N_a = 225;                   // N_a       
-  Ntable.N_k_lin = 500;               // N_k_lin
-  Ntable.N_k_nlin = 500;              // N_k_nlin
-  Ntable.N_ell = 300;                 // N_ell      
-  Ntable.Ntheta = 225;                // N_theta   
-  Ntable.N_M = 1000;                  // N_M, M = mass (Halo Model)
-  Ntable.NL_Nchi = 500;               // Cosmo2D - NL = NonLimber (NL_Nchi)
-  Ntable.photoz_interpolation_type = 0;
+{ // Multiples of 8 (cache line; OpenMP Core usually set to 4/8; AVX2)
+  Ntable.LMAX     = 100000;
+  Ntable.random   = 0.0;
+  Ntable.N_a      = 256;   // N_a       
+  Ntable.N_k_lin  = 512;   // N_k_lin
+  Ntable.N_k_nlin = 512;   // N_k_nlin
+  Ntable.N_ell    = 512;   // N_ell      
+  Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
+  Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
+  Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
-  Ntable.dCX_dlnk_nlnk = 190;
+  Ntable.dCX_dlnk_nlnk = 256;
   Ntable.dCX_dlnk_kmin = 1.e-5;
-  Ntable.dCX_dlnk_kmax = 1.e2;
+  Ntable.dCX_dlnk_kmax = 1.e2; 
+  Ntable.nz_fine_sampling_factor = 4; // nz fine-sampling (to ensure uniform points)
 }
 
 /*

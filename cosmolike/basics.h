@@ -447,6 +447,57 @@ int line_count(
     char* filename  // path to the text file
   );
 
+
+// ---------------------------------------------------------------------------
+// Natural cubic spline coefficients on a uniform grid.
+//
+// DERIVATION:
+//   A cubic spline S_i(x) = y_i + b_i·δ + c_i·δ^2 + d_i·δ^3 on each
+//   interval [x_i, x_{i+1}] (where δ = x − x_i) must satisfy:
+//     (1) interpolation:  S_i(x_i) = y_i
+//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_i+1)
+//     (3) C2 continuity:  S_i''(x_{i+1}) = S_{i+1}''(x_{i+1})
+//
+//   Condition (3) yields a tridiagonal system for the c_i coefficients
+//   (second derivatives / 2). For general spacing h_i = x_{i+1} − x_i:
+//
+//     h_{i-1} c_{i-1} + 2(h_{i-1} + h_i) c_i + h_i c_{i+1}
+//       = 3 [(y_{i+1} − y_i)/h_i − (y_i − y_{i-1})/h_{i-1}]
+//
+//   For a UNIFORM grid (h_i = dx for all i), this simplifies to:
+//
+//     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (6/dx)(y_{i-1} − 2y_i + y_{i+1})
+//
+//   Dividing through by dx gives the symmetric tridiagonal system:
+//
+//     [1  4  1] [c_1, ..., c_{n-2}]^T = (6/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
+//
+//   with natural boundary conditions c_0 = c_{n-1} = 0.
+//
+// ALGORITHM:
+//   Thomas algorithm (forward elimination + back substitution) for
+//   symmetric tridiagonal systems. Subdiagonal = superdiagonal = 1,
+//   diagonal = 4. The multiplier m_i = 1/(4 − m_{i-1}) converges
+//   quickly to 1/(4 − 1/(4 − ...)) ≈ 0.268 (the continued fraction).
+//
+//   Forward sweep:  c_i = (rhs_i − c_{i-1}) · m_i
+//   Back substitution:  c_i -= m_i · c_{i+1}
+//
+//   Cost: O(n) time, O(n) scratch space. Called once per cache rebuild.
+//
+// PARAMETERS:
+//   y  — function values on the uniform grid (length n)
+//   n  — number of grid points
+//   dx — uniform grid spacing
+//   c  — output: spline coefficients (length n), with c[0] = c[n-1] = 0
+// ---------------------------------------------------------------------------
+void spline_coeffs_uniform(
+    const double* RESTRICT y,
+    const int n,
+    const double dx,
+    double* RESTRICT c
+  );
+
 // ---------------------------------------------------------------------------
 // Compute the Hankel-transform kernel in Fourier space.
 //

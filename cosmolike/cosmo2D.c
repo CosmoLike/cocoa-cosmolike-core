@@ -5572,6 +5572,7 @@ void C_cl_tomo(
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
     (void) C_gg_tomo_limber_nointerp((double) 100, 0, 0, 1);
   }
+
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
     x[j] = chi_min * exp(dlnchi * j);
