@@ -16,6 +16,80 @@
 
 #include "log.c/src/log.h"
 
+// ---------------------------------------------------------------------------
+// Natural cubic spline coefficients on a uniform grid.
+//
+// DERIVATION:
+//   A cubic spline S_i(x) = y_i + b_i·δ + c_i·δ^2 + d_i·δ^3 on each
+//   interval [x_i, x_{i+1}] (where δ = x − x_i) must satisfy:
+//     (1) interpolation:  S_i(x_i) = y_i
+//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_i+1)
+//     (3) C2 continuity:  S_i''(x_{i+1}) = S_{i+1}''(x_{i+1})
+//
+//   Condition (3) yields a tridiagonal system for the c_i coefficients
+//   (second derivatives / 2). For general spacing h_i = x_{i+1} − x_i:
+//
+//     h_{i-1} c_{i-1} + 2(h_{i-1} + h_i) c_i + h_i c_{i+1}
+//       = 3 [(y_{i+1} − y_i)/h_i − (y_i − y_{i-1})/h_{i-1}]
+//
+//   (see e.g. Burden & Faires, "Numerical Analysis", 10th ed., §3.4,
+//    or De Boor, "A Practical Guide to Splines", ch. IV).
+//
+//   For a UNIFORM grid (h_i = dx for all i), this simplifies to:
+//
+//     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (6/dx)(y_{i-1} − 2y_i + y_{i+1})
+//
+//   Dividing through by dx gives the symmetric tridiagonal system:
+//
+//     [1  4  1] [c_1, ..., c_{n-2}]^T = (6/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
+//
+//   with natural boundary conditions c_0 = c_{n-1} = 0.
+//
+// ALGORITHM:
+//   Thomas algorithm (forward elimination + back substitution) for
+//   symmetric tridiagonal systems. Subdiagonal = superdiagonal = 1,
+//   diagonal = 4. The multiplier m_i = 1/(4 − m_{i-1}) converges
+//   quickly to 1/(4 − 1/(4 − ...)) ≈ 0.268 (the continued fraction).
+//
+//   Forward sweep:  c_i = (rhs_i − c_{i-1}) · m_i
+//   Back substitution:  c_i -= m_i · c_{i+1}
+//
+//   Cost: O(n) time, O(n) scratch space. Called once per cache rebuild.
+//
+// PARAMETERS:
+//   y  — function values on the uniform grid (length n)
+//   n  — number of grid points
+//   dx — uniform grid spacing
+//   c  — output: spline coefficients (length n), with c[0] = c[n-1] = 0
+// ---------------------------------------------------------------------------
+static void spline_coeffs_uniform(
+    const double* restrict y,
+    const int n,
+    const double dx,
+    double* restrict c)
+{
+  double* scratch = (double*) malloc(n * sizeof(double));
+  const double inv_dx2 = 6.0 / (dx * dx);
+
+  c[0] = 0.0;
+  scratch[0] = 0.0;
+
+  for (int i = 1; i < n - 1; i++) {
+    const double rhs = inv_dx2 * (y[i-1] - 2.0 * y[i] + y[i+1]);
+    const double m = 1.0 / (4.0 - scratch[i-1]);
+    c[i] = (rhs - c[i-1]) * m;
+    scratch[i] = m;
+  }
+  c[n-1] = 0.0;
+
+  for (int i = n - 2; i > 0; i--) {
+    c[i] -= scratch[i] * c[i+1];
+  }
+
+  free(scratch);
+}
+
+
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
@@ -409,131 +483,221 @@ double zdistr_histo_n(double z, const int ni)
   return res;
 }
 
-double nz_source_photoz(double zz, const int nj) 
-{ 
-  // Normalized source galaxy redshift distribution with photo-z bias,
-  // evaluated at redshift zz for tomography bin nj.
-  //
-  // On first call, builds a table of normalized n(z) from the raw histogram
-  // values in zdistr_histo_n. The normalization works as follows:
-  //
-  //   1. Compute per-bin normalization NORM[i] = ∫ n_raw_i(z) dz
-  //      by summing the raw histogram over all redshift bins.
-  //
-  //   2. Compute total normalization: norm = Σ_i NORM[i].
-  //
-  //   3. Build two tables:
-  //      - table[i+1][k] = n_raw_i(z_k) / NORM[i]
-  //        The per-bin distribution, normalized so each bin integrates
-  //        to unity independently.
-  //      - table[0][k] = Σ_i table[i+1][k] * NORM[i] / norm
-  //        The combined (all-bin) distribution, where each bin's
-  //        contribution is weighted by its fraction of the total
-  //        galaxy count.
-  //
-  //   4. Fit cubic splines through the bin-center values for smooth
-  //      interpolation (the raw data is histogram-binned, but the
-  //      underlying n(z) is smooth).
-  //
-  // At evaluation time, applies the photo-z bias shift:
-  //    zz_corrected = zz - nuisance.photoz[0][0][nj]
-  // then eval the spline for bin nj+1. Returns 0 outside the tabulated range.
+// ---------------------------------------------------------------------------
+// Photometric redshift distribution n(z) for source tomographic bin nj.
+//
+// PHYSICS:
+//   Returns the normalized redshift distribution of source (background)
+//   galaxies in tomographic bin nj, evaluated at redshift zz. This
+//   function is called inside the Limber projection integrals for every
+//   probe involving source galaxies (shear-shear, galaxy-shear, CMB
+//   lensing × shear), where it enters through the radial weight
+//   functions W_kappa, W_source, and g_tomo.
+//
+// PHOTO-Z MODEL:
+//   The raw histogram n_raw(z, i) from the survey (accessed via
+//   zdistr_histo_n) is normalized per bin:
+//     n_i(z) = n_raw(z, i) / ∫ n_raw(z', i) dz'
+//
+//   A combined distribution (stored in table[0]) sums over all bins
+//   weighted by their fractional contribution to the total sample.
+//
+//   At query time, a shift photo-z model is applied:
+//     z → z − Δz_i
+//   where Δz_i = nuisance.photoz[0][0][nj] is the per-bin shift.
+//   Unlike nz_lens_photoz, there is no stretch factor — only a shift.
+//
+// NUMERICAL SCHEME:
+//   Two-stage interpolation for speed on the hot path:
+//
+//   Stage 1 (cache rebuild, runs once when redshift.random_shear changes):
+//     - Normalize the raw histograms and fit cubic splines (via GSL) on
+//       the original (possibly non-uniform) bin-center grid.
+//     - Resample each spline onto a uniform fine grid (20× the original
+//       resolution) and precompute cubic spline coefficients via a
+//       tridiagonal solve (spline_coeffs_uniform).
+//     - Controlled by DONT_NZ_FAST_SUMBSAMPLE: when defined, the fine
+//       grid is skipped and the hot path falls back to GSL evaluation.
+//
+//   Stage 2 (hot path, called millions of times per likelihood):
+//     - Direct-index lookup on the uniform fine grid: one multiply to
+//       compute the grid index (no binary search, no GSL function pointer
+//       dispatch), then Horner-form cubic polynomial evaluation.
+//
+// CACHE INVALIDATION:
+//   Recomputes when redshift.random_shear changes, which tracks:
+//     - source n(z) histogram values
+//     - number of bins, redshift range, bin edges
+//
+// PARAMETERS:
+//   zz — redshift at which to evaluate (before photo-z shift)
+//   nj — source tomographic bin index (0 .. shear_nbin − 1)
+//
+// RETURNS:
+//   n(z − Δz_nj, nj). Returns 0 outside the tabulated range.
+// ---------------------------------------------------------------------------
+double nz_source_photoz(double zz, const int nj)
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
-  
-  if (table == NULL || fdiff2(cache[0], redshift.random_shear)) { 
-    if (table == NULL) {
-      for (int i=0; i<MAX_SIZE_ARRAYS+1; i++) {
-        photoz_splines[i] = NULL;
-      }
-    }
+#ifndef DONT_NZ_FAST_SUMBSAMPLE
+  static double*** fine = NULL;
+  static double zmin_fine;
+  static double inv_dz_fine;
+  static int nzbins_fine;
+#endif
 
+  if (table == NULL || fdiff2(cache[0], redshift.random_shear)) {
+    if (table == NULL) {
+      for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++)
+        photoz_splines[i] = NULL;
+    }
     const int ntomo  = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
 
     if (table != NULL) free(table);
     table = (double**) malloc2d(ntomo + 2, nzbins);
-    
     const double zmin = redshift.shear_zdist_zmin_all;
     const double zmax = redshift.shear_zdist_zmax_all;
-    const double dz_histo = (zmax - zmin) / ((double) nzbins);  
-    for (int k=0; k<nzbins; k++) { // redshift stored at zv = table[ntomo+1]
+    const double dz_histo = (zmax - zmin) / ((double) nzbins);
+    for (int k = 0; k < nzbins; k++) {
       table[ntomo+1][k] = zmin + (k + 0.5) * dz_histo;
     }
-    
-    double NORM[MAX_SIZE_ARRAYS];    
-    double norm = 0; 
+
+    double NORM[MAX_SIZE_ARRAYS];
+    double norm = 0;
     #pragma omp parallel for reduction( + : norm )
-    for (int i=0; i<ntomo; i++) {
+    for (int i = 0; i < ntomo; i++) {
       NORM[i] = 0.0;
-      for (int k=0; k<nzbins; k++) {    
-        const double z = table[ntomo+1][k];  
+      for (int k = 0; k < nzbins; k++) {
+        const double z = table[ntomo+1][k];
         NORM[i] += zdistr_histo_n(z, i) * dz_histo;
       }
       if (!(NORM[i] > 0.0)) {
-        log_fatal("zero/negative n(z) normalization for source bin %d", i); 
+        log_fatal("zero/negative n(z) normalization for source bin %d", i);
         exit(1);
       }
       norm += NORM[i];
     }
     if (!(norm > 0.0)) {
-      log_fatal("zero/negative total n(z) normalization"); 
+      log_fatal("zero/negative total n(z) normalization");
       exit(1);
     }
 
-    #pragma omp parallel for
-    for (int k=0; k<nzbins; k++) { 
-      table[0][k] = 0; // store normalization in table[0][:]
-      for (int i=0; i<ntomo; i++) {
+    #pragma omp parallel for schedule(static)
+    for (int k = 0; k < nzbins; k++) {
+      table[0][k] = 0;
+      for (int i = 0; i < ntomo; i++) {
         const double z = table[ntomo+1][k];
-        table[i + 1][k] = zdistr_histo_n(z, i)/NORM[i];
+        table[i + 1][k] = zdistr_histo_n(z, i) / NORM[i];
         table[0][k] += table[i+1][k] * NORM[i] / norm;
       }
     }
-    for (int i=0; i<ntomo+1; i++) {
+
+    for (int i = 0; i < ntomo+1; i++) {
       if (photoz_splines[i] != NULL) gsl_interp_free(photoz_splines[i]);
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
-    #pragma omp parallel for
-    for (int i=0; i<ntomo+1; i++) {
-      int status = gsl_interp_init(photoz_splines[i], 
-                                   table[ntomo+1], // z_v = table[ntomo+1]
-                                   table[i], 
+
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < ntomo+1; i++) {
+      int status = gsl_interp_init(photoz_splines[i],
+                                   table[ntomo+1],
+                                   table[i],
                                    nzbins);
       if (status) {
         log_fatal(gsl_strerror(status));
         exit(1);
       }
     }
+
+#ifndef DONT_NZ_FAST_SUMBSAMPLE
+    nzbins_fine = 20 * (1 + abs(Ntable.high_def_integration)) * nzbins + 1;
+    const double eps = 1e-15;
+    zmin_fine = table[ntomo+1][0] + eps;
+    const double zmax_fine = table[ntomo+1][nzbins - 1] - eps;
+    const double dz_fine = (zmax_fine - zmin_fine) / ((double) nzbins_fine - 1);
+    inv_dz_fine = 1.0 / dz_fine;
+
+    if (fine != NULL) free(fine);
+    fine = (double***) malloc3d(2, ntomo + 1, nzbins_fine);
+
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < ntomo+1; i++) {
+      for (int k = 0; k < nzbins_fine; k++) {
+        const double z = (k < nzbins_fine - 1)
+          ? zmin_fine + k * dz_fine : zmax_fine;
+        int status = gsl_interp_eval_e(photoz_splines[i],
+                                       table[ntomo+1], table[i],
+                                       z, NULL, &fine[0][i][k]);
+        if (status) {
+          printf("gsl_interp_eval_e failed: bin=%d k=%d z=%.10e status=%s\n",
+                 i, k, z, gsl_strerror(status));
+          exit(1);
+        }
+      }
+      spline_coeffs_uniform(fine[0][i], nzbins_fine, dz_fine, fine[1][i]);
+    }
+#endif
     cache[0] = redshift.random_shear;
   }
-  
-  const int ntomo  = redshift.shear_nbin;
-  const int nzbins = redshift.shear_nzbins;
 
+  const int ntomo = redshift.shear_nbin;
   if (nj < 0 || nj > ntomo - 1) {
-    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo); exit(1);
+    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
+    exit(1);
   }
 
   zz = zz - nuisance.photoz[0][0][nj];
-  
-  double res; 
-  if (zz < table[ntomo+1][0] || zz > table[ntomo+1][nzbins-1]) { // z_v = table[ntomo+1]
+
+#ifdef DONT_NZ_FAST_SUMBSAMPLE
+  const int nzbins = redshift.shear_nzbins;
+  double res;
+  if (zz <= table[ntomo+1][0] || zz >= table[ntomo+1][nzbins - 1]) {
     res = 0.0;
   }
   else {
-    int status = gsl_interp_eval_e(photoz_splines[nj+1], 
+    int status = gsl_interp_eval_e(photoz_splines[nj+1],
                                    table[ntomo+1],
                                    table[nj+1],
-                                   zz, 
-                                   NULL, 
-                                   &res);
+                                   zz, NULL, &res);
     if (status) {
-      log_fatal(gsl_strerror(status)); exit(1);
+      log_fatal(gsl_strerror(status));
+      exit(1);
     }
   }
   return res;
+#else
+  if (zz <= zmin_fine || zz >= zmin_fine + (nzbins_fine - 1) / inv_dz_fine) {
+    return 0.0;
+  }
+  // -----------------------------------------------------------------------
+  // Hot-path cubic spline evaluation on the uniform fine grid.
+  //
+  // Direct-index lookup: the uniform spacing allows computing the grid
+  // index from a single multiply (no binary search, no accelerator).
+  //   r     = fractional grid index (floating point)
+  //   index = integer part → left bracket
+  //   delx  = (r - index) * dx → distance from left grid point
+  //
+  // The cubic polynomial on interval [z_index, z_{index+1}] is:
+  //   S(z) = y_i + delx * (b + delx * (c_i + delx * d))
+  // with coefficients b, c_i, d derived from the precomputed spline
+  // coefficients c_i, c_{i+1} and the local slope dy/dx, following
+  // the same formulation as GSL's cspline_eval (Horner form).
+  // -----------------------------------------------------------------------
+  const double r = (zz - zmin_fine) * inv_dz_fine;
+  const int index = (int) r;
+  const double dx = 1.0 / inv_dz_fine;
+  const double delx = (r - index) * dx;
+  const double dy = fine[0][nj+1][index+1] - fine[0][nj+1][index];
+  const double c_i  = fine[1][nj+1][index];
+  const double c_i1 = fine[1][nj+1][index+1];
+  const double b = (dy * inv_dz_fine) - dx * (c_i1 + 2.0 * c_i) / 3.0;
+  const double d = (c_i1 - c_i) / (3.0 * dx);
+  return fine[0][nj+1][index] + delx * (b + delx * (c_i + delx * d));
+#endif
 }
 
 double int_for_zmean_source(double z, void* params) 
@@ -569,7 +733,7 @@ double zmean_source(int ni)
     w = malloc_gslint_glfixed(szint);
 
     (void) nz_source_photoz(0., 0); // init static variables
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<redshift.shear_nbin; i++) {
       double ar[1] = {(double) i};
       gsl_function F;
@@ -627,32 +791,33 @@ double pf_histo_n(double z, const int ni)
   return res;
 }
 
+// Normalized lens galaxy redshift distribution with photo-z bias  and stretch,
+// evaluated at redshift zz for tomography bin nj.
+//
+// On first call, builds a table of normalized n(z) from the raw histogram 
+// values in pf_histo_n. The normalization follows the same scheme as nz_source_photoz:
+//
+//   1. Per-bin normalization: NORM[i] = ∫ n_raw_i(z) dz
+//
+//   2. Total normalization: norm = Σ_i NORM[i]
+//
+//   3. table[i+1][k] = n_raw_i(z_k) / NORM[i]       (per-bin, unit integral)
+//      table[0][k]   = Σ_i table[i+1][k] * NORM[i] / norm  (combined)
+//
+//   4. Cubic splines through bin-center values for smooth evaluation.
+//
+// At evaluation time, applies the photo-z bias and stretch:
+//   zz_corrected = (zz - bias - zmean) / stretch + zmean
+// where
+//   bias    = nuisance.photoz[1][0][nj]
+//   stretch = nuisance.photoz[1][1][nj]
+//   zmean   = redshift.clustering_zdist_zmean[nj]
+//
+// The result is divided by the stretch factor to conserve the integral under
+// the change of variable. Returns 0 outside the tabulated redshift range.
+/*
 double nz_lens_photoz(double zz, int nj) 
 { 
-  // Normalized lens galaxy redshift distribution with photo-z bias  and stretch,
-  // evaluated at redshift zz for tomography bin nj.
-  //
-  // On first call, builds a table of normalized n(z) from the raw histogram 
-  // values in pf_histo_n. The normalization follows the same scheme as nz_source_photoz:
-  //
-  //   1. Per-bin normalization: NORM[i] = ∫ n_raw_i(z) dz
-  //
-  //   2. Total normalization: norm = Σ_i NORM[i]
-  //
-  //   3. table[i+1][k] = n_raw_i(z_k) / NORM[i]       (per-bin, unit integral)
-  //      table[0][k]   = Σ_i table[i+1][k] * NORM[i] / norm  (combined)
-  //
-  //   4. Cubic splines through bin-center values for smooth evaluation.
-  //
-  // At evaluation time, applies the photo-z bias and stretch:
-  //   zz_corrected = (zz - bias - zmean) / stretch + zmean
-  // where
-  //   bias    = nuisance.photoz[1][0][nj]
-  //   stretch = nuisance.photoz[1][1][nj]
-  //   zmean   = redshift.clustering_zdist_zmean[nj]
-  //
-  // The result is divided by the stretch factor to conserve the integral under
-  // the change of variable. Returns 0 outside the tabulated redshift range.
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
@@ -699,7 +864,7 @@ double nz_lens_photoz(double zz, int nj)
       exit(1);
     }
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int k=0; k<nzbins; k++) { 
       table[0][k] = 0; // store normalization in table[0][:]
       for (int i=0; i<ntomo; i++) 
@@ -715,7 +880,7 @@ double nz_lens_photoz(double zz, int nj)
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<ntomo+1; i++) {
       int status = gsl_interp_init(photoz_splines[i], 
                                    table[ntomo+1], // z_v = table[ntomo+1]
@@ -760,6 +925,255 @@ double nz_lens_photoz(double zz, int nj)
   }
   return res;
 }
+*/
+
+
+// ---------------------------------------------------------------------------
+// Photometric redshift distribution n(z) for lens tomographic bin nj.
+//
+// PHYSICS:
+//   Returns the normalized redshift distribution of lens (foreground)
+//   galaxies in tomographic bin nj, evaluated at redshift zz. This
+//   function is called inside the Limber projection integrals for every
+//   probe involving lens galaxies (galaxy-galaxy lensing, galaxy
+//   clustering, galaxy–CMB lensing), where it enters through the
+//   radial weight functions W_gal and g_lens.
+//
+// PHOTO-Z MODEL:
+//   The raw histogram n_raw(z, i) from the survey (accessed via
+//   pf_histo_n) is normalized per bin:
+//     n_i(z) = n_raw(z, i) / ∫ n_raw(z', i) dz'
+//
+//   A combined distribution (stored in table[0]) sums over all bins
+//   weighted by their fractional contribution to the total sample.
+//
+//   At query time, a shift-and-stretch photo-z model is applied:
+//     z → (z − Δz_i − z̄_i) / σ_i + z̄_i
+//   where Δz_i = nuisance.photoz[1][0][nj] is the per-bin shift,
+//   σ_i = nuisance.photoz[1][1][nj] is the per-bin stretch, and
+//   z̄_i = clustering_zdist_zmean[nj] is the fiducial mean redshift.
+//   The returned value is divided by σ_i to preserve normalization
+//   under the stretch (∫ n(z) dz = 1).
+//
+// NUMERICAL SCHEME:
+//   Two-stage interpolation for speed on the hot path:
+//
+//   Stage 1 (cache rebuild, runs once per parameter change):
+//     - Fit cubic splines (via GSL) to the normalized histograms on
+//       the original (possibly non-uniform) bin-center grid.
+//     - Resample each spline onto a uniform fine grid (20× the
+//       original resolution) and precompute cubic spline coefficients
+//       on that grid via a tridiagonal solve.
+//
+//   Stage 2 (hot path, called millions of times per likelihood):
+//     - Direct-index lookup on the uniform fine grid: one multiply
+//       to compute the grid index (no binary search, no GSL function
+//       pointer dispatch), then Horner-form cubic polynomial evaluation.
+//
+//   This replaces the original GSL gsl_interp_eval_e call, which
+//   accounted for ~6% of wall time due to binary search overhead and
+//   function pointer indirection in the inner Limber loops.
+//
+// CACHE INVALIDATION:
+//   Recomputes when redshift.random_clustering changes, which tracks:
+//     - lens n(z) histogram values
+//     - number of bins, redshift range, bin edges
+//
+// PARAMETERS:
+//   zz — redshift at which to evaluate (before photo-z transformation)
+//   nj — lens tomographic bin index (0 .. clustering_nbin − 1)
+//
+// RETURNS:
+//   n(z_transformed, nj) / σ_nj, the stretch-corrected normalized
+//   redshift distribution. Returns 0 outside the tabulated range.
+// ---------------------------------------------------------------------------
+double nz_lens_photoz(double zz, int nj)
+{
+  static uint64_t cache[MAX_SIZE_ARRAYS];
+  static double** table = NULL;
+  static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
+#ifndef DONT_NZ_FAST_SUMBSAMPLE
+  // uniform fine grid for direct-index evaluation (no binary search)
+  // fine[0] = table_fine (y values), fine[1] = c_fine (spline coefficients)
+  static double*** fine = NULL;
+  static double zmin_fine;
+  static double inv_dz_fine;
+  static int nzbins_fine;
+#endif
+
+  if (NULL == table || fdiff2(cache[0], redshift.random_clustering))
+  {
+    if (table == NULL) {
+      for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++) {
+        photoz_splines[i] = NULL;
+      }
+    }
+    const int ntomo  = redshift.clustering_nbin;
+    const int nzbins = redshift.clustering_nzbins;
+
+    if (table != NULL) free(table);
+    table = (double**) malloc2d(ntomo + 2, nzbins);
+    const double zmin = redshift.clustering_zdist_zmin_all;
+    const double zmax = redshift.clustering_zdist_zmax_all;
+    const double dz_histo = (zmax - zmin) / ((double) nzbins);
+    for (int k = 0; k < nzbins; k++) {
+      table[ntomo+1][k] = zmin + (k + 0.5) * dz_histo;
+    }
+
+    double NORM[MAX_SIZE_ARRAYS];
+    double norm = 0;
+    #pragma omp parallel for reduction( + : norm )
+    for (int i = 0; i < ntomo; i++) {
+      NORM[i] = 0.0;
+      for (int k = 0; k < nzbins; k++) {
+        const double z = table[ntomo+1][k];
+        NORM[i] += pf_histo_n(z, i) * dz_histo;
+      }
+      if (!(NORM[i] > 0.0)) {
+        log_fatal("zero/negative n(z) normalization for source bin %d", i);
+        exit(1);
+      }
+      norm += NORM[i];
+    }
+
+    if (!(norm > 0.0)) {
+      log_fatal("zero/negative total n(z) normalization"); exit(1);
+    }
+
+    #pragma omp parallel for schedule(static)
+    for (int k=0; k<nzbins; k++) {
+      table[0][k] = 0;
+      for (int i=0; i<ntomo; i++) {
+        const double z = table[ntomo+1][k];
+        table[i + 1][k] = pf_histo_n(z, i) / NORM[i];
+        table[0][k] += table[i+1][k] * NORM[i] / norm;
+      }
+    }
+    
+    for (int i = 0; i < ntomo+1; i++) {
+      if (photoz_splines[i] != NULL) {
+        gsl_interp_free(photoz_splines[i]);
+      }
+      photoz_splines[i] = malloc_gsl_interp(nzbins);
+    }
+
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < ntomo+1; i++) {
+      int status = gsl_interp_init(photoz_splines[i],
+                                   table[ntomo+1],
+                                   table[i],
+                                   nzbins);
+      if (status) {
+        log_fatal(gsl_strerror(status)); exit(1);
+      }
+    }
+
+#ifndef DONT_NZ_FAST_SUMBSAMPLE
+    // -----------------------------------------------------------------
+    // Resample each spline onto a uniform fine grid. The GSL spline on
+    // the original (possibly non-uniform) histogram grid is evaluated
+    // once here; the hot path below uses direct-index lookup with no
+    // binary search.
+    // -----------------------------------------------------------------
+    nzbins_fine = 20*(1 + abs(Ntable.high_def_integration))*nzbins + 1;
+    
+    const double eps = 1e-15;
+    zmin_fine = table[ntomo+1][0] + eps;
+    const double zmax_fine = table[ntomo+1][nzbins - 1] - eps;
+    const double dz_fine = (zmax_fine - zmin_fine) / ((double) nzbins_fine - 1);
+    inv_dz_fine = 1.0 / dz_fine;
+
+    if (fine != NULL) {
+      free(fine);
+    }
+    fine = (double***) malloc3d(2, ntomo + 1, nzbins_fine);
+
+
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < ntomo+1; i++) {
+      for (int k = 0; k < nzbins_fine; k++) {
+        const double z = (k < nzbins_fine - 1)
+          ? zmin_fine + k * dz_fine : zmax_fine; // clamp last point to exact endpoint
+        int status = gsl_interp_eval_e(photoz_splines[i],
+                          table[ntomo+1], table[i],
+                          z, NULL, &fine[0][i][k]);
+        if (status) {
+          log_fatal(gsl_strerror(status)); exit(1);
+        }
+      }
+      spline_coeffs_uniform(fine[0][i], nzbins_fine, dz_fine, fine[1][i]);
+    }
+#endif
+    cache[0] = redshift.random_clustering;
+  }
+
+  const int ntomo = redshift.clustering_nbin;
+  if (nj < 0 || nj > ntomo - 1) {
+    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
+    exit(1);
+  }
+  zz = (zz - nuisance.photoz[1][0][nj]
+           - redshift.clustering_zdist_zmean[nj]) / nuisance.photoz[1][1][nj]
+       + redshift.clustering_zdist_zmean[nj];
+
+#ifdef DONT_NZ_FAST_SUMBSAMPLE
+  const int nzbins = redshift.clustering_nzbins;
+  double res; 
+  if (zz <= table[ntomo+1][0] || zz >= table[ntomo+1][nzbins - 1]) { // z_v = table[ntomo+1]
+    res = 0.0;
+  }
+  else {
+    int status = gsl_interp_eval_e(photoz_splines[nj+1], 
+                                   table[ntomo+1],
+                                   table[nj+1],
+                                   zz, 
+                                   NULL, 
+                                   &res);
+    if (status) {
+      log_fatal(gsl_strerror(status));
+      exit(1);
+    }
+    res = res / nuisance.photoz[1][1][nj];
+  }
+  return res;
+#else
+  // -----------------------------------------------------------------------
+  // Hot-path cubic spline evaluation on the uniform fine grid.
+  //
+  // Direct-index lookup: the uniform spacing allows computing the grid
+  // index from a single multiply (no binary search, no accelerator).
+  //   r     = fractional grid index (floating point)
+  //   index = integer part → left bracket
+  //   delx  = (r - index) * dx → distance from left grid point
+  //
+  // The cubic polynomial on interval [z_index, z_{index+1}] is:
+  //   S(z) = y_i + delx * (b + delx * (c_i + delx * d))
+  // with coefficients b, c_i, d derived from the precomputed spline
+  // coefficients c_i, c_{i+1} and the local slope dy/dx, following
+  // the same formulation as GSL's cspline_eval (Horner form).
+  //
+  // The final division by nuisance.photoz[1][1][nj] applies the
+  // photo-z stretch factor to the interpolated n(z) value.
+  // -----------------------------------------------------------------------
+  if (zz <= zmin_fine || zz >= zmin_fine + (nzbins_fine - 1) / inv_dz_fine) {
+    return 0.0;
+  }
+
+  const double r = (zz - zmin_fine) * inv_dz_fine;
+  const int index = (int) r;
+  const double dx = 1.0 / inv_dz_fine;
+  const double delx = (r - index) * dx;
+  const double dy = fine[0][nj+1][index+1] - fine[0][nj+1][index];
+  const double c_i  = fine[1][nj+1][index];
+  const double c_i1 = fine[1][nj+1][index+1];
+  const double b = (dy * inv_dz_fine) - dx * (c_i1 + 2.0 * c_i) / 3.0;
+  const double d = (c_i1 - c_i) / (3.0 * dx);
+  double res = fine[0][nj+1][index] + delx * (b + delx * (c_i + delx * d));
+  res = res / nuisance.photoz[1][1][nj];
+  return res;
+#endif
+}
+
 
 double int_for_zmean(double z, void* params) 
 { 
@@ -813,7 +1227,7 @@ double zmean(const int ni)
     w = malloc_gslint_glfixed(szint);
 
     (void) nz_lens_photoz(0., 0); // init static vars
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<redshift.clustering_nbin; i++) {
       double ar[1] = {(double) i};
       gsl_function F;
@@ -843,12 +1257,69 @@ double zmean(const int ni)
   return table[ni];
 }
 
-// ------------------------------------------------------------------------
-// ------------------------------------------------------------------------
-// Bin-averaged lens efficiencies
-// ------------------------------------------------------------------------
-// ------------------------------------------------------------------------
-
+// ---------------------------------------------------------------------------
+// Lensing efficiency g(a) for source tomographic bin ni.
+//
+// PHYSICS:
+//   The lensing convergence kernel W_κ(a) for source bin j involves the
+//   cumulative lensing efficiency — the integrated geometric weight of all
+//   sources behind scale factor a:
+//
+//     g(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
+//                           × [1 − χ(a)/χ(a')]  da'
+//
+//   where n_j = nz_source_photoz is the (normalized) source photometric
+//   redshift distribution for bin j.  This is the same functional form as
+//   g_lens, but integrated against the source distribution rather than the
+//   lens distribution.  It appears in W_κ(a, j) = g(a, j) / χ(a), which
+//   enters every shear-related angular power spectrum (shear-shear,
+//   galaxy-shear, CMB lensing × shear).
+//
+//   Splitting the geometric factor [1 − χ(a)/χ(a')] gives two cumulative
+//   integrals:
+//
+//     P(a) = ∫_{a_min}^{a} n_j(z') / a'^2              da'
+//     Q(a) = ∫_{a_min}^{a} n_j(z') / [χ(a') · a'^2]    da'
+//
+//   so that g(a) = P(a) − χ(a) · Q(a).
+//
+// NUMERICAL SCHEME:
+//   Same fine/coarse two-grid scheme as g_lens:
+//
+//     Fine grid:   Na = x·(N_a − 1) + 1 points on [a_min, a_max]
+//     Coarse grid: N_a points (every x-th fine point)
+//     x = 25·(1 + |high_def_integration|)
+//
+//   Step 1 — Sample integrands on the fine grid (parallel over bins × points):
+//     Pint[j][i] = n_j(z(a_i)) / a_i^2
+//     Qint[j][i] = Pint[j][i] / χ(a_i)
+//
+//   Step 2 — Cumulative trapezoidal integration on the fine grid (serial
+//   within each bin). Every x-th fine step, subsample onto the coarse grid:
+//     table[j][k] = P − χ(a_k) · Q
+//
+//   Step 3 — At query time, linearly interpolate table[ni] at a.
+//
+// NOTE:
+//   The Step 2 loop is not parallelized over bins (unlike g_lens). Adding
+//   #pragma omp parallel for schedule(static) over j would be safe here
+//   since each bin's running sum is independent.
+//
+// CACHE INVALIDATION:
+//   Recomputes when any of these change:
+//     - Ntable.random             (grid parameters: N_a, high_def_integration)
+//     - cosmology.random          (χ(a) depends on cosmological parameters)
+//     - nuisance.random_photoz_shear  (source photo-z nuisance shifts)
+//     - redshift.random_shear         (source n(z) distribution)
+//
+// PARAMETERS:
+//   ainput — scale factor at which to evaluate the lensing efficiency
+//   ni     — source tomographic bin index (0 .. shear_nbin − 1)
+//
+// RETURNS:
+//   g(a, ni), linearly interpolated from the precomputed table.
+//   Returns 0 if a ≤ a_min or a > 1 − dac (outside the tabulated range).
+// ---------------------------------------------------------------------------
 double g_tomo(double ainput, const int ni) {
   // Bin-averaged lensing efficiency for *source* tomography bin ni.
   // Assumes flat cosmology: f_K(x) = x, so the lensing kernel factors as
@@ -883,7 +1354,7 @@ double g_tomo(double ainput, const int ni) {
     (void) nz_source_photoz(0.0, 0); // init static variables
     const double da = (amax - amin) / ((double) Na - 1.0); // fine
 
-    #pragma omp parallel for collapse(2) schedule(static,1)
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int j=0; j<redshift.shear_nbin; j++) {
       for (int i=0; i<Na; i++) {
         const double a = amin + i*da;
@@ -895,7 +1366,7 @@ double g_tomo(double ainput, const int ni) {
         Qint[j][i] = Pint[j][i] / c;
       }
     }
-    #pragma omp parallel for schedule(static,1)
+    #pragma omp parallel for schedule(static)
     for (int j=0; j<redshift.shear_nbin; j++) {
       double P = 0.0;
       double Q = 0.0;
@@ -922,14 +1393,71 @@ double g_tomo(double ainput, const int ni) {
     interpol1d(table[ni], Ntable.N_a, amin, amax, dac, ainput);
 }
 
+// ---------------------------------------------------------------------------
+// Integral of the squared lensing kernel for source tomographic bin ni.
+//
+// PHYSICS:
+//   Several terms in the angular power spectrum of source galaxy clustering
+//   (and magnification–magnification correlations) involve the integral of
+//   the *squared* lensing efficiency kernel over the source distribution:
+//
+//     g2(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
+//                            × [1 − χ(a)/χ(a')]^2  da'
+//
+//   This is distinct from [g(a)]^2: g2 is the integral of the square,
+//   not the square of the integral.  Physically, g(a) gives the mean
+//   lensing weight (used in galaxy-shear cross-correlations), while g2(a)
+//   gives the second moment of the lensing weight along the line of sight
+//   (used when computing magnification auto-correlations or source
+//   clustering terms where two lensing factors share the same radial
+//   integration variable).
+//
+//   Expanding the squared kernel:
+//
+//     [1 − χ(a)/χ(a')]^2 = 1 − 2χ(a)/χ(a') + χ(a)^2/χ(a')^2
+//
+//   the integral splits into three cumulative pieces:
+//
+//     P(a) = ∫_{a_min}^{a} n_j(z') / a'^2                da'
+//     Q(a) = ∫_{a_min}^{a} n_j(z') / [χ(a') · a'^2]      da'
+//     R(a) = ∫_{a_min}^{a} n_j(z') / [χ(a')^2 · a'^2]    da'
+//
+//   so that g2(a) = P(a) − 2χ(a)·Q(a) + χ(a)^2·R(a), with each integral
+//   computable as a single running sum rather than a nested quadrature.
+//
+// NUMERICAL SCHEME:
+//   Same fine/coarse two-grid scheme as g_lens:
+//
+//     Fine grid:   Na = x·(N_a − 1) + 1 points on [a_min, a_max]
+//     Coarse grid: N_a points (every x-th fine point)
+//
+//   Step 1 — Sample the three integrands on the fine grid:
+//     Pint[j][i] = n_j(z(a_i)) / a_i^2
+//     Qint[j][i] = Pint[j][i] / χ(a_i)
+//     Rint[j][i] = Qint[j][i] / χ(a_i)
+//
+//   Step 2 — Cumulative trapezoidal integration. Every x-th fine step, 
+//   subsample onto the coarse grid: table[j][k] = P − 2χ(a_k)·Q + χ(a_k)^2·R.
+//
+//   Step 3 — At query time, linearly interpolate table[ni] at a.
+//
+// CACHE INVALIDATION:
+//   Recomputes when any of these change:
+//     - Ntable.random             (grid parameters)
+//     - cosmology.random          (χ(a) depends on cosmology)
+//     - nuisance.random_photoz_shear  (source photo-z shifts)
+//     - redshift.random_shear         (source n(z) distribution)
+//
+// PARAMETERS:
+//   a  — scale factor at which to evaluate
+//   ni — source tomographic bin index (0 .. shear_nbin − 1)
+//
+// RETURNS:
+//   g2(a, ni), linearly interpolated from the precomputed table.
+//   Returns 0 if a is outside the tabulated range.
+// ---------------------------------------------------------------------------
 double g2_tomo(double a, int ni)
-{ // Squared lensing efficiency for source tomography bin ni
-  // (used in source clustering). Assumes flat cosmology, so
-  //   g2(a_i) = P(a_i) - 2 chi(a_i) Q(a_i) + chi(a_i)^2 R(a_i)
-  // where
-  //   P(a) = ∫_{amin}^{a} n_j(z') / a'^2              da'
-  //   Q(a) = ∫_{amin}^{a} n_j(z') / (chi(a') a'^2)    da'
-  //   R(a) = ∫_{amin}^{a} n_j(z') / (chi(a')^2 a'^2)  da'
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static double** Pint  = NULL;  // P integrand on fine grid
@@ -970,7 +1498,7 @@ double g2_tomo(double a, int ni)
       chia[i] = c;
     }
 
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int j = 0; j < redshift.shear_nbin; j++) {
       for (int i = 0; i < Na; i++) {
         const double ap = amin + i * da;
@@ -980,8 +1508,7 @@ double g2_tomo(double a, int ni)
         Rint[j][i] = Qint[j][i] / chia[i];
       }
     }
-
-    #pragma omp parallel for schedule(static,1)
+    #pragma omp parallel for schedule(static)
     for (int j = 0; j < redshift.shear_nbin; j++) {
       double P = 0.0, Q = 0.0, R = 0.0;
       table[j][0] = 0.0;
@@ -1011,14 +1538,75 @@ double g2_tomo(double a, int ni)
     interpol1d(table[ni], Ntable.N_a, amin, amax, dac, a);
 }
 
+// ---------------------------------------------------------------------------
+// Bin-averaged lensing efficiency g(a) for lens tomographic bin ni.
+//
+// PHYSICS:
+//   In the flat-sky Limber approximation for galaxy-galaxy lensing (and
+//   magnification), the angular power spectrum C_l^{gκ} involves a radial
+//   projection kernel that weights lens galaxies by how efficiently they
+//   lens background sources. For a flat cosmology (f_K = χ), this kernel
+//   factors as:
+//
+//     g(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
+//                           × [1 - χ(a)/χ(a')] da'
+//
+//   where n_j = nz_lens_photoz is the (normalized) photometric redshift
+//   distribution for lens bin j, and the 1/a'^2 Jacobian converts dz → da.
+//   The geometric factor [1 − χ(a)/χ(a')] = [χ(a') − χ(a)] / χ(a')
+//   is the standard lensing efficiency: it vanishes when the lens sits
+//   at the same distance as the source (χ = χ') and grows as the lens
+//   moves closer to the observer relative to the source.
+//
+//   Rather than evaluating the full expression directly, the code splits
+//   the kernel into two simpler cumulative integrals:
+//
+//     P(a) = ∫_{a_min}^{a} n_j(z') / a'^2              da'
+//     Q(a) = ∫_{a_min}^{a} n_j(z') / [χ(a') · a'^2]    da'
+//
+//   so that g(a) = P(a) − χ(a) · Q(a).  This avoids recomputing the full
+//   double integral for each query point a.
+//
+// NUMERICAL SCHEME:
+//   Two nested grids are used:
+//
+//     Fine grid:   Na = x·(N_a − 1) + 1 points on [a_min, a_max]
+//                  spacing da = (a_max − a_min) / (Na − 1)
+//                  x = 25·(1 + |high_def_integration|), so x ∈ {25, 50, ...}
+//
+//     Coarse grid: N_a points on [a_min, a_max]
+//                  spacing dac = (a_max − a_min) / (N_a − 1)
+//                  every x-th fine point maps to a coarse grid point
+//
+//   Step 1 — Sample integrands on the fine grid (parallelized over bins × points):
+//     Pint[j][i] = n_j(z(a_i)) / a_i^2
+//     Qint[j][i] = Pint[j][i] / χ(a_i)
+//
+//   Step 2 — Cumulative trapezoidal integration on the fine grid:
+//     P and Q start at zero. Every x-th fine step, the running sums are
+//     subsampled onto the coarse grid: table[j][k] = P − χ(a_k) · Q.
+//     This gives the accuracy of fine-grid trapezoidal integration with
+//     the memory footprint and lookup speed of the coarse grid.
+//
+//   Step 3 — At query time, linearly interpolate table[ni] at the requested a.
+//
+// CACHE INVALIDATION:
+//   Recomputes when any of these change:
+//     - Ntable.random          (grid parameters: N_a, high_def_integration)
+//     - cosmology.random       (χ(a) depends on cosmological parameters)
+//     - nuisance.random_photoz_clustering  (photo-z nuisance shifts)
+//     - redshift.random_clustering         (lens n(z) distribution)
+//
+// PARAMETERS:
+//   a  — scale factor at which to evaluate the lensing efficiency
+//   ni — lens tomographic bin index (0 .. clustering_nbin − 1)
+//
+// RETURNS:
+//   g(a, ni), linearly interpolated from the precomputed table.
+//   Returns 0 if a < a_min or a > 1 − dac (outside the tabulated range).
+// ---------------------------------------------------------------------------
 double g_lens(double a, int ni)
-{ // Bin-averaged lens efficiency for lens tomography bin ni.
-  // Assumes flat cosmology: f_K(x) = x, so the lensing kernel factors as
-  //   g(a_i) = P(a_i) - chi(a_i) * Q(a_i)
-  // where
-  //   P(a) = ∫_{amin_shear}^{a} n_j(z') / a'^2           da'
-  //   Q(a) = ∫_{amin_shear}^{a} n_j(z') / (chi(a') a'^2) da'
-  // and n_j is nz_lens_photoz (the lens photo-z distribution for bin j).
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static double** Pint  = NULL; // P integrand samples on fine grid
@@ -1045,32 +1633,9 @@ double g_lens(double a, int ni)
       fdiff2(cache[3], redshift.random_clustering))
   {
     (void) nz_lens_photoz(0.0, 0);
+    const double da = (amax - amin) / ((double) Na - 1.0);
 
-    double P0[redshift.clustering_nbin];
-    double Q0[redshift.clustering_nbin];
-    const double da = (amax - amin) / ((double) Na - 1.0); // fine grid spacing
-    {
-      const int Na0 = (amin_shear<amin) ? (int) ceil((amin-amin_shear)/da)+1 : 1;
-      const double da0 = (Na0>1) ? (amin-amin_shear)/((double) Na0-1.) : 0.0;
-      for (int j = 0; j<redshift.clustering_nbin; j++) {
-        double P = 0.0; 
-        double Q = 0.0;
-        for (int i=1; i<Na0; i++) {
-          const double apl = amin_shear + (i-1) * da0;
-          const double aph = amin_shear +  i    * da0;
-          const double fl = nz_lens_photoz(1.0/apl - 1.0, j) / (apl * apl);
-          const double fh = nz_lens_photoz(1.0/aph - 1.0, j) / (aph * aph);
-          // P integrand = n_j(z(a')) / a'^2
-          // Q integrand = P integrand / chi(a')
-          P += 0.5 * da0 * (fl + fh); // trapezoidal rule
-          Q += 0.5 * da0 * (fl / chi(apl) + fh / chi(aph));
-        }
-        P0[j] = P;
-        Q0[j] = Q;
-      }
-    }
-
-    #pragma omp parallel for collapse(2)
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int j = 0; j < redshift.clustering_nbin; j++) {
       for (int i = 0; i < Na; i++) {
         const double ap = amin + i * da;
@@ -1079,11 +1644,10 @@ double g_lens(double a, int ni)
         Qint[j][i] = Pint[j][i] / chi(amin + i * da);
       }
     }
-    
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int j = 0; j < redshift.clustering_nbin; j++) {
-      double P = P0[j];
-      double Q = Q0[j]; 
+      double P = 0.0;
+      double Q = 0.0; 
       table[j][0] = P - chi(amin) * Q; // 1st point: integral_amin_shear^amin
       for (int i = 1; i < Na; i++) {
         P += 0.5 * da * (Pint[j][i-1] + Pint[j][i]);
@@ -1094,7 +1658,6 @@ double g_lens(double a, int ni)
         }
       }
     }
-
     cache[0] = Ntable.random;
     cache[1] = cosmology.random;
     cache[2] = nuisance.random_photoz_clustering;

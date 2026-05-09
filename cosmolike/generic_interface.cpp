@@ -885,7 +885,6 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
   }
   tomo.N_ggl_exclude = int(nsize/2);  
   debug("{}: {} ggl pairs excluded", fname, tomo.N_ggl_exclude);
-  #pragma omp parallel for schedule(static)
   for(int i=0; i<nsize; i++) {
     if (std::isnan(ggl_exclude(i))) {
       critical(errnance2, fname, i, errnance); exit(1);
@@ -1292,27 +1291,30 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     if (cosmology.lnPL != NULL) { free(cosmology.lnPL); }
     cosmology.lnPL = (double**) malloc2d(cosmology.lnPL_nk+1,cosmology.lnPL_nz+1);
 
-    #pragma omp parallel for schedule(static)
-    for (int i=0; i<cosmology.lnPL_nk; i++) {
-      if (std::isnan(io_log10k(i))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit); exit(1);
-      }
-      cosmology.lnPL[i][cosmology.lnPL_nz] = io_log10k(i);
-    }
-    #pragma omp parallel for schedule(static)
-    for (int j=0; j<cosmology.lnPL_nz; j++) {
-      if (std::isnan(io_z(j))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit); exit(1);
-      }
-      cosmology.lnPL[cosmology.lnPL_nk][j] = io_z(j);
-    }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int i=0; i<cosmology.lnPL_nk; i++) {
-      for (int j=0; j<cosmology.lnPL_nz; j++) {
-        if (std::isnan(io_lnP(i*cosmology.lnPL_nz+j))) [[unlikely]] {
+    #pragma omp parallel
+    {
+      #pragma omp for schedule(static) nowait
+      for (int i = 0; i < cosmology.lnPL_nk; i++) {
+        if (std::isnan(io_log10k(i))) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
-        cosmology.lnPL[i][j] = io_lnP(i*cosmology.lnPL_nz+j);
+        cosmology.lnPL[i][cosmology.lnPL_nz] = io_log10k(i);
+      }
+      #pragma omp for schedule(static) nowait
+      for (int j = 0; j < cosmology.lnPL_nz; j++) {
+        if (std::isnan(io_z(j))) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        cosmology.lnPL[cosmology.lnPL_nk][j] = io_z(j);
+      }
+      #pragma omp for collapse(2) schedule(static) nowait
+      for (int i = 0; i < cosmology.lnPL_nk; i++) {
+        for (int j = 0; j < cosmology.lnPL_nz; j++) {
+          if (std::isnan(io_lnP(i * cosmology.lnPL_nz + j))) [[unlikely]] {
+            critical("{}: {}", fname, errnanit); exit(1);
+          }
+          cosmology.lnPL[i][j] = io_lnP(i * cosmology.lnPL_nz + j);
+        }
       }
     }
     cosmology.random = RandomNumber::get_instance().get();
@@ -1407,27 +1409,30 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     if (cosmology.lnP != NULL) { free(cosmology.lnP); }
     cosmology.lnP = (double**) malloc2d(cosmology.lnP_nk+1,cosmology.lnP_nz+1);
 
-    #pragma omp parallel for schedule(static)
-    for (int i=0; i<cosmology.lnP_nk; i++) {
-      if (std::isnan(io_log10k(i))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit); exit(1);
-      }
-      cosmology.lnP[i][cosmology.lnP_nz] = io_log10k(i);
-    }
-    #pragma omp parallel for schedule(static)
-    for (int j=0; j<cosmology.lnP_nz; j++) {
-      if (std::isnan(io_z(j))) [[unlikely]] {
-        critical("{}: {}", fname, errnanit); exit(1);
-      }
-      cosmology.lnP[cosmology.lnP_nk][j] = io_z(j);
-    }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int i=0; i<cosmology.lnP_nk; i++) {
-      for (int j=0; j<cosmology.lnP_nz; j++) {
-        if (std::isnan(io_lnP(i*cosmology.lnP_nz+j))) [[unlikely]] {
+    #pragma omp parallel
+    {
+      #pragma omp for schedule(static) nowait
+      for (int i = 0; i < cosmology.lnP_nk; i++) {
+        if (std::isnan(io_log10k(i))) [[unlikely]] {
           critical("{}: {}", fname, errnanit); exit(1);
         }
-        cosmology.lnP[i][j] = io_lnP(i*cosmology.lnP_nz+j);
+        cosmology.lnP[i][cosmology.lnP_nz] = io_log10k(i);
+      }
+      #pragma omp for schedule(static) nowait
+      for (int j = 0; j < cosmology.lnP_nz; j++) {
+        if (std::isnan(io_z(j))) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        cosmology.lnP[cosmology.lnP_nk][j] = io_z(j);
+      }
+      #pragma omp for collapse(2) schedule(static) nowait
+      for (int i = 0; i < cosmology.lnP_nk; i++) {
+        for (int j = 0; j < cosmology.lnP_nz; j++) {
+          if (std::isnan(io_lnP(i * cosmology.lnP_nz + j))) [[unlikely]] {
+            critical("{}: {}", fname, errnanit); exit(1);
+          }
+          cosmology.lnP[i][j] = io_lnP(i * cosmology.lnP_nz + j);
+        }
       }
     }
     cosmology.random = RandomNumber::get_instance().get();

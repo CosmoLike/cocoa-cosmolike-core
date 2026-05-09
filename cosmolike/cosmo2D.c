@@ -1569,7 +1569,6 @@ cosmo_nodes create_cosmo_nodes(
   cn.npts = (int) w->n;
   cn.data = (double**) malloc2d(CN_NPARAMS, cn.npts);
 
-  #pragma omp parallel for schedule(static)
   for (int p = 0; p < cn.npts; p++) {
     gsl_integration_glfixed_point(amin, 
                                   amax, 
@@ -2891,81 +2890,86 @@ static void C_gs_tomo_limber_work(
     limbias[1] = log(FPTbias.k_max);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
   }
-  // -----------------------------------------------------------------------
-  // Precompute: lens weights, galaxy biases, source weights, IA amplitudes
-  // -----------------------------------------------------------------------
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-    for (int p = 0; p < npts; p++) {
-      const cosmo_nodes* cn = &cn_all[zl];
-      const double a  = cn->data[CN_A][p];
-      const double z  = 1.0/a - 1.0;
-      const double growfac_a = cn->data[CN_GROWFAC][p];
-      WB[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
-      WB[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
-      WB[2][zl][p] = gb1(z, zl);
-      WB[3][zl][p] = gbmag(z, zl);
-      if (1 == nonlinear_bias) {
-        WB[4][zl][p] = gb2(z, zl);
-        WB[5][zl][p] = gbs2(z, zl);
-        WB[6][zl][p] = gb3(z, zl);
-        WB[7][zl][p] = gbK(z, zl);
-      }
-      for (int zs = 0; zs < redshift.shear_nbin; zs++) {
-        WC[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
-        WC[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
-        WC[2][zl][zs][p] = IA_A1_Z1(a, growfac_a, zs);
-        WC[3][zl][zs][p] = IA_A2_Z1(a, growfac_a, zs);
-        WC[4][zl][zs][p] = IA_BTA_Z1(a, growfac_a, zs);
-      }
-    }
-  }
-  // -----------------------------------------------------------------------
-  // Precompute: P(k,a), RSD, TATT kernels, one-loop bias kernels
-  // -----------------------------------------------------------------------
-  #pragma omp parallel for collapse(3) schedule(static)
-  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-    for (int p = 0; p < npts; p++) {
-      for (int i = 0; i < nell; i++) {
+  
+  #pragma omp parallel
+  {
+    // -----------------------------------------------------------------------
+    // Precompute: lens weights, galaxy biases, source weights, IA amplitudes
+    // -----------------------------------------------------------------------
+    #pragma omp for collapse(2) schedule(static) nowait
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int p = 0; p < npts; p++) {
         const cosmo_nodes* cn = &cn_all[zl];
         const double a  = cn->data[CN_A][p];
-        const double fK = cn->data[CN_FK][p];
-        const double ell = lx[i] + 0.5;
-        const double k = ell / fK;
-        const double lnk = log(k);
-        KIA[0][zl][i][p] = Pdelta(k, a);
-        if (1 == include_RSD_GS) {
-          const double chi_0 = ell/k;
-          const double chi_1 = (ell + 1.0)/k;
-          const double a_0 = a_chi(chi_0);
-          const double a_1 = a_chi(chi_1);
-          KIA[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
+        const double z  = 1.0/a - 1.0;
+        const double growfac_a = cn->data[CN_GROWFAC][p];
+        WB[0][zl][p] = W_gal(cn->data[CN_A][p], zl, cn->data[CN_HOVERH0][p]);
+        WB[1][zl][p] = W_mag(cn->data[CN_A][p], cn->data[CN_FK][p], zl);
+        WB[2][zl][p] = gb1(z, zl);
+        WB[3][zl][p] = gbmag(z, zl);
+        if (1 == nonlinear_bias) {
+          WB[4][zl][p] = gb2(z, zl);
+          WB[5][zl][p] = gbs2(z, zl);
+          WB[6][zl][p] = gb3(z, zl);
+          WB[7][zl][p] = gbK(z, zl);
         }
-        if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-          if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
-            const double r = (lnk - limTATT[0]) / limTATT[2];
-            const int b = (int) floor(r);
-            const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
-            const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
-            for (int m = 0; m < 4; m++) {
-              KIA[2+m][zl][i][p] = LERP(FPTIA.tab[GS_IA_SRC[m]], idx, dr);
+        for (int zs = 0; zs < redshift.shear_nbin; zs++) {
+          WC[0][zl][zs][p] = W_kappa(cn->data[CN_A][p], cn->data[CN_FK][p], zs);
+          WC[1][zl][zs][p] = W_source(cn->data[CN_A][p], zs, cn->data[CN_HOVERH0][p]);
+          WC[2][zl][zs][p] = IA_A1_Z1(a, growfac_a, zs);
+          WC[3][zl][zs][p] = IA_A2_Z1(a, growfac_a, zs);
+          WC[4][zl][zs][p] = IA_BTA_Z1(a, growfac_a, zs);
+        }
+      }
+    }
+    // -----------------------------------------------------------------------
+    // Precompute: P(k,a), RSD, TATT kernels, one-loop bias kernels
+    // -----------------------------------------------------------------------
+    #pragma omp for collapse(3) schedule(static) nowait
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int p = 0; p < npts; p++) {
+        for (int i = 0; i < nell; i++) {
+          const cosmo_nodes* cn = &cn_all[zl];
+          const double a  = cn->data[CN_A][p];
+          const double fK = cn->data[CN_FK][p];
+          const double ell = lx[i] + 0.5;
+          const double k = ell / fK;
+          const double lnk = log(k);
+          KIA[0][zl][i][p] = Pdelta(k, a);
+          if (1 == include_RSD_GS) {
+            const double chi_0 = ell/k;
+            const double chi_1 = (ell + 1.0)/k;
+            const double a_0 = a_chi(chi_0);
+            const double a_1 = a_chi(chi_1);
+            KIA[1][zl][i][p] = W_RSD(ell, a_0, a_1, zl);
+          }
+          if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+            if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
+              const double r = (lnk - limTATT[0]) / limTATT[2];
+              const int b = (int) floor(r);
+              const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+              const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+              for (int m = 0; m < 4; m++) {
+                KIA[2+m][zl][i][p] = LERP(FPTIA.tab[GS_IA_SRC[m]], idx, dr);
+              }
             }
           }
-        }
-        if (1 == nonlinear_bias) {
-          if (lnk >= limbias[0] && lnk <= limbias[1]) {
-            const double r = (lnk - limbias[0]) / limbias[2];
-            const int b = (int) floor(r);
-            const double dr = (b+1 >= FPTbias.N) ? 0.0 : r - b;
-            const int idx = (b+1 >= FPTbias.N) ? FPTbias.N - 2 : b;
-            for (int m = 0; m < 3; m++) {
-              KIA[6+m][zl][i][p] = LERP(FPTbias.tab[GS_BIAS_SRC[m]], idx, dr);
+          if (1 == nonlinear_bias) {
+            if (lnk >= limbias[0] && lnk <= limbias[1]) {
+              const double r = (lnk - limbias[0]) / limbias[2];
+              const int b = (int) floor(r);
+              const double dr = (b+1 >= FPTbias.N) ? 0.0 : r - b;
+              const int idx = (b+1 >= FPTbias.N) ? FPTbias.N - 2 : b;
+              for (int m = 0; m < 3; m++) {
+                KIA[6+m][zl][i][p] = LERP(FPTbias.tab[GS_BIAS_SRC[m]], idx, dr);
+              }
             }
           }
         }
       }
     }
   }
+
   // -----------------------------------------------------------------------
   // Main integration loop.
   // Always calls _tatt_core (reduces to NLA when C2=BTA=0 via memset).
