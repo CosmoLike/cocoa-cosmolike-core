@@ -151,6 +151,7 @@ gsl_spline* malloc_gsl_spline(const int n);
 // ---------------------------------------------------------------------------
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n);
 
+#ifndef COSMO2D_NOT_USE_SIMD
 // ---------------------------------------------------------------------------
 // Sum all elements of a double array using AVX2 SIMD intrinsics (via
 // SIMDe for portability).
@@ -174,6 +175,7 @@ double simd_array_sum(
 double simd_horizontal_sum(
     simde__m256d four_lanes  // 256-bit register holding four doubles to sum
   );
+#endif
 
 // ---------------------------------------------------------------------------
 // Allocate a 1D array of int as a single 64-byte-aligned contiguous block.
@@ -352,11 +354,12 @@ void* calloc1d(
     const int nx   // number of double elements to allocate
   );
 
-inline int fdiff2(const uint64_t a, const uint64_t b)
+static inline int fdiff2(const uint64_t a, const uint64_t b)
 {
   return (a == b) ? 0 : 1;
 }
-inline int fdiff(const double a, const double b)
+
+static inline int fdiff(const double a, const double b)
 {
   return (fabs(a-b) < 1.0e-13 * fabs(a+b) || fabs(a-b) < 2.0e-38) ? 0 : 1;
 }
@@ -435,6 +438,46 @@ double interpol2d(
     double dy,    // uniform y grid spacing
     double y      // y query point
   ) __attribute__((pure));
+
+// ---------------------------------------------------------------------------
+// Safe zeroing functions for padded multi-dimensional arrays.
+//
+// PROBLEM:
+//   malloc2d/3d/4d pad the innermost dimension to 64-byte boundaries
+//   for SIMD alignment. For example, malloc3d(11, 100, 100) allocates
+//   rows of 104 doubles (nzp = 104), not 100. The data layout is:
+//
+//     row (0,0): [100 logical doubles | 4 padding doubles]
+//     row (0,1): [100 logical doubles | 4 padding doubles]
+//     ...
+//
+//   The naive idiom
+//     memset(arr[0][0], 0, nx*ny*nz*sizeof(double))
+//   treats the data as a flat contiguous block of nx*ny*nz doubles.
+//   But the actual stride is nzp, not nz. The flat memset zeros
+//   nx*ny*nz doubles starting from arr[0][0], which undershoots the
+//   true allocation (nx*ny*nzp doubles). The result:
+//     - early rows: logical data zeroed, padding left dirty (harmless)
+//     - late rows: logical data left UNINITIALIZED (dangerous)
+//
+//   Example: malloc3d(11, 100, 100), nzp = 104
+//     memset zeros:  11*100*100 = 110,000 doubles
+//     actual data:   11*100*104 = 114,400 doubles
+//     last ~4,400 doubles uninitialized — affects rows 1058-1099
+//
+//
+// SOLUTION:
+//   Zero through the pointer indirection, one innermost row at a time.
+//   Each memset follows the actual row pointer (which accounts for
+//   padding) and zeros exactly the logical element count. Safe for
+//   any dimension size, regardless of 64-byte alignment.
+// ---------------------------------------------------------------------------
+void zero2d(double** a, const int nx, const int ny);
+
+void zero3d(double*** a, const int nx, const int ny, const int nz);
+
+void zero4d(double**** a, const int nx, const int ny, const int nz,
+            const int nw);
 
 // ---------------------------------------------------------------------------
 // Count the number of non-empty lines in a text file.

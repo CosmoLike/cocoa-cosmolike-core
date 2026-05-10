@@ -457,7 +457,7 @@ void** malloc2d(
   void* raw_block = NULL;
   if (posix_memalign(&raw_block, 
                      align, 
-                     sizeof(double*)*nxp+sizeof(double)*nxp*nyp) != 0) {
+                     sizeof(double*)*nxp+sizeof(double)*nx*nyp) != 0) {
     log_fatal("posix_memalign failed for malloc2d"); exit(EXIT_FAILURE);
   }
 
@@ -470,6 +470,7 @@ void** malloc2d(
   }
   return (void**) tab;
 }
+
 
 // ---------------------------------------------------------------------------
 // Allocate a 1D array of int as a single 64-byte-aligned contiguous block.
@@ -1054,6 +1055,67 @@ double interpol2d(
          dt * (1. - ds) * f[i + 1][j] + dt * ds * f[i + 1][j + 1];
 }
 
+
+// ---------------------------------------------------------------------------
+// Safe zeroing functions for padded multi-dimensional arrays.
+//
+// PROBLEM:
+//   malloc2d/3d/4d pad the innermost dimension to 64-byte boundaries
+//   for SIMD alignment. For example, malloc3d(11, 100, 100) allocates
+//   rows of 104 doubles (nzp = 104), not 100. The data layout is:
+//
+//     row (0,0): [100 logical doubles | 4 padding doubles]
+//     row (0,1): [100 logical doubles | 4 padding doubles]
+//     ...
+//
+//   The naive idiom
+//     memset(arr[0][0], 0, nx*ny*nz*sizeof(double))
+//   treats the data as a flat contiguous block of nx*ny*nz doubles.
+//   But the actual stride is nzp, not nz. The flat memset zeros
+//   nx*ny*nz doubles starting from arr[0][0], which undershoots the
+//   true allocation (nx*ny*nzp doubles). The result:
+//     - early rows: logical data zeroed, padding left dirty (harmless)
+//     - late rows: logical data left UNINITIALIZED (dangerous)
+//
+//   Example: malloc3d(11, 100, 100), nzp = 104
+//     memset zeros:  11*100*100 = 110,000 doubles
+//     actual data:   11*100*104 = 114,400 doubles
+//     last ~4,400 doubles uninitialized — affects rows 1058-1099
+//
+//
+// SOLUTION:
+//   Zero through the pointer indirection, one innermost row at a time.
+//   Each memset follows the actual row pointer (which accounts for
+//   padding) and zeros exactly the logical element count. Safe for
+//   any dimension size, regardless of 64-byte alignment.
+// ---------------------------------------------------------------------------
+void zero2d(double** a, const int nx, const int ny)
+{
+  for (int i = 0; i < nx; i++) {
+    memset(a[i], 0, ny * sizeof(double));
+  }
+}
+
+void zero3d(double*** a, const int nx, const int ny, const int nz)
+{
+  for (int i = 0; i < nx; i++) {
+    for (int j = 0; j < ny; j++) {
+      memset(a[i][j], 0, nz * sizeof(double));
+    }
+  }
+}
+
+void zero4d(double**** a, const int nx, const int ny, const int nz,
+            const int nw)
+{
+  for (int i = 0; i < nx; i++) {
+    for (int j = 0; j < ny; j++) {
+      for (int k = 0; k < nz; k++) {
+        memset(a[i][j][k], 0, nw * sizeof(double));
+      }
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Compute the Hankel-transform kernel in Fourier space.

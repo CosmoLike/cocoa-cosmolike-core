@@ -1611,7 +1611,7 @@ void free_cosmo_nodes(cosmo_nodes* cn) {
 //
 // Computes: (WK1 - WS1*C11) * (WK2 - WS2*C12) * PK
 // ---------------------------------------------------------------------------
-inline double int_for_C_ss_tomo_limber_nla_core(
+static inline double int_for_C_ss_tomo_limber_nla_core(
     const double PK,   // P_delta(k, a): nonlinear matter power spectrum
     const double WK1,  // W_kappa(a, fK, n1): lensing convergence kernel, bin 1
     const double WK2,  // W_kappa(a, fK, n2): lensing convergence kernel, bin 2
@@ -1638,7 +1638,7 @@ inline double int_for_C_ss_tomo_limber_nla_core(
 // where IA_i includes linear (C1*PK), density-weighted (C1*bta*ta_dE),
 // and quadratic (C2*mix, C2^2*tt) contributions.
 // ---------------------------------------------------------------------------
-inline double int_for_C_ss_tomo_limber_tatt_EE_core(
+static inline double int_for_C_ss_tomo_limber_tatt_EE_core(
     const double PK,     // P_delta(k, a): nonlinear matter power spectrum
     const double WK1,    // W_kappa(a, fK, n1): lensing convergence kernel, bin 1
     const double WK2,    // W_kappa(a, fK, n2): lensing convergence kernel, bin 2
@@ -1681,7 +1681,7 @@ inline double int_for_C_ss_tomo_limber_tatt_EE_core(
 //                    + 25*C21*C22*tt)
 // For NLA (C2 = 0, bta = 0), BB = 0 identically.
 // ---------------------------------------------------------------------------
-inline double int_for_C_ss_tomo_limber_tatt_BB_core(
+static inline double int_for_C_ss_tomo_limber_tatt_BB_core(
     const double PK,   // P_delta(k, a): NL MPS (unused but kept for API consistency)
     const double WK1,  // W_kappa(a, fK, n1): convergence kernel (unused, BB has no tree level)
     const double WK2,  // W_kappa(a, fK, n2): convergence kernel (unused, BB has no tree level)
@@ -1875,9 +1875,10 @@ double C_ss_tomo_limber_nointerp(
   }
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
-                         (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 96 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 : 
+                         (3 == hdi) ? 512 :  1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -1978,7 +1979,7 @@ static void C_ss_tomo_limber_work(
   // -----------------------------------------------------------------------
   double*** WC = (double***) malloc3d(5, redshift.shear_nbin, cn->npts);
   double*** KIA = (double***) malloc3d(11, nell, cn->npts);
-  memset(KIA[0][0], 0, 11*nell*cn->npts*sizeof(double));
+  zero3d(KIA, 11, nell, cn->npts);
 
   double limTATT[3];
   if (nuisance.IA_MODEL == IA_MODEL_TATT) {
@@ -2125,9 +2126,10 @@ void C_ss_tomo_limber_nointerp_ells(
   if (NULL == w || fdiff2(cache[0], Ntable.random)) 
   {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
-                         (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024;
+    const size_t szint = (0 == hdi) ? 96 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 : 
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2152,7 +2154,7 @@ void C_ss_tomo_limber_nointerp_ells(
   }
 
   double*** tmp = (double***) malloc3d(2, NSIZE, nell);
-  memset(tmp[0][0], 0, 2*NSIZE*nell*sizeof(double));
+  zero3d(tmp, 2, NSIZE, nell);
 
   C_ss_tomo_limber_work(&cn, ells, nell, NSIZE, tmp, 0);
 
@@ -2275,7 +2277,7 @@ double C_ss_tomo_limber(
     
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, tomo.shear_Npowerspectra, nell);
-    memset(table[0][0], 0, 2*tomo.shear_Npowerspectra*nell*sizeof(double));
+    zero3d(table, 2, tomo.shear_Npowerspectra, nell);
 
     ss_.tab = table; 
     ss_.lim[0] = lim[0]; 
@@ -2284,9 +2286,10 @@ double C_ss_tomo_limber(
     ss_.nell = nell;  
 
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
-                         (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024;
+    const size_t szint = (0 == hdi) ? 96 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 : 
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -2407,7 +2410,7 @@ void C_ss_tomo_limber_fill(
 // NLA/TATT core functions to enforce one-loop consistency (oneloop × linear IA
 // only, avoiding two-loop cross terms).
 // ---------------------------------------------------------------------------
-inline double int_for_C_gs_tomo_limber_bias_oneloop_core(
+static inline double int_for_C_gs_tomo_limber_bias_oneloop_core(
     const double k,    // wavenumber k = (l+0.5) / fK
     const double PK,   // P_delta(k, a): nonlinear matter power spectrum
     const double g4,   // D(a)^4: fourth power of the linear growth factor
@@ -2445,7 +2448,7 @@ inline double int_for_C_gs_tomo_limber_bias_oneloop_core(
 // terms with galaxy bias would be two-loop order, so WRSD and WMAG
 // multiply b1*PK but not oneloop.
 // ---------------------------------------------------------------------------
-inline double int_for_C_gs_tomo_limber_nla_core(
+static inline double int_for_C_gs_tomo_limber_nla_core(
     const double PK,
     const double WK, 
     const double WS,
@@ -2500,7 +2503,7 @@ inline double int_for_C_gs_tomo_limber_nla_core(
 // Reduces to int_for_C_gs_tomo_limber_nla_core when C2 = 0, BTA = 0,
 // and all TATT kernels are zero (as enforced by memset for NLA).
 // ---------------------------------------------------------------------------
-inline double int_for_C_gs_tomo_limber_tatt_core(
+static inline double int_for_C_gs_tomo_limber_tatt_core(
     const double PK,                // P_delta(k, a): nonlinear matter power spectrum
     const double WK,                // W_kappa(a, fK, ns): lensing convergence kernel
     const double WS,                // W_source(a, ns, h/h0): source galaxy distribution
@@ -2720,9 +2723,10 @@ double C_gs_tomo_limber_nointerp(
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
-                         (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024;; // predefined GSL tables
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 : 
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL)  {
       gsl_integration_glfixed_table_free(w);
     }
@@ -2864,15 +2868,14 @@ static void C_gs_tomo_limber_work(
   const int npts = cn_all[0].npts;
 
   double*** WB = (double***) malloc3d(10, redshift.clustering_nbin, npts);
-  memset(WB[0][0], 0, 10*redshift.clustering_nbin*npts*sizeof(double));
+  zero3d(WB, 10, redshift.clustering_nbin, npts);
 
   double**** WC = (double****) malloc4d(5, redshift.clustering_nbin,
                                         redshift.shear_nbin, npts);
-  memset(WC[0][0][0], 0, 5*redshift.clustering_nbin*
-                         redshift.shear_nbin*npts*sizeof(double));
+  zero4d(WC, 5, redshift.clustering_nbin, redshift.shear_nbin, npts);
 
   double**** KIA = (double****) malloc4d(10, redshift.clustering_nbin, nell, npts);
-  memset(KIA[0][0][0], 0, 10*redshift.clustering_nbin*nell*npts*sizeof(double));
+  zero4d(KIA, 10, redshift.clustering_nbin, nell, npts);
 
   double limTATT[3];
   double limbias[3];
@@ -3070,9 +3073,10 @@ void C_gs_tomo_limber_nointerp_ells(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
-                         (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024;
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 : 
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -3118,7 +3122,7 @@ void C_gs_tomo_limber_nointerp_ells(
   }
 
   double** tmp_table = (double**) malloc2d(NSIZE, nell);
-  memset(tmp_table[0], 0, NSIZE*nell*sizeof(double));
+  zero2d(tmp_table, NSIZE, nell);
 
   C_gs_tomo_limber_work(cn_all, ells, ep, ep2, nell, tmp_table, 0);
 
@@ -3226,7 +3230,7 @@ double C_gs_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double**) malloc2d(tomo.ggl_Npowerspectra, nell);
-    memset(table[0], 0, tomo.ggl_Npowerspectra*nell*sizeof(double));
+    zero2d(table, tomo.ggl_Npowerspectra, nell);
 
     gs_.tab    = table;
     gs_.lim[0] = lim[0];
@@ -3235,9 +3239,10 @@ double C_gs_tomo_limber(
     gs_.nell   = nell;
 
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 128 :
-                         (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024;
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 : 
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -3869,7 +3874,7 @@ double C_gk_tomo_limber_nointerp(
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 : 
+    const size_t szint = (0 == hdi) ? 64 : 
                          (1 == hdi) ? 128 : 
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -4053,7 +4058,7 @@ double C_ks_tomo_limber_nointerp(const double l, const int ni, const int init)
   }
   if (NULL ==  w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 : 
+    const size_t szint = (0 == hdi) ? 64 : 
                          (1 == hdi) ? 128 : 
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -4211,7 +4216,7 @@ double C_kk_limber_nointerp(const double l, const int init)
   
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 : 
+    const size_t szint = (0 == hdi) ? 64 : 
                          (1 == hdi) ? 128 : 
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -4874,7 +4879,7 @@ void cfftlog_ells_p1(
     config* const cfg,                      // FFTLog config per component (nu, c_window_width, derivative, N_pad)
     fftw_complex* const* const toutfwd,     // output forward FFT coefficients [SIZE1*SIZE2][Nmax/2+1]
     double* const* const eta_m,             // output Fourier frequencies [SIZE2][Nmax/2+1]
-    int const N[][3],                       // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
+    int N[][3],                             // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
     int const Nmax,                         // max(N[j][2]) across all components
     int const SIZE1,                        // number of lens redshift bins
     int const SIZE2                         // number of radial components (2 without magnification, 3 with)
@@ -5063,7 +5068,7 @@ void cfftlog_ells_p2(
     double* const* const* const* const Fy,  // output projected functions Fy[SIZE1][SIZE2][LMAX][Nx]
     fftw_complex* const* const toutfwd,     // forward FFT coefficients from p1 [SIZE1*SIZE2][Nmax/2+1]
     double* const* const eta_m,             // Fourier frequencies from p1 [SIZE2][Nmax/2+1]
-    int const N[][3],                       // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
+    int  N[][3],                            // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
     int const Nmax,                         // max(N[j][2]) across all components
     int const ks,                           // first multipole in this block (inclusive)
     int const ke,                           // last multipole in this block (exclusive)
@@ -5095,8 +5100,11 @@ void cfftlog_ells_p2(
 
   const int kmax = (ke < LMAX) ? ke : LMAX;
   const int BLOCK = ke - ks;
+  #ifdef _OPENMP
   const int NTHREADS = omp_get_max_threads();
-
+  #else
+  const int NTHREADS = 1;
+  #endif
   const double sqrtpi = sqrt(M_PI);
   const double ln2 = log(2.);
   const double x0   = x[0];
@@ -5372,7 +5380,11 @@ void cfftlog_ells_p2(
     #pragma omp parallel for collapse(2) schedule(static)
     for(int j=0; j<SIZE2; j++) {
       for (int k=ks; k<kmax; k++) { 
-        const int id = omp_get_thread_num();  
+#ifdef _OPENMP
+        const int id = omp_get_thread_num(); 
+#else
+        const int id = 0;
+#endif 
         const double lnbase = log(base_j[j] * y[i][k][0]);    
 #ifndef COSMO2D_NOT_USE_SIMD 
         // Explore the fact that the phase eta_m[j][q] is linear in q
@@ -5552,7 +5564,6 @@ void C_cl_tomo(
   const double dlnchi  = log(chi_max/chi_min) / ((double) nchi - 1.0);
   const double dlnk    = dlnchi;
   { // INIT: make sure static init variables inside the funcs are defined
-    const int i = 0;
     const double chi = chi_min/real_coverH0;
     const double a   = a_chi(chi);
     const double z   = 1. / a - 1.;
