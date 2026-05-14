@@ -40,6 +40,7 @@ using spdlog::critical;
 
 namespace cosmolike_interface
 {
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -47,6 +48,72 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// parse_double_or_throw
+// -----------------------------------------------------------------------------
+// Parse a single whitespace-trimmed token as a double, with fault-tolerant
+// handling of floating-point range errors.
+//
+// Behavior
+// --------
+//   - Returns the parsed double on success.
+//   - Throws std::runtime_error if the token contains no numeric prefix
+//     (i.e. strtod consumes zero characters).
+//   - Throws std::runtime_error on overflow: errno == ERANGE and the result
+//     is +/-HUGE_VAL (non-finite).
+//   - ACCEPTS underflow: errno == ERANGE but the result is a finite value
+//     (subnormal or zero). The returned value is used as-is.
+//
+// Why this exists (and why we no longer use std::stod / std::stold)
+// -----------------------------------------------------------------
+// Cosmolike covariance and data-vector tables routinely contain entries
+// well below DBL_MIN (~2.2e-308) -- think deep-tail covariance off-diagonals
+// or noise-model entries pre-multiplied by tiny prefactors. These values are
+// numerically fine: they round to a subnormal or to 0.0, which is exactly
+// what the downstream Cholesky / matrix-vector code expects.
+//
+// std::stod (and std::stold) throws std::out_of_range on ANY ERANGE, making
+// no distinction between:
+//
+//     (a) overflow  -> result is +/-HUGE_VAL, truly unusable, MUST be rejected.
+//     (b) underflow -> result is a finite subnormal or 0.0, perfectly safe.
+//
+// In practice this means a table containing a legitimate 1e-320 aborts the
+// entire run before a single likelihood is evaluated. That is the bug this
+// helper is built to fix.
+//
+// std::strtod gives us what stod hides: errno is set on range errors, but the
+// returned value distinguishes the two cases via std::isfinite(). We treat
+// only the non-finite branch as fatal.
+//
+// Implementation notes
+// --------------------
+//   - errno must be cleared before the call. strtod sets errno on range
+//     errors but never clears it, so a stale ERANGE from elsewhere would
+//     otherwise be misattributed to this parse.
+//   - end == tok.c_str() is the canonical "no digits consumed" check;
+//     this catches empty tokens, pure whitespace, and garbage like "abc".
+//   - std::isfinite(v) returns false for +/-HUGE_VAL and any NaN, and true
+//     for every normal, subnormal, and zero value. This is exactly the
+//     "accept underflow, reject overflow" discriminator we need.
+//   - Tokens like "nan" parse successfully and are NOT finite, so they will
+//     be rejected here -- which is what we want for table data.
+// -----------------------------------------------------------------------------
+double parse_double_or_throw(const std::string& tok) {
+  errno = 0;
+  char* end = nullptr;
+  const double v = std::strtod(tok.c_str(), &end);
+
+  if (end == tok.c_str()) {
+    throw std::runtime_error(
+      fmt::format("read_table: cannot parse '{}' as double", tok));
+  }
+  if (errno == ERANGE && !std::isfinite(v)) {
+    throw std::runtime_error(
+      fmt::format("read_table: range error parsing '{}' (non-finite)", tok));
+  }
+  return v;
+}
 
 arma::Mat<double> read_table(const std::string file_name)
 {
@@ -123,7 +190,7 @@ arma::Mat<double> read_table(const std::string file_name)
     result.set_size(lines.size(), ncols);
     
     for (size_t j=0; j<ncols; j++)
-      result(0,j) = std::stod(words[j]);
+      result(0,j) = parse_double_or_throw(words[j]);
   }
 
   #pragma omp parallel for schedule(static)
@@ -152,7 +219,7 @@ arma::Mat<double> read_table(const std::string file_name)
     }
     
     for (size_t j=0; j<ncols; j++)
-      result(i,j) = std::stod(words[j]);
+      result(i,j) = parse_double_or_throw(words[j]);
   };
   
   return result;
