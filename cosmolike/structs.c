@@ -275,7 +275,7 @@ void reset_Ntable_struct(void)
   Ntable.dCX_dlnk_nlnk = 256;
   Ntable.dCX_dlnk_kmin = 1.e-5;
   Ntable.dCX_dlnk_kmax = 1.e2; 
-  Ntable.nz_fine_sampling_factor = 4; // nz fine-sampling (to ensure uniform points)
+  Ntable.nz_fine_sampling_factor = 5; // nz fine-sampling (to ensure uniform points)
 }
 
 /*

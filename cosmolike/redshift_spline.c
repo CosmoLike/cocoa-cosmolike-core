@@ -526,7 +526,7 @@ double nz_source_photoz(double zz, const int nj)
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
 #ifndef DONT_NZ_FAST_SUMBSAMPLE
-    nzbins_fine = 20 * (1 + abs(Ntable.high_def_integration)) * nzbins + 1;
+    nzbins_fine = Ntable.nz_fine_sampling_factor*nzbins + 1;
     const double eps = 1e-15;
     zmin_fine = table[ntomo+1][0] + eps;
     const double zmax_fine = table[ntomo+1][nzbins - 1] - eps;
@@ -967,7 +967,6 @@ double nz_lens_photoz(double zz, int nj)
 #endif
 }
 
-
 double int_for_zmean(double z, void* params) 
 { 
   // Integrand for computing the mean lens redshift: z * n_j(z).
@@ -1126,7 +1125,7 @@ double g_tomo(double ainput, const int ni) {
   static double** Pint = NULL; // P integrand samples on fine grid
   static double** Qint = NULL; // Q integrand samples on fine grid
 
-  const int x  = 25*(1 + abs(Ntable.high_def_integration));
+  const int x  = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0/(redshift.shear_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
@@ -1257,7 +1256,7 @@ double g2_tomo(double a, int ni)
   static double** Qint  = NULL;  // Q integrand on fine grid
   static double** Rint  = NULL;  // R integrand on fine grid
 
-  const int x = 25*(1 + abs(Ntable.high_def_integration));
+  const int x = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.shear_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
@@ -1405,7 +1404,7 @@ double g_lens(double a, int ni)
   static double** Pint  = NULL; // P integrand samples on fine grid
   static double** Qint  = NULL; // Q integrand samples on fine grid
 
-  const int x = 25*(1 + abs(Ntable.high_def_integration));
+  const int x = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.clustering_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
