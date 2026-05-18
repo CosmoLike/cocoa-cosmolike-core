@@ -565,11 +565,12 @@ double xi_pm_tomo(
         Cl[1][i][l] = 0.0;
       }
     }
+
     // init static vars
     (void) C_ss_tomo_limber((double) limits.LMIN_tab+1, Z1(0), Z2(0), 1);
     
     if (1 == limber) {
-      C_ss_tomo_limber_nointerp_batch(lmin, limits.LMIN_tab, NSIZE, Cl, 0);
+      C_ss_tomo_limber_nointerp_batch(lmin, limits.LMIN_tab, NSIZE, Cl);
       #pragma omp parallel for schedule(static)
       for (int nz = 0; nz < NSIZE; nz++) {
         C_ss_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX,
@@ -792,9 +793,8 @@ double w_gammat_tomo(
     }
 
     (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
-    
     if (1 == limber) {
-      C_gs_tomo_limber_nointerp_batch(lmin, limits.LMIN_tab, NSIZE, Cl, 0);
+      C_gs_tomo_limber_nointerp_batch(lmin, limits.LMIN_tab, NSIZE, Cl);
       #pragma omp parallel for schedule(static)
       for (int nz = 0; nz < NSIZE; nz++) {
         C_gs_tomo_limber_fill(nz, limits.LMIN_tab, Ntable.LMAX, lnell, Cl[nz]);
@@ -1836,7 +1836,6 @@ double int_for_C_ss_tomo_limber(
     return ans*(chidchi.dchida/fK)*ell_prefactor;
   }
 }
-
 // ---------------------------------------------------------------------------
 // Single-ell shear-shear C_l via GSL fixed-order Gauss-Legendre quadrature.
 //
@@ -1947,8 +1946,7 @@ static void C_ss_tomo_limber_work(
     const double* lx,       // multipole values (length nell)
     const int nell,         // number of multipole values
     const int NSIZE,        // number of tomo shear power spectra
-    double*** table,        // output [2][NSIZE][nell]: EE and BB
-    const int init          // 1 = warm up statics only, 0 = full computation
+    double*** table        // output [2][NSIZE][nell]: EE and BB
   )
 {
   // -----------------------------------------------------------------------
@@ -1967,13 +1965,13 @@ static void C_ss_tomo_limber_work(
     (void) IA_A2_Z1(a, gf, 0);
     (void) IA_BTA_Z1(a, gf, 0);
     (void) Pdelta(ell/fK, a);
+    (void) Z1(0);
+    (void) Z2(0);
     if (nuisance.IA_MODEL == IA_MODEL_TATT) {
       if (0 == nuisance.IA_code) get_FPT_IA();
     }
   }
-  if (1 == init) {
-    return;
-  }
+
   // -----------------------------------------------------------------------
   // Allocate precomputed arrays
   // -----------------------------------------------------------------------
@@ -2117,8 +2115,7 @@ void C_ss_tomo_limber_nointerp_ells(
     const int nell,       // number of multipole values
     const int NSIZE,      // number of tomo shear power spectra
     double** out_EE,      // output EE [NSIZE][nell], NULL if init=1
-    double** out_BB,      // output BB [NSIZE][nell], NULL if init=1
-    const int init        // 1 = warm up statics only, 0 = full computation
+    double** out_BB      // output BB [NSIZE][nell], NULL if init=1
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
@@ -2140,14 +2137,6 @@ void C_ss_tomo_limber_nointerp_ells(
 
   cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 
-  const double lx0 = (nell > 0 && ells != NULL) ? ells[0] : 2.0;
-  C_ss_tomo_limber_work(&cn, &lx0, 1, NSIZE, NULL, 1);
-
-  if (1 == init) {
-    free_cosmo_nodes(&cn);
-    return;
-  }
-
   if (nell <= 0) {
     log_fatal("nell = %d <= 0", nell);
     exit(1);
@@ -2156,7 +2145,7 @@ void C_ss_tomo_limber_nointerp_ells(
   double*** tmp = (double***) malloc3d(2, NSIZE, nell);
   zero3d(tmp, 2, NSIZE, nell);
 
-  C_ss_tomo_limber_work(&cn, ells, nell, NSIZE, tmp, 0);
+  C_ss_tomo_limber_work(&cn, ells, nell, NSIZE, tmp);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
@@ -2165,8 +2154,7 @@ void C_ss_tomo_limber_nointerp_ells(
     }
   }
 
-  free(tmp);
-  free_cosmo_nodes(&cn);
+  free(tmp); free_cosmo_nodes(&cn);
 }
 
 // ---------------------------------------------------------------------------
@@ -2177,14 +2165,9 @@ void C_ss_tomo_limber_nointerp_batch(
     const int lmin,
     const int lmax,
     const int NSIZE,
-    double*** Cl,
-    const int init
+    double*** Cl
   )
 {
-  if (1 == init) {
-    C_ss_tomo_limber_nointerp_ells(NULL, 0, NSIZE, NULL, NULL, 1);
-    return;
-  }
   const int nell = lmax - lmin;
   if (nell <= 0) {
     log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
@@ -2197,7 +2180,7 @@ void C_ss_tomo_limber_nointerp_batch(
   double** tmp_EE = (double**) malloc2d(NSIZE, nell);
   double** tmp_BB = (double**) malloc2d(NSIZE, nell);
 
-  C_ss_tomo_limber_nointerp_ells(lx, nell, NSIZE, tmp_EE, tmp_BB, 0);
+  C_ss_tomo_limber_nointerp_ells(lx, nell, NSIZE, tmp_EE, tmp_BB);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
@@ -2311,8 +2294,7 @@ double C_ss_tomo_limber(
     
     cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 
-    C_ss_tomo_limber_work(&cn, lx, nell,
-                          tomo.shear_Npowerspectra, table, 0);
+    C_ss_tomo_limber_work(&cn, lx, nell, tomo.shear_Npowerspectra, table);
 
     free_cosmo_nodes(&cn);
 
@@ -2710,26 +2692,19 @@ double C_gs_tomo_limber_nointerp(
   )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-  
-  if (nl < 0 || 
-      nl > redshift.clustering_nbin -1 || 
-      ns < 0 || 
-      ns > redshift.shear_nbin -1)
+  static gsl_integration_glfixed_table* w = NULL; 
+  if (nl < -1 || nl > redshift.clustering_nbin -1 || 
+      ns < -1 || ns > redshift.shear_nbin -1)
   {
-    log_fatal("invalid bin input (ni, nj) = (%d, %d)", nl, ns);
-    exit(1);
+    log_fatal("invalid bin input (ni, nj) = (%d, %d)", nl, ns); exit(1);
   }
-
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 64 :
+    const size_t szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
-    if (w != NULL)  {
-      gsl_integration_glfixed_table_free(w);
-    }
+                         (3 == hdi) ? 512 :  1024; // predefined GSL tables
+    if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
   }
@@ -2738,14 +2713,11 @@ double C_gs_tomo_limber_nointerp(
   
   const double amin = amin_lens(nl);
   const double amax = amax_lens(nl);
-  
   if (!(amin>0) || !(amin<1) || !(amax>0) || !(amax<1)) {
-    log_fatal("0 < amin/amax < 1 not true");
-    exit(1);
+    log_fatal("0 < amin/amax < 1 not true"); exit(1);
   }
   if (!(amin < amax)) {
-    log_fatal("amin < amax not true");
-    exit(1);
+    log_fatal("amin < amax not true"); exit(1);
   }
 
   double res;
@@ -2815,8 +2787,7 @@ static void C_gs_tomo_limber_work(
     const double* ell_prefactor,  // l*(l+1)/(l+0.5)^2 per ell (magnification)
     const double* ell_prefactor2, // sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2 per ell
     const int nell,             // number of multipole values
-    double** table,             // output [ggl_Npowerspectra][nell]
-    const int init              // 1 = warm up statics only, 0 = full computation
+    double** table             // output [ggl_Npowerspectra][nell]
   )
 {
   // -----------------------------------------------------------------------
@@ -2841,6 +2812,8 @@ static void C_gs_tomo_limber_work(
     (void) Pdelta(ell/fK, a);
     (void) gb1(0.1, 0);
     (void) gbmag(0.1, 0);
+    (void) ZL(0);
+    (void) ZS(0);
     if (1 == nonlinear_bias) {
       (void) gb2(0.1, 0);
       (void) gbs2(0.1, 0);
@@ -2860,7 +2833,6 @@ static void C_gs_tomo_limber_work(
       }
     }
   }
-  if (1 == init) return;
 
   // -----------------------------------------------------------------------
   // Allocate precomputed arrays
@@ -2870,11 +2842,16 @@ static void C_gs_tomo_limber_work(
   double*** WB = (double***) malloc3d(10, redshift.clustering_nbin, npts);
   zero3d(WB, 10, redshift.clustering_nbin, npts);
 
-  double**** WC = (double****) malloc4d(5, redshift.clustering_nbin,
-                                        redshift.shear_nbin, npts);
+  double**** WC = (double****) malloc4d(5, 
+                                        redshift.clustering_nbin,
+                                        redshift.shear_nbin, 
+                                        npts);
   zero4d(WC, 5, redshift.clustering_nbin, redshift.shear_nbin, npts);
 
-  double**** KIA = (double****) malloc4d(10, redshift.clustering_nbin, nell, npts);
+  double**** KIA = (double****) malloc4d(10, 
+                                         redshift.clustering_nbin, 
+                                         nell, 
+                                         npts);
   zero4d(KIA, 10, redshift.clustering_nbin, nell, npts);
 
   double limTATT[3];
@@ -2926,7 +2903,7 @@ static void C_gs_tomo_limber_work(
     // -----------------------------------------------------------------------
     // Precompute: P(k,a), RSD, TATT kernels, one-loop bias kernels
     // -----------------------------------------------------------------------
-    #pragma omp for collapse(3) schedule(static) nowait
+    #pragma omp for collapse(3) schedule(static)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       for (int p = 0; p < npts; p++) {
         for (int i = 0; i < nell; i++) {
@@ -3040,10 +3017,7 @@ static void C_gs_tomo_limber_work(
       table[j][i] = sum;
     }
   }
-
-  free(WB);
-  free(WC);
-  free(KIA);
+  free(WB); free(WC); free(KIA);
 }
 
 // ---------------------------------------------------------------------------
@@ -3062,11 +3036,10 @@ static void C_gs_tomo_limber_work(
 //             if 0, perform full batch computation
 // ---------------------------------------------------------------------------
 void C_gs_tomo_limber_nointerp_ells(
-    const double* ells,   // array of multipole values (length nell)
-    const int nell,       // number of multipole values
-    const int NSIZE,      // number of ggl power spectra
-    double** out,         // output [NSIZE][nell], NULL if init=1
-    const int init        // 1 = warm up statics only, 0 = full computation
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of ggl power spectra
+    double** out         // output [NSIZE][nell], NULL if init=1
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
@@ -3083,7 +3056,7 @@ void C_gs_tomo_limber_nointerp_ells(
   }
 
   cosmo_nodes cn_all[redshift.clustering_nbin];
-  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+  for (int zl = 0; zl<redshift.clustering_nbin; zl++) {
     const double amin = amin_lens(zl);
     const double amax = amax_lens(zl);
     cn_all[zl] = create_cosmo_nodes(amin, amax, w);
@@ -3093,51 +3066,37 @@ void C_gs_tomo_limber_nointerp_ells(
       log_fatal("inconsistent quadrature size"); exit(1);
     }
   }
-
-  const double lx0 = (nell > 0 && ells != NULL) ? ells[0] : 2.0;
-  const double ep0 = lx0*(lx0+1.)/((lx0+0.5)*(lx0+0.5));
-  const double tmp0 = (lx0-1.)*lx0*(lx0+1.)*(lx0+2.);
-  const double ep20 = (tmp0 > 0) ? sqrt(tmp0)/((lx0+0.5)*(lx0+0.5)) : 0.0;
-  C_gs_tomo_limber_work(cn_all, &lx0, &ep0, &ep20, 1, NULL, 1);
-
-  if (1 == init) {
-    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-      free_cosmo_nodes(&cn_all[zl]);
-    }
-    return;
-  }
-
   if (nell <= 0) {
-    log_fatal("nell = %d <= 0", nell);
-    exit(1);
-  }
-
-  double* ep  = (double*) malloc1d(nell);
-  double* ep2 = (double*) malloc1d(nell);
-  for (int i = 0; i < nell; i++) {
-    const double ell = ells[i] + 0.5;
-    ep[i] = ells[i]*(ells[i]+1.)/(ell*ell);
-    const double tmp = (ells[i]-1.)*ells[i]*(ells[i]+1.)*(ells[i]+2.);
-    ep2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
+    log_fatal("nell = %d <= 0", nell); exit(1);
   }
 
   double** tmp_table = (double**) malloc2d(NSIZE, nell);
   zero2d(tmp_table, NSIZE, nell);
 
-  C_gs_tomo_limber_work(cn_all, ells, ep, ep2, nell, tmp_table, 0);
+  double* ep1  = (double*) malloc1d(nell);
+  double* ep2 = (double*) malloc1d(nell);
+  for (int i=0; i<nell; i++) {
+    ep1[i] = ells[i]*(ells[i] + 1.)/((ells[i] + 0.5)*(ells[i] + 0.5));
+    
+    const double tmp = (ells[i] - 1.)*ells[i]*(ells[i] + 1.)*(ells[i] + 2.);
+    ep2[i] = (tmp > 0) ? sqrt(tmp)/((ells[i] + 0.5)*(ells[i] + 0.5)) : 0.0;
+  }
+
+  C_gs_tomo_limber_work(cn_all, ells, ep1, ep2, nell, tmp_table);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
       out[k][i] = tmp_table[k][i];
     }
   }
+  
+  free(tmp_table); free(ep1); free(ep2);
 
-  free(tmp_table);
-  free(ep);
-  free(ep2);
   for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
     free_cosmo_nodes(&cn_all[zl]);
   }
+
+  return;
 }
 
 // ---------------------------------------------------------------------------
@@ -3148,27 +3107,22 @@ void C_gs_tomo_limber_nointerp_batch(
     const int lmin,
     const int lmax,
     const int NSIZE,
-    double** Cl,
-    const int init
+    double** Cl
   )
 {
-  if (1 == init) {
-    C_gs_tomo_limber_nointerp_ells(NULL, 0, NSIZE, NULL, 1);
-    return;
-  }
   const int nell = lmax - lmin;
   if (nell <= 0) {
     log_fatal("lmax = %d <= lmin = %d", lmax, lmin);
     exit(1);
   }
   double* lx = (double*) malloc1d(nell);
-  for (int i = 0; i < nell; i++) {
+  for (int i=0; i<nell; i++) {
     lx[i] = (double)(lmin + i);
   }
 
   double** tmp = (double**) malloc2d(NSIZE, nell);
 
-  C_gs_tomo_limber_nointerp_ells(lx, nell, NSIZE, tmp, 0);
+  C_gs_tomo_limber_nointerp_ells(lx, nell, NSIZE, tmp);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
@@ -3176,8 +3130,7 @@ void C_gs_tomo_limber_nointerp_batch(
     }
   }
 
-  free(tmp);
-  free(lx);
+  free(tmp); free(lx);
 }
 
 // ---------------------------------------------------------------------------
@@ -3283,7 +3236,7 @@ double C_gs_tomo_limber(
       }
     }
 
-    C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, table, 0);
+    C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, table);
 
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       free_cosmo_nodes(&cn_all[zl]);

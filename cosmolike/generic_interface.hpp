@@ -979,16 +979,16 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
 
   if constexpr (0 == M) {
     if (1 == like.shear_shear) {
-      if constexpr (N == 0) {
+      if constexpr (0 == N) {
         for (int nz = 0; nz < tomo.shear_Npowerspectra; nz++) {
           const int z1 = Z1(nz);
           const int z2 = Z2(nz);
-          for (int i = 0; i < Ntable.Ntheta; i++) {
-            int index = start + Ntable.Ntheta*nz + i;
+          for (int i = 0; i < Nlen[N]; i++) {
+            int index = start + Nlen[N]*nz + i;
             if (survey.get_mask(index)) {
               dv(index) = xi_pm_tomo(1, i, z1, z2, 1);
             }  
-            index += Ntable.Ntheta*tomo.shear_Npowerspectra;
+            index += Nlen[N]*tomo.shear_Npowerspectra;
             if (survey.get_mask(index)) {
               dv(index) = xi_pm_tomo(-1, i, z1, z2, 1);
             } 
@@ -996,22 +996,22 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
         }
       }
       else {
-        double** out_EE = (double**) malloc2d(tomo.shear_Npowerspectra, like.Ncl);
-        double** out_BB = (double**) malloc2d(tomo.shear_Npowerspectra, like.Ncl);
-
+        
+        double** out_EE = (double**) malloc2d(tomo.shear_Npowerspectra, Nlen[N]);
+        double** out_BB = (double**) malloc2d(tomo.shear_Npowerspectra, Nlen[N]);
         C_ss_tomo_limber_nointerp_ells(like.ell, like.Ncl,
                                        tomo.shear_Npowerspectra,
-                                       out_EE, out_BB, 0);
+                                       out_EE, 
+                                       out_BB);
 
         for (int nz = 0; nz < tomo.shear_Npowerspectra; nz++) {
-          for (int i = 0; i < like.Ncl; i++) {
-            const int index = start + like.Ncl*nz + i;
+          for (int i=0; i<Nlen[N]; i++) {
+            const int index = start + Nlen[N]*nz + i;
             if (survey.get_mask(index) && (like.ell[i] < like.lmax_shear)) {
               dv(index) = out_EE[nz][i];
             }
           }
         }
-
         free(out_EE);
         free(out_BB);
       }
@@ -1024,29 +1024,31 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
         for (int nz = 0; nz < tomo.ggl_Npowerspectra; nz++) {
           const int zl = ZL(nz);
           const int zs = ZS(nz);
-          for (int i = 0; i < Ntable.Ntheta; i++) {
-            const int index = start + Ntable.Ntheta*nz + i;
+          for (int i = 0; i < Nlen[N]; i++) {
+            const int index = start + Nlen[N]*nz + i;
             if (survey.get_mask(index)) {
               dv(index) = w_gammat_tomo(i, zl, zs, 1);
             }
           }
         }
       }
-      else {
-        double** out = (double**) malloc2d(tomo.ggl_Npowerspectra, like.Ncl);
+      else {        
+        
+        double** out = (double**) malloc2d(tomo.ggl_Npowerspectra, Nlen[N]);
 
-        C_gs_tomo_limber_nointerp_ells(like.ell, like.Ncl,
-                                       tomo.ggl_Npowerspectra, out, 0);
+        C_gs_tomo_limber_nointerp_ells(like.ell, 
+                                       Nlen[N],
+                                       tomo.ggl_Npowerspectra, 
+                                       out);
 
         for (int nz = 0; nz < tomo.ggl_Npowerspectra; nz++) {
-          for (int i = 0; i < like.Ncl; i++) {
-            const int index = start + like.Ncl*nz + i;
+          for (int i=0; i<Nlen[N]; i++) {
+            const int index = start + Nlen[N]*nz + i;
             if (survey.get_mask(index)) {
               dv(index) = out[nz][i];
             }
           }
         }
-
         free(out);
       }
       add_calib_and_set_mask_X_N<N,M>(dv, start);
@@ -1301,14 +1303,16 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
       this->mask_(i) = 0;
     }
   }
-  if (0 == like.shear_pos) {
+  if (0 == like.shear_pos) 
+  {
     const int A = start(1);
     const int B = A + sizes(1);
     for (int i=A; i<B; i++) {
       this->mask_(i) = 0;
     }
   }
-  if (0 == like.pos_pos) {
+  if (0 == like.pos_pos) 
+  {
     const int A = start(2);
     const int B = A + sizes(2);
     for (int i=A; i<B; i++) {

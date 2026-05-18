@@ -37,9 +37,12 @@
 // The result is clamped to [0, n_total - 2] so the caller can safely
 // access grid[j] and grid[j+1] without bounds checks.
 // ---------------------------------------------------------------------------
-static inline int piecewise_index(double q, int nseg,
-                                  const int *start, const int *len,
-                                  const double *xmin, const double *inv_dx,
+static inline int piecewise_index(double q, 
+                                  int nseg,
+                                  const int *start, 
+                                  const int *len,
+                                  const double *xmin, 
+                                  const double *inv_dx,
                                   int n_total)
 {
   // Pick the segment: q is in segment s if q is in [xmin[s], xmin[s+1]).

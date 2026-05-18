@@ -90,12 +90,11 @@ double C_ss_tomo_limber_nointerp(
   );
 
 void C_ss_tomo_limber_nointerp_ells(
-    const double* ells,   // array of multipole values (length nell)
-    const int nell,       // number of multipole values
-    const int NSIZE,      // number of tomo shear power spectra
-    double** out_EE,      // output EE [NSIZE][nell], NULL if init=1
-    double** out_BB,      // output BB [NSIZE][nell], NULL if init=1
-    const int init        // 1 = warm up statics only, 0 = full computation
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of tomo shear power spectra
+    double** out_EE,     // output EE [NSIZE][nell], NULL if init=1
+    double** out_BB      // output BB [NSIZE][nell], NULL if init=1
   );
 
 // Batch computation at integer multipoles lmin..lmax-1.
@@ -104,23 +103,21 @@ void C_ss_tomo_limber_nointerp_batch(
     const int lmin, 
     const int lmax,
     const int NSIZE, 
-    double*** Cl,
-    const int init
+    double*** Cl
   );
 
 double C_gs_tomo_limber_nointerp(
     const double l, 
     const int ni, 
-    const int nj, 
+    const int nj,
     const int init
   );
 
 void C_gs_tomo_limber_nointerp_ells(
-    const double* ells,   // array of multipole values (length nell)
-    const int nell,       // number of multipole values
-    const int NSIZE,      // number of ggl power spectra
-    double** out,         // output [NSIZE][nell], NULL if init=1
-    const int init        // 1 = warm up statics only, 0 = full computation
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of ggl power spectra
+    double** out         // output [NSIZE][nell], NULL if init=1
   );
 
 // Batch computation at integer multipoles lmin..lmax-1.
@@ -129,8 +126,7 @@ void C_gs_tomo_limber_nointerp_batch(
     const int lmin,
     const int lmax,
     const int NSIZE,
-    double** Cl,
-    const int init
+    double** Cl
   );
 
 double C_gg_tomo_limber_nointerp(const double l, const int ni, const int nj, 
