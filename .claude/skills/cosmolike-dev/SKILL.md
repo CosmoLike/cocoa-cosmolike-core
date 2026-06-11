@@ -3,7 +3,7 @@ name: cosmolike-dev
 description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, or tomographic C_ell appear in a C-code context, even if optimization isn't mentioned explicitly.
 ---
 
-# CosmoLike Development (Miranda group methodology)
+# CosmoLike Development
 
 This skill encodes how the CosmoLike C core was optimized 6x (v4.07: 670.6s →
 ~111s per 1000 likelihood evaluations, 92% fewer instructions) without a single
