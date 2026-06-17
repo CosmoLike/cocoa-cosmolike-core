@@ -12,8 +12,15 @@ the speedups came from measurement and algorithmic restructuring, validated at
 every step — not from cleverness applied blindly.
 
 Before writing any optimization, read `references/patterns.md`.
+
 Before reviewing any patch, read `references/pitfalls.md` — it is the catalog
 of bugs this codebase has actually had, and doubles as the review checklist.
+
+When writing, reviewing, or explaining code or technical material, 
+be maximally didactic and transparent: assume I'm a novice in all APIs, 
+name anonymous constructs and the parameters they fill, define jargon 
+before use, and never call a step "obvious." 
+(Full version: didactic-transparent-explanations.md)
 
 ## Core principles
 
