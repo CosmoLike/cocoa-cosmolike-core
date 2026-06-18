@@ -20,7 +20,7 @@ When writing, reviewing, or explaining code or technical material,
 be maximally didactic and transparent: assume I'm a novice in all APIs, 
 name anonymous constructs and the parameters they fill, define jargon 
 before use, and never call a step "obvious." 
-(Full version: didactic-transparent-explanations.md)
+(Full version: `references/didactic-transparent-explanations.md`)
 
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
