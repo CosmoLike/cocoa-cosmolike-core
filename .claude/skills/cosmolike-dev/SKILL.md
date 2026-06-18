@@ -22,6 +22,12 @@ name anonymous constructs and the parameters they fill, define jargon
 before use, and never call a step "obvious." 
 (Full version: didactic-transparent-explanations.md)
 
+Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
+image size diagnosis, or container build failures — 
+read `references/docker-reference.md`. It contains 
+the methodology and conventions for editing Dockerfiles, 
+the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
+
 ## Core principles
 
 1. **Correctness is non-negotiable.** In the default (strict IEEE-754) build,
