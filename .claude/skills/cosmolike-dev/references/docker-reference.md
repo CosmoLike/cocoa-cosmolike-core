@@ -213,8 +213,9 @@ Total often lands at 25–30 GB for a "kitchen-sink" image.
    libsnappy-dev, libgoogle-glog-dev, autoconf, automake, libtool, etc.) when
    the image only runs Python wheels → ~1.5 GB
 4. **Drop one of {emacs, vim, nano}** — Jupyter is your editor
-5. **Drop LaTeX-render packages** (cm-super 800 MB, ghostscript, dvipng) if
-   matplotlib doesn't use `text.usetex=True`
+5. **LaTeX packages for matplotlib** — see the dedicated section below. The
+   short version: KEEP them by default when matplotlib is in the image.
+   `text.usetex=True` is the user's default and the build must support it.
 6. **Drop `[and-cuda]` from TF if PyTorch already brings CUDA** → ~3 GB of
    duplicated NVIDIA stack
 7. **Use `pip install --no-cache-dir`** inside the RUN
@@ -252,6 +253,46 @@ RUN apt-get clean && rm -rf /var/lib/apt/lists/*
 This is the single biggest source of bloat in real-world Dockerfiles.
 
 ---
+
+## LaTeX for matplotlib (`text.usetex=True`)
+
+> ⚠️ **DEFAULT ASSUMPTION**: if matplotlib is in the image, the build MUST
+> support `rcParams['text.usetex'] = True`. This is the user's default
+> matplotlib configuration. The right LaTeX packages must be installed and
+> NOT cut for image size. **Only drop them if the user explicitly says
+> usetex is off.**
+>
+> Whenever a Dockerfile that includes matplotlib is being built, edited, or
+> trimmed, flag this:
+>
+> *"I'll assume `text.usetex=True` is on (default unless you tell me
+> otherwise). That means cm-super + the TeX Live packages stay in. Confirm
+> if you want them dropped."*
+>
+> Do not silently remove `cm-super`, `dvipng`, `ghostscript`, or any
+> `texlive-*` package. These are non-negotiable defaults.
+
+### Required apt packages for matplotlib usetex
+
+The minimum set for matplotlib to render math expressions with LaTeX:
+
+```dockerfile
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       cm-super \
+       dvipng \
+       ghostscript \
+       texlive-latex-base \
+       texlive-latex-extra \
+       texlive-latex-recommended \
+       texlive-fonts-recommended \
+       texlive-fonts-extra \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+```
+
+Size impact: ~1.5–2 GB for the full set. Cannot be meaningfully reduced
+without breaking common LaTeX expressions matplotlib emits.
 
 ## UID handling for bind mounts
 
