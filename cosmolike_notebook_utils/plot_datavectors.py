@@ -424,3 +424,713 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
             fig.show()
     else:
         return (fig, axes)
+
+
+def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabel = None, lmin = 30, lmax = 1500, 
+                          cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
+                          legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, yaxisticklabelsize = 10, 
+                          xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12), 
+                          show = 1, colorbar=1):
+    """Panel grid of galaxy-galaxy lensing angular power spectra.
+
+    One panel per (lens, source) bin pair: rows are lens bins,
+    columns are source bins. Without C_gs_ref each curve is
+    ell(ell+1) C_ell / 2 pi on a log scale; with C_gs_ref each curve
+    is the fractional difference C / C_ref - 1.
+
+    Arguments:
+      ell      = 1D array of multipoles, shared by every C_gs entry.
+      C_gs     = list of 3D arrays (n_ell, n_lens, n_source), one
+                 per curve.
+      C_gs_ref = None, or one 3D array used as the ratio reference.
+      param, colorbarlabel, lmin, lmax, cmap, ylim, linestyle,
+      linewidth, legend, legendloc, the *size arguments, bintextpos,
+      bintextsize, figsize = layout knobs as in
+      plot_C_ss_tomo_limber.
+      show     = 1 draws the figure; None returns (fig, axes).
+      colorbar = None suppresses the colorbar even with param set.
+
+    Returns:
+      0 on malformed input (a printed message names the problem),
+      None after drawing, or (fig, axes) when show is None.
+    """
+
+    nell, nlens, nsource = C_gs[0].shape
+    if nell != len(ell):
+        print("Bad Input (number of ell)")
+        return 0
+    
+    if not (C_gs_ref is None):
+        nell2, nlens2, nsource2 = C_gs_ref.shape
+        if (nlens != nlens2) or (nell != nell2) or (nsource != nsource2):
+            print("Bad Input")
+            print(f"Nlens = {nlens}, Nlens_REF = {nlens2}")
+            print(f"Nsource = {nsource}, Nsource_REF = {nsource2}")
+            print(f"Nell = {nell}, Nell_REF = {nell2}")
+            return 0   
+
+    if C_gs_ref is None:
+        fig, axes = plt.subplots(
+            nrows = nsource, 
+            ncols = nlens, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = False, 
+            gridspec_kw = {'wspace': 0.275, 'hspace': 0.135})
+    else:
+        fig, axes = plt.subplots(
+            nrows = nsource, 
+            ncols = nlens, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = True, 
+            gridspec_kw = {'wspace': 0, 'hspace': 0})
+    
+    cm = plt.get_cmap(cmap)
+    
+    if not (param is None or colorbar is None):
+        cb = fig.colorbar(
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
+            ax = axes.ravel().tolist(), 
+            orientation = 'vertical', 
+            aspect = 50, 
+            pad = 0.03, 
+            shrink = 0.5)
+        if not (colorbarlabel is None):
+            cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
+        if len(param) != len(C_gs):
+            print("Bad Input")
+            return 0
+
+    if not (linestyle is None):
+        linestylecycler = itertools.cycle(linestyle)
+    else:
+        linestylecycler = itertools.cycle(['solid'])
+
+    if not (linewidth is None):
+        linewidthcycler = itertools.cycle(linewidth)
+    else:
+        linewidthcycler = itertools.cycle([1.0])
+    
+    for i in range(nlens):
+        for j in range(nsource):
+            clmin = []
+            clmax = []
+            for Cl in C_gs:  
+                tmp = Cl[:,i,j]
+                clmin.append(np.min(tmp))
+                clmax.append(np.max(tmp))
+ 
+            axes[j,i].set_xlim([lmin, lmax])
+            
+            if C_gs_ref is None:
+                axes[j,i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
+                axes[j,i].set_yscale('log')
+            else:
+                tmp = np.array(ylim) - 1
+                axes[j,i].set_ylim(tmp.tolist())
+                axes[j,i].set_yscale('linear')
+                
+            axes[j,i].set_xscale('log')
+            
+            if i == 0:
+                if C_gs_ref is None:
+                    axes[j,i].set_ylabel(r"$|C_{\ell}^{gs}|$", fontsize=yaxislabelsize)
+                else:
+                    axes[j,i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
+            for item in (axes[j,i].get_yticklabels()):
+                item.set_fontsize(yaxisticklabelsize)
+            for item in (axes[j,i].get_xticklabels()):
+                item.set_fontsize(xaxisticklabelsize)
+            
+            if j == nsource-1:
+                axes[j,i].set_xlabel(r"$\ell$", fontsize=16)
+            
+            axes[j,i].text(bintextpos[0], bintextpos[1], 
+                "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
+                horizontalalignment = 'center', 
+                verticalalignment = 'center',
+                fontsize = bintextsize,
+                usetex = True,
+                transform = axes[j,i].transAxes)
+            
+            for x, Cl in enumerate(C_gs):
+                if C_gs_ref is None:
+                    tmp = Cl[:,i,j]
+                else:
+                    tmp = Cl[:,i,j] / C_gs_ref[:,i,j] - 1
+                axes[j,i].plot(ell, 
+                               tmp, 
+                               color=cm(x/len(C_gs)), 
+                               linewidth=next(linewidthcycler), 
+                               linestyle=next(linestylecycler))
+
+    if not (legend is None):
+        if len(legend) != len(C_gs):
+            print("Bad Input")
+            return 0
+        fig.legend(
+            legend, 
+            loc=legendloc,
+            borderpad=0.1,
+            handletextpad=0.4,
+            handlelength=1.5,
+            columnspacing=0.35,
+            scatteryoffsets=[0],
+            frameon=False)
+
+    if not (show is None):
+        fig.show()
+    else:
+        return (fig, axes)
+
+
+def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = None, lmin = 30, lmax = 1500, 
+                   cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
+                   legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, yaxisticklabelsize = 10, 
+                   xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12), 
+                   show = 1, forcelinearyscale=False, overwriteylabel=None, forcelinearxscale=False,
+                   marker = None, markersize=3, colorbar=1):
+    """One panel per lens bin of galaxy-clustering angular spectra.
+
+    The panels show the auto-correlation C_gg of each lens bin.
+    Without C_gg_ref each curve is ell(ell+1) C_ell / 2 pi; with
+    C_gg_ref each curve is the fractional difference C / C_ref - 1.
+
+    Arguments:
+      ell      = 1D array of multipoles, shared by every C_gg entry.
+      C_gg     = list of 3D arrays (n_ell, n_lens, n_lens), one per
+                 curve; the panels read the diagonal.
+      C_gg_ref = None, or one 3D array used as the ratio reference.
+      forcelinearyscale, forcelinearxscale = True switches that axis
+                 to linear even without a reference.
+      overwriteylabel = y-axis label replacing the default.
+      marker, markersize = point markers instead of lines.
+      param, colorbarlabel, lmin, lmax, cmap, ylim, linestyle,
+      linewidth, legend, legendloc, the *size arguments, bintextpos,
+      bintextsize, figsize = layout knobs as in
+      plot_C_ss_tomo_limber.
+      show     = 1 draws the figure; None returns (fig, axes).
+      colorbar = None suppresses the colorbar even with param set.
+
+    Returns:
+      0 on malformed input (a printed message names the problem),
+      None after drawing, or (fig, axes) when show is None.
+    """
+
+    nell, nlens1, nlens2 = C_gg[0].shape   
+    if nlens1 != nlens2:
+        print("Bad Input (number of nlens1/nlens2)")
+        return 0
+    if nell != len(ell):
+        print("Bad Input (number of ell)")
+        return 0
+    if not (C_gg_ref is None):
+        nell2, nlens3, nlens4 = C_gg_ref.shape
+        if nlens3 != nlens4:
+            print("Bad Input (number of nlens3/nlens4)")
+            return 0
+        if (nlens1 != nlens3) or (nell != nell2):
+            print("Bad Input")
+            print(f"Nlens  = {nlens1}, Nlens_REF = {nlens3}")
+            print(f"Nell = {nell}, Nell_REF = {nell2}")
+            return 0   
+    
+    if C_gg_ref is None:
+        fig, axes = plt.subplots(
+            nrows = 1, 
+            ncols = nlens1, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = False, 
+            gridspec_kw = {'wspace': 0.275, 'hspace': 0.135})
+    else:
+        fig, axes = plt.subplots(
+            nrows = 1, 
+            ncols = nlens1, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = True, 
+            gridspec_kw = {'wspace': 0, 'hspace': 0})
+    
+    cm = plt.get_cmap(cmap)
+    
+    if not (param is None or colorbar is None):
+        cb = fig.colorbar(
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
+            ax = axes.ravel().tolist(), 
+            orientation = 'vertical', 
+            aspect = 50, 
+            pad = 0.03, 
+            shrink = 1.0)
+        if not (colorbarlabel is None):
+            cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
+        if len(param) != len(C_gg):
+            print("Bad Input")
+            return 0
+
+    if not (marker is None):
+        markercycler = itertools.cycle(marker)     
+    if not (linestyle is None):
+        linestylecycler = itertools.cycle(linestyle)
+    else:
+        linestylecycler = itertools.cycle(['solid'])
+    if not (linewidth is None):
+        linewidthcycler = itertools.cycle(linewidth)
+    else:
+        linewidthcycler = itertools.cycle([1.0])
+    
+    for i in range(nlens1):
+        clmin = []
+        clmax = []
+        for Cl in C_gg:  
+            tmp = Cl[:,i,i]
+            clmin.append(np.min(tmp))
+            clmax.append(np.max(tmp))
+
+        axes[i].set_xlim([lmin, lmax])
+        
+        if C_gg_ref is None:
+            axes[i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
+            axes[i].set_yscale('log')
+            if forcelinearyscale == True:
+                axes[i].set_yscale('linear')
+        else:
+            tmp = np.array(ylim) - 1
+            axes[i].set_ylim(tmp.tolist())
+            axes[i].set_yscale('linear')
+            
+        axes[i].set_xscale('log')
+        if forcelinearxscale == True:
+            axes[i].set_xscale('linear')
+        
+        if i == 0:
+            if C_gg_ref is None:
+                axes[i].set_ylabel(r"$C_{\ell}^{gg}$",fontsize=yaxislabelsize)
+                if not (overwriteylabel is None):
+                    axes[i].set_ylabel(overwriteylabel,fontsize=yaxislabelsize)
+            else:
+                axes[i].set_ylabel("frac. diff.",fontsize=yaxislabelsize)
+                if not (overwriteylabel is None):
+                    axes[i].set_ylabel(overwriteylabel,fontsize=yaxislabelsize)
+        
+        for item in (axes[i].get_yticklabels()):
+            item.set_fontsize(yaxisticklabelsize)
+        for item in (axes[i].get_xticklabels()):
+            item.set_fontsize(xaxisticklabelsize)
+        
+        axes[i].set_xlabel(r"$\ell$", fontsize=16)
+        
+        axes[i].text(bintextpos[0], bintextpos[1], 
+            "$(" +  str(i+1) + ")$", 
+            horizontalalignment = 'center', 
+            verticalalignment = 'center',
+            fontsize = bintextsize,
+            usetex = True,
+            transform = axes[i].transAxes)
+        
+        for x, Cl in enumerate(C_gg):
+            if C_gg_ref is None:
+                tmp = Cl[:,i,i]
+            else:
+                tmp = Cl[:,i,i] / C_gg_ref[:,i,i] - 1
+            
+            if marker is None:
+                axes[i].plot(ell, 
+                             tmp, 
+                             color=cm(x/len(C_gg)), 
+                             linewidth=next(linewidthcycler), 
+                             linestyle=next(linestylecycler))
+            else:
+                axes[i].plot(ell, 
+                             tmp, 
+                             color=cm(x/len(C_gg)), 
+                             markerfacecolor='None',
+                             marker=next(markercycler),
+                             markeredgecolor=cm(x/len(C_gg)),
+                             linestyle='None',
+                             markersize=markersize)
+    
+    if not (legend is None):
+        if len(legend) != len(C_gg):
+            print("Bad Input")
+            return 0
+        fig.legend(
+            legend, 
+            loc=legendloc,
+            borderpad=0.1,
+            handletextpad=0.4,
+            handlelength=1.5,
+            columnspacing=0.35,
+            scatteryoffsets=[0],
+            frameon=False)
+
+    if not (show is None):
+        fig.show()
+    else:
+        return (fig, axes)
+
+
+def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, colorbarlabel = None, marker = None, 
+                            linestyle = None, linewidth = None, ylim = [0.75,1.25],
+                            cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, 
+                            yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
+                            bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
+                     thetashow=[3, 1100]):
+    """Panel grid of the real-space tangential shear gamma_t(theta).
+
+    One panel per (lens, source) bin pair: rows are lens bins,
+    columns are source bins. Without gammat_ref each curve is
+    theta * gamma_t * 10^4; with gammat_ref each curve is the
+    fractional difference gamma_t / ref - 1.
+
+    Arguments:
+      theta_gammat = list of (theta, gammat) pairs, one per curve:
+                 theta in arcmin, gammat a 3D array
+                 (n_theta, n_lens, n_source).
+      gammat_ref = None, or one (theta, gammat) pair used as the
+                 ratio reference.
+      thetashow = x-axis range in arcmin.
+      marker   = list of matplotlib markers cycled across curves
+                 (points instead of lines), or None for lines.
+      param, colorbarlabel, cmap, ylim, linestyle, linewidth,
+      legend, legendloc, the *size arguments, bintextpos,
+      bintextsize, figsize = layout knobs as in
+      plot_C_ss_tomo_limber.
+      show     = 1 draws the figure; None returns (fig, axes).
+      colorbar = None suppresses the colorbar even with param set.
+
+    Returns:
+      0 on malformed input (a printed message names the problem),
+      None after drawing, or (fig, axes) when show is None.
+    """
+
+    (theta, gammat) = theta_gammat[0]
+    ntheta, nlens, nsource = gammat.shape
+    
+    if ntheta != len(theta):
+        print("Bad Input (theta)")
+        print(theta)
+        print(ntheta, len(theta))
+        return 0
+
+    if not (gammat_ref is None):
+        (theta1, gammat2) = gammat_ref
+        ntheta2, nlens2, nsource2 = gammat2.shape
+        if (nlens != nlens2) or (ntheta != ntheta2) or (nsource != nsource2):
+            print("Bad Input")
+            print(f"Nlens = {nlens}, Nlens_REF = {ntheta2}")
+            print(f"Nsource = {nsource}, Nsource_REF = {nsource2}")
+            print(f"Ntheta = {ntheta}, Ntheta_REF = {ntheta2}")
+            return 0   
+        
+    if gammat_ref is None:
+        fig, axes = plt.subplots(
+            nrows = nsource, 
+            ncols = nlens, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = False, 
+            gridspec_kw = {'wspace': 0.25, 'hspace': 0.05})
+    else:
+        fig, axes = plt.subplots(
+            nrows = nsource, 
+            ncols = nlens, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = True, 
+            gridspec_kw = {'wspace': 0, 'hspace': 0})
+    
+    cm = plt.get_cmap(cmap)
+    
+    if not (param is None or colorbar is None):
+        cb = fig.colorbar(
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
+            ax = axes.ravel().tolist(), 
+            orientation = 'vertical', 
+            aspect = 50, 
+            pad = 0.03, 
+            shrink = 0.5)
+        if not (colorbarlabel is None):
+            cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
+        if len(param) != len(theta_gammat):
+            print("Bad Input")
+            return 0
+
+    if not (marker is None):
+        markercycler = itertools.cycle(marker)
+        
+    if not (linestyle is None):
+        linestylecycler = itertools.cycle(linestyle)
+    else:
+        linestylecycler = itertools.cycle(['solid'])
+
+    if not (linewidth is None):
+        linewidthcycler = itertools.cycle(linewidth)
+    else:
+        linewidthcycler = itertools.cycle([1.0])
+
+    for i in range(nlens):
+        for j in range(nsource):
+            ximin = []
+            ximax = []
+            for (theta, gammat) in theta_gammat:  
+                ximin.append(np.min(np.abs(gammat[:,i,j])))
+                ximax.append(np.max(np.abs(gammat[:,i,j])))
+ 
+            axes[j,i].set_xlim(thetashow)
+            
+            if gammat_ref is None:
+                axes[j,i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
+                axes[j,i].set_yscale('log')
+            else:
+                tmp = np.array(ylim) - 1
+                axes[j,i].set_ylim(tmp.tolist())
+                axes[j,i].set_yscale('linear')
+                
+            axes[j,i].set_xscale('log')
+            
+            if i == 0:
+                if gammat_ref is None:
+                    axes[j,i].set_ylabel(r"$|\gamma_{t}(\\theta)|$", fontsize=yaxislabelsize)
+                else:
+                    axes[j,i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
+            for item in (axes[j,i].get_yticklabels()):
+                item.set_fontsize(yaxisticklabelsize)
+            for item in (axes[j,i].get_xticklabels()):
+                item.set_fontsize(xaxisticklabelsize)
+            
+            if j == nsource-1:
+                axes[j,i].set_xlabel(r"$\\theta$", fontsize=16)
+            
+            axes[j,i].text(bintextpos[0], bintextpos[1], 
+                "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
+                horizontalalignment = 'center', 
+                verticalalignment = 'center',
+                fontsize = bintextsize,
+                usetex = True,
+                transform = axes[j,i].transAxes)
+
+            for x, (theta, gammat) in enumerate(theta_gammat):
+                if gammat_ref is None:
+                    tmp = np.abs(gammat[:,i,j])
+                else:
+                    (theta1, gammat2) = gammat_ref
+                    tmp = gammat[:,i,j]/gammat2[:,i,j] - 1
+                
+                if marker is None:
+                    axes[j,i].plot(theta, 
+                                   tmp, 
+                                   color=cm(x/len(theta_gammat)), 
+                                   linewidth=next(linewidthcycler), 
+                                   linestyle=next(linestylecycler))
+                else:
+                    axes[j,i].plot(theta, 
+                                   tmp, 
+                                   color=cm(x/len(theta_gammat)), 
+                                   markerfacecolor='None', 
+                                   marker=next(markercycler),
+                                   markeredgecolor=cm(x/len(theta_gammat)), 
+                                   linestyle='None', 
+                                   markersize=3)                    
+    
+    if not (legend is None):
+        if len(legend) != len(theta_gammat):
+            print("Bad Input")
+            return 0
+        fig.legend(
+            legend, 
+            loc=legendloc,
+            borderpad=0.1,
+            handletextpad=0.4,
+            handlelength=1.5,
+            columnspacing=0.35,
+            scatteryoffsets=[0],
+            frameon=False)
+
+    if not (show is None):
+        fig.show()
+    else:
+        return (fig, axes)
+
+
+def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorbarlabel = None, marker = None, 
+                     linestyle = None, linewidth = None, ylim = [0.75,1.25],
+                     cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, 
+                     yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
+                     bintextsize = 15, figsize = (12, 12), show = True, colorbar=1,
+                     thetashow=[3, 1100]):
+    """One panel per lens bin of the clustering correlation w(theta).
+
+    Without theta_wtheta_ref each curve is theta * w(theta) * 10^4;
+    with it each curve is the fractional difference w / ref - 1.
+
+    Arguments:
+      theta_wtheta = list of (theta, wtheta) pairs, one per curve:
+                 theta in arcmin, wtheta a 3D array
+                 (n_theta, n_lens, n_lens); the panels read the
+                 diagonal.
+      theta_wtheta_ref = None, or one (theta, wtheta) pair used as
+                 the ratio reference.
+      thetashow = x-axis range in arcmin.
+      marker   = list of matplotlib markers cycled across curves
+                 (points instead of lines), or None for lines.
+      param, colorbarlabel, cmap, ylim, linestyle, linewidth,
+      legend, legendloc, the *size arguments, bintextpos,
+      bintextsize, figsize = layout knobs as in
+      plot_C_ss_tomo_limber.
+      show     = True draws the figure; None returns (fig, axes).
+      colorbar = None suppresses the colorbar even with param set.
+
+    Returns:
+      0 on malformed input (a printed message names the problem),
+      None after drawing, or (fig, axes) when show is None.
+    """
+
+    (theta, wtheta) = theta_wtheta[0]
+    ntheta, nlens1, nlens2 = wtheta.shape
+    if nlens1 != nlens2:
+        print("Bad Input (number of nlens1/nlens2)")
+        return 0
+        
+    if ntheta != len(theta):
+        print("Bad Input (theta)")
+        print(theta)
+        print(ntheta, len(theta))
+        return 0
+
+    if not (theta_wtheta_ref is None):
+        (theta1, wtheta2) = theta_wtheta_ref
+        ntheta2, nlens3, nlens4 = wtheta2.shape
+        if nlens3 != nlens4:
+            print("Bad Input (number of nlens3/nlens4)")
+            return 0
+        if (nlens1 != nlens3) or (ntheta != ntheta2):
+            print("Bad Input")
+            print(f"Nlens = {nlens1}, Nlens_REF = {nlens3}")
+            print(f"Ntheta = {ntheta}, Ntheta_REF = {ntheta2}")
+            return 0   
+        
+    if theta_wtheta_ref is None:
+        fig, axes = plt.subplots(
+            nrows = 1, 
+            ncols = nlens1, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = False, 
+            gridspec_kw = {'wspace': 0.25, 'hspace': 0.05})
+    else:
+        fig, axes = plt.subplots(
+            nrows = 1, 
+            ncols = nlens1, 
+            figsize = figsize, 
+            sharex = True, 
+            sharey = True, 
+            gridspec_kw = {'wspace': 0, 'hspace': 0})
+    
+    cm = plt.get_cmap(cmap)
+    
+    if not (param is None or colorbar is None):
+        cb = fig.colorbar(
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
+            ax = axes.ravel().tolist(), 
+            orientation = 'vertical', 
+            aspect = 50, 
+            pad = 0.03, 
+            shrink = 1.0)
+        if not (colorbarlabel is None):
+            cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
+        if len(param) != len(theta_wtheta):
+            print("Bad Input")
+            return 0
+
+    if not (marker is None):
+        markercycler = itertools.cycle(marker)    
+    if not (linestyle is None):
+        linestylecycler = itertools.cycle(linestyle)
+    else:
+        linestylecycler = itertools.cycle(['solid'])
+    if not (linewidth is None):
+        linewidthcycler = itertools.cycle(linewidth)
+    else:
+        linewidthcycler = itertools.cycle([1.0])
+
+    for i in range(nlens1):
+        ximin = []
+        ximax = []
+        for (theta, wtheta) in theta_wtheta:  
+            ximin.append(np.min(np.abs(wtheta[:,i,i])))
+            ximax.append(np.max(np.abs(wtheta[:,i,i])))
+
+        axes[i].set_xlim(thetashow)
+        
+        if theta_wtheta_ref is None:
+            axes[i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
+            axes[i].set_yscale('log')
+        else:
+            tmp = np.array(ylim) - 1
+            axes[i].set_ylim(tmp.tolist())
+            axes[i].set_yscale('linear')
+            
+        axes[i].set_xscale('log')
+        
+        if i == 0:
+            if theta_wtheta_ref is None:
+                axes[i].set_ylabel(r"$|w_{t}(\\theta)|$", fontsize=yaxislabelsize)
+            else:
+                axes[i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
+        for item in (axes[i].get_yticklabels()):
+            item.set_fontsize(yaxisticklabelsize)
+        for item in (axes[i].get_xticklabels()):
+            item.set_fontsize(xaxisticklabelsize)
+
+        axes[i].set_xlabel(r"$\\theta$", fontsize=16)
+        
+        axes[i].text(bintextpos[0], bintextpos[1], 
+            "$(" +  str(i+1) + ")$", 
+            horizontalalignment = 'center', 
+            verticalalignment = 'center',
+            fontsize = bintextsize,
+            usetex = True,
+            transform = axes[i].transAxes)
+
+        for x, (theta, wtheta) in enumerate(theta_wtheta):
+            if theta_wtheta_ref is None:
+                tmp = np.abs(wtheta[:,i,i])
+            else:
+                (theta1, wtheta2) = theta_wtheta_ref
+                tmp = wtheta[:,i,i]/wtheta2[:,i,i] - 1
+            
+            if marker is None:
+                axes[i].plot(theta, 
+                               tmp, 
+                               color=cm(x/len(theta_wtheta)), 
+                               linewidth=next(linewidthcycler), 
+                               linestyle=next(linestylecycler))
+            else:
+                axes[i].plot(theta, 
+                               tmp, 
+                               color=cm(x/len(theta_wtheta)), 
+                               markerfacecolor='None', 
+                               marker=next(markercycler),
+                               markeredgecolor=cm(x/len(theta_wtheta)), 
+                               linestyle='None', 
+                               markersize=3)                    
+    
+    if not (legend is None):
+        if len(legend) != len(theta_wtheta):
+            print("Bad Input")
+            return 0
+        fig.legend(
+            legend, 
+            loc=legendloc,
+            borderpad=0.1,
+            handletextpad=0.4,
+            handlelength=1.5,
+            columnspacing=0.35,
+            scatteryoffsets=[0],
+            frameon=False)
+    if not (show is None):
+        fig.show()
+    else:
+        return (fig, axes)

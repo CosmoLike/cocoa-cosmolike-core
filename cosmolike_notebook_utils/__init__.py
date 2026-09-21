@@ -21,9 +21,11 @@ and `ddv` parameters of the Fisher helpers). Three groups:
   camb_cosmology     get_camb_cosmology: one CAMB run packaged into
                      the tuple set_cosmology consumes, on the nested
                      dyadic grids shared with the likelihoods.
-  plot_datavectors   plot_C_ss_tomo_limber and plot_xi: tomographic
-                     triangle plots of angular power spectra and real
-                     space correlation functions.
+  plot_datavectors   tomographic plots of the data vectors: cosmic
+                     shear (plot_C_ss_tomo_limber, plot_xi),
+                     galaxy-galaxy lensing (plot_C_gs_tomo_limber,
+                     plot_gammat_tomo_limber), and galaxy clustering
+                     (plot_C_gg_tomo, plot_wtheta_tomo).
   fisher             finite-difference and derivkit derivatives of an
                      injected data-vector function, Fisher-matrix
                      assembly, figures of merit, and Fisher contour
@@ -35,6 +37,9 @@ thin wrappers that bind those to the functions here.
 """
 
 from .camb_cosmology import get_camb_cosmology
-from .plot_datavectors import plot_C_ss_tomo_limber, plot_xi
+from .plot_datavectors import (plot_C_gg_tomo, plot_C_gs_tomo_limber,
+                               plot_C_ss_tomo_limber,
+                               plot_gammat_tomo_limber, plot_wtheta_tomo,
+                               plot_xi)
 from .fisher import (add_gaussian_priors, get_Fisher, get_Fisher2,
                      get_FoM, get_ddv, get_ddv_dkit, plot_Fisher)
