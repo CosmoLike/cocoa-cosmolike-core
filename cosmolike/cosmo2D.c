@@ -5495,20 +5495,33 @@ void C_cl_tomo(
     fx = (double***) malloc3d(nbins,3,nchi); 
     if (vres != NULL) free((void*) vres);
     vres = (double***) malloc3d(nbins, limits.LMAX_NOLIMBER, nchi); 
+    // FFTLog computes the Bessel convolution of these integrals with a
+    // circular FFT, and a circular FFT is periodic: whatever leaks past
+    // one end of the chi array re-enters at the other (wrap-around
+    // aliasing). The zero-padding N_pad is the guard band that absorbs
+    // that leakage. What protects the integral is the guard band's
+    // LOG-LENGTH N_pad*dlnchi, not its point count: the chi range is
+    // fixed, so dlnchi shrinks like 1/nchi when the accuracy boost
+    // raises nchi = Ntable.NL_Nchi, and a constant N_pad would shrink
+    // the guard band until the long low-ell kernel tails wrap into the
+    // non-Limber C_gg (measured on a 6x2pt data vector: chi2 shifts of
+    // +27 at accuracy boost 5). Scaling N_pad with nchi keeps the guard
+    // band at the log-length these constants gave at the unboosted
+    // grid, nchi = 512, so results at accuracy boost 1 are unchanged.
     cfg[0].nu = 1.;
     cfg[0].c_window_width = 0.25;
     cfg[0].derivative = 0;
-    cfg[0].N_pad = 200;
+    cfg[0].N_pad = (long) ceil(200.0*nchi/512.0);
     // RSD
     cfg[1].nu = 1.01;
     cfg[1].c_window_width = 0.25;
     cfg[1].derivative = 2;
-    cfg[1].N_pad = 500;
+    cfg[1].N_pad = (long) ceil(500.0*nchi/512.0);
     // MAG
     cfg[2].nu = 1.;
     cfg[2].c_window_width = 0.25;
     cfg[2].derivative = 0;
-    cfg[2].N_pad = 500;
+    cfg[2].N_pad = (long) ceil(500.0*nchi/512.0);
     cache[0] = Ntable.random;
   }
   const double real_coverH0 = cosmology.coverH0/cosmology.h0;
