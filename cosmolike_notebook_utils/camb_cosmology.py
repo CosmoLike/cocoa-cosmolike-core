@@ -99,7 +99,7 @@ def get_camb_cosmology(omegam,
     CAMBAccuracyBoost = CAMBAccuracyBoost*(1.0 + (AccuracyBoost-1.0)/3.0)
     lens_potential_accuracy = lens_potential_accuracy*CAMBAccuracyBoost
     kmax = kmax*(1.0 + 3*(CAMBAccuracyBoost-1))
-    k_per_logint = int(k_per_logint) + int(3*(CAMBAccuracyBoost-1))
+    k_per_logint = int(k_per_logint) + int(30*(CAMBAccuracyBoost-1))
     extrap_kmax=2.5e2*CAMBAccuracyBoost
 
     # cosmolike aborts on non-monotone chi(z) grids (duplicate segment
