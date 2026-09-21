@@ -26,6 +26,9 @@ and `ddv` parameters of the Fisher helpers). Three groups:
                      galaxy-galaxy lensing (plot_C_gs_tomo_limber,
                      plot_gammat_tomo_limber), and galaxy clustering
                      (plot_C_gg_tomo, plot_wtheta_tomo).
+  plot_response      plot_response_function: curves of a data
+                     vector's response to the matter power spectrum,
+                     both d ln DV / d ln k and cumulative R(k_max).
   fisher             finite-difference and derivkit derivatives of an
                      injected data-vector function, Fisher-matrix
                      assembly, figures of merit, and Fisher contour
@@ -43,3 +46,4 @@ from .plot_datavectors import (plot_C_gg_tomo, plot_C_gs_tomo_limber,
                                plot_xi)
 from .fisher import (add_gaussian_priors, get_Fisher, get_Fisher2,
                      get_FoM, get_ddv, get_ddv_dkit, plot_Fisher)
+from .plot_response import plot_response_function
