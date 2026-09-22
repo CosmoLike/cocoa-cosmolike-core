@@ -30,30 +30,54 @@ _LINESTYLES = [
 
 
 def _luminance(rgb):
-    # Perceived brightness of an RGB color (the ITU-R BT.709 weights;
-    # green dominates because the eye is most sensitive to it). Used
-    # below to draw brighter, harder-to-see colors with thicker lines.
+    """Perceived brightness of an RGB color, between 0 and 1.
+
+    Uses the ITU-R BT.709 weights; green dominates because the eye
+    is most sensitive to it. plot_response_function draws brighter,
+    harder-to-see colors with thicker lines, and this is its
+    brightness measure.
+
+    Arguments:
+      rgb = color as (r, g, b) or (r, g, b, a), each channel in
+            [0, 1]; an alpha channel is ignored.
+
+    Returns:
+      the weighted channel sum, a float in [0, 1].
+    """
     r, g, b = rgb[:3]
     return 0.2126*r + 0.7152*g + 0.0722*b
 
 
 def _style_factor(ls):
-    # Extra thickness for dashed styles. A pattern with short "on"
-    # segments puts less ink on the page than a solid line and looks
-    # thinner than it is; compensate by up to a factor of 2.
+    """Extra line thickness compensating a dashed style's ink loss.
+
+    A pattern with short "on" segments puts less ink on the page
+    than a solid line of the same width and looks thinner than it
+    is; the factor grows as the mean "on" segment shrinks.
+
+    Arguments:
+      ls = a _LINESTYLES entry: the string "-" (solid) or an
+           (offset, dash pattern) tuple.
+
+    Returns:
+      a float in [1, 2]: 1 for solid, up to 2 for the shortest
+      dashes, so no style gets thinner than solid or more than
+      twice as thick.
+    """
     if isinstance(ls, str):
         return 1.0  # solid line: no extra thickness
     _, dashes = ls
     on_lengths = dashes[0::2]   # only the "on" (ink) segments
     mean_on = sum(on_lengths) / len(on_lengths)
-    # shorter dashes => larger factor; clamp to keep it sane
     return float(np.clip(6.0 / mean_on, 1.0, 2.0))
 
 
 def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True,
                            ncolors = None, ntomo = 8, xtickformat = "2g",
                            cmap = 'berlin', figsize = (20, 4), fontsize = 16,
-                           show = 1):
+                           show = 1, yaxislabelsize = None, xaxislabelsize = None, 
+                           yaxisticklabelsize = None, xaxisticklabelsize = None, 
+                           legendfontsize = None):
     """Response of a data vector to the matter power spectrum vs k.
 
     One curve per (label, tomographic bin) pair, all in one panel.
@@ -72,7 +96,7 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       labels = one LaTeX legend label per plotted slice.
       ylabel = y-axis label (LaTeX string).
       idx    = position of each label's slice on the array's second
-               axis, or None when label j simply is slice j.
+               axis, or None when label j is slice j.
       normalize = divide each curve by its own maximum.
       ncolors = how many colors the colormap is split into, or None
                for one per label. Passing more than len(labels)
@@ -83,9 +107,28 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       xtickformat = "2g" for two-significant-digit x tick labels
                (0.01, 0.1, 1, 10), or "scalar" for matplotlib's
                plain number formatter.
-      cmap, figsize, fontsize = matplotlib layout knobs.
+      cmap, figsize = matplotlib layout knobs.
+      fontsize = one size for every text element; the family
+               knobs below override it one by one.
+      yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
+      xaxisticklabelsize, legendfontsize = the same size names
+               every plotter of plot_datavectors takes; None
+               (default) falls back to fontsize.
       show   = call plt.show() at the end.
     """
+    # the family size knobs override the shared fontsize one by
+    # one; a None keeps the shared value, so fontsize alone still
+    # sizes everything at once
+    if yaxislabelsize is None:
+        yaxislabelsize = fontsize
+    if xaxislabelsize is None:
+        xaxislabelsize = fontsize
+    if yaxisticklabelsize is None:
+        yaxisticklabelsize = fontsize
+    if xaxisticklabelsize is None:
+        xaxisticklabelsize = fontsize
+    if legendfontsize is None:
+        legendfontsize = fontsize
     if ncolors is None:
         ncolors = len(labels)
     colors = plt.get_cmap(cmap)(np.linspace(0, 1, ncolors))
@@ -108,7 +151,7 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
                 plt.plot(k, y, color=c, label=labels[j], ls=ls, linewidth=lw)
             else:
                 plt.plot(k, y, color=c, ls=ls, linewidth=lw)
-    plt.xlabel("k [h/Mpc]", fontsize=fontsize)
+    plt.xlabel("k [h/Mpc]", fontsize=xaxislabelsize)
     ax = plt.gca()
     ax.set_xscale("log")
     if xtickformat == "scalar":
@@ -117,9 +160,10 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
         ax.xaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:.2g}"))
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax.tick_params(axis="both", which="major", labelsize=fontsize)
+    ax.tick_params(axis="x", which="major", labelsize=xaxisticklabelsize)
+    ax.tick_params(axis="y", which="major", labelsize=yaxisticklabelsize)
     plt.xlim(k[0], k[-1])
-    plt.ylabel(ylabel, fontsize=fontsize)
-    plt.legend(fontsize=fontsize)
+    plt.ylabel(ylabel, fontsize=yaxislabelsize)
+    plt.legend(fontsize=legendfontsize)
     if show:
         plt.show()
