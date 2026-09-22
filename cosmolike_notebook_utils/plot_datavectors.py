@@ -60,7 +60,8 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                           xaxisticklabelsize = 6, bintextpos = [0.2, 0.85], bintextsize = 13, figsize = (18, 18), 
                           show = 1, colorbar=1, wspace=0.25, hspace=0.05, rescale = None,
                           alphatextpos = [0.05, 0.12], ydecades = 4,
-                          ylabel = r"$\alpha\,\ell (\ell+1) C_{\ell}^{EE}/(2 \pi)$"):
+                          ylabel = r"$\alpha\,\ell (\ell+1) C_{\ell}^{EE}/(2 \pi)$",
+                          legendfontsize = None):
     """Triangle plot of tomographic angular power spectra.
 
     One panel per tomographic bin pair (i, j), lower triangle only.
@@ -285,6 +286,7 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             legend,
             loc=(0.6, 0.78) if legendloc is None else legendloc,
             ncols=(2 if len(legend) > 4 else 1) if legendloc is None else 1,
+            fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
             handlelength=1.5,
@@ -304,7 +306,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 10, 
                 yaxisticklabelsize = 6, xaxisticklabelsize = 20, bintextpos = [[0.8, 0.875],[0.2,0.875]], 
                 bintextsize = 15, figsize = (18, 18), show = 1, thetashow=[3,250], colorbar=1, wspace=0.25,hspace=0.05,
-                rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None):
+                rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None, legendfontsize = None):
     """Triangle plot of the real-space shear correlation functions.
 
     One panel per tomographic bin pair (i, j), lower triangle only.
@@ -579,6 +581,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
         fig.legend(legend,
                    loc=(0.6, 0.78) if legendloc is None else legendloc,
                    ncols=(2 if len(legend) > 4 else 1) if legendloc is None else 1,
+                   fontsize=legendfontsize,
                    borderpad=0.1,
                    handletextpad=0.4,
                    handlelength=1.5,
@@ -598,7 +601,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                           legend = None, legendloc = None, yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12),
                           show = 1, colorbar=1, rescale = None, alphatextpos = [0.05, 0.12],
-                          ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$"):
+                          ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$", legendfontsize = None):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -824,6 +827,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             legend, 
             loc="upper center" if legendloc is None else legendloc,
             ncols=min(len(legend), 4) if legendloc is None else 1,
+            fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
             handlelength=1.5,
@@ -843,7 +847,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
                    xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12), 
                    show = 1, forcelinearyscale=False, overwriteylabel=None, forcelinearxscale=False,
                    marker = None, markersize=3, colorbar=1, rescale = None,
-                   alphatextpos = [0.05, 0.12], ydecades = 4, ylabel = r"$\alpha\,C_{\ell}^{gg}$"):
+                   alphatextpos = [0.05, 0.12], ydecades = 4, ylabel = r"$\alpha\,C_{\ell}^{gg}$", legendfontsize = None):
     """One panel per lens bin of galaxy-clustering angular spectra.
 
     The panels show the auto-correlation C_gg of each lens bin.
@@ -1077,6 +1081,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             legend, 
             loc="upper center" if legendloc is None else legendloc,
             ncols=min(len(legend), 4) if legendloc is None else 1,
+            fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
             handlelength=1.5,
@@ -1096,7 +1101,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                             yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85],
                             bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
                      thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
-                     ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$"):
+                     ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$", legendfontsize = None):
     """Panel grid of the real-space tangential shear gamma_t(theta).
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -1349,6 +1354,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             legend, 
             loc="upper center" if legendloc is None else legendloc,
             ncols=min(len(legend), 4) if legendloc is None else 1,
+            fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
             handlelength=1.5,
@@ -1368,7 +1374,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                      yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
                      bintextsize = 15, figsize = (12, 12), show = True, colorbar=1,
                      thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
-                     ydecades = 4, ylabel = r"$\alpha\,|w_{t}(\theta)|$"):
+                     ydecades = 4, ylabel = r"$\alpha\,|w_{t}(\theta)|$", legendfontsize = None):
     """One panel per lens bin of the clustering correlation w(theta).
 
     Without theta_wtheta_ref each curve is theta * w(theta) * 10^4;
@@ -1601,6 +1607,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             legend, 
             loc="upper center" if legendloc is None else legendloc,
             ncols=min(len(legend), 4) if legendloc is None else 1,
+            fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
             handlelength=1.5,
