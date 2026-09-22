@@ -105,11 +105,42 @@ def _glued_supylabel(fig, leftcol, ylabel, yaxislabelsize):
     lab.set_x(max(xmin - 0.004 - labw, 0.001))
 
 
+def _align_log_ticklabels(axs):
+    """Left-aligns y tick labels so the "10" bases stack vertically.
+
+    matplotlib right-aligns y tick labels, so "10^-1" (whose box is
+    wider by the minus sign) pushes its "10" base left of its
+    neighbors' and stacked labels zig-zag. Every label is anchored
+    instead by its LEFT edge on one common column: the tick pad
+    grows to the widest label's width (plus a small gap), and the
+    labels' text then runs from that column toward the axis. The
+    bases align exactly, and the leftover width shows up as ragged
+    space next to the axis, where it reads naturally.
+    """
+    for ax in axs:
+        fig = ax.figure
+        # a draw realizes the labels so their widths can be measured
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        labels = [t for t in ax.get_yticklabels()
+                  if t.get_text() and t.get_visible()]
+        if not labels:
+            continue
+        widest = max(t.get_window_extent(renderer).width for t in labels)
+        # the tick pad is in points; window extents are in pixels,
+        # and 72 points make an inch, so pixels * 72 / dpi converts
+        pad_points = widest*72.0/fig.dpi + 3.5
+        ax.yaxis.set_tick_params(pad=pad_points)
+        for t in ax.get_yticklabels():
+            t.set_horizontalalignment('left')
+
+
 def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabel = None, lmin = 30, lmax = 1500, colorbarshrink=0.3,
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
                           legend = None, legendloc = None, yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 13, figsize = (18, 18),
-                          show = 1, colorbar=1, wspace=0.25, hspace=0.05, rescale = None,
+                          show = 1, colorbar=1, wspace=0.25, hspace=0.05, 
+                          marker = None, markersize = 3, rescale = None,
                           alphatextpos = [0.05, 0.12], ydecades = 4,
                           ylabel = r"$\alpha\,\ell (\ell+1) C_{\ell}^{EE}/(2 \pi)$",
                           legendfontsize = None, xaxislabelsize = 16):
@@ -133,6 +164,8 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                  min/max; with it, the band around 1 (drawn as
                  ylim - 1).
       linestyle, linewidth = lists cycled across curves, or None.
+      marker, markersize = point markers instead of lines (a list
+                 cycled across curves, drawn at markersize points).
       legend   = one label per curve, or None. legendloc = None (the
                  default) puts the legend inside the empty upper
                  triangle; an (x, y) pair in figure fractions places
@@ -251,6 +284,9 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             print("Bad Input")
             return 0
 
+    if not (marker is None):
+        markercycler = itertools.cycle(marker)
+
     # itertools.cycle repeats a list forever: each next(...) in the
     # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
@@ -338,12 +374,23 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                         tmp = ell * (ell + 1) * Cl[:,i,j] / (2 * math.pi) * 10.0**alpha[i,j]
                     else:
                         tmp = Cl[:,i,j] / C_ss_ref[:,i,j] - 1
-                    lines = axes[j,i].plot(ell, tmp, 
-                                           color=cm(x/len(C_ss)), 
-                                           linewidth=next(linewidthcycler), 
-                                           linestyle=next(linestylecycler))
+                    if marker is None:
+                        axes[j,i].plot(ell, tmp, 
+                                       color=cm(x/len(C_ss)), 
+                                       linewidth=next(linewidthcycler), 
+                                       linestyle=next(linestylecycler))
+                    else:
+                        axes[j,i].plot(ell, tmp, 
+                                       color=cm(x/len(C_ss)), 
+                                       markerfacecolor='None', 
+                                       marker=next(markercycler), 
+                                       markeredgecolor=cm(x/len(C_ss)), 
+                                       linestyle='None', 
+                                       markersize=markersize)
     
     if not (rescale is None):
+        # the minus sign otherwise staggers the stacked y numbers
+        _align_log_ticklabels(axes[:,0])
         _hide_glued_edge_ticklabels(
             [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
             yglued[0], yglued[1])
@@ -386,7 +433,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 16, 
                 yaxisticklabelsize = 10, xaxisticklabelsize = 20, bintextpos = [[0.8, 0.875],[0.2,0.875]],
                 bintextsize = 15, figsize = (18, 18), show = 1, thetashow=[3,250], colorbar=1, wspace=0.25,hspace=0.05,
-                rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None, legendfontsize = None, xaxislabelsize = 16):
+                markersize = 3, rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None, legendfontsize = None, xaxislabelsize = 16):
     """Triangle plot of the real-space shear correlation functions.
 
     One panel per tomographic bin pair (i, j), lower triangle only.
@@ -635,7 +682,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                             else:
                                 axes[j,i].plot(theta, theta*xip[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
                                                markerfacecolor='None', marker=next(markercycler), 
-                                               markeredgecolor=cm(x/len(xi)), linestyle='None', markersize=3)
+                                               markeredgecolor=cm(x/len(xi)), linestyle='None', markersize=markersize)
                         else:
                             if marker is None:   
                                 axes[j,i].plot(theta, theta*xim[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
@@ -643,7 +690,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                             else:
                                 axes[j,i].plot(theta, theta*xim[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
                                                markerfacecolor='None', marker=next(markercycler), 
-                                               markeredgecolor=cm(x/len(xi)), linestyle='None', markersize=3)
+                                               markeredgecolor=cm(x/len(xi)), linestyle='None', markersize=markersize)
                 else:
                     (theta_ref, xip_ref, xim_ref) = xi_ref
                     for x, (theta, xip, xim) in enumerate(xi):
@@ -658,7 +705,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                                 axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, 
                                                color=cm(x/len(xi)), markerfacecolor='None',
                                                marker=next(markercycler),  markeredgecolor=cm(x/len(xi)), 
-                                               linestyle='None', markersize=3)
+                                               linestyle='None', markersize=markersize)
                         else:
                             if marker is None:   
                                 lines = axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
@@ -667,7 +714,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                                 axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
                                                markerfacecolor='None', marker=next(markercycler), 
                                                markeredgecolor=cm(x/len(xi)), 
-                                               linestyle='None', markersize=3)    
+                                               linestyle='None', markersize=markersize)    
     if not (rescale is None):
         _hide_glued_edge_ticklabels(
             [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
@@ -712,7 +759,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
                           legend = None, legendloc = None, yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12),
-                          show = 1, colorbar=1, rescale = None, alphatextpos = [0.05, 0.12],
+                          show = 1, colorbar=1, colorbarshrink = 0.5, marker = None, 
+                          markersize = 3, rescale = None, alphatextpos = [0.05, 0.12],
                           ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$", legendfontsize = None, xaxislabelsize = 16):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
@@ -726,8 +774,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
       C_gs     = list of 3D arrays (n_ell, n_lens, n_source), one
                  per curve.
       C_gs_ref = None, or one 3D array used as the ratio reference.
-      param, colorbarlabel, lmin, lmax, cmap, ylim, linestyle,
-      linewidth, legend, legendfontsize, the *size arguments
+      param, colorbarlabel, lmin, lmax, cmap, colorbarshrink, ylim,
+      linestyle, linewidth, marker, markersize, legend,
+      legendfontsize, the *size arguments
       (yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
       xaxisticklabelsize), bintextpos, bintextsize, figsize =
       layout knobs as in plot_C_ss_tomo_limber.
@@ -832,12 +881,15 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             orientation = 'vertical', 
             aspect = 50, 
             pad = 0.03, 
-            shrink = 0.5)
+            shrink = colorbarshrink)
         if not (colorbarlabel is None):
             cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
         if len(param) != len(C_gs):
             print("Bad Input")
             return 0
+
+    if not (marker is None):
+        markercycler = itertools.cycle(marker)
 
     # itertools.cycle repeats a list forever: each next(...) in the
     # panel loop pulls the following entry, wrapping at the end
@@ -942,13 +994,25 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                     tmp = Cl[:,i,j] * 10.0**alpha[i,j]
                 else:
                     tmp = Cl[:,i,j] / C_gs_ref[:,i,j] - 1
-                axes[j,i].plot(ell,
-                               tmp,
-                               color=cm(x/len(C_gs)),
-                               linewidth=next(linewidthcycler),
-                               linestyle=next(linestylecycler))
+                if marker is None:
+                    axes[j,i].plot(ell,
+                                   tmp,
+                                   color=cm(x/len(C_gs)),
+                                   linewidth=next(linewidthcycler),
+                                   linestyle=next(linestylecycler))
+                else:
+                    axes[j,i].plot(ell,
+                                   tmp,
+                                   color=cm(x/len(C_gs)),
+                                   markerfacecolor='None',
+                                   marker=next(markercycler),
+                                   markeredgecolor=cm(x/len(C_gs)),
+                                   linestyle='None',
+                                   markersize=markersize)
 
     if not (rescale is None):
+        # the minus sign otherwise staggers the stacked y numbers
+        _align_log_ticklabels(axes[:,0])
         _hide_glued_edge_ticklabels(
             [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
             yglued[0], yglued[1])
@@ -1004,7 +1068,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
                    legend = None, legendloc = None, yaxislabelsize = 16, yaxisticklabelsize = 10, 
                    xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12), 
                    show = 1, forcelinearyscale=False, overwriteylabel=None, forcelinearxscale=False,
-                   marker = None, markersize=3, colorbar=1, rescale = None,
+                   marker = None, markersize=3, colorbar=1, colorbarshrink = 1.0, rescale = None,
                    alphatextpos = [0.05, 0.12], ydecades = 4, ylabel = r"$\alpha\,C_{\ell}^{gg}$", legendfontsize = None, xaxislabelsize = 16):
     """One panel per lens bin of galaxy-clustering angular spectra.
 
@@ -1021,8 +1085,9 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
                  to linear even without a reference.
       overwriteylabel = y-axis label replacing the default.
       marker, markersize = point markers instead of lines.
-      param, colorbarlabel, lmin, lmax, cmap, ylim, linestyle,
-      linewidth, legend, legendfontsize, the *size arguments
+      param, colorbarlabel, lmin, lmax, cmap, colorbarshrink, ylim,
+      linestyle, linewidth, marker, markersize, legend,
+      legendfontsize, the *size arguments
       (yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
       xaxisticklabelsize), bintextpos, bintextsize, figsize =
       layout knobs as in plot_C_ss_tomo_limber.
@@ -1126,7 +1191,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             orientation = 'vertical', 
             aspect = 50, 
             pad = 0.03, 
-            shrink = 1.0)
+            shrink = colorbarshrink)
         if not (colorbarlabel is None):
             cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
         if len(param) != len(C_gg):
@@ -1244,6 +1309,9 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
                              markersize=markersize)
     
     if not (rescale is None):
+        if forcelinearyscale != True:
+            # the minus sign otherwise staggers the stacked y numbers
+            _align_log_ticklabels([axes[0]])
         # the row is glued horizontally, so the clash is between the
         # x tick labels at interior panel boundaries
         _hide_glued_edge_ticklabels(
@@ -1303,6 +1371,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                             cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 16,
                             yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85],
                             bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
+                     colorbarshrink = 0.5, markersize = 3, 
                      thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
                      ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$", legendfontsize = None, xaxislabelsize = 16):
     """Panel grid of the real-space tangential shear gamma_t(theta).
@@ -1322,8 +1391,9 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                  theta arrays themselves.
       marker   = list of matplotlib markers cycled across curves
                  (points instead of lines), or None for lines.
-      param, colorbarlabel, cmap, ylim, linestyle, linewidth,
-      legend, legendfontsize, the *size arguments (yaxislabelsize,
+      param, colorbarlabel, cmap, colorbarshrink, ylim, linestyle,
+      linewidth, markersize, legend, legendfontsize,
+      the *size arguments (yaxislabelsize,
       xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
       bintextpos, bintextsize, figsize = layout knobs as in
       plot_C_ss_tomo_limber.
@@ -1436,7 +1506,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             orientation = 'vertical', 
             aspect = 50, 
             pad = 0.03, 
-            shrink = 0.5)
+            shrink = colorbarshrink)
         if not (colorbarlabel is None):
             cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
         if len(param) != len(theta_gammat):
@@ -1564,9 +1634,11 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                                    marker=next(markercycler),
                                    markeredgecolor=cm(x/len(theta_gammat)), 
                                    linestyle='None', 
-                                   markersize=3)                    
+                                   markersize=markersize)                    
     
     if not (rescale is None):
+        # the minus sign otherwise staggers the stacked y numbers
+        _align_log_ticklabels(axes[:,0])
         _hide_glued_edge_ticklabels(
             [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
             yglued[0], yglued[1])
@@ -1621,7 +1693,8 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                      linestyle = None, linewidth = None, ylim = [0.75,1.25],
                      cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 16, 
                      yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
-                     bintextsize = 15, figsize = (12, 12), show = True, colorbar=1,
+                     bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
+                     colorbarshrink = 1.0, markersize = 3, 
                      thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
                      ydecades = 4, ylabel = r"$\alpha\,|w_{t}(\theta)|$", legendfontsize = None, xaxislabelsize = 16):
     """One panel per lens bin of the clustering correlation w(theta).
@@ -1640,8 +1713,9 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                  theta arrays themselves.
       marker   = list of matplotlib markers cycled across curves
                  (points instead of lines), or None for lines.
-      param, colorbarlabel, cmap, ylim, linestyle, linewidth,
-      legend, legendfontsize, the *size arguments (yaxislabelsize,
+      param, colorbarlabel, cmap, colorbarshrink, ylim, linestyle,
+      linewidth, markersize, legend, legendfontsize,
+      the *size arguments (yaxislabelsize,
       xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
       bintextpos, bintextsize, figsize = layout knobs as in
       plot_C_ss_tomo_limber.
@@ -1649,7 +1723,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                  above the panels, centered on them; an (x, y) pair
                  in figure fractions places its lower-left corner
                  anywhere.
-      show     = True draws the figure; None returns (fig, axes).
+      show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
                  chosen so the rescaled maximum lands in [1, 10):
@@ -1754,7 +1828,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             orientation = 'vertical', 
             aspect = 50, 
             pad = 0.03, 
-            shrink = 1.0)
+            shrink = colorbarshrink)
         if not (colorbarlabel is None):
             cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
         if len(param) != len(theta_wtheta):
@@ -1860,9 +1934,11 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                                marker=next(markercycler),
                                markeredgecolor=cm(x/len(theta_wtheta)), 
                                linestyle='None', 
-                               markersize=3)                    
+                               markersize=markersize)                    
     
     if not (rescale is None):
+        # the minus sign otherwise staggers the stacked y numbers
+        _align_log_ticklabels([axes[0]])
         # the row is glued horizontally, so the clash is between the
         # x tick labels at interior panel boundaries
         _hide_glued_edge_ticklabels(
@@ -1920,7 +1996,7 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
                             titlesize = 16, yaxislabelsize = 16, yaxisticklabelsize = 14, 
                             xaxisticklabelsize = 14, xaxislabelsize = 16, 
                             legendfontsize = None, figsize = (10, 6), show = 1, 
-                            colorbar = 1):
+                            colorbar = 1, colorbarshrink = 1.0):
     """One panel of baryonic feedback suppression curves S(k).
 
     Made for parameter sweeps of the bfmt theory block: each entry of
@@ -1943,9 +2019,9 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
       title    = panel title (e.g. "method: vary parameter"), or
                  None; titlesize sizes it.
       linewidth = list cycled across curves, or None.
-      cmap, the *size arguments (yaxislabelsize, xaxislabelsize,
-      yaxisticklabelsize, xaxisticklabelsize), figsize = layout
-      knobs as in plot_C_ss_tomo_limber.
+      cmap, colorbarshrink, the *size arguments (yaxislabelsize,
+      xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
+      figsize = layout knobs as in plot_C_ss_tomo_limber.
       show     = 1 draws the figure; None returns (fig, ax).
       colorbar = None suppresses the colorbar even with param set.
 
@@ -1987,7 +2063,8 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
             ax = ax,
             orientation = 'vertical',
             aspect = 30,   # bar length over bar width: larger = thinner
-            pad = 0.02)    # gap to the panel, as a fraction of the axes
+            pad = 0.02,    # gap to the panel, as a fraction of the axes
+            shrink = colorbarshrink)
         if not (colorbarlabel is None):
             cb.set_label(label = colorbarlabel, size = 18, weight = 'bold', labelpad = 2)
         if len(param) != len(sup):

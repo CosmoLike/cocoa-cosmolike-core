@@ -75,7 +75,9 @@ def _style_factor(ls):
 def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True,
                            ncolors = None, ntomo = 8, xtickformat = "2g",
                            cmap = 'berlin', figsize = (20, 4), fontsize = 16,
-                           show = 1):
+                           show = 1, yaxislabelsize = None, xaxislabelsize = None, 
+                           yaxisticklabelsize = None, xaxisticklabelsize = None, 
+                           legendfontsize = None):
     """Response of a data vector to the matter power spectrum vs k.
 
     One curve per (label, tomographic bin) pair, all in one panel.
@@ -105,9 +107,28 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       xtickformat = "2g" for two-significant-digit x tick labels
                (0.01, 0.1, 1, 10), or "scalar" for matplotlib's
                plain number formatter.
-      cmap, figsize, fontsize = matplotlib layout knobs.
+      cmap, figsize = matplotlib layout knobs.
+      fontsize = one size for every text element; the family
+               knobs below override it one by one.
+      yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
+      xaxisticklabelsize, legendfontsize = the same size names
+               every plotter of plot_datavectors takes; None
+               (default) falls back to fontsize.
       show   = call plt.show() at the end.
     """
+    # the family size knobs override the shared fontsize one by
+    # one; a None keeps the shared value, so fontsize alone still
+    # sizes everything at once
+    if yaxislabelsize is None:
+        yaxislabelsize = fontsize
+    if xaxislabelsize is None:
+        xaxislabelsize = fontsize
+    if yaxisticklabelsize is None:
+        yaxisticklabelsize = fontsize
+    if xaxisticklabelsize is None:
+        xaxisticklabelsize = fontsize
+    if legendfontsize is None:
+        legendfontsize = fontsize
     if ncolors is None:
         ncolors = len(labels)
     colors = plt.get_cmap(cmap)(np.linspace(0, 1, ncolors))
@@ -130,7 +151,7 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
                 plt.plot(k, y, color=c, label=labels[j], ls=ls, linewidth=lw)
             else:
                 plt.plot(k, y, color=c, ls=ls, linewidth=lw)
-    plt.xlabel("k [h/Mpc]", fontsize=fontsize)
+    plt.xlabel("k [h/Mpc]", fontsize=xaxislabelsize)
     ax = plt.gca()
     ax.set_xscale("log")
     if xtickformat == "scalar":
@@ -139,9 +160,10 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
         ax.xaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:.2g}"))
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
-    ax.tick_params(axis="both", which="major", labelsize=fontsize)
+    ax.tick_params(axis="x", which="major", labelsize=xaxisticklabelsize)
+    ax.tick_params(axis="y", which="major", labelsize=yaxisticklabelsize)
     plt.xlim(k[0], k[-1])
-    plt.ylabel(ylabel, fontsize=fontsize)
-    plt.legend(fontsize=fontsize)
+    plt.ylabel(ylabel, fontsize=yaxislabelsize)
+    plt.legend(fontsize=legendfontsize)
     if show:
         plt.show()
