@@ -425,7 +425,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
                           legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12),
-                          show = 1, colorbar=1, rescale = None, alphatextpos = [0.22, 0.1]):
+                          show = 1, colorbar=1, rescale = None, alphatextpos = [0.22, 0.1],
+                          ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$"):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -453,6 +454,13 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                  with C_gs_ref (already dimensionless and shared).
                  None (default) keeps per-panel y-ranges.
       alphatextpos = axes-fraction (x, y) of the alpha annotation.
+      ydecades = with rescale, cap on how many decades the shared
+                 y-range extends below its ceiling (default 4):
+                 deep |C| dips at sign crossings otherwise drag the
+                 common floor down and compress every panel. None
+                 keeps the full union of the panel ranges.
+      ylabel   = with rescale, the single global y-axis label of
+                 the glued grid (drawn once with fig.supylabel).
 
     Returns:
       0 on malformed input (a printed message names the problem),
@@ -494,6 +502,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                     panlo.append(lo)
                 panhi.append(pmax*10.0**alpha[i,j])
         yglued = [ylim[0]*np.min(panlo if panlo else panhi), ylim[1]*np.max(panhi)]
+        if not (ydecades is None):
+            yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
     if C_gs_ref is None and rescale is None:
         fig, axes = plt.subplots(
@@ -574,10 +584,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
 
             if i == 0:
                 if C_gs_ref is None:
+                    # with rescale the y label is global: one fig.supylabel
                     if rescale is None:
                         axes[j,i].set_ylabel(r"$|C_{\ell}^{gs}|$", fontsize=yaxislabelsize)
-                    else:
-                        axes[j,i].set_ylabel(r"$\alpha\,|C_{\ell}^{gs}|$", fontsize=yaxislabelsize)
                 else:
                     axes[j,i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
             for item in (axes[j,i].get_yticklabels()):
@@ -625,6 +634,20 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                                color=cm(x/len(C_gs)),
                                linewidth=next(linewidthcycler),
                                linestyle=next(linestylecycler))
+
+    if not (rescale is None):
+        # a draw realizes the tick labels, whose measured extent puts
+        # the global label right beside the grid at any figure size
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        xmin = min(a.get_tightbbox(renderer).x0 for a in axes[:,0])
+        xmin = fig.transFigure.inverted().transform((xmin, 0))[0]
+        # supylabel anchors the rotated text's LEFT edge (ha='left'):
+        # back off its full measured width so the right edge clears
+        # the tick labels by a small pad
+        lab = fig.supylabel(ylabel, fontsize=yaxislabelsize)
+        labw = lab.get_window_extent(renderer).width/fig.bbox.width
+        lab.set_x(max(xmin - 0.004 - labw, 0.001))
 
     if not (legend is None):
         if len(legend) != len(C_gs):
@@ -837,7 +860,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                             cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16,
                             yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85],
                             bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
-                     thetashow=[3, 1100], rescale = None, alphatextpos = [0.22, 0.1]):
+                     thetashow = None, rescale = None, alphatextpos = [0.22, 0.1],
+                     ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$"):
     """Panel grid of the real-space tangential shear gamma_t(theta).
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -851,7 +875,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                  (n_theta, n_lens, n_source).
       gammat_ref = None, or one (theta, gammat) pair used as the
                  ratio reference.
-      thetashow = x-axis range in arcmin.
+      thetashow = x-axis range in arcmin; None (default) spans the
+                 theta arrays themselves.
       marker   = list of matplotlib markers cycled across curves
                  (points instead of lines), or None for lines.
       param, colorbarlabel, cmap, ylim, linestyle, linewidth,
@@ -869,6 +894,13 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                  Ignored with gammat_ref (already dimensionless and
                  shared). None (default) keeps per-panel y-ranges.
       alphatextpos = axes-fraction (x, y) of the alpha annotation.
+      ydecades = with rescale, cap on how many decades the shared
+                 y-range extends below its ceiling (default 4):
+                 deep |gamma_t| dips at sign crossings otherwise
+                 drag the common floor down and compress every
+                 panel. None keeps the full union of panel ranges.
+      ylabel   = with rescale, the single global y-axis label of
+                 the glued grid (drawn once with fig.supylabel).
 
     Returns:
       0 on malformed input (a printed message names the problem),
@@ -877,12 +909,15 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
 
     (theta, gammat) = theta_gammat[0]
     ntheta, nlens, nsource = gammat.shape
-    
+
     if ntheta != len(theta):
         print("Bad Input (theta)")
         print(theta)
         print(ntheta, len(theta))
         return 0
+
+    if thetashow is None:
+        thetashow = [np.min(theta), np.max(theta)]
 
     if not (gammat_ref is None):
         (theta1, gammat2) = gammat_ref
@@ -915,6 +950,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                     panlo.append(lo)
                 panhi.append(pmax*10.0**alpha[i,j])
         yglued = [ylim[0]*np.min(panlo if panlo else panhi), ylim[1]*np.max(panhi)]
+        if not (ydecades is None):
+            yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
     if gammat_ref is None and rescale is None:
         fig, axes = plt.subplots(
@@ -997,10 +1034,9 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             
             if i == 0:
                 if gammat_ref is None:
+                    # with rescale the y label is global: one fig.supylabel
                     if rescale is None:
-                        axes[j,i].set_ylabel(r"$|\gamma_{t}(\\theta)|$", fontsize=yaxislabelsize)
-                    else:
-                        axes[j,i].set_ylabel(r"$\alpha\,|\gamma_{t}(\theta)|$", fontsize=yaxislabelsize)
+                        axes[j,i].set_ylabel(r"$|\gamma_{t}(\theta)|$", fontsize=yaxislabelsize)
                 else:
                     axes[j,i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
             for item in (axes[j,i].get_yticklabels()):
@@ -1009,7 +1045,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                 item.set_fontsize(xaxisticklabelsize)
             
             if j == nsource-1:
-                axes[j,i].set_xlabel(r"$\\theta$", fontsize=16)
+                axes[j,i].set_xlabel(r"$\theta$", fontsize=16)
             
             axes[j,i].text(bintextpos[0], bintextpos[1], 
                 "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
@@ -1061,6 +1097,20 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                                    linestyle='None', 
                                    markersize=3)                    
     
+    if not (rescale is None):
+        # a draw realizes the tick labels, whose measured extent puts
+        # the global label right beside the grid at any figure size
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        xmin = min(a.get_tightbbox(renderer).x0 for a in axes[:,0])
+        xmin = fig.transFigure.inverted().transform((xmin, 0))[0]
+        # supylabel anchors the rotated text's LEFT edge (ha='left'):
+        # back off its full measured width so the right edge clears
+        # the tick labels by a small pad
+        lab = fig.supylabel(ylabel, fontsize=yaxislabelsize)
+        labw = lab.get_window_extent(renderer).width/fig.bbox.width
+        lab.set_x(max(xmin - 0.004 - labw, 0.001))
+
     if not (legend is None):
         if len(legend) != len(theta_gammat):
             print("Bad Input")
@@ -1086,7 +1136,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                      cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, 
                      yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
                      bintextsize = 15, figsize = (12, 12), show = True, colorbar=1,
-                     thetashow=[3, 1100]):
+                     thetashow = None):
     """One panel per lens bin of the clustering correlation w(theta).
 
     Without theta_wtheta_ref each curve is theta * w(theta) * 10^4;
@@ -1099,7 +1149,8 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                  diagonal.
       theta_wtheta_ref = None, or one (theta, wtheta) pair used as
                  the ratio reference.
-      thetashow = x-axis range in arcmin.
+      thetashow = x-axis range in arcmin; None (default) spans the
+                 theta arrays themselves.
       marker   = list of matplotlib markers cycled across curves
                  (points instead of lines), or None for lines.
       param, colorbarlabel, cmap, ylim, linestyle, linewidth,
@@ -1119,12 +1170,15 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
     if nlens1 != nlens2:
         print("Bad Input (number of nlens1/nlens2)")
         return 0
-        
+
     if ntheta != len(theta):
         print("Bad Input (theta)")
         print(theta)
         print(ntheta, len(theta))
         return 0
+
+    if thetashow is None:
+        thetashow = [np.min(theta), np.max(theta)]
 
     if not (theta_wtheta_ref is None):
         (theta1, wtheta2) = theta_wtheta_ref
@@ -1203,7 +1257,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         
         if i == 0:
             if theta_wtheta_ref is None:
-                axes[i].set_ylabel(r"$|w_{t}(\\theta)|$", fontsize=yaxislabelsize)
+                axes[i].set_ylabel(r"$|w_{t}(\theta)|$", fontsize=yaxislabelsize)
             else:
                 axes[i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
         for item in (axes[i].get_yticklabels()):
@@ -1211,7 +1265,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         for item in (axes[i].get_xticklabels()):
             item.set_fontsize(xaxisticklabelsize)
 
-        axes[i].set_xlabel(r"$\\theta$", fontsize=16)
+        axes[i].set_xlabel(r"$\theta$", fontsize=16)
         
         axes[i].text(bintextpos[0], bintextpos[1], 
             "$(" +  str(i+1) + ")$", 
