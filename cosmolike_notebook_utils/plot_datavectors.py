@@ -822,11 +822,22 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # above the grid, clear of every panel
+        # right above the panels, centered on their measured span
+        if legendloc is None:
+            pos = [a.get_position() for a in np.ravel(axes)]
+            cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
+            ty = max(q.y1 for q in pos)
+            legendloc = "lower center"
+            legendanchor = (cx, ty + 0.008)
+            ncols = min(len(legend), 4)
+        else:
+            legendanchor = None
+            ncols = 1
         fig.legend(
             legend, 
-            loc="upper center" if legendloc is None else legendloc,
-            ncols=min(len(legend), 4) if legendloc is None else 1,
+            loc=legendloc,
+            bbox_to_anchor=legendanchor,
+            ncols=ncols,
             fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
@@ -1076,11 +1087,22 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # above the grid, clear of every panel
+        # right above the panels, centered on their measured span
+        if legendloc is None:
+            pos = [a.get_position() for a in np.ravel(axes)]
+            cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
+            ty = max(q.y1 for q in pos)
+            legendloc = "lower center"
+            legendanchor = (cx, ty + 0.008)
+            ncols = min(len(legend), 4)
+        else:
+            legendanchor = None
+            ncols = 1
         fig.legend(
             legend, 
-            loc="upper center" if legendloc is None else legendloc,
-            ncols=min(len(legend), 4) if legendloc is None else 1,
+            loc=legendloc,
+            bbox_to_anchor=legendanchor,
+            ncols=ncols,
             fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
@@ -1349,11 +1371,22 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # above the grid, clear of every panel
+        # right above the panels, centered on their measured span
+        if legendloc is None:
+            pos = [a.get_position() for a in np.ravel(axes)]
+            cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
+            ty = max(q.y1 for q in pos)
+            legendloc = "lower center"
+            legendanchor = (cx, ty + 0.008)
+            ncols = min(len(legend), 4)
+        else:
+            legendanchor = None
+            ncols = 1
         fig.legend(
             legend, 
-            loc="upper center" if legendloc is None else legendloc,
-            ncols=min(len(legend), 4) if legendloc is None else 1,
+            loc=legendloc,
+            bbox_to_anchor=legendanchor,
+            ncols=ncols,
             fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
@@ -1602,11 +1635,22 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # above the grid, clear of every panel
+        # right above the panels, centered on their measured span
+        if legendloc is None:
+            pos = [a.get_position() for a in np.ravel(axes)]
+            cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
+            ty = max(q.y1 for q in pos)
+            legendloc = "lower center"
+            legendanchor = (cx, ty + 0.008)
+            ncols = min(len(legend), 4)
+        else:
+            legendanchor = None
+            ncols = 1
         fig.legend(
             legend, 
-            loc="upper center" if legendloc is None else legendloc,
-            ncols=min(len(legend), 4) if legendloc is None else 1,
+            loc=legendloc,
+            bbox_to_anchor=legendanchor,
+            ncols=ncols,
             fontsize=legendfontsize,
             borderpad=0.1,
             handletextpad=0.4,
