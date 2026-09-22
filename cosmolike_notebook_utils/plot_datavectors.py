@@ -10,7 +10,6 @@ notebooks; these functions only build the figures.
 
 import math
 import itertools
-import warnings
 
 import numpy as np
 import matplotlib
@@ -187,12 +186,10 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             scatteryoffsets=[0],
             frameon=False)
 
-    # the with-block silences warnings only inside it: fig.show()
-    # outside a notebook warns about non-interactive backends
+    # warn=False: outside a notebook, showing a figure on a
+    # non-interactive backend would otherwise warn
     if not (show is None):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fig.show()
+        fig.show(warn=False)
     else:
         return (fig, axes)
 
@@ -416,12 +413,10 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                    columnspacing=0.35,
                    scatteryoffsets=[0],
                    frameon=False)  
-    # the with-block silences warnings only inside it: fig.show()
-    # outside a notebook warns about non-interactive backends
+    # warn=False: outside a notebook, showing a figure on a
+    # non-interactive backend would otherwise warn
     if not (show is None):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fig.show()
+        fig.show(warn=False)
     else:
         return (fig, axes)
 
@@ -598,7 +593,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             frameon=False)
 
     if not (show is None):
-        fig.show()
+        fig.show(warn=False)
     else:
         return (fig, axes)
 
@@ -784,7 +779,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             frameon=False)
 
     if not (show is None):
-        fig.show()
+        fig.show(warn=False)
     else:
         return (fig, axes)
 
@@ -985,7 +980,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             frameon=False)
 
     if not (show is None):
-        fig.show()
+        fig.show(warn=False)
     else:
         return (fig, axes)
 
@@ -1167,6 +1162,6 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             scatteryoffsets=[0],
             frameon=False)
     if not (show is None):
-        fig.show()
+        fig.show(warn=False)
     else:
         return (fig, axes)
