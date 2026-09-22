@@ -1711,3 +1711,111 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         fig.show(warn=False)
     else:
         return (fig, axes)
+
+
+def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None, 
+                            zlabels = None, cmap = 'gist_rainbow', ylim = None, 
+                            linewidth = None, legendloc = None, title = None, 
+                            titlesize = 16, yaxislabelsize = 16, yaxisticklabelsize = 14, 
+                            xaxisticklabelsize = 14, xaxislabelsize = 16, 
+                            legendfontsize = None, figsize = (10, 6), show = 1, 
+                            colorbar = 1):
+    """One panel of baryonic feedback suppression curves S(k).
+
+    Made for parameter sweeps of the bfmt theory block: each entry of
+    sup is one curve set (one parameter value), colored by param, and
+    each of its rows is one redshift slice, drawn with its own
+    linestyle (solid, dashed, dashdot, dotted, cycling).
+
+    Arguments:
+      log10k   = 1D array, log10 of k (the block's own unit, 1/Mpc).
+      sup      = list of 2D arrays (n_z, n_k), one per parameter
+                 value.
+      param    = list of parameter values (one per curve) coloring
+                 the curves and the colorbar, or None.
+      colorbarlabel = colorbar label, or None.
+      zlabels  = one label per redshift slice for the linestyle
+                 legend, or None for no legend; legendloc places it
+                 (None picks matplotlib's best corner).
+      ylim     = explicit (lo, hi), or None for matplotlib's choice.
+      title    = panel title (e.g. "method: vary parameter"), or
+                 None; titlesize sizes it.
+      linewidth = list cycled across curves, or None.
+      cmap, the *size arguments, figsize = layout knobs as in
+      plot_C_ss_tomo_limber.
+      show     = 1 draws the figure; None returns (fig, ax).
+      colorbar = None suppresses the colorbar even with param set.
+
+    Returns:
+      0 on malformed input (a printed message names the problem),
+      None after drawing, or (fig, ax) when show is None.
+    """
+
+    nz, nk = np.asarray(sup[0]).shape
+    if nk != len(log10k):
+        print("Bad Input (number of k)")
+        return 0
+    if not (zlabels is None) and len(zlabels) != nz:
+        print("Bad Input (number of zlabels)")
+        return 0
+
+    fig, ax = plt.subplots(figsize = figsize)
+    cm = plt.get_cmap(cmap)
+
+    if not (param is None or colorbar is None):
+        cb = fig.colorbar(
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
+            ax = ax, 
+            orientation = 'vertical', 
+            aspect = 30, 
+            pad = 0.02)
+        if not (colorbarlabel is None):
+            cb.set_label(label = colorbarlabel, size = 18, weight = 'bold', labelpad = 2)
+        if len(param) != len(sup):
+            print("Bad Input")
+            return 0
+
+    if not (linewidth is None):
+        linewidthcycler = itertools.cycle(linewidth)
+    else:
+        linewidthcycler = itertools.cycle([1.5])
+
+    k = np.power(10.0, log10k)
+    zstyles = ['solid', 'dashed', 'dashdot', 'dotted']
+    for x, S in enumerate(sup):
+        S = np.asarray(S)
+        lw = next(linewidthcycler)
+        for iz in range(nz):
+            ax.plot(k, 
+                    S[iz], 
+                    color = cm(x/len(sup)), 
+                    linewidth = lw, 
+                    linestyle = zstyles[iz % len(zstyles)])
+
+    ax.set_xscale('log')
+    ax.set_xlim([k[0], k[-1]])
+    if not (ylim is None):
+        ax.set_ylim(list(ylim))
+    ax.set_xlabel(r"$k$ [1/Mpc]", fontsize = xaxislabelsize)
+    ax.set_ylabel(r"$S(k) = P_{\rm feedback}/P_{\rm DM}$", fontsize = yaxislabelsize)
+    for item in ax.get_yticklabels():
+        item.set_fontsize(yaxisticklabelsize)
+    for item in ax.get_xticklabels():
+        item.set_fontsize(xaxisticklabelsize)
+    if not (title is None):
+        ax.set_title(title, fontsize = titlesize)
+
+    if not (zlabels is None):
+        # proxy handles: the linestyle legend is independent of the
+        # parameter colors, so it is drawn in black
+        handles = [matplotlib.lines.Line2D([], [], color = 'black', 
+                       linestyle = zstyles[iz % len(zstyles)]) for iz in range(nz)]
+        ax.legend(handles, zlabels, 
+                  loc = 'best' if legendloc is None else legendloc,
+                  fontsize = legendfontsize,
+                  frameon = False)
+
+    if not (show is None):
+        fig.show(warn=False)
+    else:
+        return (fig, ax)
