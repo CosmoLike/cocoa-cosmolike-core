@@ -210,6 +210,9 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
         if not (ydecades is None):
             yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
+    # sharex/sharey tie the panels' axis limits together; the glued
+    # branch also zeroes wspace and hspace, the gaps between panels,
+    # so neighbors touch edge to edge (see the module docstring)
     if C_ss_ref is None and rescale is None:
         fig, axes = plt.subplots(
             nrows = ntomo,
@@ -230,6 +233,11 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
     cm = plt.get_cmap(cmap)
     
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = 'gist_rainbow'), 
             ax = axes.ravel().tolist(), 
@@ -244,7 +252,7 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             return 0
 
     # itertools.cycle repeats a list forever: each next(...) in the
-    # panel loop pulls the following style, wrapping at the end
+    # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
         linestylecycler = itertools.cycle(linestyle)
     else:
@@ -262,6 +270,8 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             if i>j:                
                 axes[j,i].axis('off')
             else:
+                # collect each curve's extremes in this panel: without rescale
+                # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
                 clmin = []
                 clmax = []
                 for Cl in C_ss:  
@@ -279,6 +289,8 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                         axes[j,i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
                         axes[j,i].set_yscale('log')
                 else:
+                    # with a reference every curve is value/reference - 1, so ylim
+                    # (multipliers around 1) is drawn as the band ylim - 1 around 0
                     tmp = np.array(ylim) - 1
                     axes[j,i].set_ylim(tmp.tolist())
                     axes[j,i].set_yscale('linear')
@@ -300,6 +312,8 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                 if j == ntomo-1:
                     axes[j,i].set_xlabel(r"$\ell$", fontsize=xaxislabelsize)
                 
+                # transform=transAxes puts the text in panel fractions: (0, 0)
+                # is the panel's lower-left corner, (1, 1) its upper-right
                 axes[j,i].text(bintextpos[0], bintextpos[1], 
                     "$(" +  str(i) + "," +  str(j) + ")$", 
                     horizontalalignment = 'center', 
@@ -461,6 +475,9 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 panhi.append(pmax*10.0**alpha[i,j])
         yglued = [ylim[0]*np.min(panlo), ylim[1]*np.max(panhi)]
 
+    # sharex/sharey tie the panels' axis limits together; the glued
+    # branch also zeroes wspace and hspace, the gaps between panels,
+    # so neighbors touch edge to edge (see the module docstring)
     if xi_ref is None and rescale is None:
         fig, axes = plt.subplots(
             nrows = ntomo,
@@ -483,6 +500,11 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
     cm = plt.get_cmap(cmap)
 
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = 'gist_rainbow'), 
             ax = axes.ravel().tolist(), 
@@ -500,6 +522,8 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
     if not (marker is None):
         markercycler = itertools.cycle(marker)
     
+    # itertools.cycle repeats a list forever: each next(...) in the
+    # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
         linestylecycler = itertools.cycle(linestyle)
     else:
@@ -517,6 +541,8 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
             if i>j:                
                 axes[j,i].axis('off')
             else:
+                # collect each curve's extremes in this panel: without rescale
+                # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
                 ximin = []
                 ximax = []
                 for (theta, xip, xim) in xi:
@@ -535,6 +561,8 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                     else:
                         axes[j,i].set_ylim([np.min(ylim[0]*np.array(ximin)), np.max(ylim[1]*np.array(ximax))])
                 else:
+                    # with a reference every curve is value/reference - 1, so ylim
+                    # (multipliers around 1) is drawn as the band ylim - 1 around 0
                     tmp = np.array(ylim) - 1
                     axes[j,i].set_ylim(tmp.tolist())
                 axes[j,i].set_xscale('log')
@@ -562,6 +590,10 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 for item in (axes[j,i].get_xticklabels()):
                     item.set_fontsize(xaxisticklabelsize)
 
+                # transform=transAxes puts the text in panel fractions:
+                # (0, 0) is the panel's lower-left corner, (1, 1) its
+                # upper-right; xi_plus and xi_minus carry their own
+                # positions in the nested bintextpos list
                 if pm > 0:
                     axes[j,i].text(bintextpos[0][0], 
                                    bintextpos[0][1], 
@@ -766,6 +798,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
         if not (ydecades is None):
             yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
+    # sharex/sharey tie the panels' axis limits together; the glued
+    # branch also zeroes wspace and hspace, the gaps between panels,
+    # so neighbors touch edge to edge (see the module docstring)
     if C_gs_ref is None and rescale is None:
         fig, axes = plt.subplots(
             nrows = nsource,
@@ -786,6 +821,11 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
     cm = plt.get_cmap(cmap)
     
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
             ax = axes.ravel().tolist(), 
@@ -799,6 +839,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             print("Bad Input")
             return 0
 
+    # itertools.cycle repeats a list forever: each next(...) in the
+    # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
         linestylecycler = itertools.cycle(linestyle)
     else:
@@ -809,8 +851,12 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
     else:
         linewidthcycler = itertools.cycle([1.0])
     
+    # axes[j,i] is the panel at row j (source bin) and column i
+    # (lens bin): every (lens, source) pair gets one panel
     for i in range(nlens):
         for j in range(nsource):
+            # collect each curve's extremes in this panel: without rescale
+            # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
             clmin = []
             clmax = []
             for Cl in C_gs:  
@@ -823,6 +869,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             # (lens, source) pairs dropped via init_ggl_exclude come back as
             # identically zero: such panels get an "excluded" placeholder,
             # since zeros can be neither log scaled nor used as a ratio ref.
+            # (all(...) over a generator is True only when every curve
+            # in the panel is identically zero)
             excluded = all(not np.any(Cl[:,i,j]) for Cl in C_gs)
             if not (C_gs_ref is None):
                 excluded = excluded or not np.any(C_gs_ref[:,i,j])
@@ -837,6 +885,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                     axes[j,i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
                     axes[j,i].set_yscale('log')
             else:
+                # with a reference every curve is value/reference - 1, so ylim
+                # (multipliers around 1) is drawn as the band ylim - 1 around 0
                 tmp = np.array(ylim) - 1
                 axes[j,i].set_ylim(tmp.tolist())
                 axes[j,i].set_yscale('linear')
@@ -858,6 +908,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             if j == nsource-1:
                 axes[j,i].set_xlabel(r"$\ell$", fontsize=xaxislabelsize)
             
+            # transform=transAxes puts the text in panel fractions: (0, 0)
+            # is the panel's lower-left corner, (1, 1) its upper-right
             axes[j,i].text(bintextpos[0], bintextpos[1], 
                 "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
                 horizontalalignment = 'center', 
@@ -914,7 +966,10 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span
+        # right above the panels, centered on their measured span:
+        # np.ravel flattens the axes array into one flat list,
+        # get_position returns each panel's box in figure fractions,
+        # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
             pos = [a.get_position() for a in np.ravel(axes)]
             cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
@@ -1037,6 +1092,9 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         if not (ydecades is None) and forcelinearyscale != True:
             yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
+    # sharex/sharey tie the panels' axis limits together; the glued
+    # branch also zeroes wspace and hspace, the gaps between panels,
+    # so neighbors touch edge to edge (see the module docstring)
     if C_gg_ref is None and rescale is None:
         fig, axes = plt.subplots(
             nrows = 1,
@@ -1057,6 +1115,11 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
     cm = plt.get_cmap(cmap)
     
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
             ax = axes.ravel().tolist(), 
@@ -1072,6 +1135,8 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)     
+    # itertools.cycle repeats a list forever: each next(...) in the
+    # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
         linestylecycler = itertools.cycle(linestyle)
     else:
@@ -1081,7 +1146,12 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
     else:
         linewidthcycler = itertools.cycle([1.0])
     
+    # one panel per lens bin in a single row: axes[i] is column i,
+    # and the [:,i,i] slices below read the (i, i) diagonal, the
+    # auto-correlation of lens bin i with itself
     for i in range(nlens1):
+        # collect each curve's extremes in this panel: without rescale
+        # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
         clmin = []
         clmax = []
         for Cl in C_gg:  
@@ -1101,6 +1171,8 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             if forcelinearyscale == True:
                 axes[i].set_yscale('linear')
         else:
+            # with a reference every curve is value/reference - 1, so ylim
+            # (multipliers around 1) is drawn as the band ylim - 1 around 0
             tmp = np.array(ylim) - 1
             axes[i].set_ylim(tmp.tolist())
             axes[i].set_yscale('linear')
@@ -1128,6 +1200,8 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         
         axes[i].set_xlabel(r"$\ell$", fontsize=xaxislabelsize)
         
+        # transform=transAxes puts the text in panel fractions: (0, 0)
+        # is the panel's lower-left corner, (1, 1) its upper-right
         axes[i].text(bintextpos[0], bintextpos[1], 
             "$(" +  str(i+1) + ")$", 
             horizontalalignment = 'center', 
@@ -1191,7 +1265,10 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span
+        # right above the panels, centered on their measured span:
+        # np.ravel flattens the axes array into one flat list,
+        # get_position returns each panel's box in figure fractions,
+        # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
             pos = [a.get_position() for a in np.ravel(axes)]
             cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
@@ -1325,6 +1402,9 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
         if not (ydecades is None):
             yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
+    # sharex/sharey tie the panels' axis limits together; the glued
+    # branch also zeroes wspace and hspace, the gaps between panels,
+    # so neighbors touch edge to edge (see the module docstring)
     if gammat_ref is None and rescale is None:
         fig, axes = plt.subplots(
             nrows = nsource,
@@ -1345,6 +1425,11 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
     cm = plt.get_cmap(cmap)
     
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
             ax = axes.ravel().tolist(), 
@@ -1361,6 +1446,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
     if not (marker is None):
         markercycler = itertools.cycle(marker)
         
+    # itertools.cycle repeats a list forever: each next(...) in the
+    # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
         linestylecycler = itertools.cycle(linestyle)
     else:
@@ -1371,8 +1458,12 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
     else:
         linewidthcycler = itertools.cycle([1.0])
 
+    # axes[j,i] is the panel at row j (source bin) and column i
+    # (lens bin): every (lens, source) pair gets one panel
     for i in range(nlens):
         for j in range(nsource):
+            # collect each curve's extremes in this panel: without rescale
+            # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
             ximin = []
             ximax = []
             for (theta, gammat) in theta_gammat:  
@@ -1384,6 +1475,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             # (lens, source) pairs dropped via init_ggl_exclude come back as
             # identically zero: such panels get an "excluded" placeholder,
             # since zeros can be neither log scaled nor used as a ratio ref.
+            # (all(...) over a generator is True only when every curve
+            # in the panel is identically zero)
             excluded = all(not np.any(g[:,i,j]) for (t, g) in theta_gammat)
             if not (gammat_ref is None):
                 excluded = excluded or not np.any(gammat_ref[1][:,i,j])
@@ -1398,6 +1491,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                     axes[j,i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
                     axes[j,i].set_yscale('log')
             else:
+                # with a reference every curve is value/reference - 1, so ylim
+                # (multipliers around 1) is drawn as the band ylim - 1 around 0
                 tmp = np.array(ylim) - 1
                 axes[j,i].set_ylim(tmp.tolist())
                 axes[j,i].set_yscale('linear')
@@ -1419,6 +1514,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             if j == nsource-1:
                 axes[j,i].set_xlabel(r"$\theta$", fontsize=xaxislabelsize)
             
+            # transform=transAxes puts the text in panel fractions: (0, 0)
+            # is the panel's lower-left corner, (1, 1) its upper-right
             axes[j,i].text(bintextpos[0], bintextpos[1], 
                 "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
                 horizontalalignment = 'center', 
@@ -1487,7 +1584,10 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span
+        # right above the panels, centered on their measured span:
+        # np.ravel flattens the axes array into one flat list,
+        # get_position returns each panel's box in figure fractions,
+        # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
             pos = [a.get_position() for a in np.ravel(axes)]
             cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
@@ -1620,6 +1720,9 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         if not (ydecades is None):
             yglued[0] = max(yglued[0], yglued[1]/10.0**ydecades)
 
+    # sharex/sharey tie the panels' axis limits together; the glued
+    # branch also zeroes wspace and hspace, the gaps between panels,
+    # so neighbors touch edge to edge (see the module docstring)
     if theta_wtheta_ref is None and rescale is None:
         fig, axes = plt.subplots(
             nrows = 1,
@@ -1640,6 +1743,11 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
     cm = plt.get_cmap(cmap)
     
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
             ax = axes.ravel().tolist(), 
@@ -1655,6 +1763,8 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)    
+    # itertools.cycle repeats a list forever: each next(...) in the
+    # panel loop pulls the following entry, wrapping at the end
     if not (linestyle is None):
         linestylecycler = itertools.cycle(linestyle)
     else:
@@ -1664,7 +1774,12 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
     else:
         linewidthcycler = itertools.cycle([1.0])
 
+    # one panel per lens bin in a single row: axes[i] is column i,
+    # and the [:,i,i] slices below read the (i, i) diagonal, the
+    # auto-correlation of lens bin i with itself
     for i in range(nlens1):
+        # collect each curve's extremes in this panel: without rescale
+        # the per-panel y-range is [ylim[0]*min, ylim[1]*max]
         ximin = []
         ximax = []
         for (theta, wtheta) in theta_wtheta:  
@@ -1681,6 +1796,8 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                 axes[i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
                 axes[i].set_yscale('log')
         else:
+            # with a reference every curve is value/reference - 1, so ylim
+            # (multipliers around 1) is drawn as the band ylim - 1 around 0
             tmp = np.array(ylim) - 1
             axes[i].set_ylim(tmp.tolist())
             axes[i].set_yscale('linear')
@@ -1701,6 +1818,8 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
 
         axes[i].set_xlabel(r"$\theta$", fontsize=xaxislabelsize)
         
+        # transform=transAxes puts the text in panel fractions: (0, 0)
+        # is the panel's lower-left corner, (1, 1) its upper-right
         axes[i].text(bintextpos[0], bintextpos[1], 
             "$(" +  str(i+1) + ")$", 
             horizontalalignment = 'center', 
@@ -1763,7 +1882,10 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             print("Bad Input")
             return 0
         # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span
+        # right above the panels, centered on their measured span:
+        # np.ravel flattens the axes array into one flat list,
+        # get_position returns each panel's box in figure fractions,
+        # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
             pos = [a.get_position() for a in np.ravel(axes)]
             cx = 0.5*(min(q.x0 for q in pos) + max(q.x1 for q in pos))
@@ -1858,8 +1980,8 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
         # the colorbar is not read off the plotted lines: it is drawn
         # from a ScalarMappable, a bare description of "this colormap
         # spans these values", with Normalize mapping the parameter
-        # range onto the colormap's 0..1 axis. The curves below use
-        # the same colormap, so the bar and the line colors agree.
+        # range onto the colormap's 0..1 axis; the curves use the same
+        # colormap, so bar and line colors agree
         cb = fig.colorbar(
             matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap),
             ax = ax,
