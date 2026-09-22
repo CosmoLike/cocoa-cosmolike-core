@@ -279,12 +279,12 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
         if len(legend) != len(C_ss):
             print("Bad Input")
             return 0
-        # legendloc None (the default) lays the entries in one row
-        # above the grid, clear of every panel
+        # legendloc None (the default) puts the legend inside the
+        # empty upper triangle; an (x, y) pair places it anywhere
         fig.legend(
-            legend, 
-            loc="upper center" if legendloc is None else legendloc,
-            ncols=min(len(legend), 4) if legendloc is None else 1,
+            legend,
+            loc=(0.6, 0.78) if legendloc is None else legendloc,
+            ncols=(2 if len(legend) > 4 else 1) if legendloc is None else 1,
             borderpad=0.1,
             handletextpad=0.4,
             handlelength=1.5,
@@ -574,11 +574,11 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
         if len(legend) != len(xi):
             print("Bad Input")
             return 0
-        # legendloc None (the default) lays the entries in one row
-        # above the grid, clear of every panel
-        fig.legend(legend, 
-                   loc="upper center" if legendloc is None else legendloc,
-                   ncols=min(len(legend), 4) if legendloc is None else 1,
+        # legendloc None (the default) puts the legend inside the
+        # empty upper triangle; an (x, y) pair places it anywhere
+        fig.legend(legend,
+                   loc=(0.6, 0.78) if legendloc is None else legendloc,
+                   ncols=(2 if len(legend) > 4 else 1) if legendloc is None else 1,
                    borderpad=0.1,
                    handletextpad=0.4,
                    handlelength=1.5,
