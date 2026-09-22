@@ -56,12 +56,12 @@ def _glued_supylabel(fig, leftcol, ylabel, yaxislabelsize):
 
 def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabel = None, lmin = 30, lmax = 1500, colorbarshrink=0.3,
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
-                          legend = None, legendloc = None, yaxislabelsize = 12, yaxisticklabelsize = 10, 
+                          legend = None, legendloc = None, yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 13, figsize = (18, 18),
                           show = 1, colorbar=1, wspace=0.25, hspace=0.05, rescale = None,
                           alphatextpos = [0.05, 0.12], ydecades = 4,
                           ylabel = r"$\alpha\,\ell (\ell+1) C_{\ell}^{EE}/(2 \pi)$",
-                          legendfontsize = None):
+                          legendfontsize = None, xaxislabelsize = 16):
     """Triangle plot of tomographic angular power spectra.
 
     One panel per tomographic bin pair (i, j), lower triangle only.
@@ -239,7 +239,7 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                     item.set_fontsize(xaxisticklabelsize)
                 
                 if j == ntomo-1:
-                    axes[j,i].set_xlabel(r"$\ell$", fontsize=16)
+                    axes[j,i].set_xlabel(r"$\ell$", fontsize=xaxislabelsize)
                 
                 axes[j,i].text(bintextpos[0], bintextpos[1], 
                     "$(" +  str(i) + "," +  str(j) + ")$", 
@@ -303,10 +303,10 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
 
 def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = None, colorbarshrink=0.3,
                 linestyle = None, linewidth = None, ylim = [0.88,1.12], 
-                cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 10, 
+                cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 16, 
                 yaxisticklabelsize = 10, xaxisticklabelsize = 20, bintextpos = [[0.8, 0.875],[0.2,0.875]],
                 bintextsize = 15, figsize = (18, 18), show = 1, thetashow=[3,250], colorbar=1, wspace=0.25,hspace=0.05,
-                rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None, legendfontsize = None):
+                rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None, legendfontsize = None, xaxislabelsize = 16):
     """Triangle plot of the real-space shear correlation functions.
 
     One panel per tomographic bin pair (i, j), lower triangle only.
@@ -483,7 +483,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                             axes[j,i].set_ylabel(r"frac. diff. ($\xi_{-})$", fontsize=yaxislabelsize)
 
                 if j == ntomo-1:
-                    axes[j,i].set_xlabel(r"$\theta$ [arcmin]", fontsize=16)
+                    axes[j,i].set_xlabel(r"$\theta$ [arcmin]", fontsize=xaxislabelsize)
                 for item in (axes[j,i].get_yticklabels()):
                     item.set_fontsize(yaxisticklabelsize)
                 for item in (axes[j,i].get_xticklabels()):
@@ -601,7 +601,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                           legend = None, legendloc = None, yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12),
                           show = 1, colorbar=1, rescale = None, alphatextpos = [0.05, 0.12],
-                          ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$", legendfontsize = None):
+                          ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$", legendfontsize = None, xaxislabelsize = 16):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -771,7 +771,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                 item.set_fontsize(xaxisticklabelsize)
             
             if j == nsource-1:
-                axes[j,i].set_xlabel(r"$\ell$", fontsize=16)
+                axes[j,i].set_xlabel(r"$\ell$", fontsize=xaxislabelsize)
             
             axes[j,i].text(bintextpos[0], bintextpos[1], 
                 "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
@@ -847,7 +847,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
                    xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12), 
                    show = 1, forcelinearyscale=False, overwriteylabel=None, forcelinearxscale=False,
                    marker = None, markersize=3, colorbar=1, rescale = None,
-                   alphatextpos = [0.05, 0.12], ydecades = 4, ylabel = r"$\alpha\,C_{\ell}^{gg}$", legendfontsize = None):
+                   alphatextpos = [0.05, 0.12], ydecades = 4, ylabel = r"$\alpha\,C_{\ell}^{gg}$", legendfontsize = None, xaxislabelsize = 16):
     """One panel per lens bin of galaxy-clustering angular spectra.
 
     The panels show the auto-correlation C_gg of each lens bin.
@@ -1018,7 +1018,7 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         for item in (axes[i].get_xticklabels()):
             item.set_fontsize(xaxisticklabelsize)
         
-        axes[i].set_xlabel(r"$\ell$", fontsize=16)
+        axes[i].set_xlabel(r"$\ell$", fontsize=xaxislabelsize)
         
         axes[i].text(bintextpos[0], bintextpos[1], 
             "$(" +  str(i+1) + ")$", 
@@ -1101,7 +1101,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                             yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85],
                             bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
                      thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
-                     ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$", legendfontsize = None):
+                     ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$", legendfontsize = None, xaxislabelsize = 16):
     """Panel grid of the real-space tangential shear gamma_t(theta).
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -1286,7 +1286,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                 item.set_fontsize(xaxisticklabelsize)
             
             if j == nsource-1:
-                axes[j,i].set_xlabel(r"$\theta$", fontsize=16)
+                axes[j,i].set_xlabel(r"$\theta$", fontsize=xaxislabelsize)
             
             axes[j,i].text(bintextpos[0], bintextpos[1], 
                 "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
@@ -1374,7 +1374,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                      yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
                      bintextsize = 15, figsize = (12, 12), show = True, colorbar=1,
                      thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
-                     ydecades = 4, ylabel = r"$\alpha\,|w_{t}(\theta)|$", legendfontsize = None):
+                     ydecades = 4, ylabel = r"$\alpha\,|w_{t}(\theta)|$", legendfontsize = None, xaxislabelsize = 16):
     """One panel per lens bin of the clustering correlation w(theta).
 
     Without theta_wtheta_ref each curve is theta * w(theta) * 10^4;
@@ -1545,7 +1545,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         for item in (axes[i].get_xticklabels()):
             item.set_fontsize(xaxisticklabelsize)
 
-        axes[i].set_xlabel(r"$\theta$", fontsize=16)
+        axes[i].set_xlabel(r"$\theta$", fontsize=xaxislabelsize)
         
         axes[i].text(bintextpos[0], bintextpos[1], 
             "$(" +  str(i+1) + ")$", 
