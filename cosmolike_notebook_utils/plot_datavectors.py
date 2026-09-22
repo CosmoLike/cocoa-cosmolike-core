@@ -523,9 +523,19 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
  
             axes[j,i].set_xlim([lmin, lmax])
             
+            # (lens, source) pairs dropped via init_ggl_exclude come back as
+            # identically zero: such panels get an "excluded" placeholder,
+            # since zeros can be neither log scaled nor used as a ratio ref.
+            excluded = all(not np.any(Cl[:,i,j]) for Cl in C_gs)
+            if not (C_gs_ref is None):
+                excluded = excluded or not np.any(C_gs_ref[:,i,j])
+
             if C_gs_ref is None:
-                axes[j,i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
-                axes[j,i].set_yscale('log')
+                if excluded:
+                    axes[j,i].set_yticks([])
+                else:
+                    axes[j,i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
+                    axes[j,i].set_yscale('log')
             else:
                 tmp = np.array(ylim) - 1
                 axes[j,i].set_ylim(tmp.tolist())
@@ -554,6 +564,14 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                 usetex = True,
                 transform = axes[j,i].transAxes)
             
+            if excluded:
+                axes[j,i].text(0.5, 0.5, "excluded",
+                    horizontalalignment = 'center',
+                    verticalalignment = 'center',
+                    fontsize = bintextsize,
+                    transform = axes[j,i].transAxes)
+                continue
+
             for x, Cl in enumerate(C_gs):
                 if C_gs_ref is None:
                     tmp = Cl[:,i,j]
@@ -880,9 +898,19 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
  
             axes[j,i].set_xlim(thetashow)
             
+            # (lens, source) pairs dropped via init_ggl_exclude come back as
+            # identically zero: such panels get an "excluded" placeholder,
+            # since zeros can be neither log scaled nor used as a ratio ref.
+            excluded = all(not np.any(g[:,i,j]) for (t, g) in theta_gammat)
+            if not (gammat_ref is None):
+                excluded = excluded or not np.any(gammat_ref[1][:,i,j])
+
             if gammat_ref is None:
-                axes[j,i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
-                axes[j,i].set_yscale('log')
+                if excluded:
+                    axes[j,i].set_yticks([])
+                else:
+                    axes[j,i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
+                    axes[j,i].set_yscale('log')
             else:
                 tmp = np.array(ylim) - 1
                 axes[j,i].set_ylim(tmp.tolist())
@@ -910,6 +938,14 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                 fontsize = bintextsize,
                 usetex = True,
                 transform = axes[j,i].transAxes)
+
+            if excluded:
+                axes[j,i].text(0.5, 0.5, "excluded",
+                    horizontalalignment = 'center',
+                    verticalalignment = 'center',
+                    fontsize = bintextsize,
+                    transform = axes[j,i].transAxes)
+                continue
 
             for x, (theta, gammat) in enumerate(theta_gammat):
                 if gammat_ref is None:
