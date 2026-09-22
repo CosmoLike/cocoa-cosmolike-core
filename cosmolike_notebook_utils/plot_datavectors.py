@@ -1832,7 +1832,14 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
       None after drawing, or (fig, ax) when show is None.
     """
 
+    # sup arrives as a python list whose entries may themselves be
+    # nested lists; np.asarray converts the first entry to a numpy
+    # array so .shape can be read, and the (rows, columns) tuple
+    # unpacks into the number of redshift slices and of k points
     nz, nk = np.asarray(sup[0]).shape
+    # validate before building anything: a size mismatch caught here
+    # names the problem, instead of surfacing later as a matplotlib
+    # broadcast error deep inside ax.plot
     if nk != len(log10k):
         print("Bad Input (number of k)")
         return 0
@@ -1840,45 +1847,73 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
         print("Bad Input (number of zlabels)")
         return 0
 
+    # plt.subplots builds one figure and one drawing area (the axes)
+    # in a single call and returns them as a pair
     fig, ax = plt.subplots(figsize = figsize)
+    # a colormap is a function: cm(0.0) is the first color of the
+    # map, cm(1.0) the last, with a continuous blend in between
     cm = plt.get_cmap(cmap)
 
     if not (param is None or colorbar is None):
+        # the colorbar is not read off the plotted lines: it is drawn
+        # from a ScalarMappable, a bare description of "this colormap
+        # spans these values", with Normalize mapping the parameter
+        # range onto the colormap's 0..1 axis. The curves below use
+        # the same colormap, so the bar and the line colors agree.
         cb = fig.colorbar(
-            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
-            ax = ax, 
-            orientation = 'vertical', 
-            aspect = 30, 
-            pad = 0.02)
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap),
+            ax = ax,
+            orientation = 'vertical',
+            aspect = 30,   # bar length over bar width: larger = thinner
+            pad = 0.02)    # gap to the panel, as a fraction of the axes
         if not (colorbarlabel is None):
             cb.set_label(label = colorbarlabel, size = 18, weight = 'bold', labelpad = 2)
         if len(param) != len(sup):
             print("Bad Input")
             return 0
 
+    # itertools.cycle repeats a list forever: each next(...) in the
+    # curve loop pulls the following width, wrapping at the end
     if not (linewidth is None):
         linewidthcycler = itertools.cycle(linewidth)
     else:
         linewidthcycler = itertools.cycle([1.5])
 
+    # np.power works elementwise: one call turns the whole log10 grid
+    # back into k values, no loop needed
     k = np.power(10.0, log10k)
+    # one linestyle per redshift slice; iz % len(zstyles) is the
+    # remainder of the division, so a fifth slice wraps around and
+    # reuses the solid style
     zstyles = ['solid', 'dashed', 'dashdot', 'dotted']
+    # enumerate yields (position, entry) pairs, so x counts the
+    # curves; x/len(sup) is this curve's position in 0..1, the
+    # coordinate the colormap expects
     for x, S in enumerate(sup):
         S = np.asarray(S)
         lw = next(linewidthcycler)
         for iz in range(nz):
-            ax.plot(k, 
-                    S[iz], 
-                    color = cm(x/len(sup)), 
-                    linewidth = lw, 
+            # S[iz] is row iz of the 2D array: this parameter value's
+            # suppression at one redshift, over all k
+            ax.plot(k,
+                    S[iz],
+                    color = cm(x/len(sup)),
+                    linewidth = lw,
                     linestyle = zstyles[iz % len(zstyles)])
 
+    # feedback acts over decades in k, so the x axis is logarithmic;
+    # S is of order one, so the y axis stays linear
     ax.set_xscale('log')
     ax.set_xlim([k[0], k[-1]])
     if not (ylim is None):
+        # set_ylim accepts any two-element sequence; list(...) turns
+        # the (lo, hi) tuple into one
         ax.set_ylim(list(ylim))
     ax.set_xlabel(r"$k$ [1/Mpc]", fontsize = xaxislabelsize)
     ax.set_ylabel(r"$S(k) = P_{\rm feedback}/P_{\rm DM}$", fontsize = yaxislabelsize)
+    # the tick numbers are Text objects; matplotlib has no single
+    # "tick font size" setter on the axes, so each label is resized
+    # on its own
     for item in ax.get_yticklabels():
         item.set_fontsize(yaxisticklabelsize)
     for item in ax.get_xticklabels():
@@ -1887,15 +1922,25 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
         ax.set_title(title, fontsize = titlesize)
 
     if not (zlabels is None):
-        # proxy handles: the linestyle legend is independent of the
-        # parameter colors, so it is drawn in black
-        handles = [matplotlib.lines.Line2D([], [], color = 'black', 
+        # the legend must key the linestyles, not the plotted lines:
+        # every curve of one redshift shares a style but has its own
+        # color. Line2D([], []) is a line with no data points - it
+        # never draws inside the panel and exists only as a black
+        # legend key for one style (a "proxy handle" in matplotlib
+        # terms). The comprehension builds one such key per redshift
+        # slice, in slice order.
+        handles = [matplotlib.lines.Line2D([], [], color = 'black',
                        linestyle = zstyles[iz % len(zstyles)]) for iz in range(nz)]
-        ax.legend(handles, zlabels, 
+        # ax.legend pairs handles with labels position by position;
+        # the conditional expression falls back to matplotlib's
+        # 'best' corner search when no location was passed
+        ax.legend(handles, zlabels,
                   loc = 'best' if legendloc is None else legendloc,
                   fontsize = legendfontsize,
                   frameon = False)
 
+    # warn=False: outside a notebook, showing a figure on a
+    # non-interactive backend would otherwise warn
     if not (show is None):
         fig.show(warn=False)
     else:
