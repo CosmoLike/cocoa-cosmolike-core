@@ -57,7 +57,7 @@ def _glued_supylabel(fig, leftcol, ylabel, yaxislabelsize):
 def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabel = None, lmin = 30, lmax = 1500, colorbarshrink=0.3,
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
                           legend = None, legendloc = None, yaxislabelsize = 12, yaxisticklabelsize = 10, 
-                          xaxisticklabelsize = 6, bintextpos = [0.2, 0.85], bintextsize = 13, figsize = (18, 18), 
+                          xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 13, figsize = (18, 18),
                           show = 1, colorbar=1, wspace=0.25, hspace=0.05, rescale = None,
                           alphatextpos = [0.05, 0.12], ydecades = 4,
                           ylabel = r"$\alpha\,\ell (\ell+1) C_{\ell}^{EE}/(2 \pi)$",
@@ -304,7 +304,7 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
 def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = None, colorbarshrink=0.3,
                 linestyle = None, linewidth = None, ylim = [0.88,1.12], 
                 cmap = 'gist_rainbow', legend = None, legendloc = None, yaxislabelsize = 10, 
-                yaxisticklabelsize = 6, xaxisticklabelsize = 20, bintextpos = [[0.8, 0.875],[0.2,0.875]], 
+                yaxisticklabelsize = 10, xaxisticklabelsize = 20, bintextpos = [[0.8, 0.875],[0.2,0.875]],
                 bintextsize = 15, figsize = (18, 18), show = 1, thetashow=[3,250], colorbar=1, wspace=0.25,hspace=0.05,
                 rescale = None, alphatextpos = [0.05, 0.12], ydecades = None, ylabel = None, legendfontsize = None):
     """Triangle plot of the real-space shear correlation functions.
