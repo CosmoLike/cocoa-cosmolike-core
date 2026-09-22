@@ -425,7 +425,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
                           legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, yaxisticklabelsize = 10, 
                           xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12),
-                          show = 1, colorbar=1, rescale = None, alphatextpos = [0.22, 0.1],
+                          show = 1, colorbar=1, rescale = None, alphatextpos = [0.05, 0.12],
                           ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$"):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
@@ -453,7 +453,8 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                  and the y-axis label reading alpha |C^gs|. Ignored
                  with C_gs_ref (already dimensionless and shared).
                  None (default) keeps per-panel y-ranges.
-      alphatextpos = axes-fraction (x, y) of the alpha annotation.
+      alphatextpos = axes-fraction (x, y) anchoring the left edge
+                 of the alpha annotation.
       ydecades = with rescale, cap on how many decades the shared
                  y-range extends below its ceiling (default 4):
                  deep |C| dips at sign crossings otherwise drag the
@@ -617,7 +618,7 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                 expo = int(alpha[i,j])
                 axes[j,i].text(alphatextpos[0], alphatextpos[1],
                     "$\\alpha=1$" if expo == 0 else f"$\\alpha=10^{{{expo}}}$",
-                    horizontalalignment = 'center',
+                    horizontalalignment = 'left',
                     verticalalignment = 'center',
                     fontsize = bintextsize,
                     usetex = True,
@@ -636,6 +637,17 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                                linestyle=next(linestylecycler))
 
     if not (rescale is None):
+        # glued panels put a neighbor's edge tick label on the same
+        # spot: hide labels within 10% of an interior panel boundary
+        loglo, loghi = np.log10(yglued[0]), np.log10(yglued[1])
+        for j in range(nsource):
+            for t in axes[j,0].yaxis.get_major_ticks():
+                v = t.get_loc()
+                if not (yglued[0] <= v <= yglued[1]):
+                    continue
+                frac = (np.log10(v) - loglo)/(loghi - loglo)
+                if (frac > 0.9 and j > 0) or (frac < 0.1 and j < nsource-1):
+                    t.label1.set_visible(False)
         # a draw realizes the tick labels, whose measured extent puts
         # the global label right beside the grid at any figure size
         fig.canvas.draw()
@@ -860,7 +872,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                             cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16,
                             yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85],
                             bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
-                     thetashow = None, rescale = None, alphatextpos = [0.22, 0.1],
+                     thetashow = None, rescale = None, alphatextpos = [0.05, 0.12],
                      ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$"):
     """Panel grid of the real-space tangential shear gamma_t(theta).
 
@@ -893,7 +905,8 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                  and the y-axis label reading alpha |gamma_t|.
                  Ignored with gammat_ref (already dimensionless and
                  shared). None (default) keeps per-panel y-ranges.
-      alphatextpos = axes-fraction (x, y) of the alpha annotation.
+      alphatextpos = axes-fraction (x, y) anchoring the left edge
+                 of the alpha annotation.
       ydecades = with rescale, cap on how many decades the shared
                  y-range extends below its ceiling (default 4):
                  deep |gamma_t| dips at sign crossings otherwise
@@ -1067,7 +1080,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                 expo = int(alpha[i,j])
                 axes[j,i].text(alphatextpos[0], alphatextpos[1],
                     "$\\alpha=1$" if expo == 0 else f"$\\alpha=10^{{{expo}}}$",
-                    horizontalalignment = 'center',
+                    horizontalalignment = 'left',
                     verticalalignment = 'center',
                     fontsize = bintextsize,
                     usetex = True,
@@ -1098,6 +1111,17 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                                    markersize=3)                    
     
     if not (rescale is None):
+        # glued panels put a neighbor's edge tick label on the same
+        # spot: hide labels within 10% of an interior panel boundary
+        loglo, loghi = np.log10(yglued[0]), np.log10(yglued[1])
+        for j in range(nsource):
+            for t in axes[j,0].yaxis.get_major_ticks():
+                v = t.get_loc()
+                if not (yglued[0] <= v <= yglued[1]):
+                    continue
+                frac = (np.log10(v) - loglo)/(loghi - loglo)
+                if (frac > 0.9 and j > 0) or (frac < 0.1 and j < nsource-1):
+                    t.label1.set_visible(False)
         # a draw realizes the tick labels, whose measured extent puts
         # the global label right beside the grid at any figure size
         fig.canvas.draw()
