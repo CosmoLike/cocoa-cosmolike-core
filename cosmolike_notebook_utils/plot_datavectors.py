@@ -1,8 +1,36 @@
 """Data-vector plots shared by the EXAMPLE_EVALUATE notebooks.
 
-Triangle plots (one panel per tomographic bin pair) of angular power
-spectra and of the real-space shear correlation functions. Pure
-matplotlib and numpy: nothing here touches CAMB or the compiled
+One function per probe, each drawing one panel per tomographic bin
+(or bin pair): cosmic shear as a lower triangle
+(plot_C_ss_tomo_limber in harmonic space, plot_xi for xi_plus/minus
+in real space), galaxy-galaxy lensing as a full lens x source grid
+(plot_C_gs_tomo_limber, plot_gammat_tomo_limber), galaxy clustering
+as one row of lens-bin auto-correlations (plot_C_gg_tomo,
+plot_wtheta_tomo), and one flat panel of baryonic feedback
+suppression curves for bfmt parameter sweeps
+(plot_baryon_suppression).
+
+Conventions every panel plotter shares:
+
+- Without a reference, each panel shows the spectrum itself with its
+  own y-range; with a *_ref argument it shows the fractional
+  difference (value/reference - 1) on one shared linear band, and
+  the panels are glued edge to edge (zero subplot spacing).
+- rescale = 1 glues the absolute panels too: each panel is
+  multiplied by its own power of ten, chosen so its maximum lands in
+  [1, 10), one y-range serves the whole grid, the factor is
+  annotated as alpha inside the panel, and one global y label
+  replaces the per-row labels. ydecades caps how far the shared
+  range extends below its ceiling.
+- Glued panels put a neighbor's edge tick number on the same spot,
+  so tick labels within 10% of an interior panel boundary are
+  hidden (y boundaries on grids and triangles, x boundaries on the
+  one-row plots).
+- A (lens, source) pair dropped via cosmolike's init_ggl_exclude
+  arrives as an identically zero spectrum; its panel is drawn empty
+  with an "excluded" placeholder instead of log scaling zeros.
+
+Pure matplotlib and numpy: nothing here touches CAMB or the compiled
 cosmolike interface, so every project shares these functions
 unchanged. Figure styling (fonts, usetex, rcParams) stays in the
 notebooks; these functions only build the figures.
@@ -20,10 +48,18 @@ def _hide_glued_edge_ticklabels(panels, lo, hi, axis = "y", log = True):
     """Hides tick labels near interior boundaries of a glued grid.
 
     Glued panels put a neighbor's edge tick label on the same spot,
-    so labels within 10% of an interior boundary disappear. panels =
-    sequence of (axes, free_lo, free_hi), where free_lo / free_hi
-    say whether that panel's low / high edge sits on the outer
-    figure boundary (labels there stay) instead of on a neighbor.
+    so labels within 10% of an interior boundary disappear.
+
+    Arguments:
+      panels = sequence of (axes, free_lo, free_hi): free_lo and
+               free_hi say whether that panel's low / high edge sits
+               on the outer figure boundary (labels there stay)
+               instead of on a neighbor.
+      lo, hi = the shared axis limits the fractions are measured in.
+      axis   = "y" (default) or "x": which axis the glue direction
+               runs along.
+      log    = True measures the 10% fraction in log10 of the tick
+               value (log-scaled axes); False measures it linearly.
     """
     span = (np.log10(hi) - np.log10(lo)) if log else (hi - lo)
     for ax, free_lo, free_hi in panels:
@@ -47,10 +83,18 @@ def _hide_glued_edge_ticklabels(panels, lo, hi, axis = "y", log = True):
 def _glued_supylabel(fig, leftcol, ylabel, yaxislabelsize):
     """One global y label placed against the measured tick-label edge.
 
-    A draw realizes the tick labels of the leftmost panels (leftcol)
-    so their extent can be measured; supylabel anchors the rotated
-    text's LEFT edge (ha='left'), so the label is measured too and
-    shifted until its right edge clears the ticks by a small pad.
+    A draw realizes the tick labels of the leftmost panels so their
+    extent can be measured; supylabel anchors the rotated text's
+    LEFT edge (ha='left'), so the label is measured too and shifted
+    until its right edge clears the ticks by a small pad.
+
+    Arguments:
+      fig     = the figure the label is drawn on.
+      leftcol = the panels whose tick labels set the clearance (the
+                leftmost column, the only one that shows y numbers
+                on a shared axis).
+      ylabel  = the label text.
+      yaxislabelsize = its font size in points.
     """
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
@@ -89,10 +133,18 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                  min/max; with it, the band around 1 (drawn as
                  ylim - 1).
       linestyle, linewidth = lists cycled across curves, or None.
-      legend   = one label per curve, or None; legendloc places it.
-      cmap, colorbarshrink, yaxislabelsize, yaxisticklabelsize,
-      xaxisticklabelsize, bintextpos, bintextsize, figsize, wspace,
-      hspace = matplotlib layout knobs.
+      legend   = one label per curve, or None. legendloc = None (the
+                 default) puts the legend inside the empty upper
+                 triangle; an (x, y) pair in figure fractions places
+                 its lower-left corner anywhere. legendfontsize =
+                 entry font size in points; None follows
+                 matplotlib's legend.fontsize rcParam.
+      yaxislabelsize, xaxislabelsize = font sizes in points of the
+                 y and x axis labels; yaxisticklabelsize and
+                 xaxisticklabelsize size the tick numbers the same
+                 way.
+      cmap, colorbarshrink, bintextpos, bintextsize, figsize,
+      wspace, hspace = matplotlib layout knobs.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -343,10 +395,17 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
       ylim   = without xi_ref, multipliers on each panel's min/max;
                with it, the band around 1 (drawn as ylim - 1).
       thetashow = x-axis range in arcmin.
-      legend = one label per curve, or None; legendloc places it.
-      cmap, colorbarshrink, yaxislabelsize, yaxisticklabelsize,
-      xaxisticklabelsize, bintextpos, bintextsize, figsize, wspace,
-      hspace = matplotlib layout knobs.
+      legend = one label per curve, or None. legendloc = None (the
+                 default) puts the legend inside the empty upper
+                 triangle; an (x, y) pair in figure fractions places
+                 its lower-left corner anywhere. legendfontsize =
+                 entry font size in points; None follows
+                 matplotlib's legend.fontsize rcParam.
+      yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
+      xaxisticklabelsize = axis-label and tick-number font sizes in
+                 points, as in plot_C_ss_tomo_limber.
+      cmap, colorbarshrink, bintextpos, bintextsize, figsize,
+      wspace, hspace = matplotlib layout knobs.
       show   = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -636,9 +695,14 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                  per curve.
       C_gs_ref = None, or one 3D array used as the ratio reference.
       param, colorbarlabel, lmin, lmax, cmap, ylim, linestyle,
-      linewidth, legend, legendloc, the *size arguments, bintextpos,
-      bintextsize, figsize = layout knobs as in
-      plot_C_ss_tomo_limber.
+      linewidth, legend, legendfontsize, the *size arguments
+      (yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
+      xaxisticklabelsize), bintextpos, bintextsize, figsize =
+      layout knobs as in plot_C_ss_tomo_limber.
+      legendloc = None (the default) lays one legend row right
+                 above the panels, centered on them; an (x, y) pair
+                 in figure fractions places its lower-left corner
+                 anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -903,9 +967,14 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
       overwriteylabel = y-axis label replacing the default.
       marker, markersize = point markers instead of lines.
       param, colorbarlabel, lmin, lmax, cmap, ylim, linestyle,
-      linewidth, legend, legendloc, the *size arguments, bintextpos,
-      bintextsize, figsize = layout knobs as in
-      plot_C_ss_tomo_limber.
+      linewidth, legend, legendfontsize, the *size arguments
+      (yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
+      xaxisticklabelsize), bintextpos, bintextsize, figsize =
+      layout knobs as in plot_C_ss_tomo_limber.
+      legendloc = None (the default) lays one legend row right
+                 above the panels, centered on them; an (x, y) pair
+                 in figure fractions places its lower-left corner
+                 anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1177,9 +1246,14 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
       marker   = list of matplotlib markers cycled across curves
                  (points instead of lines), or None for lines.
       param, colorbarlabel, cmap, ylim, linestyle, linewidth,
-      legend, legendloc, the *size arguments, bintextpos,
-      bintextsize, figsize = layout knobs as in
+      legend, legendfontsize, the *size arguments (yaxislabelsize,
+      xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
+      bintextpos, bintextsize, figsize = layout knobs as in
       plot_C_ss_tomo_limber.
+      legendloc = None (the default) lays one legend row right
+                 above the panels, centered on them; an (x, y) pair
+                 in figure fractions places its lower-left corner
+                 anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1467,9 +1541,14 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
       marker   = list of matplotlib markers cycled across curves
                  (points instead of lines), or None for lines.
       param, colorbarlabel, cmap, ylim, linestyle, linewidth,
-      legend, legendloc, the *size arguments, bintextpos,
-      bintextsize, figsize = layout knobs as in
+      legend, legendfontsize, the *size arguments (yaxislabelsize,
+      xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
+      bintextpos, bintextsize, figsize = layout knobs as in
       plot_C_ss_tomo_limber.
+      legendloc = None (the default) lays one legend row right
+                 above the panels, centered on them; an (x, y) pair
+                 in figure fractions places its lower-left corner
+                 anywhere.
       show     = True draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1736,13 +1815,15 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
       colorbarlabel = colorbar label, or None.
       zlabels  = one label per redshift slice for the linestyle
                  legend, or None for no legend; legendloc places it
-                 (None picks matplotlib's best corner).
+                 (None picks matplotlib's best corner) and
+                 legendfontsize sizes its entries in points.
       ylim     = explicit (lo, hi), or None for matplotlib's choice.
       title    = panel title (e.g. "method: vary parameter"), or
                  None; titlesize sizes it.
       linewidth = list cycled across curves, or None.
-      cmap, the *size arguments, figsize = layout knobs as in
-      plot_C_ss_tomo_limber.
+      cmap, the *size arguments (yaxislabelsize, xaxislabelsize,
+      yaxisticklabelsize, xaxisticklabelsize), figsize = layout
+      knobs as in plot_C_ss_tomo_limber.
       show     = 1 draws the figure; None returns (fig, ax).
       colorbar = None suppresses the colorbar even with param set.
 

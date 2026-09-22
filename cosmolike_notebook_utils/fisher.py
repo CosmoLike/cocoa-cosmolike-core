@@ -81,8 +81,10 @@ def get_ddv_dkit(dv, index=0, CV=None, AccuracyBoost=1.0,
     """Derivative of the data vector via the derivkit package.
 
     derivkit fits polynomials through adaptively chosen sample
-    points and differentiates the fit, which is more robust than a
-    fixed stencil when the data vector is noisy in the parameter.
+    points and differentiates the fit: numerical noise in the data
+    vector averages out over the fitted points instead of entering
+    the derivative at full strength, as it does through the fixed
+    step of a finite-difference stencil.
 
     Arguments:
       dv    = the data-vector function (see get_ddv).
@@ -123,7 +125,8 @@ def add_gaussian_priors(F, priors):
                Fisher matrix (the mean shifts no curvature).
 
     Returns:
-      a new Fisher matrix with the priors added.
+      a copy of the Fisher matrix with the priors added; the input
+      matrix is not modified.
     """
     Fp = F.copy()
     # np.fromiter builds an array straight from an iterator:

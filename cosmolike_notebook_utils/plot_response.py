@@ -30,23 +30,45 @@ _LINESTYLES = [
 
 
 def _luminance(rgb):
-    # Perceived brightness of an RGB color (the ITU-R BT.709 weights;
-    # green dominates because the eye is most sensitive to it). Used
-    # below to draw brighter, harder-to-see colors with thicker lines.
+    """Perceived brightness of an RGB color, between 0 and 1.
+
+    Uses the ITU-R BT.709 weights; green dominates because the eye
+    is most sensitive to it. plot_response_function draws brighter,
+    harder-to-see colors with thicker lines, and this is its
+    brightness measure.
+
+    Arguments:
+      rgb = color as (r, g, b) or (r, g, b, a), each channel in
+            [0, 1]; an alpha channel is ignored.
+
+    Returns:
+      the weighted channel sum, a float in [0, 1].
+    """
     r, g, b = rgb[:3]
     return 0.2126*r + 0.7152*g + 0.0722*b
 
 
 def _style_factor(ls):
-    # Extra thickness for dashed styles. A pattern with short "on"
-    # segments puts less ink on the page than a solid line and looks
-    # thinner than it is; compensate by up to a factor of 2.
+    """Extra line thickness compensating a dashed style's ink loss.
+
+    A pattern with short "on" segments puts less ink on the page
+    than a solid line of the same width and looks thinner than it
+    is; the factor grows as the mean "on" segment shrinks.
+
+    Arguments:
+      ls = a _LINESTYLES entry: the string "-" (solid) or an
+           (offset, dash pattern) tuple.
+
+    Returns:
+      a float in [1, 2]: 1 for solid, up to 2 for the shortest
+      dashes, so no style gets thinner than solid or more than
+      twice as thick.
+    """
     if isinstance(ls, str):
         return 1.0  # solid line: no extra thickness
     _, dashes = ls
     on_lengths = dashes[0::2]   # only the "on" (ink) segments
     mean_on = sum(on_lengths) / len(on_lengths)
-    # shorter dashes => larger factor; clamp to keep it sane
     return float(np.clip(6.0 / mean_on, 1.0, 2.0))
 
 
@@ -72,7 +94,7 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       labels = one LaTeX legend label per plotted slice.
       ylabel = y-axis label (LaTeX string).
       idx    = position of each label's slice on the array's second
-               axis, or None when label j simply is slice j.
+               axis, or None when label j is slice j.
       normalize = divide each curve by its own maximum.
       ncolors = how many colors the colormap is split into, or None
                for one per label. Passing more than len(labels)
