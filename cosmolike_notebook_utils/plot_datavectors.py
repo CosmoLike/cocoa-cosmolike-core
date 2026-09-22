@@ -30,9 +30,16 @@ def _hide_glued_edge_ticklabels(panels, lo, hi, axis = "y", log = True):
         axis_obj = ax.yaxis if axis == "y" else ax.xaxis
         for t in axis_obj.get_major_ticks():
             v = t.get_loc()
-            if not (lo <= v <= hi):
+            if log:
+                if v <= 0:
+                    continue
+                frac = (np.log10(v) - np.log10(lo))/span
+            else:
+                frac = (v - lo)/span
+            # the tolerance keeps ticks sitting exactly on a limit,
+            # where float dust puts them a hair outside [lo, hi]
+            if frac < -1e-6 or frac > 1 + 1e-6:
                 continue
-            frac = ((np.log10(v) - np.log10(lo)) if log else (v - lo))/span
             if (frac < 0.1 and not free_lo) or (frac > 0.9 and not free_hi):
                 t.label1.set_visible(False)
 
@@ -275,6 +282,13 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
             yglued[0], yglued[1])
         _glued_supylabel(fig, axes[:,0], ylabel, yaxislabelsize)
+
+    if not (C_ss_ref is None):
+        # the ratio triangle is glued too: same boundary-label
+        # pruning, on the shared linear range ylim - 1
+        _hide_glued_edge_ticklabels(
+            [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
+            ylim[0]-1.0, ylim[1]-1.0, log = False)
 
     if not (legend is None):
         if len(legend) != len(C_ss):
@@ -572,6 +586,13 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                       else r"$\alpha\,\theta \xi_{-} \times 10^4$")
         _glued_supylabel(fig, axes[:,0], ylabel, yaxislabelsize)
 
+    if not (xi_ref is None):
+        # the ratio triangle is glued too: same boundary-label
+        # pruning, on the shared linear range ylim - 1
+        _hide_glued_edge_ticklabels(
+            [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
+            ylim[0]-1.0, ylim[1]-1.0, log = False)
+
     if not (legend is None):
         if len(legend) != len(xi):
             print("Bad Input")
@@ -816,6 +837,13 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
             yglued[0], yglued[1])
         _glued_supylabel(fig, axes[:,0], ylabel, yaxislabelsize)
+
+    if not (C_gs_ref is None):
+        # the ratio grid is glued too: same boundary-label pruning,
+        # on the shared linear range ylim - 1
+        _hide_glued_edge_ticklabels(
+            [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
+            ylim[0]-1.0, ylim[1]-1.0, log = False)
 
     if not (legend is None):
         if len(legend) != len(C_gs):
@@ -1081,6 +1109,13 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         _glued_supylabel(fig, [axes[0]],
             ylabel if overwriteylabel is None else overwriteylabel,
             yaxislabelsize)
+
+    if not (C_gg_ref is None):
+        # the ratio row is glued too: prune the x tick labels at
+        # interior panel boundaries
+        _hide_glued_edge_ticklabels(
+            [(axes[i], i == 0, i == nlens1-1) for i in range(nlens1)],
+            lmin, lmax, axis = "x", log = (forcelinearxscale != True))
 
     if not (legend is None):
         if len(legend) != len(C_gg):
@@ -1366,6 +1401,13 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             yglued[0], yglued[1])
         _glued_supylabel(fig, axes[:,0], ylabel, yaxislabelsize)
 
+    if not (gammat_ref is None):
+        # the ratio grid is glued too: same boundary-label pruning,
+        # on the shared linear range ylim - 1
+        _hide_glued_edge_ticklabels(
+            [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
+            ylim[0]-1.0, ylim[1]-1.0, log = False)
+
     if not (legend is None):
         if len(legend) != len(theta_gammat):
             print("Bad Input")
@@ -1629,6 +1671,13 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             [(axes[i], i == 0, i == nlens1-1) for i in range(nlens1)],
             thetashow[0], thetashow[1], axis = "x")
         _glued_supylabel(fig, [axes[0]], ylabel, yaxislabelsize)
+
+    if not (theta_wtheta_ref is None):
+        # the ratio row is glued too: prune the x tick labels at
+        # interior panel boundaries
+        _hide_glued_edge_ticklabels(
+            [(axes[i], i == 0, i == nlens1-1) for i in range(nlens1)],
+            thetashow[0], thetashow[1], axis = "x")
 
     if not (legend is None):
         if len(legend) != len(theta_wtheta):
