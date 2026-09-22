@@ -424,8 +424,8 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
 def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabel = None, lmin = 30, lmax = 1500, 
                           cmap = 'gist_rainbow', ylim = [0.75,1.25], linestyle = None, linewidth = None,
                           legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, yaxisticklabelsize = 10, 
-                          xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12), 
-                          show = 1, colorbar=1):
+                          xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], bintextsize = 15, figsize = (20, 12),
+                          show = 1, colorbar=1, rescale = None, alphatextpos = [0.22, 0.1]):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -444,6 +444,15 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
       plot_C_ss_tomo_limber.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
+      rescale  = 1 multiplies each panel by its own power of ten,
+                 chosen so the rescaled maximum lands in [1, 10):
+                 every panel then shares one y-range, interior y
+                 axes disappear and the panels are glued together,
+                 with the factor alpha annotated inside each panel
+                 and the y-axis label reading alpha |C^gs|. Ignored
+                 with C_gs_ref (already dimensionless and shared).
+                 None (default) keeps per-panel y-ranges.
+      alphatextpos = axes-fraction (x, y) of the alpha annotation.
 
     Returns:
       0 on malformed input (a printed message names the problem),
@@ -464,23 +473,45 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             print(f"Nell = {nell}, Nell_REF = {nell2}")
             return 0   
 
-    if C_gs_ref is None:
+    # rescale=1: alpha[i,j] holds the log10 of the per-panel factor;
+    # multiplied in, every panel's maximum lands in [1, 10), so one
+    # common y-range (yglued) serves the whole glued grid. Panels
+    # zeroed by init_ggl_exclude keep alpha = 0 and are skipped.
+    rescale = None if not (C_gs_ref is None) else rescale
+    alpha = np.zeros((nlens, nsource))
+    if not (rescale is None):
+        panlo, panhi = [], []
+        for i in range(nlens):
+            for j in range(nsource):
+                pmax = max(np.max(np.abs(Cl[:,i,j])) for Cl in C_gs)
+                if pmax == 0:
+                    continue
+                alpha[i,j] = -np.floor(np.log10(pmax))
+                # the glued floor only counts positive minima: a curve
+                # touching zero cannot set a log-axis lower limit
+                lo = min(np.min(np.abs(Cl[:,i,j])) for Cl in C_gs)*10.0**alpha[i,j]
+                if lo > 0:
+                    panlo.append(lo)
+                panhi.append(pmax*10.0**alpha[i,j])
+        yglued = [ylim[0]*np.min(panlo if panlo else panhi), ylim[1]*np.max(panhi)]
+
+    if C_gs_ref is None and rescale is None:
         fig, axes = plt.subplots(
-            nrows = nsource, 
-            ncols = nlens, 
-            figsize = figsize, 
-            sharex = True, 
-            sharey = False, 
+            nrows = nsource,
+            ncols = nlens,
+            figsize = figsize,
+            sharex = True,
+            sharey = False,
             gridspec_kw = {'wspace': 0.275, 'hspace': 0.135})
     else:
         fig, axes = plt.subplots(
-            nrows = nsource, 
-            ncols = nlens, 
-            figsize = figsize, 
-            sharex = True, 
-            sharey = True, 
+            nrows = nsource,
+            ncols = nlens,
+            figsize = figsize,
+            sharex = True,
+            sharey = True,
             gridspec_kw = {'wspace': 0, 'hspace': 0})
-    
+
     cm = plt.get_cmap(cmap)
     
     if not (param is None or colorbar is None):
@@ -526,7 +557,10 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                 excluded = excluded or not np.any(C_gs_ref[:,i,j])
 
             if C_gs_ref is None:
-                if excluded:
+                if not (rescale is None):
+                    axes[j,i].set_ylim(yglued)
+                    axes[j,i].set_yscale('log')
+                elif excluded:
                     axes[j,i].set_yticks([])
                 else:
                     axes[j,i].set_ylim([np.min(ylim[0]*np.array(clmin)), np.max(ylim[1]*np.array(clmax))])
@@ -535,12 +569,15 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                 tmp = np.array(ylim) - 1
                 axes[j,i].set_ylim(tmp.tolist())
                 axes[j,i].set_yscale('linear')
-                
+
             axes[j,i].set_xscale('log')
-            
+
             if i == 0:
                 if C_gs_ref is None:
-                    axes[j,i].set_ylabel(r"$|C_{\ell}^{gs}|$", fontsize=yaxislabelsize)
+                    if rescale is None:
+                        axes[j,i].set_ylabel(r"$|C_{\ell}^{gs}|$", fontsize=yaxislabelsize)
+                    else:
+                        axes[j,i].set_ylabel(r"$\alpha\,|C_{\ell}^{gs}|$", fontsize=yaxislabelsize)
                 else:
                     axes[j,i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
             for item in (axes[j,i].get_yticklabels()):
@@ -567,15 +604,26 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                     transform = axes[j,i].transAxes)
                 continue
 
+            if not (rescale is None):
+                expo = int(alpha[i,j])
+                axes[j,i].text(alphatextpos[0], alphatextpos[1],
+                    "$\\alpha=1$" if expo == 0 else f"$\\alpha=10^{{{expo}}}$",
+                    horizontalalignment = 'center',
+                    verticalalignment = 'center',
+                    fontsize = bintextsize,
+                    usetex = True,
+                    transform = axes[j,i].transAxes)
+
             for x, Cl in enumerate(C_gs):
                 if C_gs_ref is None:
-                    tmp = Cl[:,i,j]
+                    # 10**alpha = 1 unless rescale is on for this panel
+                    tmp = Cl[:,i,j] * 10.0**alpha[i,j]
                 else:
                     tmp = Cl[:,i,j] / C_gs_ref[:,i,j] - 1
-                axes[j,i].plot(ell, 
-                               tmp, 
-                               color=cm(x/len(C_gs)), 
-                               linewidth=next(linewidthcycler), 
+                axes[j,i].plot(ell,
+                               tmp,
+                               color=cm(x/len(C_gs)),
+                               linewidth=next(linewidthcycler),
                                linestyle=next(linestylecycler))
 
     if not (legend is None):
@@ -784,12 +832,12 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         return (fig, axes)
 
 
-def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, colorbarlabel = None, marker = None, 
+def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, colorbarlabel = None, marker = None,
                             linestyle = None, linewidth = None, ylim = [0.75,1.25],
-                            cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16, 
-                            yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85], 
+                            cmap = 'gist_rainbow', legend = None, legendloc = (0.6,0.78), yaxislabelsize = 16,
+                            yaxisticklabelsize = 10,  xaxisticklabelsize = 20, bintextpos = [0.2, 0.85],
                             bintextsize = 15, figsize = (12, 12), show = 1, colorbar=1,
-                     thetashow=[3, 1100]):
+                     thetashow=[3, 1100], rescale = None, alphatextpos = [0.22, 0.1]):
     """Panel grid of the real-space tangential shear gamma_t(theta).
 
     One panel per (lens, source) bin pair: rows are lens bins,
@@ -812,6 +860,15 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
       plot_C_ss_tomo_limber.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
+      rescale  = 1 multiplies each panel by its own power of ten,
+                 chosen so the rescaled maximum lands in [1, 10):
+                 every panel then shares one y-range, interior y
+                 axes disappear and the panels are glued together,
+                 with the factor alpha annotated inside each panel
+                 and the y-axis label reading alpha |gamma_t|.
+                 Ignored with gammat_ref (already dimensionless and
+                 shared). None (default) keeps per-panel y-ranges.
+      alphatextpos = axes-fraction (x, y) of the alpha annotation.
 
     Returns:
       0 on malformed input (a printed message names the problem),
@@ -837,13 +894,35 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             print(f"Ntheta = {ntheta}, Ntheta_REF = {ntheta2}")
             return 0   
         
-    if gammat_ref is None:
+    # rescale=1: alpha[i,j] holds the log10 of the per-panel factor;
+    # multiplied in, every panel's maximum lands in [1, 10), so one
+    # common y-range (yglued) serves the whole glued grid. Panels
+    # zeroed by init_ggl_exclude keep alpha = 0 and are skipped.
+    rescale = None if not (gammat_ref is None) else rescale
+    alpha = np.zeros((nlens, nsource))
+    if not (rescale is None):
+        panlo, panhi = [], []
+        for i in range(nlens):
+            for j in range(nsource):
+                pmax = max(np.max(np.abs(g[:,i,j])) for (t, g) in theta_gammat)
+                if pmax == 0:
+                    continue
+                alpha[i,j] = -np.floor(np.log10(pmax))
+                # the glued floor only counts positive minima: a curve
+                # touching zero cannot set a log-axis lower limit
+                lo = min(np.min(np.abs(g[:,i,j])) for (t, g) in theta_gammat)*10.0**alpha[i,j]
+                if lo > 0:
+                    panlo.append(lo)
+                panhi.append(pmax*10.0**alpha[i,j])
+        yglued = [ylim[0]*np.min(panlo if panlo else panhi), ylim[1]*np.max(panhi)]
+
+    if gammat_ref is None and rescale is None:
         fig, axes = plt.subplots(
-            nrows = nsource, 
-            ncols = nlens, 
-            figsize = figsize, 
-            sharex = True, 
-            sharey = False, 
+            nrows = nsource,
+            ncols = nlens,
+            figsize = figsize,
+            sharex = True,
+            sharey = False,
             gridspec_kw = {'wspace': 0.25, 'hspace': 0.05})
     else:
         fig, axes = plt.subplots(
@@ -901,7 +980,10 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                 excluded = excluded or not np.any(gammat_ref[1][:,i,j])
 
             if gammat_ref is None:
-                if excluded:
+                if not (rescale is None):
+                    axes[j,i].set_ylim(yglued)
+                    axes[j,i].set_yscale('log')
+                elif excluded:
                     axes[j,i].set_yticks([])
                 else:
                     axes[j,i].set_ylim([np.min(ylim[0]*np.array(ximin)),np.max(ylim[1]*np.array(ximax))])
@@ -915,7 +997,10 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             
             if i == 0:
                 if gammat_ref is None:
-                    axes[j,i].set_ylabel(r"$|\gamma_{t}(\\theta)|$", fontsize=yaxislabelsize)
+                    if rescale is None:
+                        axes[j,i].set_ylabel(r"$|\gamma_{t}(\\theta)|$", fontsize=yaxislabelsize)
+                    else:
+                        axes[j,i].set_ylabel(r"$\alpha\,|\gamma_{t}(\theta)|$", fontsize=yaxislabelsize)
                 else:
                     axes[j,i].set_ylabel("frac. diff.", fontsize=yaxislabelsize)
             for item in (axes[j,i].get_yticklabels()):
@@ -942,9 +1027,20 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                     transform = axes[j,i].transAxes)
                 continue
 
+            if not (rescale is None):
+                expo = int(alpha[i,j])
+                axes[j,i].text(alphatextpos[0], alphatextpos[1],
+                    "$\\alpha=1$" if expo == 0 else f"$\\alpha=10^{{{expo}}}$",
+                    horizontalalignment = 'center',
+                    verticalalignment = 'center',
+                    fontsize = bintextsize,
+                    usetex = True,
+                    transform = axes[j,i].transAxes)
+
             for x, (theta, gammat) in enumerate(theta_gammat):
                 if gammat_ref is None:
-                    tmp = np.abs(gammat[:,i,j])
+                    # 10**alpha = 1 unless rescale is on for this panel
+                    tmp = np.abs(gammat[:,i,j]) * 10.0**alpha[i,j]
                 else:
                     (theta1, gammat2) = gammat_ref
                     tmp = gammat[:,i,j]/gammat2[:,i,j] - 1
