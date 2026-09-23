@@ -1506,7 +1506,7 @@ class CocoaTestHarness:
                 return None
         return evaluate_chi2(model, point)
 
-    def _ten_in_a_row_impl(self, example, tatt):
+    def _ten_in_a_row_impl(self, example, tatt, ee2=False):
         """In-process body of ten_in_a_row_chi2 (worker side).
 
         Race check: the fiducial evaluated fresh and as 10th of a
@@ -1522,6 +1522,11 @@ class CocoaTestHarness:
         Arguments:
           example = a key of the project's EXAMPLES table.
           tatt    = True runs the TATT variant, False the NLA one.
+          ee2     = True sources the nonlinear P(k) from
+                    EuclidEmulator2 (non_linear_emul: 1) instead of
+                    the frozen setting; EE2's compute is
+                    OpenMP-threaded, so this variant exercises its
+                    threading inside the race sequence.
 
         Returns:
           (fresh, tenth): chi2 of the first fiducial evaluation and
@@ -1536,10 +1541,15 @@ class CocoaTestHarness:
         # `"TATT" if tatt else "NLA"` picks the first name when tatt
         # is True, the second otherwise
         ia_label = "TATT" if tatt else "NLA"
+        if ee2:
+            ia_label += "+EE2"
         print(f"  building model ({example}, {ia_label}) ...", flush=True)
         # one model instance for the whole sequence: sharing the
         # instance is the point, since leaked state lives inside it
         info = self.load_frozen_info(example, tatt)
+        if ee2:
+            info["likelihood"][self.examples[example]["likelihood"]][
+                "non_linear_emul"] = 1
         model = make_model(info)
         point = self.build_point(model, example, tatt)
         # the fresh value: the fiducial evaluated before anything
@@ -1800,7 +1810,11 @@ class CocoaTestHarness:
         elif function == "bdrift":
             value = self._baryon_drift_chi2_impl(baryon)
         else:
-            value = list(self._ten_in_a_row_impl(example, tatt))
+            # "race" and "race_ee2" both land here; the ee2 flag is
+            # carried by the function name so the worker argv stays
+            # unchanged
+            value = list(self._ten_in_a_row_impl(
+                example, tatt, ee2=(function == "race_ee2")))
         # json.dump writes the value into the file as json text; the
         # parent reads it back with json.load. The with block closes
         # the file even when the dump fails
@@ -1972,7 +1986,7 @@ class CocoaTestHarness:
         return float(self._run_isolated("bdrift", "example1", False,
                                         baryon=baryon))
 
-    def ten_in_a_row_chi2(self, example, tatt):
+    def ten_in_a_row_chi2(self, example, tatt, ee2=False):
         """Race check, evaluated in one fresh worker subprocess.
 
         The whole 11-evaluation sequence runs inside ONE worker: the
@@ -1983,6 +1997,9 @@ class CocoaTestHarness:
         Arguments:
           example = a key of the project's EXAMPLES table.
           tatt    = True runs the TATT variant, False the NLA one.
+          ee2     = True runs the row with the nonlinear P(k) from
+                    EuclidEmulator2 (non_linear_emul: 1), the EE2
+                    race check.
 
         Returns:
           (fresh, tenth): chi2 of the first fiducial evaluation and
@@ -1997,10 +2014,12 @@ class CocoaTestHarness:
         # (parent) process fails this test and spawns a worker
         # instead
         if os.environ.get(_WORKER_FLAG) == "1":
-            return self._ten_in_a_row_impl(example, tatt)
+            return self._ten_in_a_row_impl(example, tatt, ee2=ee2)
         # the worker's two-element json list unpacks into the two
-        # names
-        fresh, tenth = self._run_isolated("race", example, tatt)
+        # names; the ee2 flag travels as the function name so the
+        # worker argv stays unchanged
+        fresh, tenth = self._run_isolated(
+            "race_ee2" if ee2 else "race", example, tatt)
         return float(fresh), float(tenth)
 
     # ---- the CFASTPT vs FASTPT comparison -----------------------------------
