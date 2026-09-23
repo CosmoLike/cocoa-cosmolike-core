@@ -1017,10 +1017,25 @@ void set_IA_PS(
   )
 {
   static constexpr std::string_view fname = "set_IA_PS"sv;
+  // Row count of the IA table the python fastpt theory block sends:
+  // 10 spectra (tt_E, tt_B, ta_dE1, ta_dE2, ta_0E0E, ta_0B0B, mixA,
+  // mixBtype2, mixDEE, mixDBB) plus the k row (index 10, rescaled as
+  // a wavenumber by the i != 10 branches below) plus P_lin.
   constexpr int NIAPS = 12;
   const double coverH0 = cosmology.coverH0;
   const double coverH0cube = coverH0*coverH0*coverH0;
-  
+
+  // Both loops below index PS[i*N+j] up to NIAPS*N, and arma's
+  // operator[] does not bounds-check in release builds: a sender
+  // whose row count disagrees with NIAPS would be read out of
+  // bounds silently (see the NBIAS comment in set_bias_PS for the
+  // abort that mismatch caused). Refuse mismatched input instead.
+  if (PS.n_elem != static_cast<arma::uword>(NIAPS) * N) [[unlikely]] {
+    critical("{}: PS has {} elements; expected NIAPS x N = {} x {} = {}",
+             fname, PS.n_elem, NIAPS, N, NIAPS * N);
+    exit(1);
+  }
+
   int cache_update = 0;
   if (NULL == FPTIA.tab ||
       FPTIA.N != N ||
@@ -1085,9 +1100,32 @@ void set_bias_PS(
   )
 {
   static constexpr std::string_view fname = "set_bias_PS"sv;
-  constexpr int NBIAS = 12;
+  // Row count of the bias table the python fastpt theory block sends:
+  // (d1d2, d2d2, d1s2, d2s2, s2s2, d1p3, k, P_lin) - 8 rows, with the
+  // k row at index 6 (the i != 6 branches below rescale it as a
+  // wavenumber). This constant was 12, copy-pasted from NIAPS in
+  // set_IA_PS: the two scan loops then read PS[i*N+j] for i = 8..11,
+  // 4*N doubles past the end of the input vector (arma operator[]
+  // does not bounds-check in release builds). Whenever the heap
+  // bytes there happened to encode a NaN, the isnan tripwire below
+  // killed the process ("NaN found on interpolation table"): a
+  // nondeterministic, machine-load-dependent abort, observed in the
+  // lsst_y1 CFASTPT-vs-FASTPT sweep at OMP_NUM_THREADS 1 and 4
+  // (2026-09-22). The garbage rows also made the cache comparison
+  // below report a change on almost every call, so the table was
+  // freed and rebuilt every evaluation. Downstream code reads rows
+  // 0, 2, and 5 only (GS_BIAS_SRC in cosmo2D.c).
+  constexpr int NBIAS = 8;
   const double coverH0  = cosmology.coverH0;
   const double coverH0cube = coverH0*coverH0*coverH0;
+
+  // same refusal as set_IA_PS: a row-count mismatch must fail loudly
+  // here, not as an out-of-bounds read inside the loops
+  if (PS.n_elem != static_cast<arma::uword>(NBIAS) * N) [[unlikely]] {
+    critical("{}: PS has {} elements; expected NBIAS x N = {} x {} = {}",
+             fname, PS.n_elem, NBIAS, N, NBIAS * N);
+    exit(1);
+  }
 
   int cache_update = 0;
   if (NULL == FPTbias.tab ||
