@@ -908,12 +908,23 @@ class CocoaTestHarness:
                          by EVERY example (a project whose examples
                          name their own carries "nla_dataset" keys in
                          EXAMPLES instead, which take precedence).
+      fastpt_masks     = the scale-cut masks the CFASTPT-vs-FASTPT
+                         comparison can run under (the --mask option
+                         of the tests). "frozen" (always first) keeps
+                         each example's own tatt_dataset; every other
+                         name selects the frozen dataset variant
+                         "<tatt_dataset stem>_<name>.dataset", a copy
+                         of that descriptor whose mask_file line
+                         names the chosen mask (e.g. "ones" for the
+                         no-scale-cuts all-ones mask). The default
+                         offers "frozen" alone.
     """
 
     def __init__(self, worker_file, interface_module, examples,
                  tatt_point, accuracy_knobs, high_accuracy_likelihood,
                  fastpt_low_settings, fastpt_high_settings,
-                 fastpt_points, nla_dataset=None):
+                 fastpt_points, nla_dataset=None,
+                 fastpt_masks=("frozen",)):
         """Bind the shared machinery to one project's data.
 
         Arguments:
@@ -946,6 +957,7 @@ class CocoaTestHarness:
         self.fastpt_high_settings = fastpt_high_settings
         self.fastpt_points = fastpt_points
         self.nla_dataset = nla_dataset
+        self.fastpt_masks = tuple(fastpt_masks)
 
     # ---- frozen-state integrity ---------------------------------------------
     def compute_manifest(self):
@@ -1925,7 +1937,7 @@ class CocoaTestHarness:
 
     # ---- the CFASTPT vs FASTPT comparison -----------------------------------
     def _fastpt_comparison_info(self, example, fastpt, high,
-                                fastpt_settings):
+                                fastpt_settings, mask="frozen"):
         """The cobaya input of one comparison block.
 
         Starts from the project's frozen TATT configuration
@@ -1952,18 +1964,36 @@ class CocoaTestHarness:
           fastpt_settings = None, or the fastpt block's extra_args
                     table (FASTPT_LOW_SETTINGS or
                     FASTPT_HIGH_SETTINGS).
+          mask    = a fastpt_masks entry: "frozen" (the default)
+                    keeps the example's own tatt_dataset; any other
+                    name swaps the data_file for the frozen variant
+                    "<tatt_dataset stem>_<mask>.dataset", identical
+                    except for its mask_file line (the --mask option
+                    of the tests).
 
         Returns:
           the input dictionary ready for cobaya's get_model.
 
         Raises:
-          ValueError from load_frozen_info when example names an
-          emulator entry (the comparison never evaluates one).
+          ValueError when mask is not a fastpt_masks entry, or from
+          load_frozen_info when example names an emulator entry (the
+          comparison never evaluates one).
         """
+        if mask not in self.fastpt_masks:
+            raise ValueError(
+                f"mask {mask!r} is not offered by this project; the "
+                f"choices are {self.fastpt_masks}")
         info = self.load_frozen_info(example, tatt=True,
                                      high_accuracy=high)
         likelihood_block = info["likelihood"][
             self.examples[example]["likelihood"]]
+        if mask != "frozen":
+            # the variant descriptor follows the naming rule the
+            # class docstring states; str.removesuffix drops the
+            # ".dataset" tail so the mask lands before it
+            stem = self.examples[example]["tatt_dataset"].removesuffix(
+                ".dataset")
+            likelihood_block["data_file"] = f"{stem}_{mask}.dataset"
         if fastpt:
             likelihood_block["IA_code"] = 1
             # setdefault hands back the existing "theory" dictionary,
@@ -1999,7 +2029,7 @@ class CocoaTestHarness:
     def _fastpt_comparison_block(self, example, fastpt, high,
                                  fastpt_settings=None, label=None,
                                  vectors_dir=None,
-                                 reference_label=None):
+                                 reference_label=None, mask="frozen"):
         """The 30-point sweep on ONE model: the comparison's worker half.
 
         Builds the frozen TATT configuration with one
@@ -2044,6 +2074,9 @@ class CocoaTestHarness:
                     sweep.
           reference_label = None to only print vectors, or the label
                     of the block to measure against.
+          mask    = a fastpt_masks entry, forwarded to
+                    _fastpt_comparison_info (see there): the
+                    scale-cut mask this block's dataset carries.
 
         Returns:
           {"chi2s": the per-point chi2 list against the shipped data
@@ -2068,10 +2101,10 @@ class CocoaTestHarness:
             # the low and high tables differ in
             code += f"(boost {fastpt_settings['accuracyboost']:g})"
         setting = "high accuracy" if high else "default settings"
-        print(f"  building model ({example}, TATT, {code}, {setting}) "
-              "...", flush=True)
+        print(f"  building model ({example}, TATT, {code}, {setting}, "
+              f"mask {mask}) ...", flush=True)
         info = self._fastpt_comparison_info(example, fastpt, high,
-                                            fastpt_settings)
+                                            fastpt_settings, mask=mask)
         # every evaluation rewrites this one file; the loop below
         # moves it to a per-point name right after each evaluation
         current_path = os.path.join(vectors_dir,
@@ -2173,7 +2206,8 @@ class CocoaTestHarness:
 
     def _run_fastpt_comparison_worker(self, example, fastpt, high,
                                       fastpt_settings, label,
-                                      vectors_dir, reference_label):
+                                      vectors_dir, reference_label,
+                                      mask="frozen"):
         """Run one _fastpt_comparison_block in a fresh python subprocess.
 
         A fresh process is the cache flush: cobaya's component
@@ -2189,7 +2223,8 @@ class CocoaTestHarness:
 
         Arguments:
           example, fastpt, high, fastpt_settings, label, vectors_dir,
-          reference_label = forwarded to _fastpt_comparison_block.
+          reference_label, mask = forwarded to
+          _fastpt_comparison_block.
 
         Returns:
           the block's result dictionary.
@@ -2221,7 +2256,7 @@ class CocoaTestHarness:
             f"fastpt={fastpt!r}, high={high!r}, "
             f"fastpt_settings={fastpt_settings!r}, "
             f"label={label!r}, vectors_dir={vectors_dir!r}, "
-            f"reference_label={reference_label!r})\n"
+            f"reference_label={reference_label!r}, mask={mask!r})\n"
             f"with open({out_path!r}, 'w') as f:\n"
             "    json.dump(result, f)\n"
         )
@@ -2243,7 +2278,8 @@ class CocoaTestHarness:
                 f"for {len(self.fastpt_points)} comparison points")
         return result
 
-    def cfastpt_vs_fastpt_chi2s(self, example, high=False):
+    def cfastpt_vs_fastpt_chi2s(self, example, high=False,
+                                mask="frozen"):
         """The comparison-point quantities under the three configurations.
 
         The same 30 hard-coded intrinsic-alignment points evaluated
@@ -2272,6 +2308,11 @@ class CocoaTestHarness:
                     camb/cosmolike settings; True repeats all three
                     blocks with the HIGH_ACCURACY settings (the
                     --high=1 command line option of the tests).
+          mask    = a fastpt_masks entry, applied to all three
+                    blocks: "frozen" (the default) keeps each
+                    example's own tatt_dataset; any other name swaps
+                    in the matching frozen dataset variant (the
+                    --mask command line option of the tests).
 
         Returns:
           (chi2_cfastpt, chi2_fastpt_low, chi2_fastpt_high,
@@ -2288,17 +2329,17 @@ class CocoaTestHarness:
             cfastpt = self._run_fastpt_comparison_worker(
                 example, fastpt=False, high=high, fastpt_settings=None,
                 label="cfastpt", vectors_dir=vectors_dir,
-                reference_label=None)
+                reference_label=None, mask=mask)
             fastpt_low = self._run_fastpt_comparison_worker(
                 example, fastpt=True, high=high,
                 fastpt_settings=self.fastpt_low_settings,
                 label="fastpt_low", vectors_dir=vectors_dir,
-                reference_label="cfastpt")
+                reference_label="cfastpt", mask=mask)
             fastpt_high = self._run_fastpt_comparison_worker(
                 example, fastpt=True, high=high,
                 fastpt_settings=self.fastpt_high_settings,
                 label="fastpt_high", vectors_dir=vectors_dir,
-                reference_label="cfastpt")
+                reference_label="cfastpt", mask=mask)
         finally:
             # the shared vectors die with the sweep, whether it
             # finished or an exception is on its way out
