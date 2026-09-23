@@ -229,6 +229,10 @@ MAP OF THIS FILE
                              _fastpt_comparison_block,
                              _run_fastpt_comparison_worker,
                              cfastpt_vs_fastpt_chi2s
+
+Module functions after the class: conftest_addoption and
+conftest_configure, the shared implementation of every project's
+conftest.py (see the section banner at the end of the file).
 """
 
 import hashlib
@@ -2077,6 +2081,13 @@ class CocoaTestHarness:
           mask    = a fastpt_masks entry, forwarded to
                     _fastpt_comparison_info (see there): the
                     scale-cut mask this block's dataset carries.
+                    Under a non-frozen mask the shipped TATT data
+                    vector does not apply (it was generated under
+                    the frozen mask), so the block regenerates the
+                    baseline: the CFASTPT fiducial vector under the
+                    chosen mask becomes the sweep's data vector and
+                    every reported chi2 is measured against it,
+                    from a zero baseline.
 
         Returns:
           {"chi2s": the per-point chi2 list against the shipped data
@@ -2131,6 +2142,49 @@ class CocoaTestHarness:
                 f"{sorted(sampled - set(base))}; point only "
                 f"{sorted(set(base) - sampled)}")
         n_points = len(self.fastpt_points)
+        fiducial_truth = None
+        if mask != "frozen":
+            # Under a non-frozen mask the shipped TATT data vector
+            # does not apply: it was generated under the frozen
+            # contract's mask, so rows this mask newly unmasks would
+            # be compared against zeros and the chi2 against it
+            # would be meaningless. The baseline is regenerated
+            # instead, the same construction the accuracy checks use
+            # when they change cosmology: the fiducial TATT point is
+            # evaluated first, and the CFASTPT block's printed
+            # vector at it becomes the data vector of the whole
+            # sweep, so the reported chi2 starts from a zero
+            # baseline (CFASTPT at the fiducial scores exactly
+            # zero). The fastpt blocks read the cfastpt fiducial
+            # from vectors_dir, where the cfastpt block (always
+            # first) left it.
+            started = time.perf_counter()
+            _evaluate_cached(model, base)
+            elapsed = time.perf_counter() - started
+            if not os.path.isfile(current_path):
+                raise RuntimeError(
+                    f"{code} fiducial: the evaluation printed no "
+                    f"data vector at {current_path}")
+            os.replace(current_path,
+                       os.path.join(vectors_dir,
+                                    f"{label}_fiducial.modelvector"))
+            # the compiled interface was initialized by the
+            # likelihood build above; its masked inverse covariance
+            # carries the chosen mask
+            import importlib
+
+            ci = importlib.import_module(self.interface_module)
+            icov_fid = np.array(ci.get_inv_cov_masked())
+            # "cfastpt" is the label the driver gives the reference
+            # block, which always runs first, so this file exists
+            # for every block (the cfastpt block reads its own)
+            fiducial_truth = _load_datavector(
+                os.path.join(vectors_dir,
+                             "cfastpt_fiducial.modelvector"))
+            print(f"  {code} fiducial under mask {mask}: baseline "
+                  f"regenerated ({elapsed:.2f} s); the chi2 below "
+                  "is measured against the CFASTPT fiducial vector",
+                  flush=True)
         chi2s = []
         eval_seconds = []
         # enumerate pairs each point with a counter; start=1 makes
@@ -2146,7 +2200,6 @@ class CocoaTestHarness:
             # stays untouched
             chi2 = _evaluate_cached(model, {**base, **ia_values})
             elapsed = time.perf_counter() - started
-            chi2s.append(chi2)
             eval_seconds.append(elapsed)
             if not os.path.isfile(current_path):
                 raise RuntimeError(
@@ -2160,6 +2213,20 @@ class CocoaTestHarness:
             os.replace(current_path,
                        os.path.join(vectors_dir,
                                     f"{label}_point{i:02d}.modelvector"))
+            if fiducial_truth is not None:
+                # the reported chi2 is measured against the
+                # regenerated baseline: the quadratic form of this
+                # point's printed vector against the CFASTPT
+                # fiducial vector, which IS the chi2 against a
+                # dataset whose data vector is that fiducial (the
+                # likelihood's own chi2 rides the stale frozen-mask
+                # data vector and is discarded)
+                own = _load_datavector(
+                    os.path.join(vectors_dir,
+                                 f"{label}_point{i:02d}.modelvector"))
+                delta = own - fiducial_truth
+                chi2 = float(delta @ icov_fid @ delta)
+            chi2s.append(chi2)
             print(f"  {code} point {i:2d}/{n_points}: chi2 = "
                   f"{chi2:.6f}   ({elapsed:.2f} s)", flush=True)
         # the first evaluation carries the one-time work (CAMB plus
@@ -2348,3 +2415,100 @@ class CocoaTestHarness:
                 fastpt_high["chi2s"],
                 fastpt_low["dchi2_vs_reference"],
                 fastpt_high["dchi2_vs_reference"])
+
+
+# =============================================================================
+# SHARED pytest CONFTEST IMPLEMENTATION
+# =============================================================================
+# pytest discovers conftest.py only by walking up from the collected
+# test files, so every project must keep a physical conftest.py inside
+# its tests/ folder. The IMPLEMENTATION lives here once; a project's
+# conftest.py reduces to a shim binding these two functions:
+#
+#     import os
+#     import sys
+#     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+#     import cocoa_test_utils as u
+#
+#     def pytest_addoption(parser):
+#         u._cct.conftest_addoption(parser, u._H.fastpt_masks)
+#
+#     def pytest_configure(config):
+#         u._cct.conftest_configure(config)
+#
+# A run collecting several projects at once loads each project's
+# conftest.py; the FIRST registration of an option name wins and the
+# later ones step aside (the try/except below), so in a multi-project
+# run the --mask choices are the first project's. The chosen values
+# still reach every project through the environment variables, and a
+# mask a project does not offer is refused by its harness
+# (_fastpt_comparison_info raises ValueError).
+
+
+def conftest_addoption(parser, mask_choices=("frozen",)):
+    """Register --high and --mask: the comparison sweeps' switches.
+
+    A project's conftest.py forwards pytest's option parser here.
+    --high=0 (the default) runs the CFASTPT-vs-FASTPT sweeps at the
+    frozen default settings; --high=1 repeats them with the
+    HIGH_ACCURACY settings applied to both implementations (the full
+    comparison is both invocations). --mask selects the scale-cut
+    mask of the same sweeps: "frozen" (the default) keeps each
+    example's own tatt_dataset, and every other offered name selects
+    the matching frozen dataset variant.
+
+    Arguments:
+      parser       = pytest's option parser (supplied by pytest to
+                     the conftest hook).
+      mask_choices = the mask names this project offers, normally the
+                     harness's fastpt_masks tuple; "frozen" alone by
+                     default.
+
+    Returns:
+      nothing; the options become readable through config.getoption.
+    """
+    # action="store" keeps the given text as the option's value;
+    # choices rejects anything except the documented settings. The
+    # second registration of the same option name (another project's
+    # conftest in the same run) raises ValueError; the first
+    # registration already serves every project, so this one steps
+    # aside.
+    try:
+        parser.addoption(
+            "--high", action="store", default="0", choices=("0", "1"),
+            help="1 repeats the CFASTPT-vs-FASTPT comparison at the "
+                 "HIGH_ACCURACY settings instead of the frozen "
+                 "defaults")
+    except ValueError:
+        pass
+    try:
+        parser.addoption(
+            "--mask", action="store", default="frozen",
+            choices=tuple(mask_choices),
+            help="the scale-cut mask of the CFASTPT-vs-FASTPT "
+                 "comparison: frozen (the contract mask, the "
+                 "default) or another mask this project offers")
+    except ValueError:
+        pass
+
+
+def conftest_configure(config):
+    """Copy the option values where the test classes read them.
+
+    A project's conftest.py forwards pytest's configuration object
+    here after the command line is parsed. The values land in the
+    COCOA_FASTPT_HIGH and COCOA_FASTPT_MASK environment variables
+    (the tests are unittest.TestCase classes, whose methods cannot
+    receive pytest fixtures), which the test modules read with the
+    "0" and "frozen" defaults, so a run without the options and a
+    run outside pytest behave the same.
+
+    Arguments:
+      config = pytest's configuration object (supplied by pytest to
+               the conftest hook).
+
+    Returns:
+      nothing; the environment of this process gains the variables.
+    """
+    os.environ["COCOA_FASTPT_HIGH"] = str(config.getoption("--high"))
+    os.environ["COCOA_FASTPT_MASK"] = str(config.getoption("--mask"))
