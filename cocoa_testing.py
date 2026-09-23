@@ -229,6 +229,15 @@ MAP OF THIS FILE
                              _fastpt_comparison_block,
                              _run_fastpt_comparison_worker,
                              cfastpt_vs_fastpt_chi2s
+    Halofit vs EE2           _nonlinear_comparison_block,
+                             _run_nonlinear_comparison_worker,
+                             halofit_vs_ee2_dchi2s
+                             (points: NONLINEAR_COMPARISON_POINTS,
+                             printer: report_nonlinear_comparison)
+
+Module functions after the class: conftest_addoption and
+conftest_configure, the shared implementation of every project's
+conftest.py (see the section banner at the end of the file).
 """
 
 import hashlib
@@ -442,6 +451,34 @@ def fastpt_comparison_points(prefix):
              f"{prefix}_A2_2", f"{prefix}_BTA_1"]
     return [dict(zip(names, values))
             for values in _FASTPT_COMPARISON_VALUES]
+
+
+# ---- the Halofit-vs-EE2 comparison points -----------------------------------
+
+# Advisory checks NL1/NL2 evaluate the SAME ten cosmologies with the
+# two nonlinear-P(k) sources the likelihoods can consume
+# (EuclidEmulator2, non_linear_emul: 1, and CAMB's Takahashi halofit,
+# non_linear_emul: 2, the frozen contracts' setting) and compare the
+# data vectors. The points are hard-coded draws shared by every
+# project: drawn ONCE, uniformly in omegam [0.26, 0.38], ns
+# [0.93, 0.99], and As_1e9 [1.8, 2.4] with
+# numpy.random.default_rng(20260923) - inside the sampled priors and
+# EE2's training box - and written out here so every run of every
+# project evaluates exactly these cosmologies (the parameter names
+# are cosmology-level, so no project prefix is involved). Every
+# other parameter keeps the project's frozen fiducial value.
+NONLINEAR_COMPARISON_POINTS = [
+    {"omegam": 0.378775, "ns": 0.961148, "As_1e9": 2.311486},
+    {"omegam": 0.285929, "ns": 0.948020, "As_1e9": 2.395017},
+    {"omegam": 0.264959, "ns": 0.937756, "As_1e9": 1.960748},
+    {"omegam": 0.351034, "ns": 0.972406, "As_1e9": 1.905972},
+    {"omegam": 0.374796, "ns": 0.956464, "As_1e9": 2.191216},
+    {"omegam": 0.355271, "ns": 0.978809, "As_1e9": 1.844406},
+    {"omegam": 0.299391, "ns": 0.985365, "As_1e9": 2.345031},
+    {"omegam": 0.338220, "ns": 0.953241, "As_1e9": 2.074333},
+    {"omegam": 0.377881, "ns": 0.930398, "As_1e9": 2.193133},
+    {"omegam": 0.291721, "ns": 0.965774, "As_1e9": 2.088667},
+]
 
 
 # =============================================================================
@@ -852,6 +889,37 @@ TEST {number}: {label}""", flush=True)
     return largest
 
 
+def report_nonlinear_comparison(label, dchi2s):
+    """Print the Halofit-vs-EE2 sweep as a readable block (advisory).
+
+    One row per cosmology with its drawn parameters and the chi2 of
+    the Halofit vector against the EE2 vector, then the max and the
+    median. There is no pass limit: the caller only checks that
+    every cosmology produced a number.
+
+    Arguments:
+      label  = one line naming the example, probe, and mask.
+      dchi2s = the per-cosmology list from halofit_vs_ee2_dchi2s,
+               index-aligned with NONLINEAR_COMPARISON_POINTS.
+
+    Returns:
+      nothing; the report goes to stdout.
+    """
+    import numpy as np
+
+    print(f"\n==== {label} ====", flush=True)
+    for i, (cosmology, d) in enumerate(
+            zip(NONLINEAR_COMPARISON_POINTS, dchi2s), start=1):
+        print(f"  cosmology {i:2d}: omegam = {cosmology['omegam']:.6f}"
+              f"  ns = {cosmology['ns']:.6f}"
+              f"  As_1e9 = {cosmology['As_1e9']:.6f}"
+              f"   dchi2(HALOFIT vs EE2) = {d:.4f}", flush=True)
+    print(f"  max dchi2    = {max(dchi2s):.4f}   (advisory; no pass "
+          "limit)", flush=True)
+    print(f"  median dchi2 = {float(np.median(dchi2s)):.4f}",
+          flush=True)
+
+
 # =============================================================================
 # SECTION 3: WORKER-SUBPROCESS PLUMBING (shared text)
 # =============================================================================
@@ -908,12 +976,23 @@ class CocoaTestHarness:
                          by EVERY example (a project whose examples
                          name their own carries "nla_dataset" keys in
                          EXAMPLES instead, which take precedence).
+      fastpt_masks     = the scale-cut masks the CFASTPT-vs-FASTPT
+                         comparison can run under (the --mask option
+                         of the tests). "frozen" (always first) keeps
+                         each example's own tatt_dataset; every other
+                         name selects the frozen dataset variant
+                         "<tatt_dataset stem>_<name>.dataset", a copy
+                         of that descriptor whose mask_file line
+                         names the chosen mask (e.g. "ones" for the
+                         no-scale-cuts all-ones mask). The default
+                         offers "frozen" alone.
     """
 
     def __init__(self, worker_file, interface_module, examples,
                  tatt_point, accuracy_knobs, high_accuracy_likelihood,
                  fastpt_low_settings, fastpt_high_settings,
-                 fastpt_points, nla_dataset=None):
+                 fastpt_points, nla_dataset=None,
+                 fastpt_masks=("frozen",)):
         """Bind the shared machinery to one project's data.
 
         Arguments:
@@ -946,6 +1025,7 @@ class CocoaTestHarness:
         self.fastpt_high_settings = fastpt_high_settings
         self.fastpt_points = fastpt_points
         self.nla_dataset = nla_dataset
+        self.fastpt_masks = tuple(fastpt_masks)
 
     # ---- frozen-state integrity ---------------------------------------------
     def compute_manifest(self):
@@ -1426,7 +1506,7 @@ class CocoaTestHarness:
                 return None
         return evaluate_chi2(model, point)
 
-    def _ten_in_a_row_impl(self, example, tatt):
+    def _ten_in_a_row_impl(self, example, tatt, ee2=False):
         """In-process body of ten_in_a_row_chi2 (worker side).
 
         Race check: the fiducial evaluated fresh and as 10th of a
@@ -1442,6 +1522,11 @@ class CocoaTestHarness:
         Arguments:
           example = a key of the project's EXAMPLES table.
           tatt    = True runs the TATT variant, False the NLA one.
+          ee2     = True sources the nonlinear P(k) from
+                    EuclidEmulator2 (non_linear_emul: 1) instead of
+                    the frozen setting; EE2's compute is
+                    OpenMP-threaded, so this variant exercises its
+                    threading inside the race sequence.
 
         Returns:
           (fresh, tenth): chi2 of the first fiducial evaluation and
@@ -1456,10 +1541,15 @@ class CocoaTestHarness:
         # `"TATT" if tatt else "NLA"` picks the first name when tatt
         # is True, the second otherwise
         ia_label = "TATT" if tatt else "NLA"
+        if ee2:
+            ia_label += "+EE2"
         print(f"  building model ({example}, {ia_label}) ...", flush=True)
         # one model instance for the whole sequence: sharing the
         # instance is the point, since leaked state lives inside it
         info = self.load_frozen_info(example, tatt)
+        if ee2:
+            info["likelihood"][self.examples[example]["likelihood"]][
+                "non_linear_emul"] = 1
         model = make_model(info)
         point = self.build_point(model, example, tatt)
         # the fresh value: the fiducial evaluated before anything
@@ -1720,7 +1810,11 @@ class CocoaTestHarness:
         elif function == "bdrift":
             value = self._baryon_drift_chi2_impl(baryon)
         else:
-            value = list(self._ten_in_a_row_impl(example, tatt))
+            # "race" and "race_ee2" both land here; the ee2 flag is
+            # carried by the function name so the worker argv stays
+            # unchanged
+            value = list(self._ten_in_a_row_impl(
+                example, tatt, ee2=(function == "race_ee2")))
         # json.dump writes the value into the file as json text; the
         # parent reads it back with json.load. The with block closes
         # the file even when the dump fails
@@ -1892,7 +1986,7 @@ class CocoaTestHarness:
         return float(self._run_isolated("bdrift", "example1", False,
                                         baryon=baryon))
 
-    def ten_in_a_row_chi2(self, example, tatt):
+    def ten_in_a_row_chi2(self, example, tatt, ee2=False):
         """Race check, evaluated in one fresh worker subprocess.
 
         The whole 11-evaluation sequence runs inside ONE worker: the
@@ -1903,6 +1997,9 @@ class CocoaTestHarness:
         Arguments:
           example = a key of the project's EXAMPLES table.
           tatt    = True runs the TATT variant, False the NLA one.
+          ee2     = True runs the row with the nonlinear P(k) from
+                    EuclidEmulator2 (non_linear_emul: 1), the EE2
+                    race check.
 
         Returns:
           (fresh, tenth): chi2 of the first fiducial evaluation and
@@ -1917,15 +2014,17 @@ class CocoaTestHarness:
         # (parent) process fails this test and spawns a worker
         # instead
         if os.environ.get(_WORKER_FLAG) == "1":
-            return self._ten_in_a_row_impl(example, tatt)
+            return self._ten_in_a_row_impl(example, tatt, ee2=ee2)
         # the worker's two-element json list unpacks into the two
-        # names
-        fresh, tenth = self._run_isolated("race", example, tatt)
+        # names; the ee2 flag travels as the function name so the
+        # worker argv stays unchanged
+        fresh, tenth = self._run_isolated(
+            "race_ee2" if ee2 else "race", example, tatt)
         return float(fresh), float(tenth)
 
     # ---- the CFASTPT vs FASTPT comparison -----------------------------------
     def _fastpt_comparison_info(self, example, fastpt, high,
-                                fastpt_settings):
+                                fastpt_settings, mask="frozen"):
         """The cobaya input of one comparison block.
 
         Starts from the project's frozen TATT configuration
@@ -1952,18 +2051,36 @@ class CocoaTestHarness:
           fastpt_settings = None, or the fastpt block's extra_args
                     table (FASTPT_LOW_SETTINGS or
                     FASTPT_HIGH_SETTINGS).
+          mask    = a fastpt_masks entry: "frozen" (the default)
+                    keeps the example's own tatt_dataset; any other
+                    name swaps the data_file for the frozen variant
+                    "<tatt_dataset stem>_<mask>.dataset", identical
+                    except for its mask_file line (the --mask option
+                    of the tests).
 
         Returns:
           the input dictionary ready for cobaya's get_model.
 
         Raises:
-          ValueError from load_frozen_info when example names an
-          emulator entry (the comparison never evaluates one).
+          ValueError when mask is not a fastpt_masks entry, or from
+          load_frozen_info when example names an emulator entry (the
+          comparison never evaluates one).
         """
+        if mask not in self.fastpt_masks:
+            raise ValueError(
+                f"mask {mask!r} is not offered by this project; the "
+                f"choices are {self.fastpt_masks}")
         info = self.load_frozen_info(example, tatt=True,
                                      high_accuracy=high)
         likelihood_block = info["likelihood"][
             self.examples[example]["likelihood"]]
+        if mask != "frozen":
+            # the variant descriptor follows the naming rule the
+            # class docstring states; str.removesuffix drops the
+            # ".dataset" tail so the mask lands before it
+            stem = self.examples[example]["tatt_dataset"].removesuffix(
+                ".dataset")
+            likelihood_block["data_file"] = f"{stem}_{mask}.dataset"
         if fastpt:
             likelihood_block["IA_code"] = 1
             # setdefault hands back the existing "theory" dictionary,
@@ -1999,7 +2116,7 @@ class CocoaTestHarness:
     def _fastpt_comparison_block(self, example, fastpt, high,
                                  fastpt_settings=None, label=None,
                                  vectors_dir=None,
-                                 reference_label=None):
+                                 reference_label=None, mask="frozen"):
         """The 30-point sweep on ONE model: the comparison's worker half.
 
         Builds the frozen TATT configuration with one
@@ -2044,6 +2161,16 @@ class CocoaTestHarness:
                     sweep.
           reference_label = None to only print vectors, or the label
                     of the block to measure against.
+          mask    = a fastpt_masks entry, forwarded to
+                    _fastpt_comparison_info (see there): the
+                    scale-cut mask this block's dataset carries.
+                    Under a non-frozen mask the shipped TATT data
+                    vector does not apply (it was generated under
+                    the frozen mask), so the block regenerates the
+                    baseline: the CFASTPT fiducial vector under the
+                    chosen mask becomes the sweep's data vector and
+                    every reported chi2 is measured against it,
+                    from a zero baseline.
 
         Returns:
           {"chi2s": the per-point chi2 list against the shipped data
@@ -2068,10 +2195,10 @@ class CocoaTestHarness:
             # the low and high tables differ in
             code += f"(boost {fastpt_settings['accuracyboost']:g})"
         setting = "high accuracy" if high else "default settings"
-        print(f"  building model ({example}, TATT, {code}, {setting}) "
-              "...", flush=True)
+        print(f"  building model ({example}, TATT, {code}, {setting}, "
+              f"mask {mask}) ...", flush=True)
         info = self._fastpt_comparison_info(example, fastpt, high,
-                                            fastpt_settings)
+                                            fastpt_settings, mask=mask)
         # every evaluation rewrites this one file; the loop below
         # moves it to a per-point name right after each evaluation
         current_path = os.path.join(vectors_dir,
@@ -2098,6 +2225,49 @@ class CocoaTestHarness:
                 f"{sorted(sampled - set(base))}; point only "
                 f"{sorted(set(base) - sampled)}")
         n_points = len(self.fastpt_points)
+        fiducial_truth = None
+        if mask != "frozen":
+            # Under a non-frozen mask the shipped TATT data vector
+            # does not apply: it was generated under the frozen
+            # contract's mask, so rows this mask newly unmasks would
+            # be compared against zeros and the chi2 against it
+            # would be meaningless. The baseline is regenerated
+            # instead, the same construction the accuracy checks use
+            # when they change cosmology: the fiducial TATT point is
+            # evaluated first, and the CFASTPT block's printed
+            # vector at it becomes the data vector of the whole
+            # sweep, so the reported chi2 starts from a zero
+            # baseline (CFASTPT at the fiducial scores exactly
+            # zero). The fastpt blocks read the cfastpt fiducial
+            # from vectors_dir, where the cfastpt block (always
+            # first) left it.
+            started = time.perf_counter()
+            _evaluate_cached(model, base)
+            elapsed = time.perf_counter() - started
+            if not os.path.isfile(current_path):
+                raise RuntimeError(
+                    f"{code} fiducial: the evaluation printed no "
+                    f"data vector at {current_path}")
+            os.replace(current_path,
+                       os.path.join(vectors_dir,
+                                    f"{label}_fiducial.modelvector"))
+            # the compiled interface was initialized by the
+            # likelihood build above; its masked inverse covariance
+            # carries the chosen mask
+            import importlib
+
+            ci = importlib.import_module(self.interface_module)
+            icov_fid = np.array(ci.get_inv_cov_masked())
+            # "cfastpt" is the label the driver gives the reference
+            # block, which always runs first, so this file exists
+            # for every block (the cfastpt block reads its own)
+            fiducial_truth = _load_datavector(
+                os.path.join(vectors_dir,
+                             "cfastpt_fiducial.modelvector"))
+            print(f"  {code} fiducial under mask {mask}: baseline "
+                  f"regenerated ({elapsed:.2f} s); the chi2 below "
+                  "is measured against the CFASTPT fiducial vector",
+                  flush=True)
         chi2s = []
         eval_seconds = []
         # enumerate pairs each point with a counter; start=1 makes
@@ -2113,7 +2283,6 @@ class CocoaTestHarness:
             # stays untouched
             chi2 = _evaluate_cached(model, {**base, **ia_values})
             elapsed = time.perf_counter() - started
-            chi2s.append(chi2)
             eval_seconds.append(elapsed)
             if not os.path.isfile(current_path):
                 raise RuntimeError(
@@ -2127,6 +2296,20 @@ class CocoaTestHarness:
             os.replace(current_path,
                        os.path.join(vectors_dir,
                                     f"{label}_point{i:02d}.modelvector"))
+            if fiducial_truth is not None:
+                # the reported chi2 is measured against the
+                # regenerated baseline: the quadratic form of this
+                # point's printed vector against the CFASTPT
+                # fiducial vector, which IS the chi2 against a
+                # dataset whose data vector is that fiducial (the
+                # likelihood's own chi2 rides the stale frozen-mask
+                # data vector and is discarded)
+                own = _load_datavector(
+                    os.path.join(vectors_dir,
+                                 f"{label}_point{i:02d}.modelvector"))
+                delta = own - fiducial_truth
+                chi2 = float(delta @ icov_fid @ delta)
+            chi2s.append(chi2)
             print(f"  {code} point {i:2d}/{n_points}: chi2 = "
                   f"{chi2:.6f}   ({elapsed:.2f} s)", flush=True)
         # the first evaluation carries the one-time work (CAMB plus
@@ -2173,7 +2356,8 @@ class CocoaTestHarness:
 
     def _run_fastpt_comparison_worker(self, example, fastpt, high,
                                       fastpt_settings, label,
-                                      vectors_dir, reference_label):
+                                      vectors_dir, reference_label,
+                                      mask="frozen"):
         """Run one _fastpt_comparison_block in a fresh python subprocess.
 
         A fresh process is the cache flush: cobaya's component
@@ -2189,7 +2373,8 @@ class CocoaTestHarness:
 
         Arguments:
           example, fastpt, high, fastpt_settings, label, vectors_dir,
-          reference_label = forwarded to _fastpt_comparison_block.
+          reference_label, mask = forwarded to
+          _fastpt_comparison_block.
 
         Returns:
           the block's result dictionary.
@@ -2221,7 +2406,7 @@ class CocoaTestHarness:
             f"fastpt={fastpt!r}, high={high!r}, "
             f"fastpt_settings={fastpt_settings!r}, "
             f"label={label!r}, vectors_dir={vectors_dir!r}, "
-            f"reference_label={reference_label!r})\n"
+            f"reference_label={reference_label!r}, mask={mask!r})\n"
             f"with open({out_path!r}, 'w') as f:\n"
             "    json.dump(result, f)\n"
         )
@@ -2243,7 +2428,8 @@ class CocoaTestHarness:
                 f"for {len(self.fastpt_points)} comparison points")
         return result
 
-    def cfastpt_vs_fastpt_chi2s(self, example, high=False):
+    def cfastpt_vs_fastpt_chi2s(self, example, high=False,
+                                mask="frozen"):
         """The comparison-point quantities under the three configurations.
 
         The same 30 hard-coded intrinsic-alignment points evaluated
@@ -2272,6 +2458,11 @@ class CocoaTestHarness:
                     camb/cosmolike settings; True repeats all three
                     blocks with the HIGH_ACCURACY settings (the
                     --high=1 command line option of the tests).
+          mask    = a fastpt_masks entry, applied to all three
+                    blocks: "frozen" (the default) keeps each
+                    example's own tatt_dataset; any other name swaps
+                    in the matching frozen dataset variant (the
+                    --mask command line option of the tests).
 
         Returns:
           (chi2_cfastpt, chi2_fastpt_low, chi2_fastpt_high,
@@ -2288,17 +2479,17 @@ class CocoaTestHarness:
             cfastpt = self._run_fastpt_comparison_worker(
                 example, fastpt=False, high=high, fastpt_settings=None,
                 label="cfastpt", vectors_dir=vectors_dir,
-                reference_label=None)
+                reference_label=None, mask=mask)
             fastpt_low = self._run_fastpt_comparison_worker(
                 example, fastpt=True, high=high,
                 fastpt_settings=self.fastpt_low_settings,
                 label="fastpt_low", vectors_dir=vectors_dir,
-                reference_label="cfastpt")
+                reference_label="cfastpt", mask=mask)
             fastpt_high = self._run_fastpt_comparison_worker(
                 example, fastpt=True, high=high,
                 fastpt_settings=self.fastpt_high_settings,
                 label="fastpt_high", vectors_dir=vectors_dir,
-                reference_label="cfastpt")
+                reference_label="cfastpt", mask=mask)
         finally:
             # the shared vectors die with the sweep, whether it
             # finished or an exception is on its way out
@@ -2307,3 +2498,348 @@ class CocoaTestHarness:
                 fastpt_high["chi2s"],
                 fastpt_low["dchi2_vs_reference"],
                 fastpt_high["dchi2_vs_reference"])
+
+    def _nonlinear_comparison_block(self, example, emul, label=None,
+                                    vectors_dir=None,
+                                    reference_label=None,
+                                    mask="frozen"):
+        """The ten-cosmology sweep on ONE nonlinear-P(k) source.
+
+        The worker half of the Halofit-vs-EE2 advisory checks
+        (NL1/NL2). Builds the frozen NLA configuration with one
+        nonlinear-P(k) source selected (non_linear_emul 1 =
+        EuclidEmulator2, 2 = CAMB's Takahashi halofit) and evaluates
+        every NONLINEAR_COMPARISON_POINTS entry on it. Each
+        evaluation prints its theory data vector into vectors_dir,
+        and a block given a reference_label measures itself against
+        the vectors a previous block left there: at every cosmology
+
+            delta chi2 = delta^T C^-1 delta,
+            delta = dv(this block) - dv(reference block),
+
+        with C^-1 the masked inverse covariance of the chosen mask.
+        The reference block's own chi2 against its vector is zero by
+        construction, so the number IS the chi2 the Halofit vector
+        would score against a dataset whose data vector is the EE2
+        prediction at the same cosmology: a zero-baseline
+        measurement at every point. Each cosmology carries its own
+        regenerated fiducial, so no stored data vector enters the
+        metric anywhere.
+
+        Runs inside a FRESH python process
+        (_run_nonlinear_comparison_worker); unlike the FASTPT sweep,
+        every point changes the cosmology, so each evaluation pays a
+        CAMB run. Ten points stay cheap.
+
+        Arguments:
+          example = a key of the project's EXAMPLES table; NL1 uses
+                    the cosmic-shear example, NL2 the 3x2pt one.
+          emul    = the likelihood's non_linear_emul: 1 evaluates
+                    with EuclidEmulator2, 2 with CAMB's Takahashi
+                    halofit.
+          label   = the file-name tag of this block's printed
+                    vectors ("ee2", "halofit").
+          vectors_dir = the directory the per-cosmology vectors are
+                    printed into, shared by the two blocks of one
+                    sweep.
+          reference_label = None to only print vectors (the
+                    reference block), or the label of the block to
+                    measure against.
+          mask    = a fastpt_masks entry: "frozen" (the default)
+                    keeps the configuration's own dataset; any other
+                    name swaps in the example's tatt_dataset variant
+                    "<stem>_<mask>.dataset", whose mask and
+                    covariance weight the difference (the data
+                    vector it names plays no role in this check's
+                    metric, so no baseline regeneration is needed).
+
+        Returns:
+          {"dchi2_vs_reference": the per-cosmology delta^T C^-1
+          delta list, or None for the reference block,
+          "eval_seconds": the per-cosmology wall-clock seconds}.
+
+        Raises:
+          ValueError when mask is not a fastpt_masks entry or a
+          comparison-point parameter is not sampled by the model;
+          RuntimeError when an evaluation did not print its vector
+          or the vector/covariance shapes disagree.
+        """
+        import time
+
+        import numpy as np
+
+        require_cocoa_environment()
+        if mask not in self.fastpt_masks:
+            raise ValueError(
+                f"mask {mask!r} is not offered by this project; the "
+                f"choices are {self.fastpt_masks}")
+        code = "EE2" if emul == 1 else "HALOFIT"
+        print(f"  building model ({example}, NLA, {code}, "
+              f"mask {mask}) ...", flush=True)
+        info = self.load_frozen_info(example, tatt=False)
+        likelihood_block = info["likelihood"][
+            self.examples[example]["likelihood"]]
+        likelihood_block["non_linear_emul"] = emul
+        if mask != "frozen":
+            # the variant descriptor follows the fastpt_masks naming
+            # rule; its data vector is never read by the metric
+            stem = self.examples[example][
+                "tatt_dataset"].removesuffix(".dataset")
+            likelihood_block["data_file"] = f"{stem}_{mask}.dataset"
+        current_path = os.path.join(vectors_dir,
+                                    f"{label}_current.modelvector")
+        likelihood_block["print_datavector"] = True
+        likelihood_block["print_datavector_file"] = current_path
+        model = make_model(info)
+        base = self.build_point(model, example, tatt=False)
+        n_points = len(NONLINEAR_COMPARISON_POINTS)
+        eval_seconds = []
+        for i, cosmology in enumerate(NONLINEAR_COMPARISON_POINTS,
+                                      start=1):
+            for name in cosmology:
+                if name not in base:
+                    raise ValueError(
+                        f"comparison parameter {name} is not sampled "
+                        f"by {example}; the parameterization changed "
+                        "since NONLINEAR_COMPARISON_POINTS was drawn")
+            started = time.perf_counter()
+            # the chi2 against the dataset's stored vector is
+            # discarded: the evaluation's purpose is the printed
+            # theory vector
+            _evaluate_cached(model, {**base, **cosmology})
+            elapsed = time.perf_counter() - started
+            eval_seconds.append(elapsed)
+            if not os.path.isfile(current_path):
+                raise RuntimeError(
+                    f"{code} cosmology {i}: the evaluation printed "
+                    f"no data vector at {current_path} (did "
+                    "print_datavector's path handling change?)")
+            os.replace(current_path,
+                       os.path.join(vectors_dir,
+                                    f"{label}_point{i:02d}"
+                                    ".modelvector"))
+            print(f"  {code} cosmology {i:2d}/{n_points} evaluated "
+                  f"({elapsed:.2f} s)", flush=True)
+        if reference_label is None:
+            return {"dchi2_vs_reference": None,
+                    "eval_seconds": eval_seconds}
+        # the compiled interface was initialized by the likelihood
+        # build above, so the masked inverse covariance of the
+        # chosen mask is available here
+        import importlib
+
+        ci = importlib.import_module(self.interface_module)
+
+        icov = np.array(ci.get_inv_cov_masked())
+        dchi2s = []
+        for i in range(1, n_points + 1):
+            own = _load_datavector(
+                os.path.join(vectors_dir,
+                             f"{label}_point{i:02d}.modelvector"))
+            ref = _load_datavector(
+                os.path.join(vectors_dir,
+                             f"{reference_label}_point{i:02d}"
+                             ".modelvector"))
+            if own.shape != ref.shape or icov.shape[0] != own.shape[0]:
+                raise RuntimeError(
+                    f"cosmology {i}: vector/covariance shapes "
+                    f"disagree ({own.shape}, {ref.shape}, "
+                    f"{icov.shape})")
+            delta = own - ref
+            dchi2s.append(float(delta @ icov @ delta))
+        return {"dchi2_vs_reference": dchi2s,
+                "eval_seconds": eval_seconds}
+
+    def _run_nonlinear_comparison_worker(self, example, emul, label,
+                                         vectors_dir, reference_label,
+                                         mask):
+        """Run one _nonlinear_comparison_block in a fresh subprocess.
+
+        The same isolation mechanism as
+        _run_fastpt_comparison_worker (see there): the fresh process
+        is the cache flush; the child imports the project's
+        cocoa_test_utils by path and calls the shim's re-exported
+        _nonlinear_comparison_block.
+
+        Arguments:
+          example, emul, label, vectors_dir, reference_label, mask =
+                    forwarded to _nonlinear_comparison_block.
+
+        Returns:
+          the block's result dictionary.
+
+        Raises:
+          subprocess.CalledProcessError when the worker fails (its
+          traceback already streamed to the terminal).
+        """
+        import subprocess
+        import sys
+
+        workdir = tempfile.mkdtemp(prefix="cocoa_nonlinear_compare_")
+        out_path = os.path.join(workdir, "result.json")
+        child_code = (
+            "import os\n"
+            f"os.environ['OMP_NUM_THREADS'] = "
+            f"{REQUIRED_OMP_THREADS!r}\n"
+            "import json\n"
+            "import sys\n"
+            f"sys.path.insert(0, {self.tests_dir!r})\n"
+            "import cocoa_test_utils as u\n"
+            f"result = u._nonlinear_comparison_block({example!r}, "
+            f"emul={emul!r}, label={label!r}, "
+            f"vectors_dir={vectors_dir!r}, "
+            f"reference_label={reference_label!r}, mask={mask!r})\n"
+            f"with open({out_path!r}, 'w') as f:\n"
+            "    json.dump(result, f)\n"
+        )
+        try:
+            subprocess.run([sys.executable, "-c", child_code],
+                           check=True)
+            with open(out_path) as f:
+                result = json.load(f)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        return result
+
+    def halofit_vs_ee2_dchi2s(self, example, mask="frozen"):
+        """The per-cosmology Halofit-vs-EE2 differences (NL1/NL2).
+
+        The ten hard-coded cosmologies
+        (NONLINEAR_COMPARISON_POINTS) evaluated twice with
+        everything else identical:
+
+          1. EuclidEmulator2 (non_linear_emul 1), the reference: its
+             printed data vector at each cosmology becomes the
+             fiducial the Halofit block is measured against;
+          2. CAMB's Takahashi halofit (non_linear_emul 2, the frozen
+             contracts' setting).
+
+        Block 2 returns, at every cosmology, the chi2 of its
+        data-vector difference against block 1 (delta^T C^-1 delta
+        under the chosen mask). The check is advisory: the numbers
+        say how much of the statistical error budget the
+        Halofit-vs-emulator difference consumes under those scale
+        cuts. Each block runs in its own subprocess; the
+        per-cosmology vectors travel through one shared temporary
+        directory that dies with this call.
+
+        Arguments:
+          example = a key of the project's EXAMPLES table; NL1 uses
+                    the cosmic-shear example, NL2 the 3x2pt one.
+          mask    = a fastpt_masks entry (the --mask command line
+                    option of the tests).
+
+        Returns:
+          the per-cosmology delta^T C^-1 delta list, index-aligned
+          with NONLINEAR_COMPARISON_POINTS.
+        """
+        vectors_dir = tempfile.mkdtemp(
+            prefix="cocoa_nonlinear_vectors_")
+        try:
+            self._run_nonlinear_comparison_worker(
+                example, emul=1, label="ee2", vectors_dir=vectors_dir,
+                reference_label=None, mask=mask)
+            halofit = self._run_nonlinear_comparison_worker(
+                example, emul=2, label="halofit",
+                vectors_dir=vectors_dir, reference_label="ee2",
+                mask=mask)
+        finally:
+            shutil.rmtree(vectors_dir, ignore_errors=True)
+        return halofit["dchi2_vs_reference"]
+
+
+# =============================================================================
+# SHARED pytest CONFTEST IMPLEMENTATION
+# =============================================================================
+# pytest discovers conftest.py only by walking up from the collected
+# test files, so every project must keep a physical conftest.py inside
+# its tests/ folder. The IMPLEMENTATION lives here once; a project's
+# conftest.py reduces to a shim binding these two functions:
+#
+#     import os
+#     import sys
+#     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+#     import cocoa_test_utils as u
+#
+#     def pytest_addoption(parser):
+#         u._cct.conftest_addoption(parser, u._H.fastpt_masks)
+#
+#     def pytest_configure(config):
+#         u._cct.conftest_configure(config)
+#
+# A run collecting several projects at once loads each project's
+# conftest.py; the FIRST registration of an option name wins and the
+# later ones step aside (the try/except below), so in a multi-project
+# run the --mask choices are the first project's. The chosen values
+# still reach every project through the environment variables, and a
+# mask a project does not offer is refused by its harness
+# (_fastpt_comparison_info raises ValueError).
+
+
+def conftest_addoption(parser, mask_choices=("frozen",)):
+    """Register --high and --mask: the comparison sweeps' switches.
+
+    A project's conftest.py forwards pytest's option parser here.
+    --high=0 (the default) runs the CFASTPT-vs-FASTPT sweeps at the
+    frozen default settings; --high=1 repeats them with the
+    HIGH_ACCURACY settings applied to both implementations (the full
+    comparison is both invocations). --mask selects the scale-cut
+    mask of the same sweeps: "frozen" (the default) keeps each
+    example's own tatt_dataset, and every other offered name selects
+    the matching frozen dataset variant.
+
+    Arguments:
+      parser       = pytest's option parser (supplied by pytest to
+                     the conftest hook).
+      mask_choices = the mask names this project offers, normally the
+                     harness's fastpt_masks tuple; "frozen" alone by
+                     default.
+
+    Returns:
+      nothing; the options become readable through config.getoption.
+    """
+    # action="store" keeps the given text as the option's value;
+    # choices rejects anything except the documented settings. The
+    # second registration of the same option name (another project's
+    # conftest in the same run) raises ValueError; the first
+    # registration already serves every project, so this one steps
+    # aside.
+    try:
+        parser.addoption(
+            "--high", action="store", default="0", choices=("0", "1"),
+            help="1 repeats the CFASTPT-vs-FASTPT comparison at the "
+                 "HIGH_ACCURACY settings instead of the frozen "
+                 "defaults")
+    except ValueError:
+        pass
+    try:
+        parser.addoption(
+            "--mask", action="store", default="frozen",
+            choices=tuple(mask_choices),
+            help="the scale-cut mask of the CFASTPT-vs-FASTPT "
+                 "comparison: frozen (the contract mask, the "
+                 "default) or another mask this project offers")
+    except ValueError:
+        pass
+
+
+def conftest_configure(config):
+    """Copy the option values where the test classes read them.
+
+    A project's conftest.py forwards pytest's configuration object
+    here after the command line is parsed. The values land in the
+    COCOA_FASTPT_HIGH and COCOA_FASTPT_MASK environment variables
+    (the tests are unittest.TestCase classes, whose methods cannot
+    receive pytest fixtures), which the test modules read with the
+    "0" and "frozen" defaults, so a run without the options and a
+    run outside pytest behave the same.
+
+    Arguments:
+      config = pytest's configuration object (supplied by pytest to
+               the conftest hook).
+
+    Returns:
+      nothing; the environment of this process gains the variables.
+    """
+    os.environ["COCOA_FASTPT_HIGH"] = str(config.getoption("--high"))
+    os.environ["COCOA_FASTPT_MASK"] = str(config.getoption("--mask"))
