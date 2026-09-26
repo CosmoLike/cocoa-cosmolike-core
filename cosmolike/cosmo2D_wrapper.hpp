@@ -88,18 +88,6 @@ py::tuple C_ss_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-py::tuple int_for_C_ss_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  );
-
-py::tuple int_for_C_ss_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -113,18 +101,6 @@ double C_gs_tomo_limber_cpp(
   );
 
 arma::Cube<double> C_gs_tomo_limber_cpp(
-    const arma::Col<double> l
-  );
-
-double int_for_C_gs_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nl, 
-    const int ns
-  );
-
-arma::Cube<double> int_for_C_gs_tomo_limber_cpp(
-    const arma::Col<double> a, 
     const arma::Col<double> l
   );
 
@@ -150,17 +126,6 @@ arma::Mat<double> C_gk_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-double int_for_C_gk_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  );
-
-arma::Cube<double> int_for_C_gk_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -174,17 +139,6 @@ arma::Mat<double> C_ks_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-double int_for_C_ks_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  );
-
-arma::Cube<double> int_for_C_ks_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -194,16 +148,6 @@ double C_kk_limber_cpp(
   );
 
 arma::Col<double> C_kk_limber_cpp(
-    const arma::Col<double> l
-  );
-
-double int_for_C_kk_limber_cpp(
-    const double a, 
-    const double l
-  );
-
-arma::Mat<double> int_for_C_kk_limber_cpp(
-    const arma::Col<double> a, 
     const arma::Col<double> l
   );
 

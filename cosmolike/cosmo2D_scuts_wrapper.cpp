@@ -55,8 +55,46 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const double k)
-{ 
+// ---------------------------------------------------------------------------
+// Shared engine of the two dlnxi_dlnk_pm_tomo_limber_cpp overloads: one
+// dlnxi_dlnk_pm_tomo_nointerp call at wavenumber k (which computes every
+// tomographic pair and angular bin at once), scattered into the
+// (theta, ni, nj) cubes with both bin orderings filled (xi is symmetric).
+// ---------------------------------------------------------------------------
+static void dlnxi_dlnk_cubes(
+    const double k,           // wavenumber in (Mpc/h)^-1
+    arma::Cube<double>& XP,   // output xi+ (Ntheta, shear_nbin, shear_nbin)
+    arma::Cube<double>& XM    // output xi- (Ntheta, shear_nbin, shear_nbin)
+  )
+{
+  const int NSIZE = tomo.shear_Npowerspectra;
+  double** tmp = dlnxi_dlnk_pm_tomo_nointerp(k);
+  for (int nz=0; nz<NSIZE; nz++) {
+    const int z1 = Z1(nz);
+    const int z2 = Z2(nz);
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      const int q = nz * Ntable.Ntheta + i;
+      XP(i,z1,z2) = tmp[0][q];
+      XP(i,z2,z1) = tmp[0][q];
+      XM(i,z1,z2) = tmp[1][q];
+      XM(i,z2,z1) = tmp[1][q];
+    }
+  }
+  free(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// dlnxi_pm/dlnk at one wavenumber, every tomographic pair and angular bin
+// (one wavenumber is already a full batch: dlnxi_dlnk_cubes computes all
+// pairs and bins in one call).
+// ---------------------------------------------------------------------------
+py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
+    const double k    // wavenumber in (Mpc/h)^-1
+  )
+{
   arma::Cube<double> dlnxp_dlnk(Ntable.Ntheta,
                                 redshift.shear_nbin,
                                 redshift.shear_nbin,
@@ -65,22 +103,8 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const double k)
                                 redshift.shear_nbin,
                                 redshift.shear_nbin,
                                 arma::fill::zeros);
-  
-  const int NSIZE = tomo.shear_Npowerspectra;
-  double** tmp = dlnxi_dlnk_pm_tomo_nointerp(k);
-  for (int nz=0; nz<NSIZE; nz++) {    
-    const int z1 = Z1(nz);
-    const int z2 = Z2(nz);
-    for (int i=0; i<Ntable.Ntheta; i++) {
-      const int q = nz * Ntable.Ntheta + i;
-      dlnxp_dlnk(i,z1,z2) = tmp[0][q];
-      dlnxp_dlnk(i,z2,z1) = tmp[0][q];
-      dlnxm_dlnk(i,z1,z2) = tmp[1][q];
-      dlnxm_dlnk(i,z2,z1) = tmp[1][q];
-    }
-  }
-  free(tmp);
-  return py::make_tuple(carma::cube_to_arr(dlnxp_dlnk), 
+  dlnxi_dlnk_cubes(k, dlnxp_dlnk, dlnxm_dlnk);
+  return py::make_tuple(carma::cube_to_arr(dlnxp_dlnk),
                         carma::cube_to_arr(dlnxm_dlnk));
 }
 
@@ -89,14 +113,17 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const double k)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const arma::Col<double> k)
-{ 
+py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
+    const arma::Col<double> k    // wavenumbers in (Mpc/h)^-1
+  )
+{
   const int nk = static_cast<int>(k.n_elem);
   if (!(nk > 0)) {
-    spdlog::critical("{}: k array size = {}", "dlnxi_dlnk_pm_tomo_cpp", nk);
+    spdlog::critical("{}: k array size = {}",
+                     "dlnxi_dlnk_pm_tomo_limber_cpp", nk);
     exit(1);
-  } 
-  arma::field<arma::Cube<double>> dlnxp_dlnk(nk); 
+  }
+  arma::field<arma::Cube<double>> dlnxp_dlnk(nk);
   arma::field<arma::Cube<double>> dlnxm_dlnk(nk);
   for (int m=0; m<nk; m++) {
     arma::Cube<double> tdlnxp_dlnk(Ntable.Ntheta,
@@ -107,20 +134,7 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const arma::Col<double> k)
                                    redshift.shear_nbin,
                                    redshift.shear_nbin,
                                    arma::fill::zeros);
-    const int NSIZE = tomo.shear_Npowerspectra;
-    double** tmp = dlnxi_dlnk_pm_tomo_nointerp(k(m));
-    for (int nz=0; nz<NSIZE; nz++) {    
-      const int z1 = Z1(nz);
-      const int z2 = Z2(nz);
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const int q = nz * Ntable.Ntheta + i;
-        tdlnxp_dlnk(i,z1,z2) = tmp[0][q];
-        tdlnxp_dlnk(i,z2,z1) = tmp[0][q];
-        tdlnxm_dlnk(i,z1,z2) = tmp[1][q];
-        tdlnxm_dlnk(i,z2,z1) = tmp[1][q];
-      }
-    }
-    free(tmp);
+    dlnxi_dlnk_cubes(k(m), tdlnxp_dlnk, tdlnxm_dlnk);
     dlnxp_dlnk(m) = tdlnxp_dlnk;
     dlnxm_dlnk(m) = tdlnxm_dlnk;
   }
@@ -160,10 +174,10 @@ static double**** dlnC_ss_dlnk_grid(
 // ---------------------------------------------------------------------------
 
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
-    const double k,
-    const double l,
-    const int ni,
-    const int nj
+    const double k,   // wavenumber in (Mpc/h)^-1
+    const double l,   // multipole
+    const int ni,     // first source redshift bin
+    const int nj      // second source redshift bin
   )
 { // point diagnostic: runs the full batch of dlnC_ss_dlnk_grid at a single
   // (k, l) and reads one entry, so it pays the whole-tomography batch cost
@@ -196,8 +210,10 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple dlnC_ss_dlnk_tomo_limber_cpp(const arma::Col<double> k, 
-                                       const arma::Col<double> l)
+py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
+    const arma::Col<double> k,   // wavenumbers in (Mpc/h)^-1
+    const arma::Col<double> l    // multipoles
+  )
 {
   const int nl = static_cast<int>(l.n_elem);
   const int nk = static_cast<int>(k.n_elem);
@@ -258,15 +274,59 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(const arma::Col<double> k,
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple RF_xi_tomo_limber_cpp(
-    const double k, 
-    const int nt, 
-    const int ni, 
-    const int nj
+// ---------------------------------------------------------------------------
+// Shared batch engine of the two RF_xi_tomo_limber_cpp overloads:
+// RF computed by RF_xi_tomo_limber_work on the ln kmax grid, indexed
+// [2][NSIZE][nk][Ntheta] with row nz the pair (Z1(nz), Z2(nz)). The
+// caller owns (and frees) the returned array.
+// ---------------------------------------------------------------------------
+static double**** RF_xi_grid(
+    const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
+    const int nk,          // number of kmax values
+    const int NSIZE        // number of tomo shear power spectra
   )
 {
-  const double RFXIP = RF_xi_tomo_limber_nointerp(k, 1, nt, ni, nj, 0);
-  const double RFXIM = RF_xi_tomo_limber_nointerp(k, 0, nt, ni, nj, 0);
+  double**** RF = (double****) malloc4d(2, NSIZE, nk, Ntable.Ntheta);
+  RF_xi_tomo_limber_work(lnkmaxx, nk, NSIZE, RF);
+  return RF;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::tuple RF_xi_tomo_limber_cpp(
+    const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni,     // first source redshift bin
+    const int nj      // second source redshift bin
+  )
+{ // point diagnostic: runs the full batch of RF_xi_grid at a single kmax
+  // and reads one entry, so it pays the whole-tomography batch cost per
+  // call. Loops over (kmax, nt, ni, nj) should call the array overload
+  // once and index the returned arrays instead.
+  if (!(k > 0)) {
+    spdlog::critical("{}: k = {} not positive",
+                     "RF_xi_tomo_limber_cpp", k);
+    exit(1);
+  }
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
+    spdlog::critical("{}: invalid angular bin input nt = {}",
+                     "RF_xi_tomo_limber_cpp", nt);
+    exit(1);
+  }
+  if (ni < 0 || ni > redshift.shear_nbin - 1 ||
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input (ni, nj) = ({}, {})",
+                     "RF_xi_tomo_limber_cpp", ni, nj);
+    exit(1);
+  }
+  const int NSIZE = tomo.shear_Npowerspectra;
+  const double lnkmax = std::log(k);
+  double**** RF = RF_xi_grid(&lnkmax, 1, NSIZE);
+  const int q = N_shear(ni, nj); // symmetric: any (ni, nj) ordering works
+  const double RFXIP = RF[0][q][0][nt];
+  const double RFXIM = RF[1][q][0][nt];
+  free(RF);
   return py::make_tuple(RFXIP, RFXIM);
 }
 
@@ -275,16 +335,28 @@ py::tuple RF_xi_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple RF_xi_tomo_limber_cpp(const arma::Col<double> k)
-{ 
+py::tuple RF_xi_tomo_limber_cpp(
+    const arma::Col<double> k    // cutoff wavenumbers kmax in (Mpc/h)^-1
+  )
+{
   const int nk = static_cast<int>(k.n_elem);
   if (!(nk > 0)) {
-    spdlog::critical("{}: k array size = {}", "dlnxi_dlnk_pm_tomo_cpp", nk);
+    spdlog::critical("{}: k array size = {}", "RF_xi_tomo_limber_cpp", nk);
     exit(1);
-  } 
-  arma::field<arma::Cube<double>> RFXIP(nk); 
-  arma::field<arma::Cube<double>> RFXIM(nk);  
+  }
   const int NSIZE = tomo.shear_Npowerspectra;
+  double* lnkmaxx = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    if (!(k(m) > 0)) {
+      spdlog::critical("{}: k({}) = {} not positive",
+                       "RF_xi_tomo_limber_cpp", m, k(m));
+      exit(1);
+    }
+    lnkmaxx[m] = std::log(k(m));
+  }
+  double**** RF = RF_xi_grid(lnkmaxx, nk, NSIZE);
+  arma::field<arma::Cube<double>> RFXIP(nk);
+  arma::field<arma::Cube<double>> RFXIM(nk);
   for (int m=0; m<nk; m++) {
     arma::Cube<double> XP(Ntable.Ntheta,
                           redshift.shear_nbin,
@@ -297,16 +369,18 @@ py::tuple RF_xi_tomo_limber_cpp(const arma::Col<double> k)
     for (int nz=0; nz<NSIZE; nz++) {
       const int z1 = Z1(nz);
       const int z2 = Z2(nz);
-      for (int i=0; i<Ntable.Ntheta; i++) {        
-        XP(i,z1,z2) = RF_xi_tomo_limber_nointerp(k(m), 1, i, z1, z2, 0);
+      for (int i=0; i<Ntable.Ntheta; i++) {
+        XP(i,z1,z2) = RF[0][nz][m][i];
         XP(i,z2,z1) = XP(i,z1,z2);
-        XM(i,z1,z2) = RF_xi_tomo_limber_nointerp(k(m), 0, i, z1, z2, 0);
+        XM(i,z1,z2) = RF[1][nz][m][i];
         XM(i,z2,z1) = XM(i,z1,z2);
       }
-    } 
+    }
     RFXIP(m) = XP;
     RFXIM(m) = XM;
   }
+  free(RF);
+  free(lnkmaxx);
   return py::make_tuple(to_np4d(RFXIP), to_np4d(RFXIM));
 }
 
@@ -342,10 +416,10 @@ static double**** RF_C_ss_grid(
 // ---------------------------------------------------------------------------
 
 py::tuple RF_C_ss_tomo_limber_cpp(
-    const double k,
-    const double l,
-    const int ni,
-    const int nj
+    const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
+    const double l,   // multipole
+    const int ni,     // first source redshift bin
+    const int nj      // second source redshift bin
   )
 { // point diagnostic: runs the full batch of RF_C_ss_grid at a single
   // (kmax, l) and reads one entry, so it pays the whole-tomography batch
@@ -378,8 +452,10 @@ py::tuple RF_C_ss_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple RF_C_ss_tomo_limber_cpp(const arma::Col<double> k, 
-                                  const arma::Col<double> l)
+py::tuple RF_C_ss_tomo_limber_cpp(
+    const arma::Col<double> k,   // cutoff wavenumbers kmax in (Mpc/h)^-1
+    const arma::Col<double> l    // multipoles
+  )
 {
   const int nl = static_cast<int>(l.n_elem);
   const int nk = static_cast<int>(k.n_elem);

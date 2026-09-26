@@ -45,6 +45,7 @@ using cube = arma::Cube<double>;
 namespace cosmolike_interface
 {
 
+// 1 if any lens bin carries a nonzero second-order galaxy bias
 static int has_b2_galaxies()
 {
   int res = 0;
@@ -59,6 +60,7 @@ static int has_b2_galaxies()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// area-weighted bin-center angles (arcmin) of the Ntheta angular bins
 arma::Col<double> get_binning_real_space()
 {  
   arma::Col<double> result(Ntable.Ntheta, arma::fill::none);
@@ -77,6 +79,7 @@ arma::Col<double> get_binning_real_space()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// log-spaced bin-center multipoles of the Ncl fourier-space bins
 arma::Col<double> get_binning_fourier_space()
 {  
   arma::Col<double> result(like.Ncl, arma::fill::none);
@@ -96,6 +99,8 @@ arma::Col<double> get_binning_fourier_space()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// cosmic shear xi+ and xi- at every angular and tomographic bin (both
+// bin orderings filled: xi is symmetric)
 py::tuple xi_pm_tomo_cpp()
 { 
   arma::Cube<double> xp(Ntable.Ntheta,
@@ -122,6 +127,7 @@ py::tuple xi_pm_tomo_cpp()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// galaxy-galaxy lensing gamma_t at every angular bin and ggl pair
 arma::Cube<double> w_gammat_tomo_cpp()
 {  
   arma::Cube<double> result(Ntable.Ntheta,
@@ -139,6 +145,7 @@ arma::Cube<double> w_gammat_tomo_cpp()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// galaxy clustering w(theta) at every angular bin (auto pairs only)
 arma::Cube<double> w_gg_tomo_cpp()
 {
   arma::Cube<double> result(Ntable.Ntheta,
@@ -214,7 +221,9 @@ static void C_ss_tomo_limber_cubes(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
+py::tuple C_ss_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (!(l.n_elem > 0)) {
     spdlog::critical("{}: l array size = {}", "C_ss_tomo_limber_cpp", l.n_elem);
@@ -235,7 +244,11 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
+py::tuple C_ss_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni,     // first source redshift bin
+    const int nj      // second source redshift bin
+  )
 { // point diagnostic: runs the full batch of C_ss_tomo_limber_cubes at a
   // single multipole and reads one entry, so it pays the whole-tomography
   // batch cost per call. Loops over (l, ni, nj) should call the array
@@ -268,6 +281,7 @@ py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// the (lens, source) bin indices of every enumerated ggl pair
 arma::Mat<double> gs_bins()
 {
   arma::Mat<double> result(tomo.ggl_Npowerspectra, 2);
@@ -281,7 +295,9 @@ arma::Mat<double> gs_bins()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
+arma::Cube<double> C_gs_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (!(l.n_elem > 0)) {
     spdlog::critical("{}: l array size = {}",
@@ -313,7 +329,11 @@ arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_gs_tomo_limber_cpp(const double l, const int ni, const int nj)
+double C_gs_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni,     // lens redshift bin
+    const int nj      // source redshift bin
+  )
 { // point diagnostic: runs the full batch of the array overload above at
   // a single multipole and reads one entry, so it pays the
   // whole-tomography batch cost per call. Loops over (l, ni, nj) should
@@ -335,14 +355,21 @@ double C_gs_tomo_limber_cpp(const double l, const int ni, const int nj)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_gg_tomo_limber_cpp(const double l, const int nz)
+// galaxy-clustering C_l (limber) at one multipole and one auto pair
+double C_gg_tomo_limber_cpp(
+    const double l,   // multipole
+    const int nz      // lens redshift bin (auto pair nz-nz)
+  )
 {
   return C_gg_tomo_limber_nointerp(l, nz, nz, 0);
 }
 
 // ---------------------------------------------------------------------------
 
-arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
+// galaxy-clustering C_l (limber) at every auto pair and many multipoles
+arma::Cube<double> C_gg_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -369,7 +396,11 @@ arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
+// galaxy-clustering C_l with the non-limber low multipoles the
+// likelihood uses (limber above limits.LMAX_NOLIMBER)
+arma::Cube<double> C_gg_tomo_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -402,12 +433,19 @@ arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_gk_tomo_limber_cpp(const double l, const int ni)
+// galaxy x CMB-lensing C_l (limber) at one multipole and lens bin
+double C_gk_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni      // lens redshift bin
+  )
 {
   return C_gk_tomo_limber_nointerp(l, ni, 0);
 }
 
-arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
+// galaxy x CMB-lensing C_l (limber) at every lens bin and many multipoles
+arma::Mat<double> C_gk_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -432,7 +470,11 @@ arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_ks_tomo_limber_cpp(const double l, const int ni)
+// CMB-lensing x shear C_l (limber) at one multipole and source bin
+double C_ks_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni      // source redshift bin
+  )
 {
   return C_ks_tomo_limber_nointerp(l, ni, 0);
 }
@@ -440,7 +482,10 @@ double C_ks_tomo_limber_cpp(const double l, const int ni)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
+// CMB-lensing x shear C_l (limber) at every source bin and many multipoles
+arma::Mat<double> C_ks_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -465,69 +510,15 @@ arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-/*
-double C_gy_tomo_limber_cpp(const double l, const int ni)
-{
-  return C_gy_tomo_limber_nointerp(l, ni, 0, 0);
-}
-
-arma::Mat<double> C_gy_tomo_limber_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_gy_tomo_limber_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Mat<double> result(l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
-    double tmp = C_gy_tomo_limber_nointerp(l(0), nz, 0, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz) = C_gy_tomo_limber_nointerp(l(i), nz, 0, 0);
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double C_ys_tomo_limber_cpp(const double l, const int ni)
-{
-  return C_ys_tomo_limber_nointerp(l, ni, 0, 0);
-}
-
-arma::Mat<double> C_ys_tomo_limber_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0)
-  {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ys_tomo_limber_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static variables
-    (void) C_ys_tomo_limber_nointerp(l(0), nz, 0, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.shear_nbin; nz++) {
-    for (int i=0; i<l.n_elem; i++) {
-      result(i, nz) = C_ys_tomo_limber_nointerp(l(i), nz, 0, 0);
-    }
-  }
-  return result;
-}
-*/
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_kk_limber_cpp(const double l)
+// CMB-lensing auto C_l (limber) at one multipole
+double C_kk_limber_cpp(
+    const double l    // multipole
+  )
 {
   return C_kk_limber_nointerp(l, 0);
 }
@@ -535,7 +526,10 @@ double C_kk_limber_cpp(const double l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
+// CMB-lensing auto C_l (limber) at many multipoles
+arma::Col<double> C_kk_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -556,57 +550,6 @@ arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-/*
-double C_ky_limber_cpp(const double l)
-{
-  return C_ky_limber_nointerp(l, 0, 0);
-}
-
-arma::Col<double> C_ky_limber_nointerp_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ky_limber_nointerp_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Col<double> result(l.n_elem);
-  { // init static variables
-    (void) C_ky_limber_nointerp(l(0), 0, 1);
-  }
-  #pragma omp parallel for
-  for (int i=0; i<l.n_elem; i++)
-    result(i) = C_ky_limber_nointerp(l(i), 0, 0);
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double C_yy_limber_cpp(double l)
-{
-  return C_yy_limber_nointerp(l, 0, 0);
-}
-
-arma::Col<double> C_yy_limber_nointerp_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_yy_limber_nointerp_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Col<double> result(l.n_elem);
-  { // init static variables
-    (void) C_yy_limber_nointerp(l(0), 0, 1);
-  }
-  #pragma omp parallel for
-  for (int i=0; i<l.n_elem; i++)
-    result(i) = C_yy_limber_nointerp(l(i), 0, 0);
-  return result;
-}
-*/
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -616,626 +559,6 @@ arma::Col<double> C_yy_limber_nointerp_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_for_C_ss_EE_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  double ar[4] = {(double) ni, (double) nj, l, 1};
-  return int_for_C_ss_tomo_limber(a, (void*) ar);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-arma::Cube<double> int_for_C_ss_EE_tomo_limber_cpp(
-    arma::Col<double> a, 
-    arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ss_EE_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
-    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j,i,nz) = int_for_C_ss_EE_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-      }
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ss_BB_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  double ar[4] = {(double) ni, (double) nj, l, 0};
-  return int_for_C_ss_tomo_limber(a, (void*) ar);
-}
-
-arma::Cube<double> int_for_C_ss_BB_tomo_limber_cpp(
-    arma::Col<double> a, 
-    arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ss_BB_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
-    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j,i,nz) = int_for_C_ss_BB_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-      }
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-py::tuple int_for_C_ss_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  return py::make_tuple(
-    int_for_C_ss_EE_tomo_limber_cpp(a, l, ni, nj),
-    int_for_C_ss_BB_tomo_limber_cpp(a, l, ni, nj)
-  );
-}
-
-py::tuple int_for_C_ss_tomo_limber_cpp(
-  const arma::Col<double> a, const arma::Col<double> l)
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ss_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> EE(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  arma::Cube<double> BB(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static vars
-    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        EE(j,i,nz) = int_for_C_ss_EE_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-        BB(j,i,nz) = int_for_C_ss_BB_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-      }
-    }
-  }
-  return py::make_tuple(carma::cube_to_arr(EE), carma::cube_to_arr(BB));
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_gs_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nl, 
-    const int ns
-  )
-{
-  double ar[4] = {(double) nl, (double) ns, l, (double) has_b2_galaxies()};
-  return int_for_C_gs_tomo_limber(a, (void*) ar);
-}
-
-arma::Cube<double> int_for_C_gs_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gs_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, tomo.ggl_Npowerspectra);
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static vars
-    (void) int_for_C_gs_tomo_limber_cpp(a(0),l(0),ZL(nz),ZS(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j,i,nz) = int_for_C_gs_tomo_limber_cpp(a(j),l(i),ZL(nz),ZS(nz));
-      }
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_gg_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  double ar[5] = {(double) ni, (double) nj, l, 0, (double) has_b2_galaxies()};
-  return int_for_C_gg_tomo_limber(a, (void*) ar);
-}
-
-arma::Cube<double> int_for_C_gg_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gg_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
-    (void) int_for_C_gg_tomo_limber_cpp(a(0), l(0), nz, nz);
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j, i, nz) = int_for_C_gg_tomo_limber_cpp(a(j), l(i), nz, nz);
-      }
-    }
-  }
-  return result;
-}
-
-/*
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_gk_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-
-  double res = 0.0;
-
-  if (has_b2_galaxies())
-    res = int_for_C_gk_tomo_limber_withb2(a, (void*) ar);
-  else
-    res = int_for_C_gk_tomo_limber(a, (void*) ar);
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_gk_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gk_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
-    (void) int_for_C_gk_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  if (has_b2_galaxies()) {
-    #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-      for (int i=0; i<l.n_elem; i++) {
-        for (int j=0; j<a.n_elem; j++)
-        {
-          double ar[3] = {(double) nz, l(i), (double) 0.0};
-          result(j, i, nz) = int_for_C_gk_tomo_limber_withb2(a(j), (void*) ar);
-        }
-      }
-    }
-  }
-  else
-  {
-    #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    {
-      for (int i=0; i<l.n_elem; i++)
-      {
-        for (int j=0; j<a.n_elem; j++)
-        {
-          double ar[3] = {(double) nz, l(i), (double) 0.0};
-          result(j, i, nz) = int_for_C_gk_tomo_limber(a(j), (void*) ar);
-        }
-      }
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-/*
-double int_for_C_gy_tomo_limber_cpp(
-    const double a, 
-    const double l,
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-  
-  double res;
-
-  if (has_b2_galaxies())
-  {
-    spdlog::critical("b2 not supported in C_gy_nointerp");
-    exit(1);
-  }
-  else
-  {
-    res = int_for_C_gy_tomo_limber(a, (void*) ar);
-  }
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_gy_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0))
-  {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gy_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_gy_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  #pragma GCC diagnostic pop
-
-  if (has_b2_galaxies())
-  {
-    spdlog::critical("b2 not supported in C_gy_nointerp");
-    exit(1);
-  }
-  else
-  {
-    #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    {
-      for (int i=0; i<l.n_elem; i++)
-      {
-        for (int j=0; j<a.n_elem; j++)
-        {
-          double ar[3] = {(double) nz, l(i), (double) 0.0};
-          result(j, i, nz) = int_for_C_gy_tomo_limber(a(j), (void*) ar);
-        }
-      }
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ks_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-
-  double res = 0.0;
-
-  switch(nuisance.IA_MODEL)
-  {
-    case IA_MODEL_NLA:
-    {
-      res = int_for_C_ks_tomo_limber(a, (void*) ar);
-    }
-    default:
-    {
-      spdlog::critical("nuisance.IA_MODEL = {} not supported", nuisance.IA_MODEL);
-      exit(1);
-    }
-  }
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_ks_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ks_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.shear_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_ks_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  #pragma GCC diagnostic pop
-
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  {
-    for (int i=0; i<l.n_elem; i++)
-    {
-      for (int j=0; j<a.n_elem; j++)
-      {
-        result(j, i, nz) = int_for_C_ks_tomo_limber_cpp(a(j), l(i), nz);
-      }
-    }
-  }
-
-  return result;
-}
-
-/*
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ys_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-
-  double res = 0.0;
-
-  switch(nuisance.IA_MODEL)
-  {
-    case IA_MODEL_NLA:
-    {
-      res = int_for_C_ys_tomo_limber(a, (void*) ar); 
-    }
-    default:
-    {
-      spdlog::critical("nuisance.IA_MODEL = {} not supported", nuisance.IA_MODEL);
-      exit(1);
-    }
-  }
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_ys_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ys_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.shear_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_ys_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  #pragma GCC diagnostic pop
-
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  {
-    for (int i=0; i<l.n_elem; i++)
-    {
-      for (int j=0; j<a.n_elem; j++)
-      {
-        result(j, i, nz) = int_for_C_ys_tomo_limber_cpp(a(j), l(i), nz);
-      }
-    }
-  }
-
-  return result;
-}
-*/
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_kk_limber_cpp(const double a, const double l)
-{
-  double ar[2] = {l, (double) 0.0}; 
-  return int_for_C_kk_limber(a, (void*) ar);
-}
-
-arma::Mat<double> int_for_C_kk_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_kk_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Mat<double> result(a.n_elem, l.n_elem);
-  { // init static variables
-    (void) int_for_C_kk_limber_cpp(a(0), l(0));
-  }
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-    for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-      result(j, i) = int_for_C_kk_limber_cpp(a(j), l(i));
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-/*
-double int_for_C_ky_limber_cpp(const double a, const double l)
-{
-  double ar[2] = {l, (double) 0.0}; 
-  return int_for_C_ky_limber(a, (void*) ar);
-}
-
-arma::Mat<double> int_for_C_ky_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ky_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  { // init static variables
-    double tmp = int_for_C_ky_limber_cpp(a(0), l(0));
-  }
-  #pragma GCC diagnostic pop
-
-  arma::Mat<double> result(a.n_elem, l.n_elem);
-
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<l.n_elem; i++)
-  {
-    for (int j=0; j<a.n_elem; j++)
-    {
-      result(j, i) = int_for_C_ky_limber_cpp(a(j), l(i));
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_yy_limber_cpp(const double a, const double l)
-{
-  double ar[2] = {l, (double) 0.0}; 
-  return int_for_C_yy_limber(a, (void*) ar);
-}
-
-arma::Mat<double> int_for_C_yy_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_yy_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  { // init static variables
-    double tmp = int_for_C_yy_limber_cpp(a(0), l(0));
-  }
-  #pragma GCC diagnostic pop
-
-  arma::Mat<double> result(a.n_elem, l.n_elem);
-
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<l.n_elem; i++)
-  {
-    for (int j=0; j<a.n_elem; j++)
-    {
-      result(j, i) = int_for_C_yy_limber_cpp(a(j), l(i));
-    }
-  }
-
-  return result;
-}
-
-*/
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

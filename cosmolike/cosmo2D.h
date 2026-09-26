@@ -69,14 +69,6 @@ double C_gk_tomo_limber(const double l, const int ni);
 
 double C_kk_limber(const double l);
 
-double C_gy_tomo_limber(const double l, const int ni);
-
-double C_ys_tomo_limber(const double l, const int ni);
-
-double C_ky_limber(const double l);
-
-double C_yy_limber(const double l);
-
 // ----------------------------------------------------------------------------
 // Non-Interpolated Version (Will compute the Integral at every call)
 // ----------------------------------------------------------------------------
@@ -104,6 +96,22 @@ void C_ss_tomo_limber_nointerp_batch(
     const int lmax,
     const int NSIZE,
     double*** Cl
+  );
+
+// Interpolate ntab log-spaced C_l tables at the integer multipoles
+// lmin..lmax-1 with shared index arithmetic and a SIMD (AVX2) gather
+// fast path: the workhorse behind every C_XY_tomo_limber_fill. The
+// tables hold tab[q][i] at l_i = exp(a + i/inv_dx) with n grid points.
+void limber_fill_interp(
+    const int ntab,                // number of tables (1 or 2)
+    const double** RESTRICT tab,   // input tables [ntab][n]
+    double** RESTRICT out,         // output arrays [ntab][>=lmax]
+    const int lmin,                // first multipole (inclusive)
+    const int lmax,                // last multipole (exclusive)
+    const double* RESTRICT ln_ell, // log(l) array, indexed by l
+    const double a,                // log(l_min) of the grid
+    const double inv_dx,           // 1 / grid spacing in log(l)
+    const int n                    // number of grid points
   );
 
 // Batch computation of the scale-cut derivative dC_ss/dlnk (2011.06469
@@ -155,14 +163,6 @@ double C_ks_tomo_limber_nointerp(const double l, const int ns, const int init);
 
 double C_kk_limber_nointerp(const double l, const int init);
 
-double C_gy_tomo_limber_nointerp(const double l, const int ni, const int init);
-
-double C_ys_tomo_limber_nointerp(const double l, const int ni, const int init);
-
-double C_ky_limber_nointerp(const double l, const int init);
-
-double C_yy_limber_nointerp(const double l, const int init);
-
 // ----------------------------------------------------------------------------
 // Integrands 
 // ----------------------------------------------------------------------------
@@ -178,14 +178,6 @@ double int_for_C_gk_tomo_limber(double a, void* params);
 double int_for_C_ks_tomo_limber(double a, void* params);
 
 double int_for_C_kk_limber(double a, void* params);
-
-double int_for_C_gy_tomo_limber(double a, void* params);
-
-double int_for_C_ys_tomo_limber(double a, void* params);
-
-double int_for_C_ky_limber(double a, void* params);
-
-double int_for_C_yy_limber(double a, void *params);
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
