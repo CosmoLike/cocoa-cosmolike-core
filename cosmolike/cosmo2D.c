@@ -1716,19 +1716,19 @@ static inline double int_for_C_ss_tomo_limber_tatt_BB_core(
 // precomputed kernels and vectorized inner loops.
 //
 // This legacy scalar code is still used by:
-//   - cosmo2D_scuts (dC/dlnk scale-cut derivatives via the deriv parameter)
+//   - cosmo2D_scuts (the dC/dlnk point diagnostic multiplies this integrand
+//     by chi: at fixed ell, k = (l + 1/2)/chi gives |dchi/dlnk| = chi)
 //   - Jupyter notebooks for single-point diagnostic evaluations
 //
-// params is double[5]:
+// params is double[4]:
 //   ar[0] = n1:    first source redshift bin index
 //   ar[1] = n2:    second source redshift bin index
 //   ar[2] = l:     multipole moment
 //   ar[3] = EE:    1 for E-mode, 0 for B-mode
-//   ar[4] = deriv: 0 for C_l, 1 for dC/dlnk (scale-cut diagnostic)
 // ---------------------------------------------------------------------------
 double int_for_C_ss_tomo_limber(
     double a,       // scale factor (integration variable, GSL interface)
-    void* params    // double[5]: {n1, n2, l, EE, deriv} — see above
+    void* params    // double[4]: {n1, n2, l, EE} — see above
   )
 {
   if (!(a>0) || !(a<1)) {
@@ -1744,7 +1744,6 @@ double int_for_C_ss_tomo_limber(
   }
   const double l = ar[2];
   const int EE = (int) ar[3];
-  const int deriv = (int) ar[4];
 
   const double ell = l + 0.5;
   struct chis chidchi = chi_all(a);
@@ -1829,12 +1828,7 @@ double int_for_C_ss_tomo_limber(
       exit(1);
     }
   }
-  if (0 == deriv) {
-    return ans*(chidchi.dchida/(fK*fK))*ell_prefactor;
-  } 
-  else { // dCXY/dlnk: important to determine scale cuts (2011.06469 eq 17)
-    return ans*(chidchi.dchida/fK)*ell_prefactor;
-  }
+  return ans*(chidchi.dchida/(fK*fK))*ell_prefactor;
 }
 // ---------------------------------------------------------------------------
 // Single-ell shear-shear C_l via GSL fixed-order Gauss-Legendre quadrature.
@@ -1882,11 +1876,10 @@ double C_ss_tomo_limber_nointerp(
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
   }
-  double ar[5] = {(double) ni, 
-                  (double) nj, 
-                  l, 
-                  (double) EE, 
-                  (double) 0};
+  double ar[4] = {(double) ni,
+                  (double) nj,
+                  l,
+                  (double) EE};
   double res = 0.0;
   const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
   const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
@@ -2192,6 +2185,373 @@ void C_ss_tomo_limber_nointerp_batch(
   free(tmp_EE);
   free(tmp_BB);
   free(lx);
+}
+
+// ---------------------------------------------------------------------------
+// Batch computation of the scale-cut derivative dC_ss/dlnk on a
+// (ln k, ell) grid (2011.06469 eq 17).
+//
+// In the Limber integral each scale factor maps one-to-one onto
+// k = (l + 1/2)/chi(a), so dC_ss/dlnk at a given (k, ell) is the C_ss
+// integrand evaluated at the single node a with chi(a) = (l + 1/2)/k,
+// times |dchi/dlnk| = chi: the per-node amplitude is dchida/fK where the
+// C_ell quadrature uses dchida/fK^2. There is no quadrature sum here —
+// every (k, ell, tomo pair) output is one core evaluation.
+//
+// Same design as C_ss_tomo_limber_work: precompute every expensive
+// quantity per node — the nodes are the nlnk*nell grid points, flattened
+// as p = f*nell + i so each fixed f is one contiguous stretch — then fill
+// every (tomo pair, node) output with the always-TATT cores, which reduce
+// identically to NLA when the KIA kernels stay zero. A node whose scale
+// factor falls outside the source support (a outside (amin, amax)) keeps
+// AMP = 0 and zeroed kernels, so its outputs are exactly 0.
+//
+// With normalize = 0 the output is dC_ss/dlnk itself — what the real-space
+// dlnxi machinery needs, since it Legendre-sums dC over ell before
+// normalizing by xi(theta). With normalize = 1 the function also computes
+// C_ss(ell, pair) — the same quadrature machinery as C_ss_tomo_limber_work
+// — and writes dlnC_ss/dlnk = dC/C: one thread team computes the C_ss rows
+// and then fills the dC rows, dividing each one right after filling it,
+// while it is still cache-hot. No separate C_ss batch call, no
+// intermediate dC table, no second pass over the output.
+// ---------------------------------------------------------------------------
+void dC_ss_dlnk_tomo_limber_work(
+    const double* lnkx,  // ln k grid values (length nlnk), k in (Mpc/h)^-1
+    const int nlnk,      // number of ln k grid values
+    const double* lx,    // multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of tomo shear power spectra
+    const int normalize, // 1: write dlnC = dC/C_ss; 0: write dC
+    double**** table     // output [2][NSIZE][nlnk][nell]: EE and BB
+  )
+{
+  const double amin = 1./(redshift.shear_zdist_zmax_all + 1.);
+  const double amax = 1./(1. + fmax(redshift.shear_zdist_zmin_all, 1e-6));
+
+  // -----------------------------------------------------------------------
+  // Warm up all functions that lazily initialize internal static tables.
+  // Must be called single-threaded before any parallel region touches them.
+  // -----------------------------------------------------------------------
+  {
+    const double a = 0.5*(amin + amax); // inside the source support
+    struct chis chidchi = chi_all(a);
+    const double fK   = chidchi.chi;
+    const double hoh0 = hoverh0v2(a, chidchi.dchida);
+    const double gf   = growfac(a);
+    const double ell  = lx[0] + 0.5;
+    (void) a_chi(fK);
+    (void) f_K(fK);
+    (void) W_kappa(a, fK, 0);
+    (void) W_source(a, 0, hoh0);
+    (void) IA_A1_Z1(a, gf, 0);
+    (void) IA_A2_Z1(a, gf, 0);
+    (void) IA_BTA_Z1(a, gf, 0);
+    (void) Pdelta(ell/fK, a);
+    (void) Z1(0);
+    (void) Z2(0);
+    if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+      if (0 == nuisance.IA_code) get_FPT_IA();
+    }
+  }
+
+  if (nlnk <= 0 || nell <= 0) {
+    log_fatal("nlnk = %d and nell = %d must be positive", nlnk, nell);
+    exit(1);
+  }
+
+  // -----------------------------------------------------------------------
+  // Allocate precomputed arrays (one entry per node p = f*nell + i)
+  // -----------------------------------------------------------------------
+  const int npts = nlnk*nell;
+
+  double* AMP = (double*) malloc1d(npts);
+  double*** WC = (double***) malloc3d(5, redshift.shear_nbin, npts);
+  zero3d(WC, 5, redshift.shear_nbin, npts);
+  double** KIA = (double**) malloc2d(11, npts);
+  zero2d(KIA, 11, npts);
+
+  double limTATT[3];
+  if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+    if (0 == nuisance.IA_code) get_FPT_IA();
+    limTATT[0] = log(FPTIA.k_min);
+    limTATT[1] = log(FPTIA.k_max);
+    limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
+  }
+
+  // -----------------------------------------------------------------------
+  // Quadrature-side precompute (only when normalizing): C_ss needs its own
+  // Gauss-Legendre node set along the line of sight, because the C_ell sum
+  // runs over quadrature nodes, not (k, ell) grid nodes. Same machinery
+  // and layouts as C_ss_tomo_limber_work: radial weights and IA amplitudes
+  // per (source bin, node) in WCq, P_delta plus TATT kernels per
+  // (ell, node) in KIAq (there k = (l + 1/2)/chi varies with ell at fixed
+  // node, so KIAq keeps the ell dimension the grid-side KIA does not need)
+  // -----------------------------------------------------------------------
+  gsl_integration_glfixed_table* w = NULL;
+  cosmo_nodes cn;
+  double*** WCq = NULL;
+  double*** KIAq = NULL;
+  double** CEE = NULL;
+  double** CBB = NULL;
+  if (1 == normalize) {
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 96 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 :
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+    w = malloc_gslint_glfixed(szint);
+    cn = create_cosmo_nodes(amin, amax, w);
+    WCq = (double***) malloc3d(5, redshift.shear_nbin, cn.npts);
+    KIAq = (double***) malloc3d(11, nell, cn.npts);
+    zero3d(KIAq, 11, nell, cn.npts);
+    CEE = (double**) malloc2d(NSIZE, nell);
+    CBB = (double**) malloc2d(NSIZE, nell);
+    #pragma omp parallel for schedule(static)
+    for (int p = 0; p < cn.npts; p++) {
+      const double a    = cn.data[CN_A][p];
+      const double fK   = cn.data[CN_FK][p];
+      const double hoh0 = cn.data[CN_HOVERH0][p];
+      const double gf   = cn.data[CN_GROWFAC][p];
+      const double g4   = gf*gf*gf*gf;
+      for (int b = 0; b < redshift.shear_nbin; b++) {
+        WCq[0][b][p] = W_kappa(a, fK, b);
+        WCq[1][b][p] = W_source(a, b, hoh0);
+        WCq[2][b][p] = IA_A1_Z1(a, gf, b);
+        WCq[3][b][p] = IA_A2_Z1(a, gf, b);
+        WCq[4][b][p] = IA_BTA_Z1(a, gf, b);
+      }
+      for (int i = 0; i < nell; i++) {
+        const double ell = lx[i] + 0.5;
+        const double k = ell / fK;
+        const double lnk = log(k);
+        KIAq[10][i][p] = Pdelta(k, a);
+        if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+          if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
+            const double r = (lnk - limTATT[0]) / limTATT[2];
+            const int b = (int) floor(r);
+            const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+            const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+            for (int m = 0; m < 10; m++) {
+              KIAq[m][i][p] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Precompute per node: the dlnk amplitude, radial weights and IA
+  // amplitudes per source bin (WC, same layout as C_ss_tomo_limber_work),
+  // and P_delta plus the TATT one-loop kernels (KIA; each node has a
+  // single k, so KIA needs no separate ell dimension here)
+  // -----------------------------------------------------------------------
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int f = 0; f < nlnk; f++) {
+    for (int i = 0; i < nell; i++) {
+      const int p = f*nell + i;
+      const double l = lx[i];
+      const double ell = l + 0.5;
+      // the (k, ell) pair selects one Limber node: chi(a) = ell/k, with k
+      // converted from (Mpc/h)^{-1} to ((Mpc/h)/(c/H0=100))^{-1}
+      const double a = a_chi(f_K(ell/(exp(lnkx[f])*cosmology.coverH0)));
+      if (!(a > amin && a < amax)) {
+        AMP[p] = 0.0;
+        continue;
+      }
+      struct chis chidchi = chi_all(a);
+      const double growfac_a = growfac(a);
+      const double hoverh0 = hoverh0v2(a, chidchi.dchida);
+      const double fK = chidchi.chi;
+      const double k = ell/fK;
+      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
+      const double ell4 = ell*ell*ell*ell;
+      const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4;
+      AMP[p] = (chidchi.dchida/fK)*ell_prefactor;
+      for (int b = 0; b < redshift.shear_nbin; b++) {
+        WC[0][b][p] = W_kappa(a, fK, b);
+        WC[1][b][p] = W_source(a, b, hoverh0);
+        WC[2][b][p] = IA_A1_Z1(a, growfac_a, b);
+        WC[3][b][p] = IA_A2_Z1(a, growfac_a, b);
+        WC[4][b][p] = IA_BTA_Z1(a, growfac_a, b);
+      }
+      KIA[10][p] = Pdelta(k, a);
+      if (nuisance.IA_MODEL == IA_MODEL_TATT) {
+        const double lnk = log(k);
+        if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
+          const double r = (lnk - limTATT[0]) / limTATT[2];
+          const int b = (int) floor(r);
+          const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
+          const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
+          for (int m = 0; m < 10; m++) {
+            KIA[m][p] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
+          }
+        }
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Main fill loop.
+  //
+  // Where the derivative differs from C_ss: in C_ss_tomo_limber_work each
+  // output is a quadrature SUM over the line of sight,
+  //
+  //   C_ss(l) = sum_p core(p) * (dchida[p]/fK[p]^2) * ell_prefactor * wt[p],
+  //
+  // because every scale factor contributes to one C_ell. Here each output
+  // is ONE core evaluation with no reduction,
+  //
+  //   dC_ss/dlnk(k, l) = core(p(k, l)) * (dchida/fK) * ell_prefactor,
+  //
+  // because at fixed ell the Limber relation k = (l + 1/2)/chi picks a
+  // single node p(k, l), and changing variables from chi to ln k brings
+  // |dchi/dlnk| = chi = fK, which cancels one power of 1/fK in the
+  // amplitude (2011.06469 eq 17). AMP carries that per-node amplitude,
+  // with AMP = 0 marking nodes outside the source support. The core
+  // functions and their inputs (WC, KIA) are exactly the ones the C_ell
+  // sum uses: only the amplitude and the absence of the sum differ.
+  //
+  // When normalizing, one thread team does everything: its first loop
+  // computes the C_ss rows (the quadrature sum below, one row per tomo
+  // pair — C_ss does not depend on k, so each row serves every f), and
+  // after the loop's implicit barrier the same team fills the dC rows and
+  // divides each one to dlnC = dC/C while it is still cache-hot. No
+  // intermediate dC table exists and no pass re-reads the output.
+  //
+  // Always uses the TATT core function, which reduces identically to NLA
+  // when C2 = BTA = 0 (as enforced by the zero initialization of KIA).
+  // This avoids the IA model switch inside the loop, so the SIMD body over
+  // the nell contiguous nodes of each f sees only pure arithmetic.
+  // The restrict pointers are hoisted before the inner loops to eliminate
+  // gather instructions and enable contiguous vector loads.
+  // -----------------------------------------------------------------------
+  #pragma omp parallel
+  {
+  if (1 == normalize) { // C_ss rows first: the division below reads them
+    #pragma omp for collapse(2) schedule(static)
+    for (int nz = 0; nz < NSIZE; nz++) {
+      for (int i = 0; i < nell; i++) {
+        const int Z1NZ = Z1(nz);
+        const int Z2NZ = Z2(nz);
+        const double* restrict fKq    = cn.data[CN_FK];
+        const double* restrict dchida = cn.data[CN_DCHIDA];
+        const double* restrict wt     = cn.data[CN_WT];
+        const double* restrict PK     = KIAq[10][i];
+        const double* restrict tt     = KIAq[0][i];
+        const double* restrict ta_dE1 = KIAq[1][i];
+        const double* restrict ta_dE2 = KIAq[2][i];
+        const double* restrict ta     = KIAq[3][i];
+        const double* restrict mixA   = KIAq[4][i];
+        const double* restrict mixB   = KIAq[5][i];
+        const double* restrict mixEE  = KIAq[6][i];
+        const double* restrict ttbb   = KIAq[7][i];
+        const double* restrict tabb   = KIAq[8][i];
+        const double* restrict mixbb  = KIAq[9][i];
+        const double* restrict WK1    = WCq[0][Z1NZ];
+        const double* restrict WK2    = WCq[0][Z2NZ];
+        const double* restrict WS1    = WCq[1][Z1NZ];
+        const double* restrict WS2    = WCq[1][Z2NZ];
+        const double* restrict C11    = WCq[2][Z1NZ];
+        const double* restrict C12    = WCq[2][Z2NZ];
+        const double* restrict C21    = WCq[3][Z1NZ];
+        const double* restrict C22    = WCq[3][Z2NZ];
+        const double* restrict bta1   = WCq[4][Z1NZ];
+        const double* restrict bta2   = WCq[4][Z2NZ];
+        const double l = lx[i];
+        const double ell = l + 0.5;
+        const double ell4 = ell*ell*ell*ell;
+        const double ell_pf = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4;
+        double sEE = 0.0;
+        double sBB = 0.0;
+        #pragma omp simd reduction(+:sEE, sBB)
+        for (int p = 0; p < cn.npts; p++) {
+          const double ampq = (dchida[p]/(fKq[p]*fKq[p]))*ell_pf;
+          sEE += int_for_C_ss_tomo_limber_tatt_EE_core(
+                   PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
+                   C11[p],C12[p],C21[p],C22[p],bta1[p],bta2[p],
+                   tt[p],ta_dE1[p],ta_dE2[p],ta[p],
+                   mixA[p],mixB[p],mixEE[p]) * ampq * wt[p];
+          sBB += int_for_C_ss_tomo_limber_tatt_BB_core(
+                   PK[p],WK1[p],WK2[p],WS1[p],WS2[p],
+                   C11[p],C12[p],C21[p],C22[p],bta1[p],bta2[p],
+                   ttbb[p],tabb[p],mixbb[p]) * ampq * wt[p];
+        }
+        CEE[nz][i] = sEE;
+        CBB[nz][i] = sBB;
+      }
+    } // implicit barrier: C_ss rows complete before any division below
+  }
+  #pragma omp for collapse(2) schedule(static)
+  for (int nz = 0; nz < NSIZE; nz++) {
+    for (int f = 0; f < nlnk; f++) {
+      const int Z1NZ = Z1(nz);
+      const int Z2NZ = Z2(nz);
+      const double* restrict amp    = &AMP[f*nell];
+      const double* restrict PK     = &KIA[10][f*nell];
+      const double* restrict tt     = &KIA[0][f*nell];
+      const double* restrict ta_dE1 = &KIA[1][f*nell];
+      const double* restrict ta_dE2 = &KIA[2][f*nell];
+      const double* restrict ta     = &KIA[3][f*nell];
+      const double* restrict mixA   = &KIA[4][f*nell];
+      const double* restrict mixB   = &KIA[5][f*nell];
+      const double* restrict mixEE  = &KIA[6][f*nell];
+      const double* restrict ttbb   = &KIA[7][f*nell];
+      const double* restrict tabb   = &KIA[8][f*nell];
+      const double* restrict mixbb  = &KIA[9][f*nell];
+      const double* restrict WK1    = &WC[0][Z1NZ][f*nell];
+      const double* restrict WK2    = &WC[0][Z2NZ][f*nell];
+      const double* restrict WS1    = &WC[1][Z1NZ][f*nell];
+      const double* restrict WS2    = &WC[1][Z2NZ][f*nell];
+      const double* restrict C11    = &WC[2][Z1NZ][f*nell];
+      const double* restrict C12    = &WC[2][Z2NZ][f*nell];
+      const double* restrict C21    = &WC[3][Z1NZ][f*nell];
+      const double* restrict C22    = &WC[3][Z2NZ][f*nell];
+      const double* restrict bta1   = &WC[4][Z1NZ][f*nell];
+      const double* restrict bta2   = &WC[4][Z2NZ][f*nell];
+      double* restrict outEE = table[0][nz][f];
+      double* restrict outBB = table[1][nz][f];
+      #pragma omp simd
+      for (int i = 0; i < nell; i++) {
+        outEE[i] = int_for_C_ss_tomo_limber_tatt_EE_core(
+                     PK[i],WK1[i],WK2[i],WS1[i],WS2[i],
+                     C11[i],C12[i],C21[i],C22[i],bta1[i],bta2[i],
+                     tt[i],ta_dE1[i],ta_dE2[i],ta[i],
+                     mixA[i],mixB[i],mixEE[i]) * amp[i];
+        outBB[i] = int_for_C_ss_tomo_limber_tatt_BB_core(
+                     PK[i],WK1[i],WK2[i],WS1[i],WS2[i],
+                     C11[i],C12[i],C21[i],C22[i],bta1[i],bta2[i],
+                     ttbb[i],tabb[i],mixbb[i]) * amp[i];
+      }
+      if (1 == normalize) { // dlnC = dC/C, dividing while the row is
+        // cache-hot; a near-zero dC passes through and a near-zero C gives
+        // 0, so the ratio never blows up where the spectra vanish
+        const double* restrict cee = CEE[nz];
+        const double* restrict cbb = CBB[nz];
+        #pragma omp simd
+        for (int i = 0; i < nell; i++) {
+          const double dCEE = outEE[i];
+          const double CEEv = (fabs(dCEE) > 1e-30) ? cee[i] : 1.0;
+          outEE[i] = (fabs(CEEv) > 1e-30) ? dCEE/CEEv : 0.0;
+          const double dCBB = outBB[i];
+          const double CBBv = (fabs(dCBB) > 1e-30) ? cbb[i] : 1.0;
+          outBB[i] = (fabs(CBBv) > 1e-30) ? dCBB/CBBv : 0.0;
+        }
+      }
+    }
+  }
+  } // end of the parallel region
+  free(AMP);
+  free(WC);
+  free(KIA);
+  if (1 == normalize) {
+    free(CEE);
+    free(CBB);
+    free(WCq);
+    free(KIAq);
+    free_cosmo_nodes(&cn);
+    gsl_integration_glfixed_table_free(w);
+  }
 }
 
 // ---------------------------------------------------------------------------

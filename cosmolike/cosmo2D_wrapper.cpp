@@ -183,12 +183,32 @@ arma::Col<double> w_ks_tomo_cpp()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
+// ---------------------------------------------------------------------------
+// Shared batch engine of the two C_ss_tomo_limber_cpp overloads: a single
+// C_ss_tomo_limber_nointerp_ells call fills every enumerated tomographic
+// pair at every multipole (row nz of the work arrays is the pair
+// (Z1(nz), Z2(nz)) with Z1 <= Z2), and the values are scattered into the
+// (ell, ni, nj) cubes; the reversed (nj, ni) entries stay zero.
+// ---------------------------------------------------------------------------
+static void C_ss_tomo_limber_cubes(
+    const arma::Col<double>& l, // multipole values
+    arma::Cube<double>& EE,     // output (nell, shear_nbin, shear_nbin)
+    arma::Cube<double>& BB      // output (nell, shear_nbin, shear_nbin)
+  )
 {
-  return py::make_tuple(
-    C_ss_tomo_limber_nointerp(l, ni, nj, 1, 0),
-    C_ss_tomo_limber_nointerp(l, ni, nj, 0, 0) 
-  );
+  const int nell = (int) l.n_elem;
+  const int NSIZE = tomo.shear_Npowerspectra;
+  double** tmp_EE = (double**) malloc2d(NSIZE, nell);
+  double** tmp_BB = (double**) malloc2d(NSIZE, nell);
+  C_ss_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp_EE, tmp_BB);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      EE(i, Z1(nz), Z2(nz)) = tmp_EE[nz][i];
+      BB(i, Z1(nz), Z2(nz)) = tmp_BB[nz][i];
+    }
+  }
+  free(tmp_EE);
+  free(tmp_BB);
 }
 
 // ---------------------------------------------------------------------------
@@ -208,20 +228,40 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
                         redshift.shear_nbin,
                         redshift.shear_nbin,
                         arma::fill::zeros);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static vars
-    (void) C_ss_tomo_limber_nointerp(l(0), Z1(nz), Z2(nz), 1, 1); // EE
-    (void) C_ss_tomo_limber_nointerp(l(0), Z1(nz), Z2(nz), 0, 1); // BB
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      const int ni = Z1(nz);
-      const int nj = Z2(nz);
-      EE(i, ni, nj) = C_ss_tomo_limber_nointerp(l(i), ni, nj, 1, 0);
-      BB(i, ni, nj) = C_ss_tomo_limber_nointerp(l(i), ni, nj, 0, 0);
-    }
-  }
+  C_ss_tomo_limber_cubes(l, EE, BB);
   return py::make_tuple(carma::cube_to_arr(EE), carma::cube_to_arr(BB));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
+{ // point diagnostic: runs the full batch of C_ss_tomo_limber_cubes at a
+  // single multipole and reads one entry, so it pays the whole-tomography
+  // batch cost per call. Loops over (l, ni, nj) should call the array
+  // overload once and index the returned cubes instead.
+  if (ni < 0 || ni > redshift.shear_nbin - 1 ||
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input (ni, nj) = ({}, {})",
+                     "C_ss_tomo_limber_cpp", ni, nj);
+    exit(1);
+  }
+  arma::Col<double> ell(1);
+  ell(0) = l;
+  arma::Cube<double> EE(1,
+                        redshift.shear_nbin,
+                        redshift.shear_nbin,
+                        arma::fill::zeros);
+  arma::Cube<double> BB(1,
+                        redshift.shear_nbin,
+                        redshift.shear_nbin,
+                        arma::fill::zeros);
+  C_ss_tomo_limber_cubes(ell, EE, BB);
+  // C_ss is symmetric in (ni, nj) and the cubes fill only the
+  // enumerated Z1 <= Z2 ordering, so read the ordered entry
+  const int zmin = (ni < nj) ? ni : nj;
+  const int zmax = (ni < nj) ? nj : ni;
+  return py::make_tuple(EE(0, zmin, zmax), BB(0, zmin, zmax));
 }
 
 // ---------------------------------------------------------------------------
@@ -241,36 +281,54 @@ arma::Mat<double> gs_bins()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_gs_tomo_limber_cpp(const double l, const int ni, const int nj)
+arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
 {
-  return C_gs_tomo_limber_nointerp(l, ni, nj, 0);
+  if (!(l.n_elem > 0)) {
+    spdlog::critical("{}: l array size = {}",
+                     "C_gs_tomo_limber_cpp",
+                     l.n_elem);
+    exit(1);
+  }
+  arma::Cube<double> result(l.n_elem,
+                            redshift.clustering_nbin,
+                            redshift.shear_nbin,
+                            arma::fill::zeros);
+  // batched computation: a single C_gs_tomo_limber_nointerp_ells call
+  // fills every enumerated ggl pair at every multipole (row nz of the
+  // work array is the pair (ZL(nz), ZS(nz))); pairs outside the
+  // enumeration stay zero, matching the data-vector convention
+  const int nell = (int) l.n_elem;
+  const int NSIZE = tomo.ggl_Npowerspectra;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_gs_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, ZL(nz), ZS(nz)) = tmp[nz][i];
+    }
+  }
+  free(tmp);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
-{
-  if (!(l.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_gs_tomo_limber_cpp", 
-                     l.n_elem);
+double C_gs_tomo_limber_cpp(const double l, const int ni, const int nj)
+{ // point diagnostic: runs the full batch of the array overload above at
+  // a single multipole and reads one entry, so it pays the
+  // whole-tomography batch cost per call. Loops over (l, ni, nj) should
+  // call the array overload once and index the returned cube instead.
+  // A pair outside the enumerated ggl list returns 0.
+  if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input (ni, nj) = ({}, {})",
+                     "C_gs_tomo_limber_cpp", ni, nj);
     exit(1);
   }
-  arma::Cube<double> result(l.n_elem,
-                            redshift.clustering_nbin, 
-                            redshift.shear_nbin,
-                            arma::fill::zeros);
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static vars
-    (void) C_gs_tomo_limber_nointerp(l(0), ZL(nz), ZS(nz), 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i,ZL(nz),ZS(nz))=C_gs_tomo_limber_nointerp(l(i),ZL(nz),ZS(nz),0);
-    }
-  }
-  return result;
+  arma::Col<double> ell(1);
+  ell(0) = l;
+  const arma::Cube<double> res = C_gs_tomo_limber_cpp(ell);
+  return res(0, ni, nj);
 }
 
 // ---------------------------------------------------------------------------
@@ -565,8 +623,8 @@ double int_for_C_ss_EE_tomo_limber_cpp(
     const int nj
   )
 {
-  double ar[5] = {(double) ni, (double) nj, l, 1, 0};
-  return int_for_C_ss_tomo_limber(a, (void*) ar); 
+  double ar[4] = {(double) ni, (double) nj, l, 1};
+  return int_for_C_ss_tomo_limber(a, (void*) ar);
 }
 
 // ---------------------------------------------------------------------------
@@ -609,8 +667,8 @@ double int_for_C_ss_BB_tomo_limber_cpp(
     const int nj
   )
 {
-  double ar[5] = {(double) ni, (double) nj, l, 0, 0};
-  return int_for_C_ss_tomo_limber(a, (void*) ar); 
+  double ar[4] = {(double) ni, (double) nj, l, 0};
+  return int_for_C_ss_tomo_limber(a, (void*) ar);
 }
 
 arma::Cube<double> int_for_C_ss_BB_tomo_limber_cpp(

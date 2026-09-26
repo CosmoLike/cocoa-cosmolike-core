@@ -100,10 +100,27 @@ void C_ss_tomo_limber_nointerp_ells(
 // Batch computation at integer multipoles lmin..lmax-1.
 // Thin wrapper around C_ss_tomo_limber_nointerp_ells.
 void C_ss_tomo_limber_nointerp_batch(
-    const int lmin, 
+    const int lmin,
     const int lmax,
-    const int NSIZE, 
+    const int NSIZE,
     double*** Cl
+  );
+
+// Batch computation of the scale-cut derivative dC_ss/dlnk (2011.06469
+// eq 17) on a (ln k, ell) grid. Each (k, ell) maps onto the single Limber
+// node chi(a) = (l + 1/2)/k; nodes outside the source support return 0.
+// With normalize = 1 the output is instead dlnC_ss/dlnk = (dC/dlnk)/C_ss,
+// with C_ss computed inside on the same thread team and the division
+// fused into the fill loop (entries where either factor vanishes are 0);
+// normalize = 0 gives the raw dC the real-space dlnxi machinery needs.
+void dC_ss_dlnk_tomo_limber_work(
+    const double* lnkx,  // ln k grid values (length nlnk), k in (Mpc/h)^-1
+    const int nlnk,      // number of ln k grid values
+    const double* lx,    // multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of tomo shear power spectra
+    const int normalize, // 1: write dlnC = dC/C_ss; 0: write dC
+    double**** table     // output [2][NSIZE][nlnk][nell]: EE and BB
   );
 
 double C_gs_tomo_limber_nointerp(

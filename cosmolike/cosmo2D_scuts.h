@@ -33,14 +33,6 @@ double dlnxi_dlnk_pm_tomo(
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
-double dC_ss_dlnk_tomo_limber_nointerp(
-    const double k, 
-    const double l,
-    const int ni, 
-    const int nj, 
-    const int EE
-  );
-
 double dC_ss_dlnk_tomo_limber(
     const double k,
     const double l, 
@@ -69,13 +61,16 @@ double RF_xi_tomo_limber_nointerp(
     const int init
   ); // compute RF_X = \int_{-infty}^{kmax} dlnk |dlnX_dlnk|
 
-double RF_C_ss_tomo_limber_nointerp(
-    const double kmax,
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE, 
-    const int init
+// Batch response function RF(kmax, l) = int_{-infty}^{ln kmax} |dlnC/dlnk|
+// normalized by the full-line integral (2011.06469 eq 17), for every
+// tomographic pair on a (ln kmax, ell) grid.
+void RF_C_ss_tomo_limber_work(
+    const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
+    const int nkmax,       // number of ln kmax values
+    const double* lx,      // multipole values (length nl)
+    const int nl,          // number of multipole values
+    const int NSIZE,       // number of tomo shear power spectra
+    double**** table       // output [2][NSIZE][nkmax][nl]: EE and BB
   );
 
 // ----------------------------------------------------------------------------
