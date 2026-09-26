@@ -44,8 +44,77 @@
 // Caching: recomputed only when cosmology or Ntable settings change
 // (tracked via cosmology.random and Ntable.random hash values).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// fpt_regrid: move FFTLog outputs from the internal convolution grid onto
+// the output table.
+//
+// Ntable.FPT_internal_accuracy_boost sets the internal (convolution) grid
+// as a fraction of the output grid. The FFTLog convolutions are smooth in
+// ln k, so their cost can shrink while the output table - whose density is
+// what the likelihood's linear interpolation actually resolves - keeps the
+// validated point count (same split as the python FAST-PT theory block and
+// bfmt: coarse internal grid, dense output table).
+//
+// Both grids are uniform in ln k with the same lower endpoint
+// (k[i] = kmin * exp(i * dlnk)), so the source interval of an output point
+// is one divide - no binary search: r = j*ddst/dsrc. Natural cubic
+// coefficients come from spline_coeffs_uniform and are evaluated in Horner
+// form, the same scheme as the n(z) fine-grid upsampling in
+// redshift_spline.c. The VALUE is splined, not its log: several FPT
+// spectra cross zero. The internal grid stops one internal spacing below
+// k_max, so the few output points past its last node evaluate clamped at
+// that node (nothing physical is read that close to k_max).
+// ---------------------------------------------------------------------------
+static void fpt_regrid(
+    double** restrict src,   // spectra on the internal grid [.][Nsrc]
+    const long Nsrc,         // internal (convolution) grid points
+    double** restrict dst,   // output tables [.][Ndst]
+    const long Ndst,         // output grid points
+    const int* restrict rows,   // which table rows to move
+    const int nrows,            // number of entries in rows[] (5 or 10)
+    double** restrict coeff,    // caller-owned spline scratch [nrows][Nsrc]
+    const double lnk_span       // ln(k_max / k_min), shared by both grids
+  )
+{
+  const double dsrc = lnk_span / Nsrc;
+  const double ddst = lnk_span / Ndst;
+
+  // phase 1, serial: the tridiagonal solves (nrows is 5 or 10; the work
+  // is microseconds and each row's solve is a sequential recursion)
+  for (int m = 0; m < nrows; m++) {
+    spline_coeffs_uniform(src[rows[m]], (int) Nsrc, dsrc, coeff[m]);
+  }
+
+  // phase 2: Horner evaluation. nrows alone (5 or 10) underfills the
+  // thread team, so collapse(2) spreads nrows * Ndst iterations.
+  // Local restrict pointers: without them the compiler cannot prove
+  // that the rows reached through the double indirection never overlap,
+  // so it re-reads y[] and c[] from memory after every write to out[]
+  // instead of keeping them in registers.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int m = 0; m < nrows; m++) {
+    for (long j = 0; j < Ndst; j++) {
+      const double* restrict y = src[rows[m]];
+      const double* restrict c = coeff[m];
+      double* restrict out = dst[rows[m]];
+      double r = j * ddst / dsrc;
+      if (r > Nsrc - 1) r = Nsrc - 1;             // top clamp (see above)
+      const long i = (r < Nsrc - 2) ? (long) r : Nsrc - 2;
+      const double delx = (r - i) * dsrc;
+      const double dy = y[i+1] - y[i];
+      const double b = dy/dsrc - dsrc*(c[i+1] + 2.0*c[i])/3.0;
+      const double d = (c[i+1] - c[i])/(3.0*dsrc);
+      out[j] = y[i] + delx*(b + delx*(c[i] + delx*d));
+    }
+  }
+}
+
 void get_FPT_bias(void)
 {
+  const int NTAB = 8; // FPTbias.tab rows: 5 spectra, Pd1p3, k, P_lin
+  static double** Fy = NULL;           // per-term FFTLog outputs [NTERMS][N_int]
+  static double** regrid_coeff = NULL;  // fpt_regrid spline scratch [5][N_int]
+  static fastpt_config config;          // FFTLog padding/window setup
   // 13 terms -> 5 output spectra
   // ---------------------------------------------------------------
   // idx | alpha | beta | ell | output     | coeff
@@ -88,32 +157,76 @@ void get_FPT_bias(void)
     FPTbias.k_max    = 1.0e+6;
     FPTbias.k_cutoff = 1.0e+4;
     FPTbias.N        = 1100 + 200 * Ntable.FPTboost;
+    // internal (convolution) grid, rounded up to even (the FFTLog engine
+    // requires it); == N makes tab_int alias tab (exact legacy path)
+    FPTbias.N_int = ((int) ceil(FPTbias.N
+                                * Ntable.FPT_internal_accuracy_boost) + 1) & ~1;
     FPTbias.sigma4   = 0.0;
+    if (FPTbias.tab_int != NULL && FPTbias.tab_int != FPTbias.tab)
+    {
+      free(FPTbias.tab_int);
+    }
     if (FPTbias.tab != NULL)
     {
       free(FPTbias.tab);
     }
-    FPTbias.tab = (double**) malloc2d(8, FPTbias.N);
+    FPTbias.tab = (double**) malloc2d(NTAB, FPTbias.N);
+    FPTbias.tab_int = (FPTbias.N_int == FPTbias.N) ? FPTbias.tab
+        : (double**) malloc2d(NTAB, FPTbias.N_int);
+    if (regrid_coeff != NULL)
+    {
+      free(regrid_coeff);
+    }
+    regrid_coeff = (FPTbias.N_int == FPTbias.N) ? NULL
+        : (double**) malloc2d(5, FPTbias.N_int); // one row per regridded spectrum
   }
  
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random))
   {
-    const long Nk = FPTbias.N;
-    const double dlogk =
-      (log(FPTbias.k_max) - log(FPTbias.k_min)) / Nk;
+    // Internal (convolution) grid: FPT_internal_accuracy_boost = 1 keeps
+    // it equal to the output grid, tab_int aliases the output tables and this is
+    // the exact legacy path; any other value runs the convolutions on
+    // ceil(boost * N) points and fpt_regrid moves the results onto the
+    // output grid, whose density is what the likelihood's interpolation
+    // resolves (see fpt_regrid above).
+    const long Nout = FPTbias.N;
+    const long Nk = FPTbias.N_int;
+    double** tab_int = FPTbias.tab_int; // aliases FPTbias.tab when Nk == Nout
+    const double lnkmin = log(FPTbias.k_min);
+    const double lnspan = log(FPTbias.k_max) - lnkmin;
+    const double dlogk = lnspan / Nk;
  
     // --- build k grid and linear P(k) ---
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < Nk; i++) {
-      FPTbias.tab[6][i] = exp(log(FPTbias.k_min) + i * dlogk);
-      FPTbias.tab[7][i] = p_lin(FPTbias.tab[6][i], 1.0);
+      tab_int[6][i] = exp(lnkmin + i * dlogk);
+      tab_int[7][i] = p_lin(tab_int[6][i], 1.0);
     }
  
-    // single J_abl call with all 13 bias terms ---
-    double **Fy = malloc(sizeof(double*) * NTERMS);
-    for (int i = 0; i < NTERMS; i++) {
-      Fy[i] = malloc(sizeof(double) * Nk);
+    // single J_abl call with all 13 bias terms; the work array and the
+    // FFTLog configuration depend only on the grids, so they persist
+    // across cosmologies and rebuild only when Ntable changes (the
+    // cache[1] stamp below still holds the pre-rebuild value here)
+    if (NULL == Fy || fdiff2(cache[1], Ntable.random)) {
+      if (Fy != NULL) {
+        free(Fy);
+      }
+      Fy = (double**) malloc2d(NTERMS, Nk);
+      config.nu             = -2.;
+      config.c_window_width = 0.65;
+      // N_pad and N_extrap are point counts, but what they protect is a
+      // LENGTH in ln k (span = count * dlnk). The FFTLog convolution is
+      // circular: N_pad zero-pads so the slowly decaying kernel tails do
+      // not wrap around and alias into the physical k range, and N_extrap
+      // extends P(k) as power laws so the array does not end in a sharp
+      // step whose Gibbs ringing (only partly damped by c_window_width)
+      // would contaminate the spectra near the k-range edges. Scaling the
+      // counts with Nk/Nout keeps all three spans exactly as validated on
+      // the legacy single grid, for any internal-grid density.
+      config.N_pad          = (int) ceil(1500. * Nk / (double) Nout);
+      config.N_extrap_low   = (int) ceil(500. * Nk / (double) Nout);
+      config.N_extrap_high  = (int) ceil(500. * Nk / (double) Nout);
     }
  
     int alpha_ar[13];
@@ -127,40 +240,44 @@ void get_FPT_bias(void)
       isP13type_ar[i] = 0;
     }
  
-    fastpt_config config;
-    config.nu             = -2.;
-    config.c_window_width = 0.65;
-    config.N_pad          = 1500;
-    config.N_extrap_low   = 500;
-    config.N_extrap_high  = 500;
- 
-    J_abl(FPTbias.tab[6], FPTbias.tab[7], Nk,
-             alpha_ar, beta_ar, ell_ar, isP13type_ar,
-             NTERMS, &config, Fy);
+    J_abl(tab_int[6], tab_int[7], Nk, alpha_ar, beta_ar, ell_ar, isP13type_ar,
+          NTERMS, &config, Fy);
  
     // --- accumulate 13 Fy terms into 5 bias spectra ---
+    // parallel over the outputs, like get_FPT_IA's group accumulation:
+    // each thread owns its output row (no reduction needed), and the
+    // per-term parallel regions of the legacy code collapse into one
+    #pragma omp parallel for schedule(static)
     for (int out = 0; out < NOUT; out++) {
-      for (long j = 0; j < Nk; j++) {
-        FPTbias.tab[out][j] = 0.;
-      }
-    }
-    for (int i = 0; i < NTERMS; i++) {
-      const int out = out_idx[i];
-      const double c = coeff[i];
-      #pragma omp parallel for
-      for (long j = 0; j < Nk; j++) {
-        FPTbias.tab[out][j] += c * Fy[i][j];
+      memset(tab_int[out], 0, sizeof(double) * Nk);
+      for (int i = 0; i < NTERMS; i++) {
+        if (out_idx[i] != out) {
+          continue;
+        }
+        const double c = coeff[i];
+        for (long j = 0; j < Nk; j++) {
+          tab_int[out][j] += c * Fy[i][j];
+        }
       }
     }
  
-    for (int i = 0; i < NTERMS; i++) {
-      free(Fy[i]);
+    FPTbias.sigma4 = tab_int[OUT_D2D2][0] / 2.; // both grids share k[0] = k_min
+
+    if (tab_int != FPTbias.tab) {
+      const double dl = lnspan / Nout;
+      #pragma omp parallel for schedule(static)
+      for (int i = 0; i < Nout; i++) {
+        FPTbias.tab[6][i] = exp(lnkmin + i * dl);
+        FPTbias.tab[7][i] = p_lin(FPTbias.tab[6][i], 1.0);
+      }
+      const int rows[5] = {0, 1, 2, 3, 4};
+      fpt_regrid(tab_int, Nk, FPTbias.tab, Nout, rows, 5, regrid_coeff, lnspan);
     }
-    free(Fy);
- 
-    // Pd1p3: interpolated from precomputed table
-    #pragma omp parallel for
-    for (int i = 0; i < Nk; i++)
+
+    // Pd1p3: interpolated from a precomputed (grid-independent) table, so
+    // it is filled directly on the output grid
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < Nout; i++)
     {
       const double lnk = log(FPTbias.tab[6][i]);
       FPTbias.tab[5][i] =
@@ -168,8 +285,6 @@ void get_FPT_bias(void)
         interpol1d(tab_d1d3, tab_d1d3_Nk, tab_d1d3_lnkmin,
                    tab_d1d3_lnkmax, tab_d1d3_dlnk, lnk);
     }
- 
-    FPTbias.sigma4 = FPTbias.tab[OUT_D2D2][0] / 2.;
  
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
@@ -227,6 +342,11 @@ static int Nmax_from_terms(int N, int (*terms)[NCOLS]) {
 
 void get_FPT_IA(void)
 {
+  const int NTAB = 12; // FPTIA.tab rows: 10 spectra, k, P_lin
+  static double *Fy_flat = NULL;        // contiguous per-term FFTLog outputs
+  static double **Fy_ptrs = NULL;       // row pointers into Fy_flat
+  static double** regrid_coeff = NULL;  // fpt_regrid spline scratch [10][N_int]
+  static fastpt_config fpt_config;      // FFTLog padding/window setup (nu = 0)
   static uint64_t cache[MAX_SIZE_ARRAYS];
   if (fdiff2(cache[1], Ntable.random))
   {
@@ -235,23 +355,44 @@ void get_FPT_IA(void)
     FPTIA.k_cutoff = 1.0e+4;
     FPTIA.sigma4   = 0.0;
     FPTIA.N        = 1100 + 200 * Ntable.FPTboost;
+    // internal (convolution) grid, rounded up to even (the FFTLog engine
+    // requires it); == N makes tab_int alias tab (exact legacy path)
+    FPTIA.N_int = ((int) ceil(FPTIA.N
+                              * Ntable.FPT_internal_accuracy_boost) + 1) & ~1;
+    if (FPTIA.tab_int != NULL && FPTIA.tab_int != FPTIA.tab) {
+      free(FPTIA.tab_int);
+    }
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
     }
-    FPTIA.tab = (double**) malloc2d(12, FPTIA.N);
+    FPTIA.tab = (double**) malloc2d(NTAB, FPTIA.N);
+    FPTIA.tab_int = (FPTIA.N_int == FPTIA.N) ? FPTIA.tab
+        : (double**) malloc2d(NTAB, FPTIA.N_int);
+    if (regrid_coeff != NULL) {
+      free(regrid_coeff);
+    }
+    regrid_coeff = (FPTIA.N_int == FPTIA.N) ? NULL
+        : (double**) malloc2d(10, FPTIA.N_int); // one row per regridded spectrum
   }
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random))
   {
-    double *k   = FPTIA.tab[10];
-    double *Pin = FPTIA.tab[11];
+    // Internal (convolution) grid - same scheme as get_FPT_bias: boost = 1
+    // aliases the output tables (exact legacy path); otherwise the ~184
+    // FFTLog terms and the two direct convolutions run on ceil(boost * N)
+    // points and fpt_regrid moves the ten spectra onto the output grid.
+    const long Nout = FPTIA.N;
+    const long Nk = FPTIA.N_int;
+    double** tab_int = FPTIA.tab_int; // aliases FPTIA.tab when Nk == Nout
+    double *k   = tab_int[10];
+    double *Pin = tab_int[11];
 
     double lim[3];
     lim[0] = log(FPTIA.k_min);
     lim[1] = log(FPTIA.k_max);
-    lim[2] = (lim[1] - lim[0]) / FPTIA.N;
+    lim[2] = (lim[1] - lim[0]) / Nk;
 
-    #pragma omp parallel for
-    for (int i = 0; i < FPTIA.N; i++) {
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < Nk; i++) {
       k[i]   = exp(lim[0] + i*lim[2]);
       Pin[i] = p_lin(k[i], 1.0);
     }
@@ -580,7 +721,7 @@ void get_FPT_IA(void)
     // Single J_abJ1J2Jk call with all ~184 terms.
     //
     // J_abJ1J2Jk expects double **Fy where Fy[i] points to an array of
-    // FPTIA.N doubles for term i's output. We allocate one contiguous block
+    // Nk doubles for term i's output. We allocate one contiguous block
     // (Fy_flat) and set up an array of pointers (Fy_ptrs) into it:
     //
     //   Fy_flat:  [--- term 0 ---][--- term 1 ---]...[--- term Ntotal-1 ---]
@@ -589,30 +730,46 @@ void get_FPT_IA(void)
     //
     // After the J_abJ1J2Jk_ar call, Fy_ptrs[i][j] = result for term i at k-point j.
     // -----------------------------------------------------------------------
-    double *Fy_flat  = (double*) malloc(sizeof(double) * Ntotal * FPTIA.N);
-    if (NULL == Fy_flat) {
-      log_fatal("malloc failed");
-      exit(1);
+    // the work arrays and the FFTLog configuration depend only on the
+    // grids (Ntotal is fixed by the hardcoded term tables), so they
+    // persist across cosmologies and rebuild only when Ntable changes
+    // (the cache[1] stamp below still holds the pre-rebuild value here)
+    if (NULL == Fy_flat || fdiff2(cache[1], Ntable.random)) {
+      if (Fy_flat != NULL) {
+        free(Fy_ptrs);
+        free(Fy_flat);
+      }
+      Fy_flat = (double*) malloc(sizeof(double) * Ntotal * Nk);
+      if (NULL == Fy_flat) {
+        log_fatal("malloc failed");
+        exit(1);
+      }
+      Fy_ptrs = (double**) malloc(sizeof(double*) * Ntotal);
+      if (NULL == Fy_ptrs) {
+        log_fatal("malloc failed");
+        exit(1);
+      }
+      for (int i = 0; i < Ntotal; i++) {
+        Fy_ptrs[i] = Fy_flat + i * Nk;
+      }
+      fpt_config.c_window_width = 0.65;
+      // N_pad and N_extrap are point counts, but what they protect is a
+      // LENGTH in ln k (span = count * dlnk). The FFTLog convolution is
+      // circular: N_pad zero-pads so the slowly decaying kernel tails do
+      // not wrap around and alias into the physical k range, and N_extrap
+      // extends P(k) as power laws so the array does not end in a sharp
+      // step whose Gibbs ringing (only partly damped by c_window_width)
+      // would contaminate the spectra near the k-range edges. Scaling the
+      // counts with Nk/Nout keeps all three spans exactly as validated on
+      // the legacy single grid, for any internal-grid density.
+      fpt_config.N_pad          = (int) ceil(1500. * Nk / (double) Nout);
+      fpt_config.N_extrap_low   = (int) ceil(500. * Nk / (double) Nout);
+      fpt_config.N_extrap_high  = (int) ceil(500. * Nk / (double) Nout);
     }
-    double **Fy_ptrs = (double**) malloc(sizeof(double*) * Ntotal);
-    if (NULL == Fy_ptrs) {
-      log_fatal("malloc failed");
-      exit(1);
-    }
-    for (int i = 0; i < Ntotal; i++) {
-      Fy_ptrs[i] = Fy_flat + i * FPTIA.N;
-    }
-
-    static const fastpt_config fpt_config = {
-      .c_window_width = 0.65, 
-      .N_pad = 1500,
-      .N_extrap_low = 500, 
-      .N_extrap_high = 500
-    };
 
     J_abJ1J2Jk(k,         // input k grid, length N
                Pin,       // input power spectrum P(k)
-               FPTIA.N,   // number of input k points (before padding)
+               Nk,        // number of input k points (before padding)
                alpha_all, // biasing exponent 1 per term: nu1 = -2 - alpha[i]
                beta_all,  // biasing exponent 2 per term: nu2 = -2 - beta[i]
                J1_all,    // angular momentum coupling 1 per term (indexes g_m cache)
@@ -643,30 +800,28 @@ void get_FPT_IA(void)
     // separately below via direct convolution, not J_abJ1J2Jk_ar.
     // -----------------------------------------------------------------------
     double *outputs[NGROUPS];
-    outputs[ID_TT_E]    = FPTIA.tab[0];
-    outputs[ID_TT_B]    = FPTIA.tab[1];
-    outputs[ID_TA_DE1]  = FPTIA.tab[2];
-    outputs[ID_TA_0E0E] = FPTIA.tab[4];
-    outputs[ID_TA_0B0B] = FPTIA.tab[5];
-    outputs[ID_MIX_A]   = FPTIA.tab[6];
-    outputs[ID_MIX_DEE] = FPTIA.tab[8];
-    outputs[ID_MIX_DBB] = FPTIA.tab[9];
+    outputs[ID_TT_E]    = tab_int[0];
+    outputs[ID_TT_B]    = tab_int[1];
+    outputs[ID_TA_DE1]  = tab_int[2];
+    outputs[ID_TA_0E0E] = tab_int[4];
+    outputs[ID_TA_0B0B] = tab_int[5];
+    outputs[ID_MIX_A]   = tab_int[6];
+    outputs[ID_MIX_DEE] = tab_int[8];
+    outputs[ID_MIX_DBB] = tab_int[9];
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(static)
     for (int g = 0; g < NGROUPS; g++) {
       // Zero the output array, then accumulate the weighted sum of all
       // terms belonging to this group (indices starts[g] .. starts[g]+Njterms[g]-1)
-      memset(outputs[g], 0, sizeof(double) * FPTIA.N);
+      memset(outputs[g], 0, sizeof(double) * Nk);
       for (int i = starts[g]; i < starts[g] + Njterms[g]; i++) {
         const double c = coeff_all[i];              // combined coefficient A*B
-        const double *row = Fy_flat + i * FPTIA.N;  // term i's result array
-        for (int j = 0; j < FPTIA.N; j++)
+        const double *row = Fy_flat + i * Nk;       // term i's result array
+        for (int j = 0; j < Nk; j++)
           outputs[g][j] += c * row[j];
       }
     }
 
-    free(Fy_ptrs);
-    free(Fy_flat);
     
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
@@ -676,13 +831,13 @@ void get_FPT_IA(void)
     const double dL = log(k[1] / k[0]);  // log-spacing of k grid
     const long Ncut = floor(3. / dL);     // transition index from exact to asymptotic
   
-    double* exps = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+    double* exps = malloc(sizeof(double) * (size_t)(2*Nk - 1));
     if (NULL == exps) {
       log_fatal("malloc failed"); exit(1);
     }
-    for (int i = 0; i < 2*FPTIA.N-1; i++) {
+    for (int i = 0; i < 2*Nk-1; i++) {
       // Precompute r = k'/k ratios for all convolution offsets
-      exps[i] = exp(-dL * (i - FPTIA.N + 1));
+      exps[i] = exp(-dL * (i - Nk + 1));
     }
 
     // -----------------------------------------------------------------------
@@ -703,15 +858,15 @@ void get_FPT_IA(void)
     //
     // The cutoff Ncut = floor(3/dL) determines where to switch between the
     // exact formula and the asymptotic expansions. The exact formula has a
-    // log singularity at r=1, so the midpoint f[FPTIA.N-1] is set analytically.
+    // log singularity at r=1, so the midpoint f[Nk-1] is set analytically.
     //
-    // r = exp(-dL*(i - FPTIA.N + 1)) maps array index i to the ratio k'/k.
+    // r = exp(-dL*(i - Nk + 1)) maps array index i to the ratio k'/k.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     {
-      double* f = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+      double* f = malloc(sizeof(double) * (size_t)(2*Nk - 1));
       if (NULL == f) {
         log_fatal("malloc failed"); exit(1);
       }
@@ -719,7 +874,7 @@ void get_FPT_IA(void)
       int i;
 
       // Region 1: r << 1 (asymptotic expansion for small r)
-      for (i = 0; i < FPTIA.N-1-Ncut; i++) {
+      for (i = 0; i < Nk-1-Ncut; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2;
         f[i] = r * (768./7 - 256/(7293.*r10) - 256/(3003.*r8)
@@ -727,7 +882,7 @@ void get_FPT_IA(void)
       }
 
        // Region 2: r ~ 1, below midpoint (exact closed-form with log term)
-      for ( ; i < FPTIA.N-1; i++) {
+      for ( ; i < Nk-1; i++) {
         double r = exps[i];
         double r2 = r*r, r3 = r2*r, r4 = r2*r2, r5 = r4*r, r6 = r4*r2, r7 = r6*r;
         f[i] = r * (30. + 146*r2 - 110*r4 + 30*r6
@@ -735,7 +890,7 @@ void get_FPT_IA(void)
       }
 
       // Region 3: r ~ 1, above midpoint (same exact formula, mirrored)
-      for (i = FPTIA.N; i < FPTIA.N-1+Ncut; i++) {
+      for (i = Nk; i < Nk-1+Ncut; i++) {
         double r = exps[i];
         double r2 = r*r, r3 = r2*r, r4 = r2*r2, r5 = r4*r, r6 = r4*r2, r7 = r6*r;
         f[i] = r * (30. + 146*r2 - 110*r4 + 30*r6
@@ -743,7 +898,7 @@ void get_FPT_IA(void)
       }
 
        // Region 4: r >> 1 (asymptotic expansion for large r)
-      for ( ; i < 2*FPTIA.N-1; i++) {
+      for ( ; i < 2*Nk-1; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2, r12 = r6*r6, r14 = r8*r6;
         f[i] = r * (256*r2 - 256*r4 + (768*r6)/7.
@@ -752,20 +907,20 @@ void get_FPT_IA(void)
       }
 
       // Midpoint: r = 1 exactly (analytic limit of the closed-form expression)
-      f[FPTIA.N-1] = 96.;
+      f[Nk-1] = 96.;
 
       // Convolve Pin with the kernel f, then extract and normalize
-      double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
+      double* g = malloc(sizeof(double) * (size_t)(3*Nk - 2));
       if (NULL == g) {
         log_fatal("malloc failed"); exit(1);
       }
 
-      fftconvolve_real(Pin, f, FPTIA.N, 2*FPTIA.N-1, g);
+      fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
       
       // P_deltaE2(k) = 2 * k^3 / (896 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
-      for (i = 0; i < FPTIA.N; i++) {
+      for (i = 0; i < Nk; i++) {
         double ki3 = k[i] * k[i] * k[i];
-        FPTIA.tab[3][i] = 2. * ki3 / (896.*M_PI*M_PI) * Pin[i] * g[FPTIA.N-1+i] * dL;
+        tab_int[3][i] = 2. * ki3 / (896.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;
       }
 
       free(g);
@@ -795,7 +950,7 @@ void get_FPT_IA(void)
     //
     // The overall /2 factor in each region is part of the kernel normalization.
     //
-    // r = exp(-dL*(i - FPTIA.N + 1)) maps array index i to the ratio k'/k.
+    // r = exp(-dL*(i - Nk + 1)) maps array index i to the ratio k'/k.
     // Ncut = floor(3/dL) sets the transition between exact and asymptotic forms.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
@@ -803,14 +958,14 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     {
-      double* f = malloc(sizeof(double) * (size_t)(2*FPTIA.N - 1));
+      double* f = malloc(sizeof(double) * (size_t)(2*Nk - 1));
       if (NULL == f) {
         log_fatal("malloc failed"); exit(1);
       }
       int i;
 
       // Region 1: r << 1 (asymptotic expansion for small r)
-      for (i = 0; i < FPTIA.N-1-Ncut; i++) {
+      for (i = 0; i < Nk-1-Ncut; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2, r12 = r6*r6;
         f[i] = r * (-16./147 - 16/(415701.*r12) - 32/(357357.*r10) - 16/(63063.*r8)
@@ -820,7 +975,7 @@ void get_FPT_IA(void)
       // Region 2: r ~ 1, below midpoint (exact closed-form with log term)
       // The (r^2-1)^4 factor arises from the angular integration of the
       // IA_mix kernel; rm1_4 = (r^2 - 1)^4 is precomputed to avoid pow().
-      for ( ; i < FPTIA.N-1; i++) {
+      for ( ; i < Nk-1; i++) {
         double r = exps[i];
         double r2 = r*r, r3 = r2*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4;
         double rm1 = r2 - 1.;
@@ -831,7 +986,7 @@ void get_FPT_IA(void)
       }
 
        // Region 3: r ~ 1, above midpoint (same exact formula, mirrored)
-      for (i = FPTIA.N; i < FPTIA.N-1+Ncut; i++) {
+      for (i = Nk; i < Nk-1+Ncut; i++) {
         double r = exps[i];
         double r2 = r*r, r3 = r2*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4;
         double rm1 = r2 - 1.;
@@ -842,7 +997,7 @@ void get_FPT_IA(void)
       }
 
       // Region 4: r >> 1 (asymptotic expansion for large r)
-      for ( ; i < 2*FPTIA.N-1; i++) {
+      for ( ; i < 2*Nk-1; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2, r12 = r6*r6, r14 = r8*r6, r16 = r8*r8;
         f[i] = r * ((-16*r4)/147. + (32*r6)/441. - (16*r8)/1617.
@@ -851,22 +1006,22 @@ void get_FPT_IA(void)
       }
 
       // Midpoint: r = 1 exactly (analytic limit of the closed-form expression)
-      f[FPTIA.N-1] = -1./42.;
+      f[Nk-1] = -1./42.;
 
       // Convolve Pin with the kernel f, then extract and normalize
-      double* g = malloc(sizeof(double) * (size_t)(3*FPTIA.N - 2));
+      double* g = malloc(sizeof(double) * (size_t)(3*Nk - 2));
       if (NULL == g) {
         log_fatal("malloc failed"); exit(1);
       }
       
-      fftconvolve_real(Pin, f, FPTIA.N, 2*FPTIA.N-1, g);
+      fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
       
       // P_B(k) = 4 * k^3 / (2 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
       // The factor of 4 is folded in here (was previously a separate
       // FPTIA.tab[7][i] *= 4 loop after IA_mix).
-      for (i = 0; i < FPTIA.N; i++) {
+      for (i = 0; i < Nk; i++) {
         double ki3 = k[i] * k[i] * k[i];
-        FPTIA.tab[7][i] = 4. * ki3 / (2.*M_PI*M_PI) * Pin[i] * g[FPTIA.N-1+i] * dL;
+        tab_int[7][i] = 4. * ki3 / (2.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;
       }
 
       free(g);
@@ -874,6 +1029,19 @@ void get_FPT_IA(void)
     }
 
     free(exps);
+
+    if (tab_int != FPTIA.tab) {
+      const double dl = (lim[1] - lim[0]) / Nout;
+      #pragma omp parallel for schedule(static)
+      for (int i = 0; i < Nout; i++) {
+        FPTIA.tab[10][i] = exp(lim[0] + i*dl);
+        FPTIA.tab[11][i] = p_lin(FPTIA.tab[10][i], 1.0);
+      }
+      const int rows[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+      fpt_regrid(tab_int, Nk, FPTIA.tab, Nout, rows, 10, regrid_coeff,
+                 lim[1] - lim[0]);
+    }
+
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

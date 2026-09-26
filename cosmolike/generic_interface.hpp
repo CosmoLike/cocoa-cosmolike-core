@@ -507,8 +507,17 @@ void init_ntable_lmax(
     const int lmax
   );
 
+void init_photoz_conventions(
+    const int interpolation_type,
+    const int zmid_convention
+  );
+
+void init_fpt_internal_boost(
+    const double internal_boost
+  );
+
 void init_accuracy_boost(
-    const double accuracy_boost, 
+    const double accuracy_boost,
     const int integration_accuracy
   );
 

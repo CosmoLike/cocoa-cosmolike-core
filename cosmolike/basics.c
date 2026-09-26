@@ -212,7 +212,15 @@ double simd_array_sum(
 gsl_interp* malloc_gsl_interp(const int n)
 {
   gsl_interp* result;
-  result = gsl_interp_alloc(gsl_interp_cspline, n);
+  if (0 == Ntable.photoz_interpolation_type) {
+    result = gsl_interp_alloc(gsl_interp_cspline, n);
+  }
+  else if (1 == Ntable.photoz_interpolation_type) {
+    result = gsl_interp_alloc(gsl_interp_linear, n);
+  }
+  else {
+    result = gsl_interp_alloc(gsl_interp_steffen, n);
+  }
   if (result == NULL) {
     log_fatal("array allocation failed"); exit(1);
   }
@@ -237,7 +245,15 @@ gsl_interp* malloc_gsl_interp(const int n)
 gsl_spline* malloc_gsl_spline(const int n)
 {
   gsl_spline* result;
-  result = gsl_spline_alloc(gsl_interp_cspline, n);
+  if (0 == Ntable.photoz_interpolation_type) {
+    result = gsl_spline_alloc(gsl_interp_cspline, n);
+  }
+  else if (1 == Ntable.photoz_interpolation_type) {
+    result = gsl_spline_alloc(gsl_interp_linear, n);
+  }
+  else {
+    result = gsl_spline_alloc(gsl_interp_steffen, n);
+  }
   if (result == NULL) {
     log_fatal("array allocation failed"); exit(1);
   }

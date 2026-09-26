@@ -128,6 +128,9 @@ typedef struct
   // ---------------------------------------------------
   // --------------------------------------------------- 
   int nz_fine_sampling_factor;
+  int photoz_interpolation_type; // 0: cspline, 1: linear, 2+: steffen (see basics.c: malloc_gsl_interp)
+  int photoz_zmid_convention;    // 0: n(z) z column = Z_LOW (left bin edges); 1: Z_MID (sample points)
+  double FPT_internal_accuracy_boost; // C-FAST-PT convolution grid / output grid (pt_cfastpt.c)
 } Ntab;
 
 typedef struct
@@ -240,12 +243,14 @@ typedef struct
 
 typedef struct
 { // parameters for power spectrum passed to FASTPT
-  int N;
+  int N;      // output grid points (what the likelihood interpolates)
+  int N_int;  // internal (convolution) grid points; == N: single grid
   double k_min;
   double k_max;
   double k_cutoff;
   double sigma4;
-  double** tab; 
+  double** tab;     // output tables
+  double** tab_int; // internal work tables; aliases tab when N_int == N
 } FPT;
 
 typedef struct

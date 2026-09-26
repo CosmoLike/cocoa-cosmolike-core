@@ -276,6 +276,12 @@ void reset_Ntable_struct(void)
   Ntable.dCX_dlnk_kmin = 1.e-5;
   Ntable.dCX_dlnk_kmax = 1.e2; 
   Ntable.nz_fine_sampling_factor = 5; // nz fine-sampling (to ensure uniform points)
+  Ntable.photoz_interpolation_type = 0; // 0: cspline, 1: linear, 2+: steffen
+  Ntable.photoz_zmid_convention = 0;    // 0: z column = Z_LOW (left edges); 1: Z_MID (points)
+  // C-FAST-PT convolution grid / output grid. 0.5 is converged: the
+  // 2026-09-25 lsst_y1 scan measured delta^T C^-1 delta <= 1e-9 vs the
+  // single-grid path down to 0.27, and 1.0 recovers that path exactly
+  Ntable.FPT_internal_accuracy_boost = 0.5;
 }
 
 /*

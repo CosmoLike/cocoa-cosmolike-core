@@ -437,11 +437,16 @@ double zdistr_histo_n(double z, const int ni)
 //   Two-stage interpolation for speed on the hot path:
 //
 //   Stage 1 (cache rebuild, runs once when redshift.random_shear changes):
-//     - Normalize the raw histograms and fit cubic splines (via GSL) on
-//       the original (possibly non-uniform) bin-center grid.
-//     - Resample each spline onto a uniform fine grid (20× the original
-//       resolution) and precompute cubic spline coefficients via a
-//       tridiagonal solve (spline_coeffs_uniform).
+//     - Normalize the raw histograms and fit GSL splines (type set by
+//       Ntable.photoz_interpolation_type: cspline default, linear, or
+//       Steffen monotone) on the original bin-center grid. The node
+//       positions follow Ntable.photoz_zmid_convention: the file z
+//       column is read as Z_LOW left bin edges (default, values at
+//       centers z + dz/2) or as Z_MID sample points (values at z).
+//     - Resample each spline onto a uniform fine grid
+//       (Ntable.nz_fine_sampling_factor x the original resolution)
+//       and precompute cubic spline coefficients via a tridiagonal
+//       solve (spline_coeffs_uniform).
 //     - Controlled by DONT_NZ_FAST_SUMBSAMPLE: when defined, the fine
 //       grid is skipped and the hot path falls back to GSL evaluation.
 //
@@ -474,7 +479,25 @@ double nz_source_photoz(double zz, const int nj)
   static int nzbins_fine;
 #endif
 
-  if (table == NULL || fdiff2(cache[0], redshift.random_shear)) {
+  // The two photo-z settings are packed into ONE integer so a single
+  // comparison detects a change in either of them:
+  //
+  //   packed = 1 + photoz_interpolation_type + 8*photoz_zmid_convention
+  //
+  // Read it like a two-digit number whose "ones digit" is the
+  // interpolation type (0-7) and whose "eights digit" is the z-column
+  // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
+  // type 0 with convention 1 gives 1 + 0 + 8 = 9. Because the type can
+  // never reach 8, two DIFFERENT settings pairs can never produce the
+  // SAME packed number. (With a multiplier of 2 they could: type 2 with
+  // convention 0 and type 0 with convention 1 would both give 3, and
+  // that settings change would be mistaken for "nothing changed" -
+  // stale n(z) tables, silently wrong physics.) The 1+ offset keeps a
+  // stamped slot nonzero, so it can never equal the zero that C puts in
+  // the static cache array before the first build.
+  if (table == NULL || fdiff2(cache[0], redshift.random_shear) ||
+      cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
+                                + 8*Ntable.photoz_zmid_convention)) {
     if (table == NULL) {
       for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++)
         photoz_splines[i] = NULL;
@@ -487,8 +510,12 @@ double nz_source_photoz(double zz, const int nj)
     const double zmin = redshift.shear_zdist_zmin_all;
     const double zmax = redshift.shear_zdist_zmax_all;
     const double dz_histo = (zmax - zmin) / ((double) nzbins);
+    // Z_LOW convention (default): the file z column holds left bin edges,
+    // so the tabulated value belongs at the cell center z + dz/2.
+    // Z_MID: the column holds the sample points themselves.
+    const double off = (1 == Ntable.photoz_zmid_convention) ? 0.0 : 0.5;
     for (int k = 0; k < nzbins; k++) {
-      table[ntomo+1][k] = zmin + (k + 0.5) * dz_histo;
+      table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
 
     double NORM[MAX_SIZE_ARRAYS];
@@ -574,6 +601,9 @@ double nz_source_photoz(double zz, const int nj)
     }
 #endif
     cache[0] = redshift.random_shear;
+    // same packed encoding as the rebuild condition above
+    cache[1] = (uint64_t) (1 + Ntable.photoz_interpolation_type
+                             + 8*Ntable.photoz_zmid_convention);
   }
 
   const int ntomo = redshift.shear_nbin;
@@ -755,11 +785,16 @@ double pf_histo_n(double z, const int ni)
 //   Two-stage interpolation for speed on the hot path:
 //
 //   Stage 1 (cache rebuild, runs once per parameter change):
-//     - Fit cubic splines (via GSL) to the normalized histograms on
-//       the original (possibly non-uniform) bin-center grid.
-//     - Resample each spline onto a uniform fine grid (20× the
-//       original resolution) and precompute cubic spline coefficients
-//       on that grid via a tridiagonal solve.
+//     - Fit GSL splines (type set by Ntable.photoz_interpolation_type:
+//       cspline default, linear, or Steffen monotone) to the
+//       normalized histograms on the original bin-center grid. The
+//       node positions follow Ntable.photoz_zmid_convention: the file
+//       z column is read as Z_LOW left bin edges (default, values at
+//       centers z + dz/2) or as Z_MID sample points (values at z).
+//     - Resample each spline onto a uniform fine grid
+//       (Ntable.nz_fine_sampling_factor x the original resolution)
+//       and precompute cubic spline coefficients on that grid via a
+//       tridiagonal solve.
 //
 //   Stage 2 (hot path, called millions of times per likelihood):
 //     - Direct-index lookup on the uniform fine grid: one multiply
@@ -797,7 +832,25 @@ double nz_lens_photoz(double zz, int nj)
   static int nzbins_fine;
 #endif
 
-  if (NULL == table || fdiff2(cache[0], redshift.random_clustering))
+  // The two photo-z settings are packed into ONE integer so a single
+  // comparison detects a change in either of them:
+  //
+  //   packed = 1 + photoz_interpolation_type + 8*photoz_zmid_convention
+  //
+  // Read it like a two-digit number whose "ones digit" is the
+  // interpolation type (0-7) and whose "eights digit" is the z-column
+  // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
+  // type 0 with convention 1 gives 1 + 0 + 8 = 9. Because the type can
+  // never reach 8, two DIFFERENT settings pairs can never produce the
+  // SAME packed number. (With a multiplier of 2 they could: type 2 with
+  // convention 0 and type 0 with convention 1 would both give 3, and
+  // that settings change would be mistaken for "nothing changed" -
+  // stale n(z) tables, silently wrong physics.) The 1+ offset keeps a
+  // stamped slot nonzero, so it can never equal the zero that C puts in
+  // the static cache array before the first build.
+  if (NULL == table || fdiff2(cache[0], redshift.random_clustering) ||
+      cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
+                                + 8*Ntable.photoz_zmid_convention))
   {
     if (table == NULL) {
       for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++) {
@@ -812,8 +865,12 @@ double nz_lens_photoz(double zz, int nj)
     const double zmin = redshift.clustering_zdist_zmin_all;
     const double zmax = redshift.clustering_zdist_zmax_all;
     const double dz_histo = (zmax - zmin) / ((double) nzbins);
+    // Z_LOW convention (default): the file z column holds left bin edges,
+    // so the tabulated value belongs at the cell center z + dz/2.
+    // Z_MID: the column holds the sample points themselves.
+    const double off = (1 == Ntable.photoz_zmid_convention) ? 0.0 : 0.5;
     for (int k = 0; k < nzbins; k++) {
-      table[ntomo+1][k] = zmin + (k + 0.5) * dz_histo;
+      table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
 
     double NORM[MAX_SIZE_ARRAYS];
@@ -899,6 +956,9 @@ double nz_lens_photoz(double zz, int nj)
     }
 #endif
     cache[0] = redshift.random_clustering;
+    // same packed encoding as the rebuild condition above
+    cache[1] = (uint64_t) (1 + Ntable.photoz_interpolation_type
+                             + 8*Ntable.photoz_zmid_convention);
   }
 
   const int ntomo = redshift.clustering_nbin;

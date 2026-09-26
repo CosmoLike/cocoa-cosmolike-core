@@ -364,6 +364,54 @@ void init_ntable_lmax(const int lmax) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+void init_photoz_conventions(
+    const int interpolation_type,
+    const int zmid_convention
+  )
+{ // n(z) stage-1 interpolant (0: cspline, 1: linear, 2+: steffen) and the
+  // reading of the n(z) file z column (0: Z_LOW left bin edges, values at
+  // cell centers z + dz/2; 1: Z_MID sample points). The n(z) table caches
+  // watch both values, so a runtime change rebuilds the tables.
+  static constexpr std::string_view fname = "init_photoz_conventions"sv;
+  debug("{}: {}", fname, errbegins);
+  Ntable.photoz_interpolation_type = interpolation_type;
+  Ntable.photoz_zmid_convention = zmid_convention;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+void init_fpt_internal_boost(const double internal_boost)
+{ // C-FAST-PT internal (convolution) grid as a fraction of the output
+  // table: 1.0 keeps the two grids equal (the exact legacy path); smaller
+  // values run the FFTLog convolutions on fewer points and cubic-spline
+  // upsample onto the output table (see pt_cfastpt.c: fpt_regrid).
+  static constexpr std::string_view fname = "init_fpt_internal_boost"sv;
+  debug("{}: {}", fname, errbegins);
+  if (!(internal_boost > 0)) {
+    critical("{}: invalid internal_boost = {}", fname, internal_boost);
+    exit(1);
+  }
+  Ntable.FPT_internal_accuracy_boost = internal_boost;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 void init_accuracy_boost(
     const double accuracy_boost, 
     const int integration_accuracy
