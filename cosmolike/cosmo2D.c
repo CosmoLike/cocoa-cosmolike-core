@@ -2065,11 +2065,13 @@ void C_ss_tomo_limber_nointerp_batch(
 // (ln k, ell) grid (2011.06469 eq 17).
 //
 // In the Limber integral each scale factor maps one-to-one onto
-// k = (l + 1/2)/chi(a), so dC_ss/dlnk at a given (k, ell) is the C_ss
-// integrand evaluated at the single node a with chi(a) = (l + 1/2)/k,
-// times |dchi/dlnk| = chi: the per-node amplitude is dchida/fK where the
-// C_ell quadrature uses dchida/fK^2. There is no quadrature sum here —
-// every (k, ell, tomo pair) output is one core evaluation.
+// k = (l + 1/2)/chi(a), so dC_ss/dlnk at a given (k, ell) is the per-chi
+// C_ss integrand core/fK^2 evaluated at the single node with
+// chi(a) = (l + 1/2)/k, times |dchi/dlnk| = chi: the per-node amplitude
+// is 1/fK. Equivalently, it is the quadrature's per-a amplitude
+// dchida/fK^2 times |da/dlnk| = fK/dchida — the dchida cancels. There is
+// no quadrature sum here — every (k, ell, tomo pair) output is one core
+// evaluation.
 //
 // Same design as C_ss_tomo_limber_work: precompute every expensive
 // quantity per node — the nodes are the nlnk*nell grid points, flattened
@@ -2240,7 +2242,7 @@ void dC_ss_dlnk_tomo_limber_work(
       const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
       const double ell4 = ell*ell*ell*ell;
       const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4;
-      AMP[p] = (chidchi.dchida/fK)*ell_prefactor;
+      AMP[p] = ell_prefactor/fK;
       for (int b = 0; b < redshift.shear_nbin; b++) {
         WC[0][b][p] = W_kappa(a, fK, b);
         WC[1][b][p] = W_source(a, b, hoverh0);
@@ -2275,15 +2277,16 @@ void dC_ss_dlnk_tomo_limber_work(
   // because every scale factor contributes to one C_ell. Here each output
   // is ONE core evaluation with no reduction,
   //
-  //   dC_ss/dlnk(k, l) = core(p(k, l)) * (dchida/fK) * ell_prefactor,
+  //   dC_ss/dlnk(k, l) = core(p(k, l)) * (1/fK) * ell_prefactor,
   //
   // because at fixed ell the Limber relation k = (l + 1/2)/chi picks a
-  // single node p(k, l), and changing variables from chi to ln k brings
-  // |dchi/dlnk| = chi = fK, which cancels one power of 1/fK in the
-  // amplitude (2011.06469 eq 17). AMP carries that per-node amplitude,
-  // with AMP = 0 marking nodes outside the source support. The core
-  // functions and their inputs (WC, KIA) are exactly the ones the C_ell
-  // sum uses: only the amplitude and the absence of the sum differ.
+  // single node p(k, l), and changing variables from a to ln k multiplies
+  // the per-a integrand core * (dchida/fK^2) by |da/dlnk| = fK/dchida:
+  // the dchida cancels and one power of 1/fK survives (2011.06469 eq 17).
+  // AMP carries that per-node amplitude, with AMP = 0 marking nodes
+  // outside the source support. The core functions and their inputs
+  // (WC, KIA) are exactly the ones the C_ell sum uses: only the amplitude
+  // and the absence of the sum differ.
   //
   // When normalizing, one thread team does everything: its first loop
   // computes the C_ss rows (the quadrature sum below, one row per tomo
