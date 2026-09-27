@@ -44,6 +44,14 @@ double w_gk_tomo(const int nt, const int ni, const int limber);
 
 double w_ks_tomo(const int nt, const int ni, const int limber);
 
+// CMB beam transfer function B_l (Gaussian approximation); zero outside
+// the [cmb.lmink_wxk, cmb.lmaxk_wxk] cross-correlation multipole range.
+double beam_cmb(const int l);
+
+// Precomputed HEALPix pixel window function at multipole l; zero for
+// l >= cmb.healpixwin_ncls.
+double w_pixel(const int l);
+
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -175,6 +183,24 @@ void C_ks_tomo_limber_nointerp_batch(
     const int lmax,   // last multipole (exclusive)
     const int NSIZE,  // number of source tomographic bins (= shear_nbin)
     double** Cl       // output [NSIZE][>=lmax], indexed as Cl[nz][l]
+  );
+
+// Batch computation of the scale-cut derivative dC_ks/dlnk (2011.06469
+// eq 17) on a (ln k, ell) grid. Each (k, ell) maps onto the single Limber
+// node chi(a) = (l + 1/2)/k; a node outside a bin's source support gives
+// 0 for that bin (the support differs per source bin, unlike ss).
+// With normalize = 1 the output is instead dlnC_ks/dlnk = (dC/dlnk)/C_ks,
+// with C_ks computed inside on the same thread team and the division
+// fused into the fill loop (entries where either factor vanishes are 0);
+// normalize = 0 gives the raw dC the real-space dlnw_ks machinery needs.
+void dC_ks_dlnk_tomo_limber_work(
+    const double* lnkx,  // ln k grid values (length nlnk), k in (Mpc/h)^-1
+    const int nlnk,      // number of ln k grid values
+    const double* lx,    // multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of source tomographic bins (= shear_nbin)
+    const int normalize, // 1: write dlnC = dC/C_ks; 0: write dC
+    double*** table      // output [NSIZE][nlnk][nell]
   );
 
 double C_kk_limber_nointerp(const double l, const int init);

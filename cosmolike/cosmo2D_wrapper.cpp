@@ -160,6 +160,24 @@ arma::Cube<double> w_gg_tomo_cpp()
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// CMB lensing x shear w_ks at every angular bin and source bin (the CMB
+// is a single lens plane, so one column per source bin)
+arma::Mat<double> w_ks_tomo_cpp()
+{
+  arma::Mat<double> result(Ntable.Ntheta,
+                           redshift.shear_nbin,
+                           arma::fill::zeros);
+  for (int nz=0; nz<redshift.shear_nbin; nz++) {
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      result(i, nz) = w_ks_tomo(i, nz, 1);
+    }
+  }
+  return result;
+}
+
 /*
 
 arma::Col<double> w_gk_tomo_cpp()

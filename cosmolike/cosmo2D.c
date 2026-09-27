@@ -4601,6 +4601,322 @@ void C_ks_tomo_limber_nointerp_batch(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Batch computation of the scale-cut derivative dC_ks/dlnk on a
+// (ln k, ell) grid (2011.06469 eq 17).
+//
+// In the Limber integral each scale factor maps one-to-one onto
+// k = (l + 1/2)/chi(a), so dC_ks/dlnk at a given (k, ell) is the per-chi
+// C_ks integrand core/fK^2 evaluated at the single node with
+// chi(a) = (l + 1/2)/k, times |dchi/dlnk| = chi: the per-node amplitude
+// is 1/fK. Equivalently, it is the quadrature's per-a amplitude
+// dchida/fK^2 times |da/dlnk| = fK/dchida — the dchida cancels. There is
+// no quadrature sum here — every (k, ell, source bin) output is one core
+// evaluation.
+//
+// Same integrand as C_ks_tomo_limber_work: (W_kappa - W_source*IA_A1) *
+// W_k * P_delta with the spin-0 x spin-2 ell prefactor pf1*pf2
+// (1812.05995 eqs 74-79). The ks cross keeps the NLA term under every IA
+// model, so there is no EE/BB split and no TATT kernel table — one
+// component per source bin. Unlike ss, the source support differs per
+// bin (amin_source, amax_source vary with b), so the kernels are gated
+// per (bin, node): a node whose scale factor falls outside bin b's
+// support keeps that bin's kernels zero, and its output is exactly 0.
+//
+// With normalize = 0 the output is dC_ks/dlnk itself — what the
+// real-space dlnw_ks machinery needs, since it Legendre-sums dC over ell
+// before normalizing by w_ks(theta). With normalize = 1 the function
+// also computes C_ks(ell, bin) — the same per-bin Gauss-Legendre
+// quadrature as C_ks_tomo_limber_work — and writes dlnC_ks/dlnk = dC/C:
+// one thread team computes the C_ks rows and then fills the dC rows,
+// dividing each one right after filling it, while it is still cache-hot.
+// ---------------------------------------------------------------------------
+void dC_ks_dlnk_tomo_limber_work(
+    const double* lnkx,  // ln k grid values (length nlnk), k in (Mpc/h)^-1
+    const int nlnk,      // number of ln k grid values
+    const double* lx,    // multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of source tomographic bins (= shear_nbin)
+    const int normalize, // 1: write dlnC = dC/C_ks; 0: write dC
+    double*** table      // output [NSIZE][nlnk][nell]
+  )
+{
+  if (NSIZE != redshift.shear_nbin) {
+    log_fatal("NSIZE = %d != shear_nbin = %d", NSIZE, redshift.shear_nbin);
+    exit(1);
+  }
+  if (nlnk <= 0 || nell <= 0) {
+    log_fatal("nlnk = %d and nell = %d must be positive", nlnk, nell);
+    exit(1);
+  }
+
+  // per-bin source support, plus the union window that gates whether a
+  // node is worth computing at all (outside it no bin contributes)
+  double aminb[redshift.shear_nbin];
+  double amaxb[redshift.shear_nbin];
+  double aminw = 1.0;
+  double amaxw = 0.0;
+  for (int b = 0; b < redshift.shear_nbin; b++) {
+    aminb[b] = amin_source(b);
+    amaxb[b] = amax_source(b);
+    if (!(aminb[b]>0) || !(aminb[b]<1) || !(amaxb[b]>0) || !(amaxb[b]<1)) {
+      log_fatal("0 < amin/amax < 1 not true"); exit(1);
+    }
+    aminw = fmin(aminw, aminb[b]);
+    amaxw = fmax(amaxw, amaxb[b]);
+  }
+
+  // -----------------------------------------------------------------------
+  // Warm up all functions that lazily initialize internal static tables.
+  // Must be called single-threaded before any parallel region touches them.
+  // -----------------------------------------------------------------------
+  {
+    const double a = 0.5*(aminw + amaxw); // inside the source support
+    struct chis chidchi = chi_all(a);
+    const double fK   = chidchi.chi;
+    const double hoh0 = hoverh0v2(a, chidchi.dchida);
+    const double gf   = growfac(a);
+    const double ell  = lx[0] + 0.5;
+    (void) a_chi(fK);
+    (void) f_K(fK);
+    (void) W_kappa(a, fK, 0);
+    (void) W_source(a, 0, hoh0);
+    (void) IA_A1_Z1(a, gf, 0);
+    (void) W_k(a, fK);
+    (void) Pdelta(ell/fK, a);
+  }
+
+  // -----------------------------------------------------------------------
+  // Allocate precomputed arrays (one entry per node p = f*nell + i)
+  // -----------------------------------------------------------------------
+  const int npts = nlnk*nell;
+
+  double* AMP = (double*) malloc1d(npts);
+  double* PKn = (double*) malloc1d(npts);
+  double*** WC = (double***) malloc3d(3, redshift.shear_nbin, npts);
+  zero3d(WC, 3, redshift.shear_nbin, npts);
+
+  // -----------------------------------------------------------------------
+  // Quadrature-side precompute (only when normalizing): C_ks needs its own
+  // Gauss-Legendre node set along the line of sight, because the C_ell sum
+  // runs over quadrature nodes, not (k, ell) grid nodes. Same machinery
+  // and layouts as C_ks_tomo_limber_work: per-bin cosmo_nodes (the
+  // integration limits differ per source bin), radial weights per
+  // (source bin, node) in WCq, P_delta per (bin, ell, node) in KPq
+  // (there k = (l + 1/2)/chi varies with ell at fixed node, so KPq keeps
+  // the ell dimension the grid-side PKn does not need)
+  // -----------------------------------------------------------------------
+  gsl_integration_glfixed_table* w = NULL;
+  cosmo_nodes cn_all[redshift.shear_nbin];
+  int cnpts = 0;
+  double*** WCq = NULL;
+  double*** KPq = NULL;
+  double** CKS = NULL;
+  if (1 == normalize) {
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 64 :
+                         (1 == hdi) ? 128 :
+                         (2 == hdi) ? 256 :
+                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+    w = malloc_gslint_glfixed(szint);
+    for (int b = 0; b < redshift.shear_nbin; b++) {
+      cn_all[b] = create_cosmo_nodes(aminb[b], amaxb[b], w);
+    }
+    for (int q = 1; q < redshift.shear_nbin; q++) {
+      if (cn_all[q].npts != cn_all[0].npts) {
+        log_fatal("inconsistent quadrature size"); exit(1);
+      }
+    }
+    cnpts = cn_all[0].npts;
+    WCq = (double***) malloc3d(3, redshift.shear_nbin, cnpts);
+    KPq = (double***) malloc3d(redshift.shear_nbin, nell, cnpts);
+    CKS = (double**) malloc2d(NSIZE, nell);
+    #pragma omp parallel
+    {
+      #pragma omp for collapse(2) schedule(static) nowait
+      for (int b = 0; b < redshift.shear_nbin; b++) {
+        for (int p = 0; p < cnpts; p++) {
+          const cosmo_nodes* cn = &cn_all[b];
+          const double a    = cn->data[CN_A][p];
+          const double fK   = cn->data[CN_FK][p];
+          const double hoh0 = cn->data[CN_HOVERH0][p];
+          const double gf   = cn->data[CN_GROWFAC][p];
+          WCq[0][b][p] = W_kappa(a, fK, b);
+          WCq[1][b][p] = W_source(a, b, hoh0)*IA_A1_Z1(a, gf, b);
+          WCq[2][b][p] = W_k(a, fK);
+        }
+      }
+      #pragma omp for collapse(3) schedule(static)
+      for (int b = 0; b < redshift.shear_nbin; b++) {
+        for (int i = 0; i < nell; i++) {
+          for (int p = 0; p < cnpts; p++) {
+            const cosmo_nodes* cn = &cn_all[b];
+            const double a   = cn->data[CN_A][p];
+            const double fK  = cn->data[CN_FK][p];
+            const double ell = lx[i] + 0.5;
+            KPq[b][i][p] = Pdelta(ell/fK, a);
+          }
+        }
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Precompute per node: the dlnk amplitude, P_delta, and the radial
+  // weights per source bin (WC, same layout as C_ks_tomo_limber_work;
+  // each node has a single k, so P_delta needs no separate ell dimension
+  // here). WC entries stay zero for the bins whose source support does
+  // not contain the node's scale factor.
+  // -----------------------------------------------------------------------
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int f = 0; f < nlnk; f++) {
+    for (int i = 0; i < nell; i++) {
+      const int p = f*nell + i;
+      const double l = lx[i];
+      const double ell = l + 0.5;
+      // the (k, ell) pair selects one Limber node: chi(a) = ell/k, with k
+      // converted from (Mpc/h)^{-1} to ((Mpc/h)/(c/H0=100))^{-1}
+      const double a = a_chi(f_K(ell/(exp(lnkx[f])*cosmology.coverH0)));
+      if (!(a > aminw && a < amaxw)) {
+        AMP[p] = 0.0;
+        PKn[p] = 0.0;
+        continue;
+      }
+      struct chis chidchi = chi_all(a);
+      const double growfac_a = growfac(a);
+      const double hoverh0 = hoverh0v2(a, chidchi.dchida);
+      const double fK = chidchi.chi;
+      const double k = ell/fK;
+      const double ell2 = ell*ell;
+      const double ell_pf1 = l*(l + 1.)/ell2;
+      const double tmp = (l - 1.)*l*(l + 1.)*(l + 2.);
+      const double ell_pf2 = (tmp > 0) ? sqrt(tmp)/ell2 : 0.0;
+      AMP[p] = (ell_pf1*ell_pf2)/fK;
+      for (int b = 0; b < redshift.shear_nbin; b++) {
+        if (!(a > aminb[b] && a < amaxb[b])) {
+          continue; // outside bin b's source support: kernels stay 0
+        }
+        WC[0][b][p] = W_kappa(a, fK, b);
+        WC[1][b][p] = W_source(a, b, hoverh0)*IA_A1_Z1(a, growfac_a, b);
+        WC[2][b][p] = W_k(a, fK);
+      }
+      PKn[p] = Pdelta(k, a);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Main fill loop.
+  //
+  // Where the derivative differs from C_ks: in C_ks_tomo_limber_work each
+  // output is a quadrature SUM over the line of sight,
+  //
+  //   C_ks(l) = sum_p core(p) * (dchida[p]/fK[p]^2) * ell_prefactor * wt[p],
+  //
+  // because every scale factor contributes to one C_ell. Here each output
+  // is ONE core evaluation with no reduction,
+  //
+  //   dC_ks/dlnk(k, l) = core(p(k, l)) * ell_prefactor / fK,
+  //
+  // because at fixed ell the Limber relation k = (l + 1/2)/chi picks a
+  // single node p(k, l), and changing variables from a to ln k multiplies
+  // the per-a integrand core * (dchida/fK^2) by |da/dlnk| = fK/dchida:
+  // the dchida cancels and one power of 1/fK survives (2011.06469 eq 17).
+  // AMP carries that per-node amplitude,
+  // with AMP = 0 marking nodes outside every bin's source support and
+  // zeroed WC kernels marking the per-bin exclusions. The core function
+  // and its inputs (WC, PKn) are exactly the ones the C_ell sum uses:
+  // only the amplitude and the absence of the sum differ.
+  //
+  // When normalizing, one thread team does everything: its first loop
+  // computes the C_ks rows (the quadrature sum below, one row per source
+  // bin — C_ks does not depend on k, so each row serves every f), and
+  // after the loop's implicit barrier the same team fills the dC rows and
+  // divides each one to dlnC = dC/C while it is still cache-hot. No
+  // intermediate dC table exists and no pass re-reads the output.
+  // The restrict pointers are hoisted before the inner loops to eliminate
+  // gather instructions and enable contiguous vector loads.
+  // -----------------------------------------------------------------------
+  #pragma omp parallel
+  {
+  if (1 == normalize) { // C_ks rows first: the division below reads them
+    #pragma omp for collapse(2) schedule(static)
+    for (int b = 0; b < NSIZE; b++) {
+      for (int i = 0; i < nell; i++) {
+        const double* restrict fKq    = cn_all[b].data[CN_FK];
+        const double* restrict dchida = cn_all[b].data[CN_DCHIDA];
+        const double* restrict wtq    = cn_all[b].data[CN_WT];
+        const double* restrict PKq    = KPq[b][i];
+        const double* restrict WK1q   = WCq[0][b];
+        const double* restrict WS1q   = WCq[1][b];
+        const double* restrict WKCq   = WCq[2][b];
+        const double l = lx[i];
+        const double ell = l + 0.5;
+        const double ell2 = ell*ell;
+        const double ell_pf1 = l*(l + 1.)/ell2;
+        const double tmp = (l - 1.)*l*(l + 1.)*(l + 2.);
+        const double ell_pf2 = (tmp > 0) ? sqrt(tmp)/ell2 : 0.0;
+        const double ell_pf = ell_pf1*ell_pf2;
+        double sum = 0.0;
+        #pragma omp simd reduction(+:sum)
+        for (int p = 0; p < cnpts; p++) {
+          const double ampq = (dchida[p]/(fKq[p]*fKq[p]))*ell_pf;
+          sum += int_for_C_ks_tomo_limber_core(PKq[p],
+                                               WK1q[p],
+                                               WKCq[p],
+                                               WS1q[p]) * ampq * wtq[p];
+        }
+        CKS[b][i] = sum;
+      }
+    } // implicit barrier: C_ks rows complete before any division below
+  }
+  #pragma omp for collapse(2) schedule(static)
+  for (int b = 0; b < NSIZE; b++) {
+    for (int f = 0; f < nlnk; f++) {
+      const double* restrict amp = &AMP[f*nell];
+      const double* restrict PK  = &PKn[f*nell];
+      const double* restrict WK1 = &WC[0][b][f*nell];
+      const double* restrict WS1 = &WC[1][b][f*nell];
+      const double* restrict WKC = &WC[2][b][f*nell];
+      double* restrict out = table[b][f];
+      #pragma omp simd
+      for (int i = 0; i < nell; i++) {
+        out[i] = int_for_C_ks_tomo_limber_core(PK[i],
+                                               WK1[i],
+                                               WKC[i],
+                                               WS1[i]) * amp[i];
+      }
+      if (1 == normalize) { // dlnC = dC/C, dividing while the row is
+        // cache-hot; a near-zero dC passes through and a near-zero C gives
+        // 0, so the ratio never blows up where the spectrum vanishes
+        const double* restrict cks = CKS[b];
+        #pragma omp simd
+        for (int i = 0; i < nell; i++) {
+          const double dCKS = out[i];
+          const double CKSv = (fabs(dCKS) > 1e-30) ? cks[i] : 1.0;
+          out[i] = (fabs(CKSv) > 1e-30) ? dCKS/CKSv : 0.0;
+        }
+      }
+    }
+  }
+  } // end of the parallel region
+  free(AMP);
+  free(PKn);
+  free(WC);
+  if (1 == normalize) {
+    free(CKS);
+    free(WCq);
+    free(KPq);
+    for (int b = 0; b < redshift.shear_nbin; b++) {
+      free_cosmo_nodes(&cn_all[b]);
+    }
+    gsl_integration_glfixed_table_free(w);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Shared state between C_ks_tomo_limber (which builds the interpolation table)
 // and C_ks_tomo_limber_fill (which reads it to fill Cl arrays at ~100k ell
 // values for real-space correlation functions).

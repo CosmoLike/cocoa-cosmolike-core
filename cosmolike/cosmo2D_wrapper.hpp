@@ -66,12 +66,12 @@ arma::Cube<double> w_gammat_tomo_cpp();
 
 arma::Cube<double> w_gg_tomo_cpp();
 
+arma::Mat<double> w_ks_tomo_cpp();
+
 /*
 arma::Col<double> w_gg_tomo_cpp();
 
 arma::Col<double> w_gk_tomo_cpp();
-
-arma::Col<double> w_ks_tomo_cpp();
 */
 
 // ---------------------------------------------------------------------------

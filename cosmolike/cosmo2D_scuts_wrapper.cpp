@@ -47,6 +47,46 @@ namespace cosmolike_interface
 {
 
 // ---------------------------------------------------------------------------
+// Stack a field of equally shaped matrices into a (n, rows, cols) numpy
+// array: the 3d analogue of cosmo2D_wrapper.hpp's to_np4d, used by the
+// ks diagnostics, whose single component (no EE/BB or xi+/xi- split, one
+// source bin instead of a pair) drops one dimension from the ss outputs.
+// ---------------------------------------------------------------------------
+static py::array_t<double,py::array::f_style> to_np3d(
+    const arma::field<arma::Mat<double>>& f
+  )
+{
+  if (0 == f.n_elem) {
+    return py::array_t<double,py::array::f_style>(std::vector<int>{0,0,0});
+  }
+  const auto& m0 = f(0);
+  const int n1 = static_cast<int>(m0.n_rows);
+  const int n2 = static_cast<int>(m0.n_cols);
+  const int n3 = static_cast<int>(f.n_elem);
+
+  for (int k=1; k<n3; ++k) { // we need all matrices to have the same shape
+    const auto& mk = f(k);
+    const int m1 = static_cast<int>(mk.n_rows);
+    const int m2 = static_cast<int>(mk.n_cols);
+    if (m1 != n1 || m2 != n2) {
+      spdlog::critical("{}: incompatible array structure", "to_np3d"); exit(1);
+    }
+  }
+
+  // first: do a list of matrices
+  py::list t;
+  for (int k=0; k<n3; ++k) t.append(carma::mat_to_arr(f(k)));
+
+  // second: stack the list of matrices into 3d np tensor
+  py::module_ np = py::module_::import("numpy");
+  py::array tmp = np.attr("stack")(t, py::arg("axis") = 0).cast<py::array>();
+
+  // last: ensure Fortran-contiguous output to match the return type (f_style).
+  py::array fA = np.attr("asfortranarray")(tmp).cast<py::array>();
+  return fA.cast<py::array_t<double,py::array::f_style>>();
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // DERIVATIVE: dlnX/dlnk: important to determine scale cuts (2011.06469 eq 17)
@@ -139,6 +179,77 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
     dlnxm_dlnk(m) = tdlnxm_dlnk;
   }
   return py::make_tuple(to_np4d(dlnxp_dlnk), to_np4d(dlnxm_dlnk));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shared engine of the two dlnw_ks_dlnk_tomo_cpp overloads: one
+// dlnw_ks_dlnk_tomo_nointerp call at wavenumber k (which computes every
+// source bin and angular bin at once), scattered into the (theta, ni)
+// matrix (one source bin per column: the CMB is a single lens plane).
+// ---------------------------------------------------------------------------
+static void dlnw_ks_dlnk_mat(
+    const double k,        // wavenumber in (Mpc/h)^-1
+    arma::Mat<double>& WK  // output (Ntheta, shear_nbin)
+  )
+{
+  const int NSIZE = redshift.shear_nbin;
+  double* tmp = dlnw_ks_dlnk_tomo_nointerp(k);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      WK(i, nz) = tmp[nz * Ntable.Ntheta + i];
+    }
+  }
+  free(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// dlnw_ks/dlnk at one wavenumber, every source bin and angular bin (one
+// wavenumber is already a full batch: dlnw_ks_dlnk_mat computes all bins
+// in one call).
+// ---------------------------------------------------------------------------
+arma::Mat<double> dlnw_ks_dlnk_tomo_cpp(
+    const double k    // wavenumber in (Mpc/h)^-1
+  )
+{
+  arma::Mat<double> dlnwks_dlnk(Ntable.Ntheta,
+                                redshift.shear_nbin,
+                                arma::fill::zeros);
+  dlnw_ks_dlnk_mat(k, dlnwks_dlnk);
+  return dlnwks_dlnk;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::array_t<double,py::array::f_style> dlnw_ks_dlnk_tomo_cpp(
+    const arma::Col<double> k    // wavenumbers in (Mpc/h)^-1
+  )
+{
+  const int nk = static_cast<int>(k.n_elem);
+  if (!(nk > 0)) {
+    spdlog::critical("{}: k array size = {}",
+                     "dlnw_ks_dlnk_tomo_cpp", nk);
+    exit(1);
+  }
+  arma::field<arma::Mat<double>> dlnwks_dlnk(nk);
+  for (int m=0; m<nk; m++) {
+    arma::Mat<double> tdlnwks_dlnk(Ntable.Ntheta,
+                                   redshift.shear_nbin,
+                                   arma::fill::zeros);
+    dlnw_ks_dlnk_mat(k(m), tdlnwks_dlnk);
+    dlnwks_dlnk(m) = tdlnwks_dlnk;
+  }
+  return to_np3d(dlnwks_dlnk);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +380,113 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shared batch engine of the two dlnC_ks_dlnk_tomo_limber_cpp overloads:
+// dlnC = dC/C computed exactly on the (ln k, ell) grid by the normalized
+// mode of dC_ks_dlnk_tomo_limber_work, indexed [NSIZE][nk][nl] with row
+// nz the source bin (one component per bin: the CMB is a single lens
+// plane). The caller owns (and frees) the returned array.
+// ---------------------------------------------------------------------------
+static double*** dlnC_ks_dlnk_grid(
+    const double* lnkx, // ln k grid values (length nk), k in (Mpc/h)^-1
+    const int nk,       // number of k values
+    const double* lx,   // multipole values (length nl)
+    const int nl,       // number of multipole values
+    const int NSIZE     // number of source tomographic bins (= shear_nbin)
+  )
+{
+  double*** dlnC = (double***) malloc3d(NSIZE, nk, nl);
+  dC_ks_dlnk_tomo_limber_work(lnkx, nk, lx, nl, NSIZE, 1, dlnC);
+  return dlnC;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double dlnC_ks_dlnk_tomo_limber_cpp(
+    const double k,   // wavenumber in (Mpc/h)^-1
+    const double l,   // multipole
+    const int ni      // source redshift bin
+  )
+{ // point diagnostic: runs the full batch of dlnC_ks_dlnk_grid at a single
+  // (k, l) and reads one entry, so it pays the whole-tomography batch cost
+  // per call. Loops over (k, l, ni) should call the array overload once
+  // and index the returned array instead.
+  if (!(k > 0)) {
+    spdlog::critical("{}: k = {} not positive",
+                     "dlnC_ks_dlnk_tomo_limber_cpp", k);
+    exit(1);
+  }
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input ni = {}",
+                     "dlnC_ks_dlnk_tomo_limber_cpp", ni);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  const double lnkx = std::log(k);
+  const double lx = l;
+  double*** dlnC = dlnC_ks_dlnk_grid(&lnkx, 1, &lx, 1, NSIZE);
+  const double CKS = dlnC[ni][0][0];
+  free(dlnC);
+  return CKS;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::array_t<double,py::array::f_style> dlnC_ks_dlnk_tomo_limber_cpp(
+    const arma::Col<double> k,   // wavenumbers in (Mpc/h)^-1
+    const arma::Col<double> l    // multipoles
+  )
+{
+  const int nl = static_cast<int>(l.n_elem);
+  const int nk = static_cast<int>(k.n_elem);
+  if (!(nl > 0)) {
+    spdlog::critical("{}: l array size = {}", "dlnC_ks_dlnk_tomo_limber_cpp", nl);
+    exit(1);
+  }
+  if (!(nk > 0)) {
+    spdlog::critical("{}: k array size = {}", "dlnC_ks_dlnk_tomo_limber_cpp", nk);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  double* lnkx = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    if (!(k(m) > 0)) {
+      spdlog::critical("{}: k({}) = {} not positive",
+                       "dlnC_ks_dlnk_tomo_limber_cpp", m, k(m));
+      exit(1);
+    }
+    lnkx[m] = std::log(k(m));
+  }
+  double* lx = (double*) malloc1d(nl);
+  for (int i=0; i<nl; i++) {
+    lx[i] = l(i);
+  }
+  double*** dlnC = dlnC_ks_dlnk_grid(lnkx, nk, lx, nl, NSIZE);
+  arma::field<arma::Mat<double>> dlnCKSdlnk(nk);
+  for (int m=0; m<nk; m++) {
+    arma::Mat<double> KS(l.n_elem, redshift.shear_nbin, arma::fill::zeros);
+    for (int nz=0; nz<NSIZE; nz++) {
+      for (int i=0; i<nl; i++) {
+        KS(i, nz) = dlnC[nz][m][i];
+      }
+    }
+    dlnCKSdlnk(m) = KS;
+  }
+  free(dlnC);
+  free(lnkx);
+  free(lx);
+  return to_np3d(dlnCKSdlnk);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // RESPONSE FUNCTION (2011.06469 eq 17) - REAL SPACE
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -384,6 +602,103 @@ py::tuple RF_xi_tomo_limber_cpp(
   return py::make_tuple(to_np4d(RFXIP), to_np4d(RFXIM));
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shared batch engine of the two RF_w_ks_tomo_cpp overloads: RF computed
+// by RF_w_ks_tomo_limber_work on the ln kmax grid, indexed
+// [NSIZE][nk][Ntheta] with row nz the source bin. The caller owns (and
+// frees) the returned array.
+// ---------------------------------------------------------------------------
+static double*** RF_w_ks_grid(
+    const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
+    const int nk,          // number of kmax values
+    const int NSIZE        // number of source tomographic bins (= shear_nbin)
+  )
+{
+  double*** RF = (double***) malloc3d(NSIZE, nk, Ntable.Ntheta);
+  RF_w_ks_tomo_limber_work(lnkmaxx, nk, NSIZE, RF);
+  return RF;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double RF_w_ks_tomo_cpp(
+    const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni      // source redshift bin
+  )
+{ // point diagnostic: runs the full batch of RF_w_ks_grid at a single kmax
+  // and reads one entry, so it pays the whole-tomography batch cost per
+  // call. Loops over (kmax, nt, ni) should call the array overload once
+  // and index the returned array instead.
+  if (!(k > 0)) {
+    spdlog::critical("{}: k = {} not positive",
+                     "RF_w_ks_tomo_cpp", k);
+    exit(1);
+  }
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
+    spdlog::critical("{}: invalid angular bin input nt = {}",
+                     "RF_w_ks_tomo_cpp", nt);
+    exit(1);
+  }
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input ni = {}",
+                     "RF_w_ks_tomo_cpp", ni);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  const double lnkmax = std::log(k);
+  double*** RF = RF_w_ks_grid(&lnkmax, 1, NSIZE);
+  const double RFWKS = RF[ni][0][nt];
+  free(RF);
+  return RFWKS;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::array_t<double,py::array::f_style> RF_w_ks_tomo_cpp(
+    const arma::Col<double> k    // cutoff wavenumbers kmax in (Mpc/h)^-1
+  )
+{
+  const int nk = static_cast<int>(k.n_elem);
+  if (!(nk > 0)) {
+    spdlog::critical("{}: k array size = {}", "RF_w_ks_tomo_cpp", nk);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  double* lnkmaxx = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    if (!(k(m) > 0)) {
+      spdlog::critical("{}: k({}) = {} not positive",
+                       "RF_w_ks_tomo_cpp", m, k(m));
+      exit(1);
+    }
+    lnkmaxx[m] = std::log(k(m));
+  }
+  double*** RF = RF_w_ks_grid(lnkmaxx, nk, NSIZE);
+  arma::field<arma::Mat<double>> RFWKS(nk);
+  for (int m=0; m<nk; m++) {
+    arma::Mat<double> WK(Ntable.Ntheta, redshift.shear_nbin,
+                         arma::fill::zeros);
+    for (int nz=0; nz<NSIZE; nz++) {
+      for (int i=0; i<Ntable.Ntheta; i++) {
+        WK(i, nz) = RF[nz][m][i];
+      }
+    }
+    RFWKS(m) = WK;
+  }
+  free(RF);
+  free(lnkmaxx);
+  return to_np3d(RFWKS);
+}
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -506,6 +821,112 @@ py::tuple RF_C_ss_tomo_limber_cpp(
   free(lnkmaxx);
   free(lx);
   return py::make_tuple(to_np4d(RFEE), to_np4d(RFBB));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shared batch engine of the two RF_C_ks_tomo_limber_cpp overloads:
+// RF computed by RF_C_ks_tomo_limber_work on the (ln kmax, ell) grid,
+// indexed [NSIZE][nk][nl] with row nz the source bin. The caller owns
+// (and frees) the returned array.
+// ---------------------------------------------------------------------------
+static double*** RF_C_ks_grid(
+    const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
+    const int nk,          // number of kmax values
+    const double* lx,      // multipole values (length nl)
+    const int nl,          // number of multipole values
+    const int NSIZE        // number of source tomographic bins (= shear_nbin)
+  )
+{
+  double*** RF = (double***) malloc3d(NSIZE, nk, nl);
+  RF_C_ks_tomo_limber_work(lnkmaxx, nk, lx, nl, NSIZE, RF);
+  return RF;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+double RF_C_ks_tomo_limber_cpp(
+    const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
+    const double l,   // multipole
+    const int ni      // source redshift bin
+  )
+{ // point diagnostic: runs the full batch of RF_C_ks_grid at a single
+  // (kmax, l) and reads one entry, so it pays the whole-tomography batch
+  // cost per call. Loops over (kmax, l, ni) should call the array
+  // overload once and index the returned array instead.
+  if (!(k > 0)) {
+    spdlog::critical("{}: k = {} not positive",
+                     "RF_C_ks_tomo_limber_cpp", k);
+    exit(1);
+  }
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input ni = {}",
+                     "RF_C_ks_tomo_limber_cpp", ni);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  const double lnkmax = std::log(k);
+  const double lx = l;
+  double*** RF = RF_C_ks_grid(&lnkmax, 1, &lx, 1, NSIZE);
+  const double RFKS = RF[ni][0][0];
+  free(RF);
+  return RFKS;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+py::array_t<double,py::array::f_style> RF_C_ks_tomo_limber_cpp(
+    const arma::Col<double> k,   // cutoff wavenumbers kmax in (Mpc/h)^-1
+    const arma::Col<double> l    // multipoles
+  )
+{
+  const int nl = static_cast<int>(l.n_elem);
+  const int nk = static_cast<int>(k.n_elem);
+  if (!(nl > 0)) {
+    spdlog::critical("{}: l array size = {}", "RF_C_ks_tomo_limber_cpp", nl);
+    exit(1);
+  }
+  if (!(nk > 0)) {
+    spdlog::critical("{}: k array size = {}", "RF_C_ks_tomo_limber_cpp", nk);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  double* lnkmaxx = (double*) malloc1d(nk);
+  for (int m=0; m<nk; m++) {
+    if (!(k(m) > 0)) {
+      spdlog::critical("{}: k({}) = {} not positive",
+                       "RF_C_ks_tomo_limber_cpp", m, k(m));
+      exit(1);
+    }
+    lnkmaxx[m] = std::log(k(m));
+  }
+  double* lx = (double*) malloc1d(nl);
+  for (int i=0; i<nl; i++) {
+    lx[i] = l(i);
+  }
+  double*** RF = RF_C_ks_grid(lnkmaxx, nk, lx, nl, NSIZE);
+  arma::field<arma::Mat<double>> RFKS(nk);
+  for (int m=0; m<nk; m++) {
+    arma::Mat<double> KS(l.n_elem, redshift.shear_nbin, arma::fill::zeros);
+    for (int nz=0; nz<NSIZE; nz++) {
+      for (int i=0; i<nl; i++) {
+        KS(i, nz) = RF[nz][m][i];
+      }
+    }
+    RFKS(m) = KS;
+  }
+  free(RF);
+  free(lnkmaxx);
+  free(lx);
+  return to_np3d(RFKS);
 }
 
 // ---------------------------------------------------------------------------

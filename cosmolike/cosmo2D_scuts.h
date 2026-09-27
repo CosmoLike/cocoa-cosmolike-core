@@ -37,6 +37,22 @@ double dlnxi_dlnk_pm_tomo(
     const int nj      // second source redshift bin
   );
 
+// dlnw_ks/dlnk at one wavenumber for every source bin and angular bin:
+// Legendre sums of the batched dC_ks/dlnk over every integer multipole,
+// weighted by the CMB filter (beam + optional HEALPix window) and
+// normalized by w_ks(theta).
+double* dlnw_ks_dlnk_tomo_nointerp(
+    const double k    // wavenumber in (Mpc/h)^-1
+  ); // returns [NSIZE*Ntheta] (caller frees), NSIZE = shear_nbin
+
+// Cached (in ln k) version of the function above; what the RF_w_ks
+// integrals read. A k outside the Ntable.dCX_dlnk grid returns 0.
+double dlnw_ks_dlnk_tomo(
+    const double k,   // wavenumber in (Mpc/h)^-1
+    const int nt,     // angular bin index (0..Ntheta-1)
+    const int ni      // source redshift bin
+  );
+
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
@@ -60,6 +76,22 @@ double dlnC_ss_dlnk_tomo_limber(
     const int EE      // 1 = E-mode, 0 = B-mode
   );
 
+// Cached dC_ks/dlnk (2011.06469 eq 17) on a (ln k, ln l) table filled by
+// dC_ks_dlnk_tomo_limber_work; a (k, l) outside the table returns 0.
+double dC_ks_dlnk_tomo_limber(
+    const double k,   // wavenumber in (Mpc/h)^-1
+    const double l,   // multipole
+    const int ni      // source redshift bin
+  );
+
+// Cached dlnC_ks/dlnk = (dC_ks/dlnk)/C_ks on the same grid, filled by the
+// normalized mode of dC_ks_dlnk_tomo_limber_work.
+double dlnC_ks_dlnk_tomo_limber(
+    const double k,   // wavenumber in (Mpc/h)^-1
+    const double l,   // multipole
+    const int ni      // source redshift bin
+  );
+
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
@@ -74,6 +106,17 @@ void RF_xi_tomo_limber_work(
     double**** table       // output [2][NSIZE][nkmax][Ntheta]: xi+ and xi-
   );
 
+// Batch real-space response function RF(kmax, theta) =
+// int_{-infty}^{ln kmax} |dlnw_ks/dlnk| normalized by the full-line
+// integral (2011.06469 eq 17), for every source bin and angular bin on
+// a ln kmax grid.
+void RF_w_ks_tomo_limber_work(
+    const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
+    const int nkmax,       // number of ln kmax values
+    const int NSIZE,       // number of source tomographic bins (= shear_nbin)
+    double*** table        // output [NSIZE][nkmax][Ntheta]
+  );
+
 // Batch response function RF(kmax, l) = int_{-infty}^{ln kmax} |dlnC/dlnk|
 // normalized by the full-line integral (2011.06469 eq 17), for every
 // tomographic pair on a (ln kmax, ell) grid.
@@ -84,6 +127,18 @@ void RF_C_ss_tomo_limber_work(
     const int nl,          // number of multipole values
     const int NSIZE,       // number of tomo shear power spectra
     double**** table       // output [2][NSIZE][nkmax][nl]: EE and BB
+  );
+
+// Batch response function RF(kmax, l) = int_{-infty}^{ln kmax} |dlnC/dlnk|
+// normalized by the full-line integral (2011.06469 eq 17), for every
+// source bin on a (ln kmax, ell) grid.
+void RF_C_ks_tomo_limber_work(
+    const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
+    const int nkmax,       // number of ln kmax values
+    const double* lx,      // multipole values (length nl)
+    const int nl,          // number of multipole values
+    const int NSIZE,       // number of source tomographic bins (= shear_nbin)
+    double*** table        // output [NSIZE][nkmax][nl]
   );
 
 // ----------------------------------------------------------------------------

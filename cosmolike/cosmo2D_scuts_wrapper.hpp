@@ -26,10 +26,18 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(const arma::Col<double> k);
 
 // -----------------------------------------------------------------------------
 
+arma::Mat<double> dlnw_ks_dlnk_tomo_cpp(const double k);
+
+py::array_t<double,py::array::f_style> dlnw_ks_dlnk_tomo_cpp(
+    const arma::Col<double> k
+  );
+
+// -----------------------------------------------------------------------------
+
 py::tuple RF_xi_tomo_limber_cpp(
-    const double k, 
-    const int nt, 
-    const int ni, 
+    const double k,
+    const int nt,
+    const int ni,
     const int nj
   );
 
@@ -37,29 +45,67 @@ py::tuple RF_xi_tomo_limber_cpp(const arma::Col<double> k);
 
 // -----------------------------------------------------------------------------
 
+double RF_w_ks_tomo_cpp(
+    const double k,
+    const int nt,
+    const int ni
+  );
+
+py::array_t<double,py::array::f_style> RF_w_ks_tomo_cpp(
+    const arma::Col<double> k
+  );
+
+// -----------------------------------------------------------------------------
+
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
-    const double k, 
-    const double l, 
-    const int ni, 
+    const double k,
+    const double l,
+    const int ni,
     const int nj
   );
 
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
-    const arma::Col<double> k, 
+    const arma::Col<double> k,
+    const arma::Col<double> l
+  );
+
+// -----------------------------------------------------------------------------
+
+double dlnC_ks_dlnk_tomo_limber_cpp(
+    const double k,
+    const double l,
+    const int ni
+  );
+
+py::array_t<double,py::array::f_style> dlnC_ks_dlnk_tomo_limber_cpp(
+    const arma::Col<double> k,
     const arma::Col<double> l
   );
 
 // -----------------------------------------------------------------------------
 
 py::tuple RF_C_ss_tomo_limber_cpp(
-    const double k, 
-    const double l, 
-    const int ni, 
+    const double k,
+    const double l,
+    const int ni,
     const int nj
   );
 
-py::tuple RF_C_ss_tomo_limber_cpp(const arma::Col<double> k, 
+py::tuple RF_C_ss_tomo_limber_cpp(const arma::Col<double> k,
                                   const arma::Col<double> l);
+
+// -----------------------------------------------------------------------------
+
+double RF_C_ks_tomo_limber_cpp(
+    const double k,
+    const double l,
+    const int ni
+  );
+
+py::array_t<double,py::array::f_style> RF_C_ks_tomo_limber_cpp(
+    const arma::Col<double> k,
+    const arma::Col<double> l
+  );
 
 // -----------------------------------------------------------------------------
 
