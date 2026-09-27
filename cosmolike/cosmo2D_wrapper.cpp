@@ -475,8 +475,22 @@ double C_ks_tomo_limber_cpp(
     const double l,   // multipole
     const int ni      // source redshift bin
   )
-{
-  return C_ks_tomo_limber_nointerp(l, ni, 0);
+{ // point diagnostic: runs the full batch of C_ks_tomo_limber_nointerp_ells
+  // at a single multipole and reads one entry, so it pays the whole-tomography
+  // batch cost per call. Loops over (l, ni) should call the array overload
+  // once and index the returned matrix instead.
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input ni = {}",
+                     "C_ks_tomo_limber_cpp", ni);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, 1);
+  double ell[1] = {l};
+  C_ks_tomo_limber_nointerp_ells(ell, 1, NSIZE, tmp);
+  const double res = tmp[ni][0];
+  free(tmp);
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,22 +501,26 @@ arma::Mat<double> C_ks_tomo_limber_cpp(
     const arma::Col<double> l    // multipoles
   )
 {
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ks_tomo_limber_cpp", 
+  if (!(l.n_elem > 0)) {
+    spdlog::critical("{}: l array size = {}",
+                     "C_ks_tomo_limber_cpp",
                      l.n_elem);
     exit(1);
   }
   arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static vars
-    (void) C_ks_tomo_limber_nointerp(l(0), nz, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.shear_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz) = C_ks_tomo_limber_nointerp(l(i), nz, 0);
+  // batched computation: a single C_ks_tomo_limber_nointerp_ells call
+  // fills every source bin at every multipole (the CMB is a single
+  // lens plane, so one spectrum per source bin)
+  const int nell = (int) l.n_elem;
+  const int NSIZE = redshift.shear_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_ks_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, nz) = tmp[nz][i];
     }
   }
+  free(tmp);
   return result;
 }
 
