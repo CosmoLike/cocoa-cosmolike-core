@@ -81,20 +81,23 @@ double C_kk_limber(const double l);
 // Non-Interpolated Version (Will compute the Integral at every call)
 // ----------------------------------------------------------------------------
 
+// Point diagnostic on the batch engine: one C_ss_tomo_limber_nointerp_ells
+// call at a single multipole, so it pays the whole-tomography batch cost
+// per call — never loop it over (l, ni, nj). Kept as the exact
+// per-multipole entry point a future non-Limber computation needs.
 double C_ss_tomo_limber_nointerp(
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE, 
-    const int init
+    const double l,  // multipole moment
+    const int ni,    // first source redshift bin
+    const int nj,    // second source redshift bin
+    const int EE     // 1 = E-mode, 0 = B-mode
   );
 
 void C_ss_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
     const int NSIZE,     // number of tomo shear power spectra
-    double** out_EE,     // output EE [NSIZE][nell], NULL if init=1
-    double** out_BB      // output BB [NSIZE][nell], NULL if init=1
+    double** out_EE,     // output EE [NSIZE][nell]
+    double** out_BB      // output BB [NSIZE][nell]
   );
 
 // Batch computation at integer multipoles lmin..lmax-1.
@@ -150,7 +153,7 @@ void C_gs_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
     const int NSIZE,     // number of ggl power spectra
-    double** out         // output [NSIZE][nell], NULL if init=1
+    double** out         // output [NSIZE][nell]
   );
 
 // Batch computation at integer multipoles lmin..lmax-1.
@@ -208,8 +211,6 @@ double C_kk_limber_nointerp(const double l, const int init);
 // ----------------------------------------------------------------------------
 // Integrands 
 // ----------------------------------------------------------------------------
-
-double int_for_C_ss_tomo_limber(double a, void* params);
 
 double int_for_C_gs_tomo_limber(double a, void* params);
 

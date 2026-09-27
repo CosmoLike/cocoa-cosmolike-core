@@ -1570,7 +1570,8 @@ enum {
 //
 // The quadrature points and weights come from the GSL fixed-order table w,
 // which is shared with the Limber integration routines. The number of points
-// (typically 64-512 depending on Ntable.high_def_integration) controls the
+// (96-1024 for ss, 64-1024 for gs/gk/ks/kk, keyed on
+// Ntable.high_def_integration) controls the
 // accuracy of the numerical integration.
 //
 // Thread safety: the functions chi_all, growfac, and hoverh0v2 must have
@@ -1724,194 +1725,49 @@ static inline double int_for_C_ss_tomo_limber_tatt_BB_core(
 }
 
 // ---------------------------------------------------------------------------
-// Scalar integrand for C_ss: combines IA-model branching, FPTIA
-// interpolation, and Limber arithmetic in one per-point function.
+// Single-ell shear-shear C_l: a point diagnostic on the batch engine.
 //
-// Not vectorizable (via SIMD) because the switch on nuisance.IA_MODEL sits 
-// inside the per-quadrature-point loop.
+// Runs one C_ss_tomo_limber_nointerp_ells call at a single multipole and
+// reads one entry, so it pays the WHOLE-TOMOGRAPHY batch cost per call
+// (every enumerated Z1 <= Z2 pair is computed even though one number is
+// returned). Never loop this over (l, ni, nj): call
+// C_ss_tomo_limber_nointerp_ells once and index the result instead.
 //
-// Not used by the hot-path C_ss_tomo_limber (!!)
-// Hot-path employs C_ss_tomo_limber_work. Why? C_ss_tomo_limber_work uses
-// precomputed kernels and vectorized inner loops.
-//
-// This legacy scalar code is still used by:
-//   - cosmo2D_scuts (the dC/dlnk point diagnostic multiplies this integrand
-//     by chi: at fixed ell, k = (l + 1/2)/chi gives |dchi/dlnk| = chi)
-//   - Jupyter notebooks for single-point diagnostic evaluations
-//
-// params is double[4]:
-//   ar[0] = n1:    first source redshift bin index
-//   ar[1] = n2:    second source redshift bin index
-//   ar[2] = l:     multipole moment
-//   ar[3] = EE:    1 for E-mode, 0 for B-mode
-// ---------------------------------------------------------------------------
-double int_for_C_ss_tomo_limber(
-    double a,       // scale factor (integration variable, GSL interface)
-    void* params    // double[4]: {n1, n2, l, EE} — see above
-  )
-{
-  if (!(a>0) || !(a<1)) {
-    log_fatal("a>0 and a<1 not true"); exit(1);
-  }
-  double* ar = (double*) params;
-  const int n1 = (int) ar[0]; // first source bin 
-  const int n2 = (int) ar[1]; // second source bin 
-  if (n1 < 0 || n1 > redshift.shear_nbin - 1 || 
-      n2 < 0 || n2 > redshift.shear_nbin - 1) {
-    log_fatal("error in selecting bin number (ni,nj) = [%d,%d]", n1,n2); 
-    exit(1);
-  }
-  const double l = ar[2];
-  const int EE = (int) ar[3];
-
-  const double ell = l + 0.5;
-  struct chis chidchi = chi_all(a);
-  const double growfac_a = growfac(a);
-  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = chidchi.chi; // (Mpc/h)/(c/H0=100) (dimensionless)
-  const double k = ell/fK;       // (c/H0)/(Mpc/h)
-  const double PK  = Pdelta(k, a);
-  const double ell4 = ell*ell*ell*ell; // correction (1812.05995 eqs 74-79)
-  const double ell_prefactor = l*(l - 1.)*(l + 1.)*(l + 2.)/ell4; 
-
-  const double WK1 = W_kappa(a, fK, n1);
-  const double WK2 = W_kappa(a, fK, n2);
-  const double WS1 = W_source(a, n1, hoverh0);
-  const double WS2 = W_source(a, n2, hoverh0);
-
-  double IA_AX[2];
-  IA_A1_Z1Z2(a, growfac_a, n1, n2, IA_AX);
-  const double C11 = IA_AX[0];
-  const double C12 = IA_AX[1];
-  IA_A2_Z1Z2(a, growfac_a, n1, n2, IA_AX);
-  const double C21 = IA_AX[0];
-  const double C22 = IA_AX[1];
-  IA_BTA_Z1Z2(a, growfac_a, n1, n2, IA_AX);
-  const double bta1 = IA_AX[0];
-  const double bta2 = IA_AX[1];
-
-  double ans = 1.0;
-  switch(nuisance.IA_MODEL) 
-  {
-    case IA_MODEL_TATT:
-    {
-      if (0 == nuisance.IA_code) {
-        get_FPT_IA();
-      }
-      const double ell = l + 0.5;
-      const double k = ell/fK;
-      const double lnk = log(k);
-      const double g4 = growfac_a*growfac_a*growfac_a*growfac_a;
-
-      double lim[3];
-      lim[0] = log(FPTIA.k_min);
-      lim[1] = log(FPTIA.k_max);
-      lim[2] = (lim[1] - lim[0])/FPTIA.N;
-
-      double K[10] = {0};
-      if (lnk >= lim[0] && lnk <= lim[1]) {
-        const double r = (lnk - lim[0]) / lim[2];
-        const int b = (int) floor(r);
-        const double dr = (b+1 >= FPTIA.N) ? 0.0 : r - b;
-        const int idx = (b+1 >= FPTIA.N) ? FPTIA.N - 2 : b;
-        for (int m=0; m<10; m++) {
-          K[m] = g4*LERP(FPTIA.tab[SS_IA_SRC[m]], idx, dr);
-        }
-      }
-
-      if (1 == EE) {
-        ans = int_for_C_ss_tomo_limber_tatt_EE_core(PK,WK1,WK2,WS1,WS2,C11,C12,
-                                                    C21,C22,bta1,bta2,
-                                                    K[0],K[1],K[2],K[3],
-                                                    K[4],K[5],K[6]);
-      }
-      else {
-        ans = int_for_C_ss_tomo_limber_tatt_BB_core(PK,WK1,WK2,WS1,WS2,C11,C12,
-                                                    C21,C22,bta1,bta2,
-                                                    K[7],K[8],K[9]);
-      }
-      break;
-    }
-    case IA_MODEL_NLA:
-    { 
-      if (1 == EE) { 
-        ans = int_for_C_ss_tomo_limber_nla_core(PK,WK1,WK2,WS1,WS2,C11,C12);
-      }
-      else {
-        ans = 0.0;
-      }
-      break;
-    }
-    default: {
-      log_fatal("nuisance.IA_MODEL = %d not supported", nuisance.IA_MODEL); 
-      exit(1);
-    }
-  }
-  return ans*(chidchi.dchida/(fK*fK))*ell_prefactor;
-}
-// ---------------------------------------------------------------------------
-// Single-ell shear-shear C_l via GSL fixed-order Gauss-Legendre quadrature.
-//
-// Uses the legacy scalar integrand int_for_C_ss_tomo_limber directly,
-// evaluating all cosmological functions per quadrature point. Much slower
-// than C_ss_tomo_limber (which precomputes everything) or the batch version
-// (which shares precomputed arrays across ell values), but self-contained
-// and does not require prior initialization of the interpolation table.
-//
-// Used by:
-//   - Jupyter notebook single-point diagnostics
-//   - Backward compatibility with callers that expect the scalar interface
+// Kept in the API as the exact per-multipole entry point a future
+// non-Limber computation needs (the non-Limber pipelines evaluate the
+// Limber part per integer multipole, the way C_gg_tomo consumes its
+// scalar today).
 //
 // Parameters:
 //   l    - multipole moment
 //   ni   - first source redshift bin index
 //   nj   - second source redshift bin index
 //   EE   - 1 for E-mode power spectrum, 0 for B-mode
-//   init - 1: warm up static variables inside int_for_C_ss_tomo_limber
-//             by evaluating the integrand once at amin (returns that value)
-//          0: compute and return the full Gauss-Legendre integral
 // ---------------------------------------------------------------------------
 double C_ss_tomo_limber_nointerp(
-    const double l, 
-    const int ni, 
-    const int nj, 
-    const int EE, 
-    const int init
-  ) // slow - use the batch version - here just for jupyter notebook.
+    const double l,
+    const int ni,
+    const int nj,
+    const int EE
+  ) // slow (whole-tomography batch per call) - use the batch version
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL; 
-  if (ni < 0 || ni > redshift.shear_nbin -1 || 
+  if (ni < 0 || ni > redshift.shear_nbin -1 ||
       nj < 0 || nj > redshift.shear_nbin -1) {
     log_fatal("invalid bin input (ni, nj) = (%d, %d)", ni, nj); exit(1);
   }
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 96 :
-                         (1 == hdi) ? 128 :
-                         (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 :  1024; // predefined GSL tables
-    if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-  double ar[4] = {(double) ni,
-                  (double) nj,
-                  l,
-                  (double) EE};
-  double res = 0.0;
-  const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
-  const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
-  if (1 == init) {
-    res = int_for_C_ss_tomo_limber(amin, (void*) ar);
-  }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_C_ss_tomo_limber;
-    res = gsl_integration_glfixed(&F, amin, amax, w);
-  }
-  return res;   
+  const int NSIZE = tomo.shear_Npowerspectra;
+  double** tmp_EE = (double**) malloc2d(NSIZE, 1);
+  double** tmp_BB = (double**) malloc2d(NSIZE, 1);
+  const double ell = l;
+
+  C_ss_tomo_limber_nointerp_ells(&ell, 1, NSIZE, tmp_EE, tmp_BB);
+
+  // N_shear is symmetric in (ni, nj), so no bin ordering is needed
+  const int nz = N_shear(ni, nj);
+  const double res = (1 == EE) ? tmp_EE[nz][0] : tmp_BB[nz][0];
+  free(tmp_EE);
+  free(tmp_BB);
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -1922,12 +1778,12 @@ double C_ss_tomo_limber_nointerp(
 // power spectrum, TATT one-loop kernels) on a fixed grid of quadrature points,
 // then evaluates the Limber integral for every (ell, tomo-pair) combination.
 //
-// The key optimization is inverting the loop nesting relative to the legacy
-// scalar integrand (int_for_C_ss_tomo_limber):
-//   Legacy: for each ell → for each quadrature point → switch(IA_MODEL)
-//   Here:   precompute all points → switch(IA_MODEL) → for each ell → SIMD loop
-// This lets the IA model branch sit outside the inner loop, and the inner loop
-// becomes pure arithmetic on contiguous arrays — vectorizable with AVX2.
+// The key optimization is the loop nesting: precompute all quadrature
+// points, resolve the IA model once, then run a SIMD loop per ell. A
+// per-ell scalar quadrature would re-evaluate every kernel and branch on
+// the IA model inside the innermost loop; here the IA model branch sits
+// outside, and the inner loop is pure arithmetic on contiguous arrays —
+// vectorizable with AVX2.
 //
 // Memory layout:
 //   WC[5][shear_nbin][npts]:  radial weight functions and IA amplitudes
@@ -2117,17 +1973,15 @@ static void C_ss_tomo_limber_work(
 //   ells    - array of multipole values, length nell (need not be integers)
 //   nell    - number of multipole values
 //   NSIZE   - number of tomographic shear power spectra (= shear_Npowerspectra)
-//   out_EE  - output array [NSIZE][nell], indexed as out_EE[nz][i], NULL if init=1
-//   out_BB  - output array [NSIZE][nell], indexed as out_BB[nz][i], NULL if init=1
-//   init    - if 1, only warm up static variables (no allocation, no computation)
-//             if 0, perform full batch computation
+//   out_EE  - output array [NSIZE][nell], indexed as out_EE[nz][i]
+//   out_BB  - output array [NSIZE][nell], indexed as out_BB[nz][i]
 // ---------------------------------------------------------------------------
 void C_ss_tomo_limber_nointerp_ells(
     const double* ells,   // array of multipole values (length nell)
     const int nell,       // number of multipole values
     const int NSIZE,      // number of tomo shear power spectra
-    double** out_EE,      // output EE [NSIZE][nell], NULL if init=1
-    double** out_BB      // output BB [NSIZE][nell], NULL if init=1
+    double** out_EE,      // output EE [NSIZE][nell]
+    double** out_BB      // output BB [NSIZE][nell]
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
@@ -3410,15 +3264,13 @@ static void C_gs_tomo_limber_work(
 //   ells    - array of multipole values, length nell (need not be integers)
 //   nell    - number of multipole values
 //   NSIZE   - number of ggl power spectra (= ggl_Npowerspectra)
-//   out     - output array [NSIZE][nell], indexed as out[nz][i], NULL if init=1
-//   init    - if 1, only warm up static variables
-//             if 0, perform full batch computation
+//   out     - output array [NSIZE][nell], indexed as out[nz][i]
 // ---------------------------------------------------------------------------
 void C_gs_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
     const int NSIZE,     // number of ggl power spectra
-    double** out         // output [NSIZE][nell], NULL if init=1
+    double** out         // output [NSIZE][nell]
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
@@ -4595,10 +4447,6 @@ void C_ks_tomo_limber_nointerp_batch(
 
   free(tmp); free(lx);
 }
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Batch computation of the scale-cut derivative dC_ks/dlnk on a
