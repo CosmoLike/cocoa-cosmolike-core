@@ -583,8 +583,12 @@ void RF_C_ss_tomo_limber_work(
           sEE += fabs(dlnC_ss_dlnk_tomo_limber(k, l, Z1NZ, Z2NZ, 1))*wt;
           sBB += fabs(dlnC_ss_dlnk_tomo_limber(k, l, Z1NZ, Z2NZ, 0))*wt;
         }
-        table[0][nz][m][i] = sEE/den[0][nz][i];
-        table[1][nz][m][i] = sBB/den[1][nz][i];
+        // a vanishing denominator row (the BB spectrum under NLA is
+        // identically 0) writes 0, never 0/0 = NaN
+        table[0][nz][m][i] = (fabs(den[0][nz][i]) > 1e-300) ?
+                             sEE/den[0][nz][i] : 0.0;
+        table[1][nz][m][i] = (fabs(den[1][nz][i]) > 1e-300) ?
+                             sBB/den[1][nz][i] : 0.0;
       }
     }
   }
@@ -692,7 +696,9 @@ void RF_C_ks_tomo_limber_work(
           const double wt = wq[p]/(tq[p]*tq[p]);
           sKS += fabs(dlnC_ks_dlnk_tomo_limber(k, l, nz))*wt;
         }
-        table[nz][m][i] = sKS/den[nz][i];
+        // a vanishing denominator writes 0, never 0/0 = NaN
+        table[nz][m][i] = (fabs(den[nz][i]) > 1e-300) ?
+                          sKS/den[nz][i] : 0.0;
       }
     }
   }
@@ -914,7 +920,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
           const int q = nz * Ntable.Ntheta + i;
           const double dxipmdlnk = ans[p][q];
           if (fabs(ans[p][q])>1.e-50) {
-            const double xipm = xi_pm_tomo(p, i, Z1(nz), Z2(nz), 1);
+            const double xipm = xi_pm_tomo(1 - p, i, Z1(nz), Z2(nz), 1);
             ans[p][q] = (fabs(xipm) > 1.e-50) ? dxipmdlnk/xipm : 0.0;
           }
         }

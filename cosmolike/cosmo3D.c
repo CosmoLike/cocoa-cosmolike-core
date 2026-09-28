@@ -243,6 +243,10 @@ struct chis chi_all(const double a)
     }
     j = ilo;
   }
+  // the "up" slope below reads j+2; clamp as the piecewise variant does
+  if (j > cosmology.chi_nz - 3) {
+    j = cosmology.chi_nz - 3;
+  }
 
   const double dy = (z                     - cosmology.chi[0][j])/
                     (cosmology.chi[0][j+1] - cosmology.chi[0][j]);
@@ -587,7 +591,11 @@ double f_growth(const double z)
   const double dy       = (z - zj) / (zj1 - zj);
   const double G        = Gj + dy * (Gj1 - Gj);
   const double dlnGdlnz = ((Gj1 - Gj) / (zj1 - zj)) * z / G;
-  const double dlnGdlna = -dlnGdlnz * (1+z) / z;
+  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
+  const double dlnGdlnz_slope = ((Gj1 - Gj)/
+    (zj1 - zj))*(1+z)/G;
+  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
+                                    : -dlnGdlnz_slope;
 
   return 1 + dlnGdlna; // Growth D = G * a
 }
@@ -626,8 +634,12 @@ double f_growth(const double z)
 
   const double dlnGdlnz = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
                            (cosmology.G[0][j+1] - cosmology.G[0][j]))*z/G;
+  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
+  const double dlnGdlnz_slope = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
+    (cosmology.G[0][j+1] - cosmology.G[0][j]))*(1+z)/G;
   
-  const double dlnGdlna = -dlnGdlnz*(1+z)/z;
+  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
+                                    : -dlnGdlnz_slope;
 
   return 1 + dlnGdlna; // Growth D = G * a
 }
@@ -699,7 +711,11 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
   const double G  = Gj + dy * (Gj1 - Gj);
 
   const double dlnGdlnz = ((Gj1 - Gj) / (zj1 - zj)) * z / G;
-  const double dlnGdlna = -dlnGdlnz * (1+z) / z;
+  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
+  const double dlnGdlnz_slope = ((Gj1 - Gj)/
+    (zj1 - zj))*(1+z)/G;
+  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
+                                    : -dlnGdlnz_slope;
 
   struct growths Gf;
   Gf.f = 1 + dlnGdlna;
@@ -767,8 +783,12 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
 
   const double dlnGdlnz = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
                            (cosmology.G[0][j+1] - cosmology.G[0][j]))*z/G;
+  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
+  const double dlnGdlnz_slope = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
+    (cosmology.G[0][j+1] - cosmology.G[0][j]))*(1+z)/G;
   
-  const double dlnGdlna = -dlnGdlnz*(1+z)/z;
+  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
+                                    : -dlnGdlnz_slope;
 
   struct growths Gf;
   Gf.f = 1 + dlnGdlna; // Growth D = G * a
@@ -1178,11 +1198,11 @@ double f_K(double chi)
   double K, K_h, f;
   K = (cosmology.Omega_m + cosmology.Omega_v - 1.);
   if (K > 1e-6) 
-  { // open
+  { // closed
     K_h = sqrt(K); // K in units H0/c see BS eq. 2.30
     f = 1. / K_h * sin(K_h * chi);
   } else if (K < -1e-6) 
-  { // closed
+  { // open
     K_h = sqrt(-K);
     f = 1. / K_h * sinh(K_h * chi);
   } else 
@@ -1346,7 +1366,8 @@ double sigma2_nointerp(
     cache[0] = Ntable.random;
   }
   
-  double ar[1] = {pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m),1./3.)};
+  double ar[2] = {pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m),1./3.),
+                  a};
   const double xmin = 0;
   const double xmax = 14.1;
 

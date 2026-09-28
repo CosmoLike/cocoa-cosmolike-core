@@ -748,7 +748,7 @@ double w_gammat_tomo(
     if (Pl != NULL) {
       free(Pl);
     }
-    Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);;
+    Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);
     
     if (w_vec != NULL) {
       free(w_vec);
@@ -1218,7 +1218,7 @@ double w_gk_tomo(
       fdiff2(cache[3], Ntable.random))
   {
     if (Pl != NULL) free(Pl);
-    Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);;
+    Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);
 
     if (w_vec != NULL) free(w_vec);
     w_vec = calloc1d(NSIZE*Ntable.Ntheta);
@@ -1451,7 +1451,7 @@ double w_ks_tomo(
       fdiff2(cache[4], Ntable.random))
   {
     if (Pl != NULL) free(Pl);
-    Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);;
+    Pl = (double**) malloc2d(Ntable.Ntheta, Ntable.LMAX);
 
     if (w_vec != NULL) free(w_vec);
     w_vec = calloc1d(NSIZE*Ntable.Ntheta);

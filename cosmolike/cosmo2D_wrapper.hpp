@@ -109,6 +109,8 @@ arma::Cube<double> C_gs_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+double C_gg_tomo_limber_cpp(const double l, const int ni);
+
 arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l);
 
 arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l);

@@ -1040,7 +1040,7 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
-  static constexpr std::string_view fname = "init_IA"sv;
+  static constexpr std::string_view fname = "init_IA_fastpt"sv;
   debug("{}: {}", fname, errbegins);
   debug(debugsel, fname, "IA MODEL", IA_MODEL);
   debug(debugsel, fname, "IA REDSHIFT EVOLUTION", IA_REDSHIFT_EVOL);
@@ -1162,7 +1162,9 @@ void init_probes(std::string possible_probes)
     };
 
   boost::trim_if(possible_probes, boost::is_any_of("\t "));
-  auto it = probe_map.find(boost::algorithm::to_lower_copy(possible_probes));
+  const std::string probe_key =
+      boost::algorithm::to_lower_copy(possible_probes);
+  auto it = probe_map.find(probe_key);
   if (it == probe_map.end()) {
     critical(errorns2, fname, "possible_probes", possible_probes);
     std::exit(1);
@@ -1175,7 +1177,7 @@ void init_probes(std::string possible_probes)
   like.gk = flags(3);
   like.ks = flags(4);
   like.kk = flags(5);
-  debug(debugsel, fname, "possible_probes", names.at(possible_probes));
+  debug(debugsel, fname, "possible_probes", names.at(probe_key));
   debug("{}: Ends", "init_probes");
   return;
 }
@@ -1494,7 +1496,12 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
   if (NULL == tomo.ggl_exclude) {
     critical("array allocation failed"); exit(1);
   }
-  tomo.N_ggl_exclude = int(nsize/2);  
+  if (0 != nsize % 2) [[unlikely]] {
+    critical("{}: ggl_exclude length = {} is odd (lens, source pairs "
+             "required)", fname, nsize);
+    exit(1);
+  }
+  tomo.N_ggl_exclude = int(nsize/2);
   tomo.random_ggl = RandomNumber::get_instance().get(); // pair maps rebuild
   debug("{}: {} ggl pairs excluded", fname, tomo.N_ggl_exclude);
   for(int i=0; i<nsize; i++) {
@@ -1847,7 +1854,7 @@ void set_bias_PS(
 // ---------------------------------------------------------------------------
 void set_distances(vector io_z, vector io_chi)
 {
-  static constexpr std::string_view fname = "set_cosmological_parameters"sv;
+  static constexpr std::string_view fname = "set_distances"sv;
   debug("{}: Begins", "set_distances");
   bool debug_fail = false;
   if (io_z.n_elem != io_chi.n_elem) [[unlikely]] {
@@ -2571,10 +2578,13 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
     if (std::isnan(B1(i)) || std::isnan(B2(i))) [[unlikely]] {
       critical(errnance2, fname, i, errnance); exit(1);
     }
-    if(fdiff(nuisance.gb[1][i], B2(i))) {
+    // bs2 depends on BOTH inputs: recompute the candidate first, so a
+    // B1-only change with B2 fixed still updates the derived tidal bias
+    const double bs2 = almost_equal(B2(i), 0.) ? 0 : (-4./7.)*(B1(i)-1.0);
+    if (fdiff(nuisance.gb[1][i], B2(i)) || fdiff(nuisance.gb[2][i], bs2)) {
       cache_update = 1;
       nuisance.gb[1][i] = B2(i);
-      nuisance.gb[2][i] = almost_equal(B2(i), 0.) ? 0 : (-4./7.)*(B1(i)-1.0);
+      nuisance.gb[2][i] = bs2;
     }
   }
   if (1 == cache_update || 1 == force_cache_update_test) {
@@ -2893,7 +2903,7 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
 void set_lens_sample_size(const int Ntomo)
 {
   static constexpr std::string_view fname = "set_lens_sample_size"sv;
-  if (std::isnan(Ntomo) || !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
+  if (!(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
     critical(errorns,fname,"Ntomo",Ntomo,MAX_SIZE_ARRAYS);
     exit(1);
   }
@@ -2941,7 +2951,7 @@ void set_lens_sample(arma::Mat<double> input_table)
   debug("{}: {}", fname, errbegins);
 
   const int Ntomo = redshift.clustering_nbin;
-  if (std::isnan(Ntomo) || !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
+  if (!(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
     critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   }
 
@@ -3055,7 +3065,7 @@ void set_lens_sample(arma::Mat<double> input_table)
 void set_source_sample_size(const int Ntomo)
 {
   static constexpr std::string_view fname = "set_source_sample_size"sv;
-  if (std::isnan(Ntomo) || !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
+  if (!(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
     critical(errorns, fname, "Ntomo", Ntomo,  MAX_SIZE_ARRAYS);
     exit(1);
   } 
@@ -3104,7 +3114,7 @@ void set_source_sample(arma::Mat<double> input_table)
   debug("{}: {}", fname, errbegins);
 
   const int Ntomo = redshift.shear_nbin;
-  if (std::isnan(Ntomo) || !(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
+  if (!(Ntomo > 0) || Ntomo > MAX_SIZE_ARRAYS) [[unlikely]] {
     critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   } 
 
@@ -3190,11 +3200,13 @@ void set_source_sample(arma::Mat<double> input_table)
           redshift.shear_zdist_zmax[Ntomo-1]);
       exit(1);
     } 
+    // bump the key BEFORE the warm-up, as set_lens_sample does: the
+    // warm-up and the debug prints must see the sample just installed
+    redshift.random_shear = RandomNumber::get_instance().get();
     nz_source_photoz(0.1, 0); // init static variables
     for (int k=0; k<Ntomo; k++) {
       debug("{}: bin {} - {} = {}.", fname, k, "<z_s>", zmean_source(k));
     }
-    redshift.random_shear = RandomNumber::get_instance().get();
   }
   debug("{}: {}", fname, errends);
 }
@@ -4015,7 +4027,7 @@ void IPCMB::set_kk_binning_bandpower (
     const int lmax
   )
 {
-  static constexpr std::string_view fname = "IPCMB::set_kk_binning"sv;
+  static constexpr std::string_view fname = "IPCMB::set_kk_binning_bandpower"sv;
   debug("{}: {}", fname, errbegins);
   if (!(nb > 0)) [[unlikely]] {
     critical(errorns2, fname, "nbins", nb); exit(1);

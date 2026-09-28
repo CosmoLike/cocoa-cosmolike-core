@@ -46,26 +46,6 @@ namespace cosmolike_interface
 {
 
 // ---------------------------------------------------------------------------
-// 1 if any lens bin carries a nonzero second-order galaxy bias
-// (nuisance.gb[1][i]), the switch that turns on the one-loop bias terms
-// in the batched gg/gs/gk Limber engines of cosmo2D.c.
-//
-// Parameters:
-//   none (reads redshift.clustering_nbin and nuisance.gb)
-//
-// Returns:
-//   1 if any lens bin has gb[1] != 0; 0 otherwise
-// ---------------------------------------------------------------------------
-static int has_b2_galaxies()
-{
-  int res = 0;
-  for (int i=0; i<redshift.clustering_nbin; i++) 
-    if (nuisance.gb[1][i])
-      res = 1;
-  return res;
-}
-
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -280,27 +260,6 @@ arma::Mat<double> w_ks_tomo_cpp()
   }
   return result;
 }
-
-// Disabled flat-vector variants of the w_gk/w_ks wrappers
-// (result(Ntheta*nz + i) packing):
-//
-// arma::Col<double> w_gk_tomo_cpp()
-// {
-//   arma::Col<double> result(Ntable.Ntheta*redshift.clustering_nbin,arma::fill::none);
-//   for (int nz=0; nz<redshift.clustering_nbin; nz++)
-//     for (int i=0; i<Ntable.Ntheta; i++)
-//       result(Ntable.Ntheta*nz+i) = w_gk_tomo(i, nz, 1);
-//   return result;
-// }
-//
-// arma::Col<double> w_ks_tomo_cpp()
-// {
-//   arma::Col<double> result(Ntable.Ntheta*redshift.shear_nbin,arma::fill::none);
-//   for (int nz=0; nz<redshift.clustering_nbin; nz++)
-//     for (int i=0; i<Ntable.Ntheta; i++)
-//       result(Ntable.Ntheta*nz+i) = w_ks_tomo(i, nz, 1);
-//   return result;
-// }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

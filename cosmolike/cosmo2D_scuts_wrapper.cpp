@@ -436,11 +436,11 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
   const int nl = static_cast<int>(l.n_elem);
   const int nk = static_cast<int>(k.n_elem);
   if (!(nl > 0)) {
-    spdlog::critical("{}: l array size = {}", "dC_ss_dlnk_tomo_limber_cpp", nl);
+    spdlog::critical("{}: l array size = {}", "dlnw_ks_dlnk_tomo_cpp", nl);
     exit(1);
   }
   if (!(nk > 0)) {
-    spdlog::critical("{}: k array size = {}", "dC_ss_dlnk_tomo_limber_cpp", nk);
+    spdlog::critical("{}: k array size = {}", "dlnw_ks_dlnk_tomo_cpp", nk);
     exit(1);
   } 
   const int NSIZE = tomo.shear_Npowerspectra;
@@ -1036,11 +1036,11 @@ py::tuple RF_C_ss_tomo_limber_cpp(
   const int nl = static_cast<int>(l.n_elem);
   const int nk = static_cast<int>(k.n_elem);
   if (!(nl > 0)) {
-    spdlog::critical("{}: l array size = {}", "dC_ss_dlnk_tomo_limber_cpp", nl);
+    spdlog::critical("{}: l array size = {}", "RF_w_ks_tomo_cpp", nl);
     exit(1);
   }
   if (!(nk > 0)) {
-    spdlog::critical("{}: k array size = {}", "dC_ss_dlnk_tomo_limber_cpp", nk);
+    spdlog::critical("{}: k array size = {}", "RF_w_ks_tomo_cpp", nk);
     exit(1);
   } 
   const int NSIZE = tomo.shear_Npowerspectra;

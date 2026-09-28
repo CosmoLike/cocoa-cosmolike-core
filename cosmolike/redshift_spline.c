@@ -376,7 +376,7 @@ int ZS(int nj)
 // (lens outer, source inner) and excluded pairs store -1.
 //
 // Cache invalidation: static map stamped with tomo.random_ggl. The
-// rebuild guard is N[0][0] < 0, so the static-initializer sentinel (-42)
+// rebuild guard is N[0][0] < -1, so the static-initializer sentinel (-42)
 // triggers the first build and a changed stamp triggers later ones; when
 // pair (0, 0) itself is excluded, its stored -1 keeps the guard true and
 // the map is rebuilt on every call. Warmed single-threaded by
@@ -395,7 +395,7 @@ int N_ggl(int ni, int nj)
 {
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
   static uint64_t cache = 0; // tomo.random_ggl the map was built with
-  if (N[0][0] < 0 || fdiff2(cache, tomo.random_ggl)) {
+  if (N[0][0] < -1 || fdiff2(cache, tomo.random_ggl)) {
     cache = tomo.random_ggl;
     int n = 0;
     for (int i=0; i<redshift.clustering_nbin; i++) {
@@ -1053,8 +1053,8 @@ double zmean_source(int ni)
       table[i] = gsl_integration_glfixed(&F, redshift.shear_zdist_zmin[i], 
                                              redshift.shear_zdist_zmax[i], w);
     }
-    cache[0] = redshift.random_shear;
-    cache[1] = Ntable.random;
+    cache[0] = Ntable.random;
+    cache[1] = redshift.random_shear;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni); exit(1);
@@ -1866,7 +1866,6 @@ double g_lens(double a, int ni)
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.clustering_zdist_zmax_all + 1.0);
   const double amax = 0.999999;
-  const double amin_shear = 1.0 / (redshift.shear_zdist_zmax_all + 1.0);
 
   if (table == NULL || fdiff2(cache[0], Ntable.random)) {
     if (table != NULL) free(table);
@@ -1898,7 +1897,8 @@ double g_lens(double a, int ni)
     for (int j = 0; j < redshift.clustering_nbin; j++) {
       double P = 0.0;
       double Q = 0.0; 
-      table[j][0] = P - chi(amin) * Q; // 1st point: integral_amin_shear^amin
+      table[j][0] = P - chi(amin) * Q; // 1st point: 0 (P = Q = 0; the lens
+                                       // n(z) support starts at amin)
       for (int i = 1; i < Na; i++) {
         P += 0.5 * da * (Pint[j][i-1] + Pint[j][i]);
         Q += 0.5 * da * (Qint[j][i-1] + Qint[j][i]);

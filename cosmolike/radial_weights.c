@@ -216,7 +216,7 @@ double W_RSD(double l, double a0, double a1, int ni)
   if (!(a1>0) || !(a1<1)) {
     log_fatal("a>0 and a<1 not true"); exit(1);
   }
-  if (ni < -1 || ni > redshift.clustering_nbin - 1) {
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni); exit(1);
   }
   double w = (1 + 8. * l) / ((2. * l + 1.) * (2. * l + 1.)) *
