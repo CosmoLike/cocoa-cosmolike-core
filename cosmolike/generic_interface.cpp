@@ -415,6 +415,43 @@ void init_ntable_lmax(const int lmax) {
 }
 
 // ---------------------------------------------------------------------------
+// Set the internal coarse ell grid of the C_ss/C_gs interpolation tables.
+//
+// The tables keep Ntable.N_ell nodes with linear interpolation (the
+// real-space Legendre sums interpolate ~100k multipoles through the
+// vectorized gather fill), but their construction cost is
+// N_ell x N_pairs Limber quadratures. C_l^ss and C_l^gs are smooth in
+// ln l, so the exact quadrature runs on this coarse grid and a cubic
+// spline upsamples to the unchanged N_ell nodes at cache-build time.
+// 0 disables the trick (exact quadrature at every node): the A/B
+// switch for validation. Galaxy clustering never uses it (BAO
+// wiggles; see C_gg_tomo_limber).
+//
+// Cache invalidation: bumps Ntable.random so every table rebuilds.
+//
+// Parameters:
+//   nell_internal - coarse node count (4 <= n <= Ntable.N_ell), or 0
+//                   for exact
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_ntable_ell_internal(const int nell_internal) {
+  static constexpr std::string_view fname = "init_ntable_ell_internal"sv;
+  debug("{}: {}", fname, errbegins);
+  if (nell_internal != 0 &&
+      (nell_internal < 4 || nell_internal > Ntable.N_ell)) [[unlikely]] {
+    critical("{}: nell_internal = {} not 0 and outside [4, {}]",
+             fname, nell_internal, Ntable.N_ell);
+    exit(1);
+  }
+  Ntable.N_ell_internal = nell_internal;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

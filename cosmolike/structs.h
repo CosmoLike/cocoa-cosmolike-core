@@ -72,6 +72,8 @@ typedef struct
   int N_k_lin;
   int N_k_nlin;
   int N_ell;
+  int N_ell_internal; // coarse exact-quadrature ell nodes of the C_ss/C_gs
+                      // tables, cubic-spline upsampled to N_ell; 0 = exact
   int Ntheta;
   int N_M;
   int NL_Nell_block;   // Cosmo2D - NL = NonLimber

@@ -2744,7 +2744,49 @@ double C_ss_tomo_limber(
     
     cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 
-    C_ss_tomo_limber_work(&cn, lx, nell, tomo.shear_Npowerspectra, table);
+    const int nc = Ntable.N_ell_internal;
+    if (nc > 3 && nc < nell) {
+      // Internal coarse grid: the exact quadrature runs on nc log-spaced
+      // nodes over the same [lim[0], lim[1]] range and a cubic spline
+      // upsamples each (component, pair) row onto the unchanged N_ell
+      // grid. C_l^ss is smooth in ln l, so the spline error sits orders
+      // of magnitude below the quadrature accuracy; N_ell_internal = 0
+      // restores the exact per-node quadrature (the A/B switch).
+      const double dc = (lim[1] - lim[0]) / ((double) nc - 1.0);
+      double* lnlc = (double*) malloc1d(nc);
+      double* lxc  = (double*) malloc1d(nc);
+      for (int i=0; i<nc; i++) {
+        lnlc[i] = lim[0] + i*dc;
+        lxc[i]  = exp(lnlc[i]);
+      }
+      double*** tabc = (double***) malloc3d(2, tomo.shear_Npowerspectra, nc);
+      zero3d(tabc, 2, tomo.shear_Npowerspectra, nc);
+
+      C_ss_tomo_limber_work(&cn, lxc, nc, tomo.shear_Npowerspectra, tabc);
+
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int c=0; c<2; c++) {
+        for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+          gsl_interp_accel* acc = gsl_interp_accel_alloc();
+          gsl_spline* spl = gsl_spline_alloc(gsl_interp_cspline, nc);
+          gsl_spline_init(spl, lnlc, tabc[c][nz], nc);
+          for (int i=0; i<nell; i++) {
+            // clamp against 1-ulp overshoot of the shared endpoints
+            const double xq = fmin(fmax(lim[0] + i*lim[2], lnlc[0]),
+                                   lnlc[nc-1]);
+            table[c][nz][i] = gsl_spline_eval(spl, xq, acc);
+          }
+          gsl_spline_free(spl);
+          gsl_interp_accel_free(acc);
+        }
+      }
+      free(tabc);
+      free(lxc);
+      free(lnlc);
+    }
+    else {
+      C_ss_tomo_limber_work(&cn, lx, nell, tomo.shear_Npowerspectra, table);
+    }
 
     free_cosmo_nodes(&cn);
 
@@ -3652,7 +3694,52 @@ double C_gs_tomo_limber(
       }
     }
 
-    C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, 0, table);
+    const int nc = Ntable.N_ell_internal;
+    if (nc > 3 && nc < nell) {
+      // Internal coarse grid + cubic-spline upsampling, as in
+      // C_ss_tomo_limber (see the note there); C_l^gs is equally smooth
+      // in ln l. N_ell_internal = 0 restores the exact quadrature.
+      const double dc = (lim[1] - lim[0]) / ((double) nc - 1.0);
+      double* lnlc = (double*) malloc1d(nc);
+      double* lxc  = (double*) malloc1d(nc);
+      double* epc  = (double*) malloc1d(nc);
+      double* ep2c = (double*) malloc1d(nc);
+      for (int i=0; i<nc; i++) {
+        lnlc[i] = lim[0] + i*dc;
+        lxc[i]  = exp(lnlc[i]);
+        const double ell = lxc[i] + 0.5;
+        epc[i] = lxc[i]*(lxc[i]+1.)/(ell*ell);
+        const double tmp = (lxc[i]-1.)*lxc[i]*(lxc[i]+1.)*(lxc[i]+2.);
+        ep2c[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
+      }
+      double** tabc = (double**) malloc2d(tomo.ggl_Npowerspectra, nc);
+      zero2d(tabc, tomo.ggl_Npowerspectra, nc);
+
+      C_gs_tomo_limber_work(cn_all, lxc, epc, ep2c, nc, 0, tabc);
+
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
+        gsl_interp_accel* acc = gsl_interp_accel_alloc();
+        gsl_spline* spl = gsl_spline_alloc(gsl_interp_cspline, nc);
+        gsl_spline_init(spl, lnlc, tabc[nz], nc);
+        for (int i=0; i<nell; i++) {
+          // clamp against 1-ulp overshoot of the shared endpoints
+          const double xq = fmin(fmax(lim[0] + i*lim[2], lnlc[0]),
+                                 lnlc[nc-1]);
+          table[nz][i] = gsl_spline_eval(spl, xq, acc);
+        }
+        gsl_spline_free(spl);
+        gsl_interp_accel_free(acc);
+      }
+      free(tabc);
+      free(lxc);
+      free(lnlc);
+      free(epc);
+      free(ep2c);
+    }
+    else {
+      C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, 0, table);
+    }
 
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       free_cosmo_nodes(&cn_all[zl]);
@@ -4348,6 +4435,11 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 //
 // Returns:
 //   C_l^gg of lens bin ni (auto spectrum)
+// The table keeps the exact per-node quadrature at every one of its
+// N_ell nodes: do NOT apply the internal coarse-grid upsampling of the
+// ss/gs tables here (Ntable.N_ell_internal) - the clustering auto
+// spectra carry BAO wiggles in exactly the ell range the spline would
+// smooth over.
 // ---------------------------------------------------------------------------
 double C_gg_tomo_limber(
     const double l,   // multipole moment (continuous, interpolated)

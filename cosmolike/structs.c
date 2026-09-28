@@ -268,7 +268,8 @@ void reset_Ntable_struct(void)
   Ntable.N_a      = 256;   // N_a       
   Ntable.N_k_lin  = 512;   // N_k_lin
   Ntable.N_k_nlin = 512;   // N_k_nlin
-  Ntable.N_ell    = 512;   // N_ell      
+  Ntable.N_ell    = 512;   // N_ell
+  Ntable.N_ell_internal = 192; // ss/gs table coarse grid; 0 = exact N_ell      
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
   Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
