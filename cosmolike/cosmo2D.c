@@ -3759,7 +3759,13 @@ double int_for_C_gg_tomo_limber(
       res *= (WGALi*b1i + WMAGi*ell_prefactor*bmagi);
       res *= (WGALi*b1i + WMAGi*ell_prefactor*bmagi);
     }
-    res *= (use_linear_ps ? p_lin(k,a) : Pdelta(k,a));
+    if (use_linear_ps) { // separable growth, as in the FFTLog term of C_cl_tomo
+      const double gf = growfac(a);
+      res *= gf*gf*p_lin(k,1.0);
+    }
+    else {
+      res *= Pdelta(k,a);
+    }
   }
 
   double oneloop = 0.0;
@@ -3907,7 +3913,7 @@ double C_gg_tomo_limber_nointerp(
 //
 // over the Gauss-Legendre nodes p of the bin (cn_all), with
 //   ep      = l (l+1) / (l + 1/2)^2           (magnification ell prefactor)
-//   PK      = P_delta(k, a), or P_lin(k, a) when use_linear_ps = 1,
+//   PK      = P_delta(k, a), or D(a)^2 * P_lin(k, z=0) when use_linear_ps = 1,
 //             at the Limber wavenumber k = (l + 1/2)/fK
 //   WRSD    = W_RSD(l + 1/2, a_0, a_1, bin), chi_0 = fK, chi_1 = (l + 3/2)/k
 //             (zero unless include_RSD_GG)
@@ -3942,7 +3948,7 @@ double C_gg_tomo_limber_nointerp(
 //   lx            - multipole values (length nell)
 //   ell_prefactor - l (l+1)/(l + 1/2)^2 per multipole
 //   nell          - number of multipole values
-//   use_linear_ps - 1: P_lin(k, a) and no one-loop bias (the
+//   use_linear_ps - 1: separable linear spectrum, no one-loop bias (the
 //                   linear term C_cl_tomo subtracts); 0: the full model
 //   table         - output [clustering_nbin][nell]
 //
@@ -4054,7 +4060,11 @@ static void C_gg_tomo_limber_work(
           const double fK  = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
           const double k   = ell/fK;
-          KG[0][zl][i][p] = (0 == use_linear_ps) ? Pdelta(k, a) : p_lin(k, a);
+          // Linear term: separable growth D(a)^2*P_lin(k, z=0), as in the
+          // FFTLog term of C_cl_tomo (see C_gs_tomo_limber_work).
+          const double gf = cn->data[CN_GROWFAC][p];
+          KG[0][zl][i][p] = (0 == use_linear_ps) ? Pdelta(k, a) :
+                                                   gf*gf*p_lin(k, 1.0);
           KG[1][zl][i][p] = 0.0;
           KG[2][zl][i][p] = 1.0;
           if (1 == include_RSD_GG) {
@@ -4167,7 +4177,7 @@ static void C_gg_tomo_limber_work(
 // use_linear_ps selects the power spectrum:
 //   0 - the full model (P_delta, one-loop galaxy bias);
 //   1 - the linear term that the non-Limber C_cl_tomo subtracts,
-//       P_lin(k, a) with b1 only.
+//       D(a)^2 * P_lin(k, z=0) with b1 only.
 //
 // Example: C_cl_tomo calls it twice with ells = 0, 1, ..., 149 to get both
 // Limber terms of the non-Limber split for every lens bin at once.
@@ -6204,6 +6214,14 @@ void cfftlog_ells_p2(
 // spectrum used in FFTLog and the nonlinear power spectrum used in the
 // Limber integral. Both come from one batched call each
 // (C_gg_tomo_limber_linpsopt_nointerp_ells at l = 0..LMAX_NOLIMBER-1).
+//
+// The FFTLog term needs separable growth, P(k; z1, z2) = D(z1)*D(z2)*
+// P_lin(k, z=0), so the subtracted Limber term uses the same D(a)^2 *
+// P_lin(k, z=0). CAMB's P_lin(k, a) is not separable (massive neutrinos
+// make its growth scale dependent): D(a)^2 differs from P_lin(k,a)/P_lin(k,0)
+// by 0.7% to 1.6% at z = 0.3 to 1 for the wavenumbers of l ~ 100, and with
+// P_lin(k, a) in the subtracted term the pair never cancels. The
+// scale-dependent part of the growth is carried by the Limber P_delta term.
 //
 // Algorithm overview:
 //   1. Build the log-spaced chi grid (chi_min..chi_max, dimensionless)
