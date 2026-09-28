@@ -2670,9 +2670,20 @@ static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
 // C_ss_tomo_limber_work, then caches it for subsequent lookups. Returns
 // the interpolated value at the requested l via interpol1d.
 //
-// The table is shared with C_ss_tomo_limber_fill via the ss_ static struct,
-// so real-space correlation functions (xi_pm_tomo) can read the same table
-// without recomputation.
+// Why the table is shared through the ss_ static struct: the
+// real-space projection (xi_pm_tomo) needs C_l at every integer
+// multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
+// inside its Legendre/Hankel sums - millions of table reads per
+// likelihood evaluation. Only the vectorized batch reader
+// (C_ss_tomo_limber_fill, which runs the interpol1d linear read four
+// multipoles at a time through AVX2 gathers) sustains that rate;
+// calling this scalar accessor once per multipole would dominate the
+// whole evaluation.
+//
+// The struct hands that reader the table pointer and its grid
+// geometry directly: builder and reader are called from different
+// places, so the alternative - passing the table through function
+// arguments - would thread it across every call site in between.
 //
 // Cache invalidation: recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -3700,9 +3711,20 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 // precomputed ell prefactors, then caches it for subsequent lookups.
 // Returns the interpolated value at the requested l via interpol1d.
 //
-// The table is shared with C_gs_tomo_limber_fill via the gs_ static
-// struct, so the real-space w_gammat_tomo can read the same table without
-// recomputation.
+// Why the table is shared through the gs_ static struct: the
+// real-space projection (w_gammat_tomo) needs C_l at every integer
+// multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
+// inside its Legendre/Hankel sums - millions of table reads per
+// likelihood evaluation. Only the vectorized batch reader
+// (C_gs_tomo_limber_fill, which runs the interpol1d linear read four
+// multipoles at a time through AVX2 gathers) sustains that rate;
+// calling this scalar accessor once per multipole would dominate the
+// whole evaluation.
+//
+// The struct hands that reader the table pointer and its grid
+// geometry directly: builder and reader are called from different
+// places, so the alternative - passing the table through function
+// arguments - would thread it across every call site in between.
 //
 // Only lens-source pairs with redshift overlap contribute (test_zoverlap).
 //
@@ -4648,9 +4670,20 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 // lookups. Returns the interpolated value at the requested l via
 // interpol1d.
 //
-// The table is shared with C_gg_tomo_limber_fill via the gg_ static
-// struct, so the real-space w_gg_tomo can read the same table without
-// recomputation.
+// Why the table is shared through the gg_ static struct: the
+// real-space projection (w_gg_tomo) needs C_l at every integer
+// multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
+// inside its Legendre/Hankel sums - millions of table reads per
+// likelihood evaluation. Only the vectorized batch reader
+// (C_gg_tomo_limber_fill, which runs the interpol1d linear read four
+// multipoles at a time through AVX2 gathers) sustains that rate;
+// calling this scalar accessor once per multipole would dominate the
+// whole evaluation.
+//
+// The struct hands that reader the table pointer and its grid
+// geometry directly: builder and reader are called from different
+// places, so the alternative - passing the table through function
+// arguments - would thread it across every call site in between.
 //
 // Cache invalidation: the static table and grid limits rebuild when the
 // table is NULL or Ntable.random changes; the values refill when any of
@@ -5221,10 +5254,23 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 // lookups. Returns the interpolated value at the requested l via
 // interpol1d.
 //
-// The table is shared with C_gk_tomo_limber_fill via the gk_ static
-// struct, so the real-space w_gk_tomo can read the same table without
-// recomputation. Stored values carry no CMB beam or pixel window;
-// w_gk_tomo multiplies its own copy by the beam_cmb/w_pixel filter.
+// Why the table is shared through the gk_ static struct: the
+// real-space projection (w_gk_tomo) needs C_l at every integer
+// multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
+// inside its Legendre/Hankel sums - millions of table reads per
+// likelihood evaluation. Only the vectorized batch reader
+// (C_gk_tomo_limber_fill, which runs the interpol1d linear read four
+// multipoles at a time through AVX2 gathers) sustains that rate;
+// calling this scalar accessor once per multipole would dominate the
+// whole evaluation.
+//
+// The struct hands that reader the table pointer and its grid
+// geometry directly: builder and reader are called from different
+// places, so the alternative - passing the table through function
+// arguments - would thread it across every call site in between.
+//
+// Stored values carry no CMB beam or pixel window; w_gk_tomo
+// multiplies its own copy by the beam_cmb/w_pixel filter.
 //
 // Cache invalidation: the static table and grid limits rebuild when the
 // table is NULL or Ntable.random changes; the values refill when any of
@@ -6035,9 +6081,20 @@ static struct { double** tab; double lim[3]; int nell; } ks_ = {0};
 // lookups. Returns the interpolated value at the requested l via
 // interpol1d.
 //
-// The table is shared with C_ks_tomo_limber_fill via the ks_ static
-// struct, so the real-space w_ks_tomo can read the same table without
-// recomputation.
+// Why the table is shared through the ks_ static struct: the
+// real-space projection (w_ks_tomo) needs C_l at every integer
+// multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
+// inside its Legendre/Hankel sums - millions of table reads per
+// likelihood evaluation. Only the vectorized batch reader
+// (C_ks_tomo_limber_fill, which runs the interpol1d linear read four
+// multipoles at a time through AVX2 gathers) sustains that rate;
+// calling this scalar accessor once per multipole would dominate the
+// whole evaluation.
+//
+// The struct hands that reader the table pointer and its grid
+// geometry directly: builder and reader are called from different
+// places, so the alternative - passing the table through function
+// arguments - would thread it across every call site in between.
 //
 // Cache invalidation: recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
