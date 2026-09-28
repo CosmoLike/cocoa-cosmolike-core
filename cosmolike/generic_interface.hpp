@@ -600,6 +600,12 @@ void init_ntable_ell_internal(const int nell_internal);
 
 void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal);
 
+double compute_sigma2(const double M);
+
+double compute_sigma2_nointerp(const double M, const double a);
+
+void init_ntable_nm_internal(const int nm_internal);
+
 void init_photoz_conventions(
     const int interpolation_type,
     const int zmid_convention

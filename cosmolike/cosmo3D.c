@@ -1354,45 +1354,193 @@ double MG_Sigma(double a __attribute__((unused))) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+
 // ---------------------------------------------------------------------------
-// GSL integrand for sigma2_nointerp in the substituted variable x = k*R.
-// With the top-hat window W(y) = 3 j1(y)/y, the variance
+// Node cache for the lobe-summed sigma^2 quadrature.
 //
-//   sigma^2 = 1/(2 pi^2) int dk k^2 P_lin(k, a) W(k*R)^2
+// The sigma^2 integrand (int_for_sigma2) is P_lin(x/R) times
+// 9 j1(x)^2 / (2 pi^2 R^3): a smooth spectrum modulated by the
+// oscillating top-hat window. The window's zeros - the roots z_n of
+// tan x = x (4.4934, 7.7253, 10.9041, 14.0662, ..., approaching
+// (n + 1/2) pi) - split the x axis into a head segment [0, z_1] (the
+// main bump, W(0) = 1) and lobes [z_n, z_{n+1}], each ONE smooth
+// bump. A low-order Gauss-Legendre rule per segment is therefore
+// exponentially accurate: the oscillation lives in the lobe
+// structure, never inside a segment.
 //
-// becomes, after x = k*R,
+// Everything mass-independent is precomputed here once per rebuild
+// (the cosmo_nodes idea of cosmo2D.c):
 //
-//   sigma^2 = int dx P_lin(x/R, a) * 9 j1(x)^2 / (2 pi^2 R^3),
+//   x[q]   - the quadrature nodes of every segment, flattened
+//   wf[q]  - GL weight x 9 j1(x_q)^2  (the Bessel function never
+//            appears in the per-mass loop)
+//   off[j] - first node of segment j; off[nseg] = total node count
 //
-// and this function returns that integrand at x. j1 is the spherical
-// Bessel function (gsl_sf_bessel_j1_e; aborts on GSL error).
+// Segment sizes ladder with abs(Ntable.high_def_integration):
+// 8 + 4 hdi nodes per lobe, 4x that for the head segment. NLOBE =
+// 512 lobes reach x ~ 1600, where the integrand envelope (P ~ k^-3
+// times 9 cos^2(x)/x^4 in the substituted variable) leaves a tail
+// far below the stopping tolerance for any halo-scale R.
+// ---------------------------------------------------------------------------
+static struct {
+  uint64_t key;  // Ntable.random stamp of the current node set
+  int nseg;      // head + lobes actually built
+  int* off;      // [nseg + 1] segment offsets into x/wf
+  double* x;     // [off[nseg]] quadrature nodes
+  double* wf;    // [off[nseg]] GL weight x 9 j1(x)^2
+} s2lobes_ = {0};
+
+// ---------------------------------------------------------------------------
+// Build the sigma^2 lobe-node cache (serial; see the struct header).
+//
+// The zeros of j1 solve tan x = x. McMahon's start z ~ q - 1/q with
+// q = (n + 1/2) pi lands inside the right branch, and a few Newton
+// steps on j1 itself - with j1'(x) = j0(x) - 2 j1(x)/x - polish it
+// to machine precision.
+//
+// Cache invalidation:
+// rebuilds when Ntable.random changes (the hdi ladder enters the
+// node counts). Callers run it OUTSIDE OpenMP regions.
+// ---------------------------------------------------------------------------
+static void sigma2_build_lobe_nodes(void)
+{
+  if (s2lobes_.x != NULL && !fdiff2(s2lobes_.key, Ntable.random)) {
+    return;
+  }
+  const int NLOBE = 512;
+  const int npl = 8 + 4*abs(Ntable.high_def_integration); // per lobe
+  const int nph = 4*npl;                                  // head segment
+
+  if (s2lobes_.x != NULL) {
+    free(s2lobes_.x);
+    free(s2lobes_.wf);
+    free(s2lobes_.off);
+  }
+  s2lobes_.nseg = 1 + NLOBE;
+  s2lobes_.off = (int*) malloc(sizeof(int)*(s2lobes_.nseg + 1));
+  const int ntot = nph + NLOBE*npl;
+  s2lobes_.x  = (double*) malloc(sizeof(double)*ntot);
+  s2lobes_.wf = (double*) malloc(sizeof(double)*ntot);
+
+  gsl_integration_glfixed_table* th = malloc_gslint_glfixed(nph);
+  gsl_integration_glfixed_table* tl = malloc_gslint_glfixed(npl);
+
+  double zlo = 0.0; // left edge of the current segment
+  int q0 = 0;       // running node count
+  for (int j = 0; j < s2lobes_.nseg; j++) {
+    // right edge: the (j+1)-th zero of j1
+    const double qq = ((double) j + 1.5)*M_PI; // (n + 1/2) pi, n = j+1
+    double z = qq - 1.0/qq; // McMahon start
+    for (int it = 0; it < 8; it++) { // Newton on j1
+      gsl_sf_result J0, J1;
+      gsl_sf_bessel_j0_e(z, &J0);
+      gsl_sf_bessel_j1_e(z, &J1);
+      const double step = J1.val/(J0.val - 2.0*J1.val/z);
+      z -= step;
+      if (fabs(step) < 1e-14*z) {
+        break;
+      }
+    }
+    const int nj = (0 == j) ? nph : npl;
+    gsl_integration_glfixed_table* tt = (0 == j) ? th : tl;
+    s2lobes_.off[j] = q0;
+    for (int i = 0; i < nj; i++) {
+      double xi, wi;
+      gsl_integration_glfixed_point(zlo, z, i, &xi, &wi, tt);
+      gsl_sf_result J1;
+      gsl_sf_bessel_j1_e(xi, &J1);
+      s2lobes_.x[q0]  = xi;
+      s2lobes_.wf[q0] = wi*9.0*J1.val*J1.val;
+      q0++;
+    }
+    zlo = z;
+  }
+  s2lobes_.off[s2lobes_.nseg] = q0;
+  gsl_integration_glfixed_table_free(th);
+  gsl_integration_glfixed_table_free(tl);
+  s2lobes_.key = Ntable.random;
+}
+
+// ---------------------------------------------------------------------------
+// Batched sigma^2 over a mass grid (the _work form of cosmo2D.c).
+//
+// For each mass, sum the lobe-node quadrature
+//
+//   sigma^2(M) = 1/(2 pi^2 R^3) sum_q wf[q] P_lin(x[q]/R, a),
+//   R(M) = (3M/(4 pi rho_crit Omega_m))^(1/3),
+//
+// segment by segment, and stop once the tail cannot matter: the
+// segment sums s_j decay along a power-law envelope, so with
+// r = s_j/s_{j-1} < 1 the remainder is bounded by the near-geometric
+// estimate s_j r/(1 - r), and the loop exits when that bound falls
+// below EPS of the running total. The tolerance replaces the old
+// fixed x < 14.1 cutoff: an explicit, documented condition instead
+// of an undocumented domain edge.
+//
+// The node cache is mass-independent (built once, serially, above),
+// so per (mass, node) only one p_lin read and one multiply-add
+// remain; masses parallelize freely, each reading just the node
+// prefix its own convergence needs. Deterministic by construction:
+// fixed nodes, independent per-mass sums, no cross-thread
+// reductions.
+//
+// Cache invalidation:
+// none here (stateless given the node cache); callers key their
+// tables on cosmology.random/Ntable.random as usual.
 //
 // Parameters:
-//   x      - integration variable k*R (dimensionless)
-//   params - double array: ar[0] = R (top-hat radius, c/H0 units),
-//            ar[1] = a (scale factor passed to p_lin)
+//   lnM - ln halo masses, M in M_sun/h (length nM)
+//   nM  - number of masses
+//   a   - scale factor passed to p_lin
+//   out - output sigma^2 per mass (length nM)
 //
 // Returns:
-//   the sigma^2 integrand at x
+//   void (out filled)
 // ---------------------------------------------------------------------------
-double int_for_sigma2(double x, void* params) // inner integral
+void sigma2_work(
+    const double* lnM, // ln halo masses in M_sun/h
+    const int nM,      // number of masses
+    const double a,    // scale factor for P_lin
+    double* out        // output sigma^2 per mass
+  )
 {
-  double* ar = (double*) params;
-  const double R = ar[0];
-  const double a = ar[1];
-  const double PK = p_lin(x/R, a);
-  
-  gsl_sf_result J1;
-  int status = gsl_sf_bessel_j1_e(x, &J1);
-  if (status) {
-    log_fatal(gsl_strerror(status)); exit(1);
+  sigma2_build_lobe_nodes(); // serial: no lazy init inside the loop
+
+  // relative tail tolerance of the lobe sum (see the header)
+  const double EPS = 1e-7;
+
+  const double* restrict xs = s2lobes_.x;
+  const double* restrict wf = s2lobes_.wf;
+  const int* restrict off = s2lobes_.off;
+  const int nseg = s2lobes_.nseg;
+
+  #pragma omp parallel for schedule(static)
+  for (int m = 0; m < nM; m++) {
+    const double M = exp(lnM[m]);
+    const double R =
+        pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m), 1./3.);
+    const double invR = 1.0/R;
+
+    double total = 0.0;
+    double sprev = 0.0;
+    for (int j = 0; j < nseg; j++) {
+      double s = 0.0;
+      for (int q = off[j]; q < off[j+1]; q++) {
+        s += wf[q]*p_lin(xs[q]*invR, a);
+      }
+      total += s;
+      // j = 0 is the head, j = 1 the first lobe: the ratio test
+      // needs two consecutive LOBES, so it starts at j = 2
+      if (j > 1 && sprev > 0.0 && s < sprev) {
+        const double r = s/sprev;
+        if (s*r/(1.0 - r) < EPS*total) {
+          break;
+        }
+      }
+      sprev = s;
+    }
+    out[m] = total/(R*R*R*2.0*M_PI*M_PI);
   }
-  // not the window W(x) = 3 j1(x)/x: the k^2 measure cancels the
-  // window's 1/x^2 after the x = k*R substitution, and the surviving
-  // factors are grouped so tmp^2/(R * 2 pi^2) equals the header's
-  // 9 j1(x)^2 / (2 pi^2 R^3)   (ar[0] = R)
-  const double tmp = 3.0*J1.val/ar[0];
-  return PK*tmp*tmp/(ar[0] * 2.0 * M_PI * M_PI);
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,69 +1549,34 @@ double int_for_sigma2(double x, void* params) // inner integral
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Variance sigma^2(M) of the linear density field smoothed with a
-// top-hat of Lagrangian radius R(M) = (3M/(4 pi rho_crit Omega_m))^(1/3),
-// by fixed Gauss-Legendre quadrature of int_for_sigma2 over x = k*R in
-// [0, 14.1] (see int_for_sigma2 for the integrand and substitution).
-// With M in M_sun/h and cosmology.rho_crit in the matching
-// (c/H0)-volume units, R comes out in c/H0 units, as p_lin expects.
+// Direct (table-free) sigma^2 at one mass: the point diagnostic of
+// the lobe-summed quadrature.
 //
-// init = 1 evaluates the integrand once at the interval midpoint instead
-// of integrating: sigma2 calls it single-threaded so the static
-// quadrature table below exists before its threaded table fill (no lazy
-// init inside a parallel region).
+// A one-mass call into sigma2_work, which holds the formula, the
+// node cache and the stopping rule. No table and no interpolation:
+// this is the reference for testing the cached sigma2(M) below, and
+// the python-facing diagnostic binding.
 //
 // Cache invalidation:
-// the static Gauss-Legendre table w rebuilds when
-// Ntable.random changes (cache[0]); its size is
-// 500 + 500*Ntable.high_def_integration points.
+// none here (the lobe-node cache rebuilds on Ntable.random inside
+// sigma2_work).
 //
 // Parameters:
-//   M    - halo mass in M_sun/h
-//   a    - scale factor for the linear power spectrum
-//   init - 1: single midpoint integrand evaluation (warm-up);
-//          0: full quadrature
+//   M - halo mass in M_sun/h
+//   a - scale factor for P_lin
 //
 // Returns:
-//   sigma^2 for mass M (init = 0), or the midpoint integrand (init = 1)
+//   sigma^2(M, a) from the lobe-summed quadrature
 // ---------------------------------------------------------------------------
 double sigma2_nointerp(
-    const double M,
-    const double a, 
-    const int init
-  ) 
+    const double M, // halo mass in M_sun/h
+    const double a  // scale factor for P_lin
+  )
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    // high_def_integration enters unwrapped here, while the cosmo2D
-    // quadrature ladders take abs() of it: a negative setting shrinks
-    // (or zeroes) this table instead of growing it
-    const size_t szint = 500 + 500 * (Ntable.high_def_integration);
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-  
-  // ar = {R(M), a} with R(M) = (3M/(4 pi rho_crit Omega_m))^(1/3) the
-  // top-hat Lagrangian radius (0.75/M_PI = 3/(4 pi)), in c/H0 units
-  double ar[2] = {pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m),1./3.),
-                  a};
-  const double xmin = 0;
-  const double xmax = 14.1;
-
-  double res;
-  if (1 == init) {
-    res = int_for_sigma2((xmin+xmax)/2.0, (void*) ar);
-  }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_sigma2;
-    res = gsl_integration_glfixed(&F, xmin, xmax, w);
-  }
-  return res;
+  const double lnM = log(M);
+  double out = 0.0;
+  sigma2_work(&lnM, 1, a, &out);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1474,14 +1587,16 @@ double sigma2_nointerp(
 // ---------------------------------------------------------------------------
 // Cached sigma^2(M) at a = 1: interpolates a table of ln sigma^2 on
 // Ntable.N_M nodes uniform in ln M over [ln limits.halo_m_min,
-// ln limits.halo_m_max], filled with sigma2_nointerp(M, 1.0, 0) and read
+// ln limits.halo_m_max], filled by sigma2_work and read
 // back with linear interpol1d in ln M (exp of the stored log). The halo
 // model rescales by the growth factor where it needs sigma at a < 1
 // (e.g. nu = delta_c/(sqrt(sigma2(m))*growfac(a)) in halo.c).
 //
-// Stages: one serial sigma2_nointerp(.., 1) warm-up builds that
-// function's static quadrature table, then an OpenMP loop fills the
-// N_M nodes.
+// Stages: sigma2_work fills the table in one batched call (the
+// lobe-summed quadrature; its node build runs serially first). When
+// Ntable.N_M_internal is active, the exact lobe sums run on the
+// coarse ln M nodes only and the house cubic spline upsamples
+// ln sigma^2 onto the unchanged N_M table (see the refill block).
 //
 // Cache invalidation:
 //   allocation and ln M limits: rebuilt when Ntable.random changes
@@ -1497,7 +1612,15 @@ double sigma2(const double M)
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table;
+  static double* lnMv;
   static double lim[3];
+  static int ncoarse = 0;  // active internal coarse mass nodes (0 = off)
+  static double dlnc = 0.; // coarse grid spacing in ln M
+  static double* lnMc = NULL;  // coarse ln M nodes
+  static int* qidx = NULL;     // fine node -> coarse interval (uniform
+  static double* qdel = NULL;  //   grids: precomputed, no search)
+  static double* tabc = NULL;  // coarse ln sigma^2 values
+  static double* cspl = NULL;  // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
@@ -1505,12 +1628,83 @@ double sigma2(const double M)
     lim[0] = log(limits.halo_m_min);
     lim[1] = log(limits.halo_m_max);
     lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
+    if (lnMv != NULL) free(lnMv);
+    lnMv = (double*) malloc(sizeof(double)*Ntable.N_M);
+    for (int i=0; i<Ntable.N_M; i++) {
+      lnMv[i] = lim[0] + i*lim[2];
+    }
+
+    // Coarse-grid workspace (the strategy note sits in the refill
+    // below): every allocation lives HERE, in the Ntable rebuild
+    // block; the per-cosmology refill only fills. qidx/qdel map each
+    // fine ln M node onto its coarse interval - both grids are
+    // uniform in ln M with shared endpoints, so the map is one
+    // multiply plus a cast, no search, with the top endpoint clamped
+    // onto the last interval against a 1-ulp overshoot.
+    if (lnMc != NULL) { free(lnMc); lnMc = NULL; }
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nc = Ntable.N_M_internal;
+    ncoarse = (nc > 3 && nc < Ntable.N_M) ? nc : 0;
+    if (ncoarse > 0) {
+      dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
+      lnMc = (double*) malloc(sizeof(double)*ncoarse);
+      for (int i=0; i<ncoarse; i++) {
+        lnMc[i] = lim[0] + i*dlnc;
+      }
+      qidx = (int*) malloc(sizeof(int)*Ntable.N_M);
+      qdel = (double*) malloc(sizeof(double)*Ntable.N_M);
+      for (int i=0; i<Ntable.N_M; i++) {
+        const double r = (double) i * lim[2] / dlnc;
+        int j = (int) r;
+        if (j > ncoarse - 2) {
+          j = ncoarse - 2;
+        }
+        qidx[i] = j;
+        qdel[i] = (r - j) * dlnc; // offset from node j, in ln M
+      }
+      tabc = (double*) malloc(sizeof(double)*ncoarse);
+      cspl = (double*) malloc(sizeof(double)*ncoarse);
+    }
   } 
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    (void) sigma2_nointerp(exp(lim[0]), 1.0, 1);    
-    #pragma omp parallel for schedule(static,1)
-    for (int i=0; i<Ntable.N_M; i++) {
-      table[i] = log(sigma2_nointerp(exp(lim[0] + i*lim[2]), 1.0, 0));
+    // Lobe-summed batch fill (sigma2_work): converged past the old
+    // 14.1 cutoff, Bessel factors precomputed once for all masses.
+    //
+    // When Ntable.N_M_internal is active, the exact lobe sums run
+    // only on the coarse ln M nodes and the house natural cubic
+    // spline upsamples ln sigma^2 onto the unchanged N_M table:
+    // ln sigma^2(ln M) is smooth and monotone, the ideal case for
+    // the coarse-exact + cubic-upsample pattern of cosmo2D.c, and
+    // the consumer's linear interpol1d reads stay untouched.
+    if (ncoarse > 0) {
+      sigma2_work(lnMc, ncoarse, 1.0, tabc);
+      for (int i=0; i<ncoarse; i++) {
+        tabc[i] = log(tabc[i]);
+      }
+      // Upsampling: the house cubic (spline_coeffs_uniform gives c =
+      // S''/2 with natural boundaries; interpolating the right node
+      // fixes b, the linear run of S'' fixes d), evaluated in Horner
+      // form at the precomputed offsets qdel from node qidx.
+      spline_coeffs_uniform(tabc, ncoarse, dlnc, cspl);
+      const double hc = dlnc;
+      const double inv_hc = 1.0/dlnc;
+      #pragma omp parallel for schedule(static)
+      for (int i=0; i<Ntable.N_M; i++) {
+        const int j = qidx[i];
+        const double b = (tabc[j+1] - tabc[j])*inv_hc
+                         - hc*(cspl[j+1] + 2.0*cspl[j])/3.0;
+        const double d = (cspl[j+1] - cspl[j])/(3.0*hc);
+        table[i] = tabc[j] + qdel[i]*(b + qdel[i]*(cspl[j] + qdel[i]*d));
+      }
+    }
+    else {
+      sigma2_work(lnMv, Ntable.N_M, 1.0, table);
+      for (int i=0; i<Ntable.N_M; i++) {
+        table[i] = log(table[i]);
+      }
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;

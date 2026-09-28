@@ -272,6 +272,7 @@ void reset_Ntable_struct(void)
   Ntable.N_ell_internal = 192; // ss/gs table coarse grid; 0 = exact N_ell      
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
   Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
+  Ntable.N_M_internal = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;

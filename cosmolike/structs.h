@@ -77,6 +77,9 @@ typedef struct
                       // N_ell; 0 = exact (C_gg always exact: BAO wiggles)
   int Ntheta;
   int N_M;
+  int N_M_internal; // coarse exact nodes of the sigma^2(M) halo-model
+                    // table, cubic-spline upsampled to N_M in ln sigma^2;
+                    // 0 = exact
   int NL_Nell_block;   // Cosmo2D - NL = NonLimber
   int NL_Nchi;         // Cosmo2D - NL = NonLimber
   // ---------------------------------------------------

@@ -521,6 +521,74 @@ void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
 }
 
 // ---------------------------------------------------------------------------
+// Set the internal coarse mass grid of the sigma^2(M) halo-model table.
+//
+// sigma^2(M)'s cached table keeps Ntable.N_M nodes in ln M; when this
+// knob is active the exact lobe-summed quadratures run on the coarse
+// nodes only and the house cubic spline upsamples ln sigma^2 onto the
+// unchanged dense table (ln sigma^2 is smooth and monotone in ln M).
+// 0 disables the trick: the A/B switch for validation.
+//
+// init_accuracy_boost (the catch-all) also scales this knob from its
+// first-boost-call baseline; calling this setter afterwards
+// overwrites the boosted value.
+//
+// Cache invalidation:
+// bumps Ntable.random so every table rebuilds.
+//
+// Parameters:
+//   nm_internal - coarse node count (4 <= n <= Ntable.N_M), or 0 for
+//                 exact
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_ntable_nm_internal(const int nm_internal) {
+  static constexpr std::string_view fname = "init_ntable_nm_internal"sv;
+  debug("{}: {}", fname, errbegins);
+  if (nm_internal != 0 &&
+      (nm_internal < 4 || nm_internal > Ntable.N_M)) [[unlikely]] {
+    critical("{}: nm_internal = {} not 0 and outside [4, {}]",
+             fname, nm_internal, Ntable.N_M);
+    exit(1);
+  }
+  Ntable.N_M_internal = nm_internal;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic reads of the halo-model mass variance sigma^2(M).
+//
+// compute_sigma2 reads the cached table (lobe-summed, and coarse-M
+// upsampled when Ntable.N_M_internal is active);
+// compute_sigma2_nointerp runs the lobe sum directly at one mass,
+// table-free. Their difference at a = 1 is the table's upsampling +
+// interpolation error. M in M_sun/h.
+//
+// Cache invalidation:
+// none here; the cached table rebuilds on cosmology.random /
+// Ntable.random as usual.
+//
+// Parameters:
+//   M - halo mass in M_sun/h (and a - scale factor, nointerp only)
+//
+// Returns:
+//   sigma^2(M)
+// ---------------------------------------------------------------------------
+double compute_sigma2(const double M)
+{
+  return sigma2(M);
+}
+
+double compute_sigma2_nointerp(const double M, const double a)
+{
+  return sigma2_nointerp(M, a);
+}
+
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -702,6 +770,7 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 //   Ntable.N_ell_internal          -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk           -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk_internal  -> ceil(baseline * boost)
+//   Ntable.N_M_internal            -> ceil(baseline * boost)
 //   Ntable.NL_Nchi                 -> ceil(baseline * boost)
 //   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
 //   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
@@ -761,6 +830,9 @@ void init_accuracy_boost(
   if (0 == cache[6]) cache[6] = Ntable.dCX_dlnk_nlnk_internal;
   Ntable.dCX_dlnk_nlnk_internal =
       static_cast<int>(ceil(cache[6]*accuracy_boost));
+
+  if (0 == cache[7]) cache[7] = Ntable.N_M_internal;
+  Ntable.N_M_internal = static_cast<int>(ceil(cache[7]*accuracy_boost));
 
   if (0 == fptcache) fptcache = Ntable.FPT_internal_accuracy_boost;
   Ntable.FPT_internal_accuracy_boost = fptcache*accuracy_boost;
