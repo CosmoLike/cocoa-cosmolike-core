@@ -43,6 +43,19 @@ using vector = arma::Col<double>;
 using matrix = arma::Mat<double>;
 using cube = arma::Cube<double>;
 
+// ---------------------------------------------------------------------------
+// Pybind wrappers of the scale-cut ("scuts") diagnostics: two tool
+// families over each observable X in {xi_pm, w_ks (real space); C_ss,
+// C_ks (fourier space)},
+//
+//   dlnX/dlnk  - where in wavenumber the signal comes from
+//   RF_X(kmax) - what fraction of it comes from below kmax
+//
+// (definitions restated at the family banners below; engines in
+// cosmo2D_scuts.c). Same batching and layout conventions as
+// cosmo2D_wrapper.cpp: array overloads are the batch tools, scalar
+// overloads are point diagnostics that pay the full batch cost.
+// ---------------------------------------------------------------------------
 namespace cosmolike_interface
 {
 
@@ -97,8 +110,21 @@ static py::array_t<double,py::array::f_style> to_np3d(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// DERIVATIVE: dlnX/dlnk: important to determine scale cuts (2011.06469 eq 17)
-// REAL SPACE
+// DERIVATIVE dlnX/dlnk (2011.06469 eq 17) - REAL SPACE
+//
+// The Limber projections are integrals over the matter power spectrum;
+// rewritten per log-wavenumber, X = int dlnk (dX/dlnk). The quantity
+//
+//   dlnX/dlnk = (dX/dlnk) / X
+//
+// is the observable's log-response: the fractional contribution to X
+// per unit ln k. It says which wavenumbers a given data point actually
+// measures - the raw material of the scale cuts. The RESPONSE FUNCTION
+// banners below integrate |dlnX/dlnk| in ln k to decide how much of a
+// point rides on untrusted small-scale power.
+//
+// This family: X = xi_pm(theta) and w_ks(theta), Legendre sums of the
+// dC/dlnk rows (engines in cosmo2D_scuts.c).
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -320,8 +346,14 @@ py::array_t<double,py::array::f_style> dlnw_ks_dlnk_tomo_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// DERIVATIVE: dlnX/dlnk: important to determine scale cuts (2011.06469 eq 17)
-// FOURIER SPACE
+// DERIVATIVE dlnX/dlnk (2011.06469 eq 17) - FOURIER SPACE
+//
+// The same log-response dlnX/dlnk = (dX/dlnk)/X as the REAL SPACE
+// banner above, now for X = C_l^ss and C_l^ks. In Limber each (k, l)
+// pair maps onto one line-of-sight node chi = (l + 1/2)/k, so dC/dlnk
+// is a single evaluation of the C_l integrand at that node (see
+// dC_ss_dlnk_tomo_limber in cosmo2D_scuts.c); the value is 0 when the
+// node falls outside the source support.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -632,7 +664,22 @@ py::array_t<double,py::array::f_style> dlnC_ks_dlnk_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// RESPONSE FUNCTION (2011.06469 eq 17) - REAL SPACE
+// RESPONSE FUNCTION RF (2011.06469 eq 17) - REAL SPACE
+//
+// The scale-cut statistic. For a data point of observable X,
+//
+//   RF(kmax) = int_{-inf}^{ln kmax} dlnk |dlnX/dlnk|
+//              / int_{-inf}^{+inf} dlnk |dlnX/dlnk|
+//
+// is the fraction of the point's total log-k response accumulated
+// below kmax; 1 - RF(kmax) is the share riding on scales above kmax,
+// where the power-spectrum modeling (nonlinearity, baryons) is not
+// trusted. The scuts machinery turns this into per-point cuts by
+// solving RF(kk) = alpha (the cosmo2D_scuts.c banner's contract): kk
+// is the wavenumber below which the point has accumulated fraction
+// alpha of its response.
+//
+// This family: X = xi_pm(theta) and w_ks(theta).
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -922,7 +969,11 @@ py::array_t<double,py::array::f_style> RF_w_ks_tomo_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// RESPONSE FUNCTION (2011.06469 eq 17) - FOURIER
+// RESPONSE FUNCTION RF (2011.06469 eq 17) - FOURIER SPACE
+//
+// The same statistic as the REAL SPACE banner above - RF(kmax) =
+// (response below kmax) / (total response), from integrating
+// |dlnX/dlnk| in ln k - now for X = C_l^ss and C_l^ks per multipole.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

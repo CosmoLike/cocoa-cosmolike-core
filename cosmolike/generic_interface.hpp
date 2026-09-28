@@ -56,6 +56,29 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Source of the cache nonces that drive every C-side table rebuild.
+//
+// Cosmolike caches its expensive tables in C static variables keyed on
+// the .random members of the global structs (cosmology.random,
+// Ntable.random, nuisance.random_*, redshift.random_*, cmb.random).
+// Each cached function stores the nonce its table was built with and
+// starts by comparing (fdiff/fdiff2) that copy against the current
+// struct member: equal = reuse the table, different = rebuild.
+//
+// The set_/init_ functions in generic_interface.cpp write a fresh draw
+// into the relevant member only when an input actually changed, so one
+// draw invalidates exactly the tables keyed on that member:
+//
+//   set_* sees a changed input -> X.random = RandomNumber::get()
+//     -> next C call finds fdiff(cache, X.random) -> table rebuilt
+//
+// A Mersenne-Twister-64 singleton seeded from std::random_device;
+// draws are uniform on [1, 2^64), so a nonce is never 0 (the value of
+// a zero-initialized static cache) and repeated draws collide with
+// negligible probability.
+// ---------------------------------------------------------------------------
 class RandomNumber
 { // Singleton Class that holds a random number generator
   public:
@@ -85,6 +108,36 @@ class RandomNumber
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The measurement side of the likelihood: one singleton holding the
+// mask, the measured data vector and the covariance, in two parallel
+// layouts.
+//
+//   full layout - length like.Ndata, the layout of the files and of
+//                 the theory vector; masked entries are kept as zeros
+//                 so probe/bin bookkeeping stays trivial.
+//   sqzd layout - "squeezed": only the mask == 1 entries, compacted in
+//                 order; length ndata_sqzd_ = number of 1s in the
+//                 mask. The layout chi2 and the baryon PCA work in.
+//
+// Member inventory (filled by set_mask -> set_data -> set_inv_cov,
+// in that order):
+//   mask_                = 0/1 keep flag per full-layout entry
+//   ndata_, ndata_sqzd_  = full and squeezed lengths
+//   index_sqzd_          = full index -> sqzd index; -1 when masked
+//   data_masked_         = data vector, full length, zeroed off-mask
+//   cov_masked_, inv_cov_masked_
+//                        = covariance and inverse, full layout, with
+//                          masked rows/columns zeroed
+//   data_masked_sqzd_, cov_masked_sqzd_, inv_cov_masked_sqzd_
+//                        = the same content compacted to sqzd layout
+//
+// Moving between the layouts:
+//   full -> sqzd : sqzd_theory_data_vector (drops masked entries)
+//   sqzd -> full : expand_theory_data_vector_from_sqzd (zeros them)
+//   full entry i sits at sqzd index index_sqzd_(i) when mask_(i) = 1
+// ---------------------------------------------------------------------------
 class IP
 { // InterfaceProducts: Singleton Class that holds data vector, covariance...
 private:
@@ -111,8 +164,6 @@ private:
     void set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord);
 
     void set_inv_cov(std::string covariance_filename);
-
-    //void set_PMmarg(std::string U_PMmarg_file);
 
     int get_mask(const int ci) const {
       static constexpr std::string_view fn = "IP::get_mask"sv;
@@ -225,9 +276,41 @@ private:
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Class IPCMB (Interface to Cosmolike C glocal struct CMBParams cmb)
+// Class IPCMB (Interface to the Cosmolike C global struct CMBparams cmb)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Front end to the C global cmb (CMBparams): the CMB-lensing settings.
+// get_instance() binds params_ to &cmb, so every setter/getter below
+// reads and writes the C struct the cosmo2D.c kernels consume.
+//
+// Two kk representations coexist; is_kk_bandpower_ selects one:
+//   bandpower = nbp_kk bands: binning_matrix_kk compresses C_kk(L)
+//               over [lminbp, lmaxbp], theory_offset_kk is subtracted
+//               per band (primary-CMB marginalization), and
+//               alpha_Hartlap_cov_kkkk rescales the kkkk covariance
+//               block (IP::set_inv_cov)
+//   plain Ncl = C_kk read directly at the like.Ncl bin-center ells,
+//               no matrix, offset or Hartlap factor
+//
+// "wxk" names the real-space w_xk = (galaxy or shear) x CMB-kappa
+// cross settings: the kappa-map beam and multipole range consumed by
+// the beam/window functions of cosmo2D.c.
+//
+// name = meaning of the wrapped fields:
+//   fwhm                   = kappa-map beam fwhm (rad)
+//   healpixwin             = HealPix pixel window, one entry per l
+//   lmink_wxk, lmaxk_wxk   = multipole range of the w_xk sums
+//   nbp_kk                 = number of kk band powers
+//   lminbp_kk, lmaxbp_kk   = multipole range entering the bands
+//   binning_matrix_kk      = (nbp) x (lmax - lmin + 1) band weights
+//   theory_offset_kk       = per-band offset subtracted from theory
+//   alpha_Hartlap_cov_kkkk = kkkk covariance debias factor
+//
+// Several functions in this header bind IPCMB& cmb locally; inside
+// them that name shadows the C global struct the class wraps.
 // ---------------------------------------------------------------------------
 class IPCMB
 {
@@ -349,6 +432,22 @@ public:
 // Class PointMass
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Point-mass marginalization of gamma_t. Mass near the lens that the
+// model does not track (one-halo and other small-scale contributions)
+// acts on the tangential shear like extra mass enclosed at the lens
+// center - a pure 1/theta^2 template per (lens, source) pair:
+//
+//   gamma_t += 4 pi (G/c^2) B_zl 1e13 g_tomo(a_l, zs)
+//              / (theta^2 chi_l a_l^3)
+//
+// (constants and units in the PointMass::get_pm header,
+// generic_interface.cpp). One amplitude B_zl per lens bin, stored via
+// set_pm_vector; sampling the B_zl marginalizes the unmodeled enclosed
+// mass. add_calib_and_set_mask_X_N<N, M=1, P=1> adds the term to the
+// real-space gs block before the shear calibration factor.
 // ---------------------------------------------------------------------------
 class PointMass
 {// Singleton Class that Evaluate Point Mass Marginalization
@@ -474,17 +573,7 @@ class BaryonScenario
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // Global Functions
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -717,6 +806,28 @@ arma::Col<double> compute_add_baryons_pcs(arma::Col<double> Q, arma::Col<double>
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Length of each probe block of the Mx2pt data vector.
+//
+// Template letters, shared by every Mx2pt template below:
+//   N = data-vector space: 0 = real (theta bins), 1 = fourier (ells)
+//   M = number of two-point probes: 3 = 3x2pt, 6 = 6x2pt
+//
+// Block sizes (Nlen = Ntable.Ntheta real / like.Ncl fourier):
+//   sizes(0) = 2*Ntheta*shear_Npowerspectra  real ss: xi+ AND xi-
+//            = Ncl*shear_Npowerspectra       fourier ss: EE only
+//   sizes(1) = Nlen*ggl_Npowerspectra        gs (lens, source) pairs
+//   sizes(2) = Nlen*clustering_Npowerspectra gg auto pairs
+//   sizes(3) = Nlen*clustering_nbin          gk: one row per lens bin
+//   sizes(4) = Nlen*shear_nbin               ks: one row per source bin
+//   sizes(5) = nbins_kk_bandpower, or Ncl in the plain-C_kk mode
+//              (IPCMB::is_kk_bandpower() picks the branch)
+//
+// The factor 2 in real ss is the xi+/xi- stacking. Sizes are counted
+// whether or not a probe is enabled: disabled blocks keep their slots
+// and are zeroed by IP::set_mask, so the data/mask/cov file layout
+// never depends on the probe selection.
+// ---------------------------------------------------------------------------
 template <int N, int M>
 arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes() 
 {
@@ -754,6 +865,23 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_sizes()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// One-call setup of the measurement side: computes the block sizes,
+// adds them into like.Ndata, then fills the IP singleton from the
+// three files.
+//
+//   compute_..._sizes<N,M>() -> like.Ndata += sum of the block sizes
+//     -> IP::set_mask    (needs like.Ndata; builds the sqzd index map)
+//     -> IP::set_data    (needs the mask to zero and compact the data)
+//     -> IP::set_inv_cov (needs the mask to zero, invert and compact)
+//
+// The += assumes like.Ndata is 0 on entry (initial_setup /
+// reset_like_struct leave it there): a second call doubles like.Ndata.
+//
+// Parameters:
+//   cov, mask, data - file paths handed to the IP setters
+//   ord             - block ordering (see ..._starts below)
+// ---------------------------------------------------------------------------
 template <int N, int M> 
 void init_data_Mx2pt_N(
     std::string cov, 
@@ -786,6 +914,23 @@ void init_data_Mx2pt_N(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Offset of each probe block inside the data vector.
+//
+// ord(i) = the slot probe block i occupies in the stored vector, so
+// start(i) = the summed sizes of the blocks in earlier slots. Worked
+// example, the canonical ord = {0, 1, 2} (ss, gs, gg in file order):
+//
+//   start(0) = 0                     ss block first
+//   start(1) = sizes(0)              gs after ss
+//   start(2) = sizes(0) + sizes(1)   gg after both
+//
+// Invariant: ord must be a self-inverse permutation of 0..M-1 (the
+// identity, or disjoint swaps). The loop reads stable_sort_index(ord)
+// both as "how many blocks precede probe i" and as "which block sits
+// in slot j", and the two readings coincide only for self-inverse ord.
+// Every project interface passes the identity.
+// ---------------------------------------------------------------------------
 template <int N, int M>
 arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixed<M> ord) 
 {
@@ -816,6 +961,31 @@ arma::Col<int>::fixed<M> compute_data_vector_Mx2pt_N_starts(arma::Col<int>::fixe
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Apply shear calibration (and optionally the gs point mass) to one
+// probe block of a theory vector, and hard-zero its masked entries.
+//
+// Template letters: N = 0 real / 1 fourier; M = the probe block below;
+// P = 1 adds the point-mass term (real-space gs only), P = 0 skips it.
+//
+// Per-probe action (index runs over the block starting at `start`):
+//   M = 0  ss  dv *= (1+m_i)(1+m_j)    one factor per source bin; in
+//              real space the xi- half-block gets the same treatment
+//   M = 1  gs  dv += PM(zl, zs, theta) real space with P = 1 only,
+//              then dv *= (1+m_zs)     the source-bin factor
+//   M = 2  gg  mask-zeroing only
+//   M = 3  gk  mask-zeroing only
+//   M = 4  ks  dv *= (1+m_nz)          one source bin
+//   M = 5  kk  mask-zeroing only (bandpower or plain-Ncl length)
+//
+// Why theory picks up (1+m): the data vector on disk is not corrected
+// for the multiplicative shear bias, so the prediction absorbs it -
+// each source shear leg contributes one sampled (1+m) factor, hence
+// two factors for ss and one for gs/ks. Masked entries are set to 0
+// either way, matching the zeroed rows of the masked covariance.
+//
+// A block whose like.* probe flag is off is skipped entirely.
+// ---------------------------------------------------------------------------
 template <int N, int M, int P = 1> 
 void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
 {
@@ -866,6 +1036,8 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
           const int index = start + Nlen[N]*nz + i;
           if (survey.get_mask(index)) {
             if constexpr (0 == N && 1 == P) {
+              // rebuilds the full theta grid once per unmasked
+              // (pair, bin) entry - the innermost loop of the block
               vector theta = compute_binning_real_space();
               const int zl = ZL(nz);
               dv(index) += PointMass::get_instance().get_pm(zl,zs,theta(i));
@@ -950,6 +1122,11 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Whole-vector wrapper of the above: computes the block starts from
+// ord and runs add_calib_and_set_mask_X_N on every probe block (3 or
+// 6 of them), returning the modified copy.
+// ---------------------------------------------------------------------------
 template <int N, int M, int P> 
 arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
     arma::Col<double> data_vector, 
@@ -984,6 +1161,32 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Fill one probe block of the theory vector dv (full layout) with its
+// engine, then hand the block to add_calib_and_set_mask_X_N.
+//
+// M = probe = engine (real N = 0 / fourier N = 1):
+//   M = 0  ss  xi_pm_tomo (xi+ half-block, then xi-)
+//              / C_ss_tomo_limber_nointerp_ells (EE only)
+//   M = 1  gs  w_gammat_tomo / C_gs_tomo_limber_nointerp_ells or the
+//              non-Limber C_gs_tomo_ells (like.adopt_limber_gs picks)
+//   M = 2  gg  w_gg_tomo / C_gg_tomo_limber_nointerp_ells or the
+//              non-Limber C_gg_tomo_ells (like.adopt_limber_gg picks)
+//   M = 3  gk  w_gk_tomo (real only; fourier: no engine, block stays
+//              at the caller's zeros)
+//   M = 4  ks  w_ks_tomo (real only; fourier: no engine, ditto)
+//   M = 5  kk  C_kk_limber (C_kk_limber_nointerp at l <= LMIN_tab),
+//              plain or bandpower branch
+//
+// Only mask == 1 entries are computed; masked ones stay at the
+// caller's zeros. Fourier ss additionally skips ells at or above
+// like.lmax_shear - the shear ell cut rides on top of the mask file.
+//
+// kk bandpower branch (IPCMB::is_kk_bandpower() == 1):
+//   zero the bands -> C_kk(L) at every integer L in [lminbp, lmaxbp]
+//     -> band j += binning_matrix(j, L - lminbp) * C_kk(L)
+//     -> band j -= theory_offset(j)   (primary-CMB marginalization)
+// ---------------------------------------------------------------------------
 template <int N, int M> 
 void compute_X_N_masked(arma::Col<double>& dv, const int start)
 {
@@ -1211,6 +1414,19 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The cobaya-facing theory vector: the masked Mx2pt prediction in the
+// full layout.
+//
+//   sizes -> starts(ord) -> dv = zeros(like.Ndata)
+//     -> compute_X_N_masked per probe block (engines fill mask == 1)
+//        -> add_calib_and_set_mask_X_N inside each block
+//     -> full-length masked theory vector (zeros off-mask)
+//
+// N = 0 real / 1 fourier; M = 3 (ss, gs, gg) or 6 (+ gk, ks, kk).
+// The result matches data_masked_ entry by entry: IP::get_chi2
+// squeezes both and contracts with the squeezed inverse covariance.
+// ---------------------------------------------------------------------------
 template <int N, int M> 
 arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
 {
@@ -1242,6 +1458,32 @@ arma::Col<double> compute_Mx2pt_N_masked(arma::Col<int>::fixed<M> ord)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Baryon principal components: the directions, in data space, along
+// which the registered hydro scenarios push the theory vector away
+// from the dark-matter-only prediction.
+//
+// Pipeline (vectors in the sqzd layout until the final expansion):
+//   dv_dm = theory with baryons reset
+//   D.col(i) = dv(scenario i) - dv_dm      difference matrix
+//   inv_L * D                              whiten with L = chol(cov):
+//                                          differences in noise units
+//   svd(U, s, V, inv_L * D)                rank modes by significance
+//   PC = L * U                             map back to data space
+//   R.col(i) = expand_..._from_sqzd(PC.col(i))   full layout
+//
+// The whitening makes the SVD order modes by chi2 impact rather than
+// raw amplitude. The likelihood then samples amplitudes Q_i of the
+// leading columns (compute_add_baryons_pcs adds sum_i Q_i PC_i).
+// Every theory evaluation here draws a fresh cosmology.random nonce
+// so the C-side caches rebuild with and without each contamination.
+//
+// Parameters:
+//   ord - block ordering (see compute_data_vector_Mx2pt_N_starts)
+//
+// Returns:
+//   (ndata x nscenarios) matrix: column i = PC i in the full layout
+// ---------------------------------------------------------------------------
 template <int N, int M> 
 arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 {
@@ -1308,6 +1550,23 @@ arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Build the mask and the full <-> sqzd index map. Must run before
+// set_data and set_inv_cov: both compact through index_sqzd_.
+//
+// Stages:
+//   read column 1 of the mask file (like.Ndata rows)
+//     -> validate: every entry is 0 or 1 (after the +1e-13
+//        float-to-int rounding guard)
+//     -> zero the blocks of probes disabled by init_probes: the file
+//        mask AND the like.* probe flags both gate an entry
+//     -> ndata_sqzd_ = number of surviving 1s (must be > 0)
+//     -> index_sqzd_(i) = running count of 1s before i, -1 if masked
+//
+// The probe-flag zeroing walks the sizes/starts<N,M>(ord) blocks, so
+// the mask file always carries the full M-probe layout even when some
+// probes are disabled.
+// ---------------------------------------------------------------------------
 template <int N, int M> 
 void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 {

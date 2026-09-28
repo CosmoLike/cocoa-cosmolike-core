@@ -34,9 +34,9 @@ using cube = arma::Cube<double>;
 using spdlog::info;
 using spdlog::debug;
 using spdlog::critical;
-// Why the cpp functions accept and return STL vectors (instead of arma:Col)?
-// Answer: the conversion between STL vector and python np array is cleaner
-// Answer: arma:Col is cast to 2D np array with 1 column (not as nice!)
+// Interface functions take and return arma types (arma::Col, arma::Mat,
+// arma::Cube); the carma headers pulled in by generic_interface.hpp
+// convert them to and from numpy arrays at the pybind11 boundary.
 
 namespace cosmolike_interface
 {
@@ -328,6 +328,26 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// How a likelihood option reaches the C kernels (representative rows;
+// each project's interface.cpp binds the python names):
+//
+//   yaml option      -> init_* here            -> C struct field
+//                                              -> consumer
+//   probe            -> init_probes            -> like.shear_shear..kk
+//                       -> gates every Mx2pt block (the hpp templates)
+//   n_theta, theta_* -> init_binning_real_space-> Ntable.Ntheta/vtmin/
+//                       vtmax -> real-space kernels (cosmo2D.c)
+//   accuracyboost    -> init_accuracy_boost    -> Ntable.N_a/N_ell/...
+//                       -> every interpolation-table resolution
+//   lmax             -> init_ntable_lmax       -> Ntable.LMAX
+//                       -> Legendre sums (cosmo2D.c)
+//   mask/cov/data    -> init_data_Mx2pt_N      -> IP singleton
+//                       -> IP::get_chi2
+//   lens/source file -> init_redshift_distributions_from_files
+//                       -> redshift.*_zdist_table -> redshift_spline.c
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Reset every Cosmolike global struct to a defined startup state.
 //
 // Zeroes the probe flags (like.shear_shear/shear_pos/pos_pos, gk/kk/ks),
@@ -364,7 +384,7 @@ void initial_setup()
   like.kk = 0;
   like.ks = 0;
   
-    // no priors
+  // cluster probes off (this interface carries no cluster likelihood)
   like.clusterN = 0;
   like.clusterWL = 0;
   like.clusterCG = 0;
@@ -427,7 +447,8 @@ void init_ntable_lmax(const int lmax) {
 // switch for validation. Galaxy clustering never uses it (BAO
 // wiggles; see C_gg_tomo_limber).
 //
-// Cache invalidation: bumps Ntable.random so every table rebuilds.
+// Cache invalidation:
+// bumps Ntable.random so every table rebuilds.
 //
 // Parameters:
 //   nell_internal - coarse node count (4 <= n <= Ntable.N_ell), or 0
@@ -468,7 +489,8 @@ void init_ntable_ell_internal(const int nell_internal) {
 // sample points). The n(z) table caches watch both values, so a runtime
 // change rebuilds the tables.
 //
-// Cache invalidation: bumps Ntable.random.
+// Cache invalidation:
+// bumps Ntable.random.
 //
 // Parameters:
 //   interpolation_type - 0 = cspline, 1 = linear, 2+ = steffen
@@ -505,7 +527,8 @@ void init_photoz_conventions(
 // convolutions on fewer points and cubic-spline upsample onto the output
 // table (see pt_cfastpt.c: fpt_regrid).
 //
-// Cache invalidation: bumps Ntable.random.
+// Cache invalidation:
+// bumps Ntable.random.
 //
 // Validation: internal_boost > 0, else critical() + exit(1).
 //
@@ -625,7 +648,8 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 // pt_cfastpt.c) and Ntable.high_def_integration = integration_accuracy
 // (selects larger fixed-order quadrature tables downstream).
 //
-// Cache invalidation: bumps Ntable.random so all tables keyed on it rebuild.
+// Cache invalidation:
+// bumps Ntable.random so all tables keyed on it rebuild.
 //
 // Parameters:
 //   accuracy_boost       - multiplier on the baseline table sizes (ceil)
@@ -777,15 +801,14 @@ void init_bias(vector bias_z_evol_model)
     critical("{}: {} = {:d} (>{:d})", fname, erriiwz, nsz, MAX_SIZE_ARRAYS);
     exit(1);
   }
-  /*
-  int galaxy_bias_model[MAX_SIZE_ARRAYS]; // [0] = b1, 
-                                          // [1] = b2, 
-                                          // [2] = bs2, 
-                                          // [3] = b3, 
-                                          // [4] = b3 
-                                          // [5] = bmag 
-                                          // [6] = bk 
-  */
+  // like.galaxy_bias_model slot layout (parallel to the nuisance.gb
+  // rows; bias.c dispatches gb1/gb2/gbs2/gb3/gbmag/gbK on these):
+  //   [0] = b1    linear bias
+  //   [1] = b2    quadratic bias
+  //   [2] = bs2   tidal bias
+  //   [3] = b3    third-order bias
+  //   [4] = bmag  magnification bias
+  //   [5] = bK    nonlocal bias
   for(int i=0; i<nsz; i++) {
     if (std::isnan(bias_z_evol_model(i))) [[unlikely]] {
       critical(errnance2, fname, i, errnance); exit(1);
@@ -933,7 +956,8 @@ void init_binning_real_space(
 // cmb.lmink_wxk/lmaxk_wxk, and the tabulated HealPix window
 // (cmb.healpixwin = column 1 of healpixwin_filename).
 //
-// Cache invalidation: bumps cmb.random so tables keyed on it rebuild.
+// Cache invalidation:
+// bumps cmb.random so tables keyed on it rebuild.
 //
 // Parameters:
 //   lmin                - lowest multipole of the w_xk sum (cmb.lmink_wxk)
@@ -986,7 +1010,18 @@ void init_cmb_cross_correlation (
 // an empty string) and the Hartlap alpha that IP::set_inv_cov applies to
 // the kkkk covariance block.
 //
-// Cache invalidation: bumps cmb.random so tables keyed on it rebuild.
+// The Hartlap alpha debiases an inverse covariance estimated from a
+// finite set of simulated realizations: the unbiased estimate is
+// alpha * (sample cov)^-1 with
+//
+//   alpha = (N_sim - N_data - 2) / (N_sim - 1) < 1
+//
+// (Hartlap et al. 2007). The caller computes alpha; IP::set_inv_cov
+// applies it by dividing the kkkk covariance block by alpha before the
+// joint inversion, which scales that block of the inverse by alpha.
+//
+// Cache invalidation:
+// bumps cmb.random so tables keyed on it rebuild.
 //
 // Parameters:
 //   nbins          - number of kk band powers (> 0)
@@ -1336,7 +1371,8 @@ void init_source_sample(std::string multihisto_file, const int Ntomo)
 // test_zoverlap(l, s) = 1 (all pairs minus the init_ggl_exclude list) and
 // tomo.clustering_Npowerspectra = clustering_nbin (auto only).
 //
-// Cache invalidation: bumps tomo.random_ggl, then (when any pair survives)
+// Cache invalidation:
+// bumps tomo.random_ggl, then (when any pair survives)
 // touches ZL(0)/ZS(0)/N_ggl so the static pair maps of redshift_spline.c
 // rebuild here, single-threaded - never inside an OpenMP region (see the
 // inline comments).
@@ -1510,7 +1546,8 @@ void init_survey(
 // for listed pairs. tomo.ggl_Npowerspectra is not recounted here; that (and
 // the single-threaded pair-map warm-up) happens in init_ntomo_powerspectra.
 //
-// Cache invalidation: bumps tomo.random_ggl so the static pair maps
+// Cache invalidation:
+// bumps tomo.random_ggl so the static pair maps
 // (test_zoverlap/ZL/ZS/N_ggl in redshift_spline.c) rebuild on next use.
 //
 // Validation: NaN entries and allocation failure are critical() + exit(1).
@@ -2360,7 +2397,8 @@ void set_nuisance_shear_calib(vector M)
 // Set the per-bin source photo-z shift nuisance.photoz[0][0][i]
 // (nz_source_photoz evaluates n(z - shift)).
 //
-// Cache invalidation: bumps nuisance.random_photoz_shear when any value
+// Cache invalidation:
+// bumps nuisance.random_photoz_shear when any value
 // changed (fdiff), so the source-side kernels and C_ell caches recompute;
 // unchanged input leaves the key alone.
 //
@@ -2410,7 +2448,8 @@ void set_nuisance_shear_photoz(vector SP)
 // Set the per-bin lens photo-z shift nuisance.photoz[1][0][i]
 // (nz_lens_photoz shifts z before the stretch transform).
 //
-// Cache invalidation: bumps nuisance.random_photoz_clustering when any
+// Cache invalidation:
+// bumps nuisance.random_photoz_clustering when any
 // value changed (fdiff); unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set and equal to the input size, no NaN
@@ -2464,7 +2503,8 @@ void set_nuisance_clustering_photoz(vector CP)
 // (nz_lens_photoz rescales z around the fiducial bin mean
 // redshift.clustering_zdist_zmean by 1/stretch).
 //
-// Cache invalidation: bumps nuisance.random_photoz_clustering when any
+// Cache invalidation:
+// bumps nuisance.random_photoz_clustering when any
 // value changed (fdiff); unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set and equal to the input size, no NaN
@@ -2518,7 +2558,8 @@ void set_nuisance_clustering_photoz_stretch(vector CPS)
 // Set the per-bin linear galaxy bias b1 = nuisance.gb[0][i] (row layout in
 // the block comment below).
 //
-// Cache invalidation: bumps nuisance.random_galaxy_bias when any value
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any value
 // changed (fdiff); unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set and equal to the input size, no NaN
@@ -2542,11 +2583,11 @@ void set_nuisance_linear_bias(vector B1)
     exit(1);
   }
   // GALAXY BIAS ------------------------------------------
-  // 1st index: b[0][i] = linear galaxy bias in clustering bin i (b1)
-  //            b[1][i] = linear galaxy bias in clustering bin i (b2)
-  //            b[2][i] = leading order tidal bias in clustering bin i (b3)
-  //            b[3][i] = leading order tidal bias in clustering bin i
-  //            b[4][i] = amplitude of magnification bias in clustering bin i
+  // 1st index: b[0][i]: linear galaxy bias in clustering bin i
+  //            b[1][i]: nonlinear b2 galaxy bias in clustering bin i
+  //            b[2][i]: leading order tidal bs2 galaxy bias in clustering bin i
+  //            b[3][i]: nonlinear b3 galaxy bias  in clustering bin i
+  //            b[4][i]: amplitude of magnification bias in clustering bin i
   //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   int cache_update = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
@@ -2576,7 +2617,8 @@ void set_nuisance_linear_bias(vector B1)
 // coevolution tidal bias gb[2][i] = bs2 = -(4/7)(b1 - 1) (zero when b2 is
 // zero). Both writes happen only for bins whose b2 changed (fdiff on B2).
 //
-// Cache invalidation: bumps nuisance.random_galaxy_bias when any b2
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any b2
 // changed; unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set, both inputs of that size, no NaN
@@ -2640,7 +2682,8 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
 // ---------------------------------------------------------------------------
 // Set the per-bin magnification-bias amplitude b_mag = nuisance.gb[4][i].
 //
-// Cache invalidation: bumps nuisance.random_galaxy_bias when any value
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any value
 // changed (fdiff); unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set and equal to the input size, no NaN
@@ -2697,7 +2740,8 @@ void set_nuisance_magnification_bias(vector B_MAG)
 // Set the per-bin third-order bias b3nl = nuisance.gb[3][i] and nonlocal
 // bias bK = nuisance.gb[5][i].
 //
-// Cache invalidation: bumps nuisance.random_galaxy_bias when any value
+// Cache invalidation:
+// bumps nuisance.random_galaxy_bias when any value
 // changed (fdiff); unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set, both inputs of that size, no NaN
@@ -2827,7 +2871,8 @@ void set_nuisance_bias(vector B1, vector B2, vector B_MAG)
 // pivot nuisance.oneplusz0_ia = 1.62. Every call writes
 // nuisance.c1rhocrit_ia = 0.01389; other IA modes change nothing else.
 //
-// Cache invalidation: bumps nuisance.random_ia when any stored value
+// Cache invalidation:
+// bumps nuisance.random_ia when any stored value
 // changed (fdiff); unchanged input leaves the key alone.
 //
 // Validation: shear_nbin set and each input at least shear_nbin long, else
@@ -2944,6 +2989,7 @@ void set_lens_sample_size(const int Ntomo)
     critical(errorns,fname,"Ntomo",Ntomo,MAX_SIZE_ARRAYS);
     exit(1);
   }
+  // photo-z mode flag; no code in cosmolike_core reads it
   redshift.clustering_photoz = 4;
   redshift.clustering_nbin = Ntomo;
 }
@@ -2967,7 +3013,8 @@ void set_lens_sample_size(const int Ntomo)
 // loops on purpose - see the inline comment). A column with no entry above
 // the threshold is critical() + exit(1).
 //
-// Cache invalidation: bumps redshift.random_clustering first, then calls
+// Cache invalidation:
+// bumps redshift.random_clustering first, then calls
 // nz_lens_photoz(0.1, 0) so the static interpolant rebuilds here,
 // single-threaded, and stores clustering_zdist_zmean[k] = zmean(k) (the
 // fiducial means the photo-z stretch transform rescales around).
@@ -3106,6 +3153,7 @@ void set_source_sample_size(const int Ntomo)
     critical(errorns, fname, "Ntomo", Ntomo,  MAX_SIZE_ARRAYS);
     exit(1);
   } 
+  // photo-z mode flag; no code in cosmolike_core reads it
   redshift.shear_photoz = 4;
   redshift.shear_nbin = Ntomo;
 }
@@ -3131,7 +3179,8 @@ void set_source_sample_size(const int Ntomo)
 // column with no entry above the threshold is critical() + exit(1), and so
 // is a per-bin range outside the global [zmin_all, zmax_all].
 //
-// Cache invalidation: warms the static interpolant with
+// Cache invalidation:
+// warms the static interpolant with
 // nz_source_photoz(0.1, 0), prints zmean_source(k) at debug level, then
 // bumps redshift.random_shear.
 //
@@ -3489,7 +3538,11 @@ void IP::set_data(std::string datavector_filename)
 //
 // When the kk bandpower probe is configured, the trailing kk block (last
 // nbins_kk rows/columns) is divided by the Hartlap alpha from
-// init_cmb_auto_bandpower before inversion.
+// init_cmb_auto_bandpower before inversion:
+// alpha = (N_sim - N_data - 2)/(N_sim - 1) < 1 is the Hartlap et al.
+// 2007 debias of a simulation-estimated inverse covariance, so
+// inflating the covariance block by 1/alpha here shrinks its inverse
+// by alpha after the joint inversion.
 //
 // Stages after assembly: eigenvalue scan (any negative eigenvalue is
 // critical() + exit(1)), arma::inv, re-masking of the inverse (masked
@@ -4108,6 +4161,13 @@ void IPCMB::set_kk_binning_bandpower (
 // set_pm_vector, g_tomo the lens efficiency of source bin zs, and
 // Goverc2 = 1.6e-23. The a_l^3 (rather than a_l) in the denominator
 // matches the DES y3_production convention.
+//
+// Units: chi is in cosmolike's c/H0 units (cosmo3D.c; coverH0 =
+// 2997.92 Mpc/h), theta in rad, g_tomo dimensionless. Goverc2 =
+// 1.6e-23 is G/c^2 = 4.79e-20 Mpc/Msun divided by coverH0, i.e. G/c^2
+// in c/H0 distance units per Msun/h; the 1e13 then puts the sampled
+// amplitude B_zl in units of 10^13 Msun/h, and the returned gamma_t
+// is dimensionless.
 //
 // Parameters:
 //   zl    - lens tomographic bin
