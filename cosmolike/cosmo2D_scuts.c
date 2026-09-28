@@ -182,7 +182,9 @@ double dC_ss_dlnk_tomo_limber(
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
     // (where the BAO wiggles live, so its default stays exact). An
-    // axis whose knob is 0 or out of range keeps its exact count.
+    // axis whose knob is 0 (off) or out of range - fewer than the 4
+    // nodes a natural cubic spline needs, or not below the exact
+    // count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -287,9 +289,9 @@ double dC_ss_dlnk_tomo_limber(
 // Cached dlnC_ss/dlnk = (dC_ss/dlnk)/C_ss (2011.06469 eq 17): interpolates
 // a (ln k, ln l) table filled by the normalized (normalize = 1) mode of
 // dC_ss_dlnk_tomo_limber_work, which computes the C_ss rows with its own
-// quadrature and divides each dC row in place (see the dC_ss_dlnk lookup function
-// above for the tabulated node amplitude and the _work header for the
-// fill).
+// quadrature and divides each dC row in place (see
+// dC_ss_dlnk_tomo_limber above for the tabulated node amplitude and
+// the _work header for the fill).
 //
 // Each tabulated numerator entry is the single Limber-node evaluation
 //
@@ -384,7 +386,9 @@ double dlnC_ss_dlnk_tomo_limber(
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
     // (where the BAO wiggles live, so its default stays exact). An
-    // axis whose knob is 0 or out of range keeps its exact count.
+    // axis whose knob is 0 (off) or out of range - fewer than the 4
+    // nodes a natural cubic spline needs, or not below the exact
+    // count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -568,7 +572,9 @@ double dC_ks_dlnk_tomo_limber(
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
     // (where the BAO wiggles live, so its default stays exact). An
-    // axis whose knob is 0 or out of range keeps its exact count.
+    // axis whose knob is 0 (off) or out of range - fewer than the 4
+    // nodes a natural cubic spline needs, or not below the exact
+    // count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -646,8 +652,8 @@ double dC_ks_dlnk_tomo_limber(
 // Cached dlnC_ks/dlnk = (dC_ks/dlnk)/C_ks (2011.06469 eq 17): interpolates
 // a (ln k, ln l) table filled by the normalized (normalize = 1) mode of
 // dC_ks_dlnk_tomo_limber_work, which computes the C_ks rows with its own
-// per-bin quadrature and divides each dC row in place (see the dC_ks_dlnk
-// lookup function above for the tabulated node amplitude).
+// per-bin quadrature and divides each dC row in place (see
+// dC_ks_dlnk_tomo_limber above for the tabulated node amplitude).
 //
 // Each tabulated numerator entry is the single Limber-node evaluation
 //
@@ -739,7 +745,9 @@ double dlnC_ks_dlnk_tomo_limber(
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
     // (where the BAO wiggles live, so its default stays exact). An
-    // axis whose knob is 0 or out of range keeps its exact count.
+    // axis whose knob is 0 (off) or out of range - fewer than the 4
+    // nodes a natural cubic spline needs, or not below the exact
+    // count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -895,13 +903,13 @@ static inline double scuts_abs_lin_part(
 //   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
 //            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// and the response it integrates is the dlnC_ss_dlnk table (read at fixed l, where its
-// bilinear interpolation reduces to the same piecewise-linear
-// profile in ln k): a table on the uniform
-// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
-// exactly zero outside the grid. The integrand is therefore
-// piecewise linear, and both integrals are CLOSED FORM (see
-// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+// and the response it integrates is the dlnC_ss_dlnk table read at
+// fixed l: a table on the uniform Ntable.dCX_dlnk grid in ln k,
+// read by BILINEAR interpolation in (ln k, ln l) - at fixed l that
+// read is LINEAR between the ln k nodes - and exactly zero outside
+// the grid. The integrand is therefore piecewise linear, and both
+// integrals are CLOSED FORM (see scuts_abs_lin_full/_part above):
+// no quadrature rule, no error.
 //
 // Per (EE/BB, pair, multipole) row:
 //
@@ -912,16 +920,13 @@ static inline double scuts_abs_lin_part(
 //     -> every requested kmax = prefix + the cut last piece,
 //        found by one multiply and a cast (uniform grid, no search)
 //
-// The old per-kmax Gauss-Legendre sweeps re-integrated the same
-// tabulated integrand once per kmax node, approximately; this
-// computes each entry exactly and roughly nkmax times faster.
-//
 // Vanishing-denominator guard: the BB response is identically zero
 // under NLA, so a zero full cumulative writes 0, never 0/0 = NaN.
 //
 // Cache invalidation:
-// none (stateless); the first call warms the dln cache
-// single-threaded, and each (row) samples it read-only afterwards.
+// none (stateless); each call first builds (or reuses) the cached
+// dlnC_ss table with one single-threaded read, and the parallel
+// rows then sample it read-only.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -990,7 +995,7 @@ void RF_C_ss_tomo_limber_work(
             else {
               const double r = (L - lnk0)/dx;
               int j = (int) r; // interval's left node (uniform grid)
-              if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+              if (j > nlnk - 2) { // 1-ulp division overshoot near lnk1
                 j = nlnk - 2;
               }
               num = cum[j] +
@@ -1021,13 +1026,13 @@ void RF_C_ss_tomo_limber_work(
 //   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
 //            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// and the response it integrates is the dlnC_ks_dlnk table (read at fixed l, where its
-// bilinear interpolation reduces to the same piecewise-linear
-// profile in ln k): a table on the uniform
-// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
-// exactly zero outside the grid. The integrand is therefore
-// piecewise linear, and both integrals are CLOSED FORM (see
-// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+// and the response it integrates is the dlnC_ks_dlnk table read at
+// fixed l: a table on the uniform Ntable.dCX_dlnk grid in ln k,
+// read by BILINEAR interpolation in (ln k, ln l) - at fixed l that
+// read is LINEAR between the ln k nodes - and exactly zero outside
+// the grid. The integrand is therefore piecewise linear, and both
+// integrals are CLOSED FORM (see scuts_abs_lin_full/_part above):
+// no quadrature rule, no error.
 //
 // Per (source bin, multipole) row:
 //
@@ -1038,16 +1043,13 @@ void RF_C_ss_tomo_limber_work(
 //     -> every requested kmax = prefix + the cut last piece,
 //        found by one multiply and a cast (uniform grid, no search)
 //
-// The old per-kmax Gauss-Legendre sweeps re-integrated the same
-// tabulated integrand once per kmax node, approximately; this
-// computes each entry exactly and roughly nkmax times faster.
-//
 // Vanishing-denominator guard kept for symmetry with RF_C_ss: a zero
 // full cumulative writes 0, never 0/0 = NaN.
 //
 // Cache invalidation:
-// none (stateless); the first call warms the dln cache
-// single-threaded, and each (row) samples it read-only afterwards.
+// none (stateless); each call first builds (or reuses) the cached
+// dlnC_ks table with one single-threaded read, and the parallel
+// rows then sample it read-only.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1113,7 +1115,7 @@ void RF_C_ks_tomo_limber_work(
           else {
             const double r = (L - lnk0)/dx;
             int j = (int) r; // interval's left node (uniform grid)
-            if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+            if (j > nlnk - 2) { // 1-ulp division overshoot near lnk1
               j = nlnk - 2;
             }
             num = cum[j] +
@@ -1839,11 +1841,12 @@ double dlnw_ks_dlnk_tomo(
 //   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
 //            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// and the response it integrates is the dlnxi_dlnk_pm_tomo cache: a table on the uniform
-// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
-// exactly zero outside the grid. The integrand is therefore
-// piecewise linear, and both integrals are CLOSED FORM (see
-// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+// and the response it integrates is the dlnxi_dlnk_pm_tomo cache:
+// a table on the uniform Ntable.dCX_dlnk grid in ln k, read by
+// LINEAR interpolation and exactly zero outside the grid. The
+// integrand is therefore piecewise linear, and both integrals are
+// CLOSED FORM (see scuts_abs_lin_full/_part above): no quadrature
+// rule, no error.
 //
 // Per (xi_+/xi_-, pair, angular bin) row:
 //
@@ -1854,17 +1857,14 @@ double dlnw_ks_dlnk_tomo(
 //     -> every requested kmax = prefix + the cut last piece,
 //        found by one multiply and a cast (uniform grid, no search)
 //
-// The old per-kmax Gauss-Legendre sweeps re-integrated the same
-// tabulated integrand once per kmax node, approximately; this
-// computes each entry exactly and roughly nkmax times faster.
-//
 // No vanishing-denominator guard: the xi_+/- responses mix the EE
 // rows into every entry, so the full cumulative is positive whenever
 // the tabulated response is not identically zero.
 //
 // Cache invalidation:
-// none (stateless); the first call warms the dln cache
-// single-threaded, and each (row) samples it read-only afterwards.
+// none (stateless); each call first builds (or reuses) the cached
+// dlnxi table with one single-threaded read, and the parallel rows
+// then sample it read-only.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1932,7 +1932,7 @@ void RF_xi_tomo_limber_work(
             else {
               const double r = (L - lnk0)/dx;
               int j = (int) r; // interval's left node (uniform grid)
-              if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+              if (j > nlnk - 2) { // 1-ulp division overshoot near lnk1
                 j = nlnk - 2;
               }
               num = cum[j] +
@@ -1962,11 +1962,12 @@ void RF_xi_tomo_limber_work(
 //   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
 //            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// and the response it integrates is the dlnw_ks_dlnk_tomo cache: a table on the uniform
-// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
-// exactly zero outside the grid. The integrand is therefore
-// piecewise linear, and both integrals are CLOSED FORM (see
-// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+// and the response it integrates is the dlnw_ks_dlnk_tomo cache:
+// a table on the uniform Ntable.dCX_dlnk grid in ln k, read by
+// LINEAR interpolation and exactly zero outside the grid. The
+// integrand is therefore piecewise linear, and both integrals are
+// CLOSED FORM (see scuts_abs_lin_full/_part above): no quadrature
+// rule, no error.
 //
 // Per (source bin, angular bin) row:
 //
@@ -1977,17 +1978,14 @@ void RF_xi_tomo_limber_work(
 //     -> every requested kmax = prefix + the cut last piece,
 //        found by one multiply and a cast (uniform grid, no search)
 //
-// The old per-kmax Gauss-Legendre sweeps re-integrated the same
-// tabulated integrand once per kmax node, approximately; this
-// computes each entry exactly and roughly nkmax times faster.
-//
 // No vanishing-denominator guard: w_ks has no identically-zero rows
 // (there is no BB analog here), so the full cumulative is positive
 // whenever the tabulated response is not identically zero.
 //
 // Cache invalidation:
-// none (stateless); the first call warms the dln cache
-// single-threaded, and each (row) samples it read-only afterwards.
+// none (stateless); each call first builds (or reuses) the cached
+// dlnw_ks table with one single-threaded read, and the parallel
+// rows then sample it read-only.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -2051,7 +2049,7 @@ void RF_w_ks_tomo_limber_work(
           else {
             const double r = (L - lnk0)/dx;
             int j = (int) r; // interval's left node (uniform grid)
-            if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+            if (j > nlnk - 2) { // 1-ulp division overshoot near lnk1
               j = nlnk - 2;
             }
             num = cum[j] +
