@@ -240,8 +240,11 @@ double dC_ss_dlnk_tomo_limber(
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 0, tabc);
 
-      // one tensor-product bicubic upsample per stored plane; an
-      // axis left exact passes through (near-)unchanged
+      // one tensor-product bicubic upsample per stored plane (each
+      // call reads and writes only its own plane, so the planes
+      // thread freely); an axis left exact passes through
+      // (near-)unchanged
+      #pragma omp parallel for collapse(2) schedule(static)
       for (int c=0; c<2; c++) {
         for (int q=0; q<tomo.shear_Npowerspectra; q++) {
           spline2d_upsample_uniform(tabc[c][q], nkc, nlc, dkc, dlc,
@@ -419,8 +422,11 @@ double dlnC_ss_dlnk_tomo_limber(
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 1, tabc);
 
-      // one tensor-product bicubic upsample per stored plane; an
-      // axis left exact passes through (near-)unchanged
+      // one tensor-product bicubic upsample per stored plane (each
+      // call reads and writes only its own plane, so the planes
+      // thread freely); an axis left exact passes through
+      // (near-)unchanged
+      #pragma omp parallel for collapse(2) schedule(static)
       for (int c=0; c<2; c++) {
         for (int q=0; q<tomo.shear_Npowerspectra; q++) {
           spline2d_upsample_uniform(tabc[c][q], nkc, nlc, dkc, dlc,
@@ -600,8 +606,11 @@ double dC_ks_dlnk_tomo_limber(
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 0, tabc);
 
-      // one tensor-product bicubic upsample per stored plane; an
-      // axis left exact passes through (near-)unchanged
+      // one tensor-product bicubic upsample per stored plane (each
+      // call reads and writes only its own plane, so the planes
+      // thread freely); an axis left exact passes through
+      // (near-)unchanged
+      #pragma omp parallel for schedule(static)
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         spline2d_upsample_uniform(tabc[nz], nkc, nlc, dkc, dlc,
                                   table[nz], nlnk, nell);
@@ -768,8 +777,11 @@ double dlnC_ks_dlnk_tomo_limber(
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 1, tabc);
 
-      // one tensor-product bicubic upsample per stored plane; an
-      // axis left exact passes through (near-)unchanged
+      // one tensor-product bicubic upsample per stored plane (each
+      // call reads and writes only its own plane, so the planes
+      // thread freely); an axis left exact passes through
+      // (near-)unchanged
+      #pragma omp parallel for schedule(static)
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         spline2d_upsample_uniform(tabc[nz], nkc, nlc, dkc, dlc,
                                   table[nz], nlnk, nell);
