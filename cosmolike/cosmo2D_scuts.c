@@ -831,38 +831,108 @@ double dlnC_ks_dlnk_tomo_limber(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Batch computation of the response function (2011.06469 eq 17)
+// Exact integrals of |v(x)| over one grid interval, v linear inside.
 //
-//   RF(kmax, l) = int_{-infty}^{ln kmax} dlnk |dlnC_ss/dlnk|
-//                 / int_{-infty}^{+infty} dlnk |dlnC_ss/dlnk|
+// The RF numerators and denominators integrate the ABSOLUTE log
+// response |dlnX/dlnk|, and the tabulated response is piecewise
+// LINEAR in ln k (the dln caches store nodes on the uniform
+// Ntable.dCX_dlnk grid and interpolate linearly between them). The
+// integral of |v| over one interval of width dx is therefore closed
+// form:
 //
-// on a (ln kmax, ell) grid, for every tomographic pair. Both integrals
-// map onto t in (0, 1] — the numerator through lnk = ln kmax - (1-t)/t,
-// the denominator through lnk = +-(1-t)/t — and use a fixed
-// Gauss-Legendre rule with the nodes and weights precomputed into
-// plain arrays (no GSL integrand callback per point).
+//   v keeps its sign across the interval
+//     -> the plain trapezoid: 0.5 (|va| + |vb|) dx
 //
-// The denominator does not depend on kmax, so one thread team first
-// fills one denominator value per (tomo pair, ell) and then, after the
-// loop's implicit barrier, accumulates the numerator for every
-// (pair, kmax, ell) output and divides. Every integrand evaluation reads
-// the cached dlnC_ss_dlnk_tomo_limber table, built once, single-threaded,
-// before the parallel region.
+//   v crosses zero inside (va vb < 0), at t* = |va|/(|va|+|vb|) dx
+//     -> two triangles: 0.5 |va| t* + 0.5 |vb| (dx - t*)
+//
+// scuts_abs_lin_part integrates only [0, tt] of the interval - the
+// cut last piece of a partial integral: v(tt) closes the trapezoid,
+// or, when the crossing t* lies before tt, the second triangle is
+// cut at tt.
+//
+// These make the RF integrals EXACT for the tabulated integrand:
+// summing them interval by interval is not a quadrature rule
+// approximating the tables - it is the integral of what the tables
+// define. A 512-node Gauss-Legendre sweep per kmax would be an
+// expensive approximation of a function whose integral has a closed
+// form; that is why no quadrature rule appears in the RF workers.
+// ---------------------------------------------------------------------------
+static inline double scuts_abs_lin_full(
+    const double va, // v at the interval's left node
+    const double vb, // v at the interval's right node
+    const double dx  // interval width (the uniform ln k spacing)
+  )
+{
+  if (va*vb >= 0.0) {
+    return 0.5*(fabs(va) + fabs(vb))*dx;
+  }
+  const double ts = fabs(va)/(fabs(va) + fabs(vb))*dx;
+  return 0.5*fabs(va)*ts + 0.5*fabs(vb)*(dx - ts);
+}
+
+static inline double scuts_abs_lin_part(
+    const double va, // v at the interval's left node
+    const double vb, // v at the interval's right node
+    const double dx, // interval width (the uniform ln k spacing)
+    const double tt  // integrate |v| over [0, tt], 0 <= tt <= dx
+  )
+{
+  const double vt = va + (vb - va)*(tt/dx);
+  if (va*vt >= 0.0) {
+    return 0.5*(fabs(va) + fabs(vt))*tt;
+  }
+  const double ts = fabs(va)/(fabs(va) + fabs(vb))*dx;
+  return 0.5*fabs(va)*ts + 0.5*fabs(vt)*(tt - ts);
+}
+
+// ---------------------------------------------------------------------------
+// RF of C_ss over kmax, exact from the tabulated response.
+//
+// RF(kmax) is the fraction of the total absolute log response below
+// kmax,
+//
+//   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
+//            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
+//
+// and the response it integrates is the dlnC_ss_dlnk table (read at fixed l, where its
+// bilinear interpolation reduces to the same piecewise-linear
+// profile in ln k): a table on the uniform
+// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
+// exactly zero outside the grid. The integrand is therefore
+// piecewise linear, and both integrals are CLOSED FORM (see
+// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+//
+// Per (EE/BB, pair, multipole) row:
+//
+//   sample the response at the grid's own ln k nodes
+//     -> cumulative sum of the per-interval |v| integrals
+//        (trapezoids, sign-crossing triangles)
+//     -> denominator = the full cumulative
+//     -> every requested kmax = prefix + the cut last piece,
+//        found by one multiply and a cast (uniform grid, no search)
+//
+// The old per-kmax Gauss-Legendre sweeps re-integrated the same
+// tabulated integrand once per kmax node, approximately; this
+// computes each entry exactly and roughly nkmax times faster.
+//
+// Vanishing-denominator guard: the BB response is identically zero
+// under NLA, so a zero full cumulative writes 0, never 0/0 = NaN.
 //
 // Cache invalidation:
-// none (stateless); it only warms the cached dlnC
-// table it reads.
+// none (stateless); the first call warms the dln cache
+// single-threaded, and each (row) samples it read-only afterwards.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
 //   nkmax   - number of ln kmax values
 //   lx      - multipole values (length nl)
 //   nl      - number of multipole values
-//   NSIZE   - number of tomographic shear power spectra
-//   table   - output [2][NSIZE][nkmax][nl], RF at each (kmax, l): EE and BB
+//   NSIZE   - number of tomo shear power spectra
+//   table   - output [2][NSIZE][nkmax][nl]: EE and BB
 //
 // Returns:
-//   nothing; the result is written into table
+//   void (table filled for every kmax and multipole)
 // ---------------------------------------------------------------------------
 void RF_C_ss_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -873,91 +943,69 @@ void RF_C_ss_tomo_limber_work(
     double**** table       // output [2][NSIZE][nkmax][nl]: EE and BB
   )
 {
-  if (nkmax <= 0 || nl <= 0) {
-    log_fatal("nkmax = %d and nl = %d must be positive", nkmax, nl);
+  if (nkmax <= 0) {
+    log_fatal("nkmax = %d must be positive", nkmax);
     exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
-  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
-  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
-  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
-  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
-  // tables are nonzero)
-  const int hdi = abs(Ntable.high_def_integration);
-  const size_t szint = (0 == hdi) ? 256 :
-                       (1 == hdi) ? 512 : 1024; // predefined GSL tables
-  gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
-  const int npts = (int) w->n;
-  double* tq = (double*) malloc1d(npts);
-  double* wq = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
+  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
+  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+                    / ((double) nlnk - 1.0);
+  const double lnk1 = lnk0 + (nlnk - 1)*dx;
+  double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
+  for (int f = 0; f < nlnk; f++) {
+    kv[f] = exp(lnk0 + f*dx);
   }
-  gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once.
-  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
-  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
-  // kd2 = exp(-(1-t)/t) the mirror half
-  double* kd1 = (double*) malloc1d(npts);
-  double* kd2 = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    kd1[p] = exp((1. - tq[p])/tq[p]);
-    kd2[p] = exp(-(1. - tq[p])/tq[p]);
-  }
-  double*** den = (double***) malloc3d(2, NSIZE, nl);
   // build the cached dlnC table (and the statics it warms) single-threaded
   (void) dlnC_ss_dlnk_tomo_limber(1.0, lx[0], Z1(0), Z2(0), 1);
   #pragma omp parallel
   {
-  #pragma omp for collapse(2) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int i = 0; i < nl; i++) {
-      const int Z1NZ = Z1(nz);
-      const int Z2NZ = Z2(nz);
-      const double l = lx[i];
-      double sEE = 0.0;
-      double sBB = 0.0;
-      for (int p = 0; p < npts; p++) {
-        const double wt = wq[p]/(tq[p]*tq[p]);
-        sEE += (fabs(dlnC_ss_dlnk_tomo_limber(kd1[p], l, Z1NZ, Z2NZ, 1)) +
-                fabs(dlnC_ss_dlnk_tomo_limber(kd2[p], l, Z1NZ, Z2NZ, 1)))*wt;
-        sBB += (fabs(dlnC_ss_dlnk_tomo_limber(kd1[p], l, Z1NZ, Z2NZ, 0)) +
-                fabs(dlnC_ss_dlnk_tomo_limber(kd2[p], l, Z1NZ, Z2NZ, 0)))*wt;
-      }
-      den[0][nz][i] = sEE;
-      den[1][nz][i] = sBB;
-    }
-  } // implicit barrier: denominators complete before the division below
-  #pragma omp for collapse(3) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int m = 0; m < nkmax; m++) {
-      for (int i = 0; i < nl; i++) {
-        const int Z1NZ = Z1(nz);
-        const int Z2NZ = Z2(nz);
-        const double l = lx[i];
-        double sEE = 0.0;
-        double sBB = 0.0;
-        for (int p = 0; p < npts; p++) {
-          const double k = exp(lnkmaxx[m] - (1. - tq[p])/tq[p]);
-          const double wt = wq[p]/(tq[p]*tq[p]);
-          sEE += fabs(dlnC_ss_dlnk_tomo_limber(k, l, Z1NZ, Z2NZ, 1))*wt;
-          sBB += fabs(dlnC_ss_dlnk_tomo_limber(k, l, Z1NZ, Z2NZ, 0))*wt;
+    double* prof = (double*) malloc1d(nlnk); // one row's response
+    double* cum  = (double*) malloc1d(nlnk); // its running integral
+    #pragma omp for collapse(3) schedule(static)
+    for (int ee = 0; ee < 2; ee++) {       // 0 = EE, 1 = BB output row
+      for (int nz = 0; nz < NSIZE; nz++) {
+        for (int i = 0; i < nl; i++) {
+          const int Z1NZ = Z1(nz);
+          const int Z2NZ = Z2(nz);
+          const double l = lx[i];
+          const int EEflag = (0 == ee) ? 1 : 0;
+          for (int f = 0; f < nlnk; f++) {
+            prof[f] = dlnC_ss_dlnk_tomo_limber(kv[f], l, Z1NZ, Z2NZ, EEflag);
+          }
+          cum[0] = 0.0;
+          for (int f = 1; f < nlnk; f++) {
+            cum[f] = cum[f-1] + scuts_abs_lin_full(prof[f-1], prof[f], dx);
+          }
+          const double dden = cum[nlnk-1];
+          for (int m = 0; m < nkmax; m++) {
+            const double L = lnkmaxx[m];
+            double num;
+            if (L <= lnk0) {
+              num = 0.0;
+            }
+            else if (L >= lnk1) {
+              num = dden;
+            }
+            else {
+              const double r = (L - lnk0)/dx;
+              int j = (int) r; // interval's left node (uniform grid)
+              if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+                j = nlnk - 2;
+              }
+              num = cum[j] +
+                    scuts_abs_lin_part(prof[j], prof[j+1], dx, (r - j)*dx);
+            }
+            table[ee][nz][m][i] = (fabs(dden) > 1e-300) ?
+                                  num/dden : 0.0;
+          }
         }
-        // a vanishing denominator row (the BB spectrum under NLA is
-        // identically 0) writes 0, never 0/0 = NaN
-        table[0][nz][m][i] = (fabs(den[0][nz][i]) > 1e-300) ?
-                             sEE/den[0][nz][i] : 0.0;
-        table[1][nz][m][i] = (fabs(den[1][nz][i]) > 1e-300) ?
-                             sBB/den[1][nz][i] : 0.0;
       }
     }
-  }
+    free(prof);
+    free(cum);
   } // end of the parallel region
-  free(den);
-  free(kd1);
-  free(kd2);
-  free(tq);
-  free(wq);
+  free(kv);
 }
 
 // ---------------------------------------------------------------------------
@@ -965,28 +1013,41 @@ void RF_C_ss_tomo_limber_work(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Batch computation of the response function (2011.06469 eq 17)
+// RF of C_ks over kmax, exact from the tabulated response.
 //
-//   RF(kmax, l) = int_{-infty}^{ln kmax} dlnk |dlnC_ks/dlnk|
-//                 / int_{-infty}^{+infty} dlnk |dlnC_ks/dlnk|
+// RF(kmax) is the fraction of the total absolute log response below
+// kmax,
 //
-// on a (ln kmax, ell) grid, for every source bin. Same design as
-// RF_C_ss_tomo_limber_work (the ks cross has one component per source
-// bin, so there is no EE/BB leading dimension): both integrals map onto
-// t in (0, 1] — the numerator through lnk = ln kmax - (1-t)/t, the
-// denominator through lnk = +-(1-t)/t — with the fixed Gauss-Legendre
-// nodes and weights precomputed into plain arrays.
+//   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
+//            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// The denominator does not depend on kmax, so one thread team first
-// fills one denominator value per (source bin, ell) and then, after the
-// loop's implicit barrier, accumulates the numerator for every
-// (bin, kmax, ell) output and divides. Every integrand evaluation reads
-// the cached dlnC_ks_dlnk_tomo_limber table, built once, single-threaded,
-// before the parallel region.
+// and the response it integrates is the dlnC_ks_dlnk table (read at fixed l, where its
+// bilinear interpolation reduces to the same piecewise-linear
+// profile in ln k): a table on the uniform
+// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
+// exactly zero outside the grid. The integrand is therefore
+// piecewise linear, and both integrals are CLOSED FORM (see
+// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+//
+// Per (source bin, multipole) row:
+//
+//   sample the response at the grid's own ln k nodes
+//     -> cumulative sum of the per-interval |v| integrals
+//        (trapezoids, sign-crossing triangles)
+//     -> denominator = the full cumulative
+//     -> every requested kmax = prefix + the cut last piece,
+//        found by one multiply and a cast (uniform grid, no search)
+//
+// The old per-kmax Gauss-Legendre sweeps re-integrated the same
+// tabulated integrand once per kmax node, approximately; this
+// computes each entry exactly and roughly nkmax times faster.
+//
+// Vanishing-denominator guard kept for symmetry with RF_C_ss: a zero
+// full cumulative writes 0, never 0/0 = NaN.
 //
 // Cache invalidation:
-// none (stateless); it only warms the cached dlnC
-// table it reads.
+// none (stateless); the first call warms the dln cache
+// single-threaded, and each (row) samples it read-only afterwards.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -994,10 +1055,10 @@ void RF_C_ss_tomo_limber_work(
 //   lx      - multipole values (length nl)
 //   nl      - number of multipole values
 //   NSIZE   - number of source tomographic bins (= shear_nbin)
-//   table   - output [NSIZE][nkmax][nl], RF at each (kmax, l)
+//   table   - output [NSIZE][nkmax][nl]
 //
 // Returns:
-//   nothing; the result is written into table
+//   void (table filled for every kmax and multipole)
 // ---------------------------------------------------------------------------
 void RF_C_ks_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1008,78 +1069,64 @@ void RF_C_ks_tomo_limber_work(
     double*** table        // output [NSIZE][nkmax][nl]
   )
 {
-  if (nkmax <= 0 || nl <= 0) {
-    log_fatal("nkmax = %d and nl = %d must be positive", nkmax, nl);
+  if (nkmax <= 0) {
+    log_fatal("nkmax = %d must be positive", nkmax);
     exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
-  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
-  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
-  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
-  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
-  // tables are nonzero)
-  const int hdi = abs(Ntable.high_def_integration);
-  const size_t szint = (0 == hdi) ? 256 :
-                       (1 == hdi) ? 512 : 1024; // predefined GSL tables
-  gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
-  const int npts = (int) w->n;
-  double* tq = (double*) malloc1d(npts);
-  double* wq = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
+  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
+  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+                    / ((double) nlnk - 1.0);
+  const double lnk1 = lnk0 + (nlnk - 1)*dx;
+  double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
+  for (int f = 0; f < nlnk; f++) {
+    kv[f] = exp(lnk0 + f*dx);
   }
-  gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once.
-  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
-  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
-  // kd2 = exp(-(1-t)/t) the mirror half
-  double* kd1 = (double*) malloc1d(npts);
-  double* kd2 = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    kd1[p] = exp((1. - tq[p])/tq[p]);
-    kd2[p] = exp(-(1. - tq[p])/tq[p]);
-  }
-  double** den = (double**) malloc2d(NSIZE, nl);
-  // build the cached dlnC table (and the statics it warms) single-threaded
+  // build the cached dlnC_ks table single-threaded before the
+  // parallel region below reads it
   (void) dlnC_ks_dlnk_tomo_limber(1.0, lx[0], 0);
   #pragma omp parallel
   {
-  #pragma omp for collapse(2) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int i = 0; i < nl; i++) {
-      const double l = lx[i];
-      double sKS = 0.0;
-      for (int p = 0; p < npts; p++) {
-        const double wt = wq[p]/(tq[p]*tq[p]);
-        sKS += (fabs(dlnC_ks_dlnk_tomo_limber(kd1[p], l, nz)) +
-                fabs(dlnC_ks_dlnk_tomo_limber(kd2[p], l, nz)))*wt;
-      }
-      den[nz][i] = sKS;
-    }
-  } // implicit barrier: denominators complete before the division below
-  #pragma omp for collapse(3) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int m = 0; m < nkmax; m++) {
+    double* prof = (double*) malloc1d(nlnk); // one row's response
+    double* cum  = (double*) malloc1d(nlnk); // its running integral
+    #pragma omp for collapse(2) schedule(static)
+    for (int nz = 0; nz < NSIZE; nz++) {
       for (int i = 0; i < nl; i++) {
         const double l = lx[i];
-        double sKS = 0.0;
-        for (int p = 0; p < npts; p++) {
-          const double k = exp(lnkmaxx[m] - (1. - tq[p])/tq[p]);
-          const double wt = wq[p]/(tq[p]*tq[p]);
-          sKS += fabs(dlnC_ks_dlnk_tomo_limber(k, l, nz))*wt;
+        for (int f = 0; f < nlnk; f++) {
+          prof[f] = dlnC_ks_dlnk_tomo_limber(kv[f], l, nz);
         }
-        // a vanishing denominator writes 0, never 0/0 = NaN
-        table[nz][m][i] = (fabs(den[nz][i]) > 1e-300) ?
-                          sKS/den[nz][i] : 0.0;
+        cum[0] = 0.0;
+        for (int f = 1; f < nlnk; f++) {
+          cum[f] = cum[f-1] + scuts_abs_lin_full(prof[f-1], prof[f], dx);
+        }
+        const double dden = cum[nlnk-1];
+        for (int m = 0; m < nkmax; m++) {
+          const double L = lnkmaxx[m];
+          double num;
+          if (L <= lnk0) {
+            num = 0.0;
+          }
+          else if (L >= lnk1) {
+            num = dden;
+          }
+          else {
+            const double r = (L - lnk0)/dx;
+            int j = (int) r; // interval's left node (uniform grid)
+            if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+              j = nlnk - 2;
+            }
+            num = cum[j] +
+                  scuts_abs_lin_part(prof[j], prof[j+1], dx, (r - j)*dx);
+          }
+          table[nz][m][i] = (fabs(dden) > 1e-300) ? num/dden : 0.0;
+        }
       }
     }
-  }
+    free(prof);
+    free(cum);
   } // end of the parallel region
-  free(den);
-  free(kd1);
-  free(kd2);
-  free(tq);
-  free(wq);
+  free(kv);
 }
 
 // ---------------------------------------------------------------------------
@@ -1784,37 +1831,49 @@ double dlnw_ks_dlnk_tomo(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Batch computation of the real-space response function (2011.06469 eq 17)
+// RF of xi_pm over kmax, exact from the tabulated response.
 //
-//   RF(kmax, theta) = int_{-infty}^{ln kmax} dlnk |dlnxi_pm/dlnk|
-//                     / int_{-infty}^{+infty} dlnk |dlnxi_pm/dlnk|
+// RF(kmax) is the fraction of the total absolute log response below
+// kmax,
 //
-// on a ln kmax grid, for every tomographic pair and angular bin. Both
-// integrals map onto t in (0, 1] — the numerator through
-// lnk = ln kmax - (1-t)/t, the denominator through lnk = +-(1-t)/t — and
-// use a fixed Gauss-Legendre rule with the nodes and weights
-// precomputed into plain arrays (no GSL integrand callback per point).
+//   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
+//            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// The denominator does not depend on kmax, so one thread team first fills
-// one denominator value per (tomo pair, angular bin) and then, after the
-// loop's implicit barrier, accumulates the numerator for every
-// (pair, kmax, angular bin) output and divides. Every integrand
-// evaluation reads the k-cached dlnxi_dlnk_pm_tomo table, built once,
-// single-threaded, before the parallel region.
+// and the response it integrates is the dlnxi_dlnk_pm_tomo cache: a table on the uniform
+// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
+// exactly zero outside the grid. The integrand is therefore
+// piecewise linear, and both integrals are CLOSED FORM (see
+// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+//
+// Per (xi_+/xi_-, pair, angular bin) row:
+//
+//   sample the response at the grid's own ln k nodes
+//     -> cumulative sum of the per-interval |v| integrals
+//        (trapezoids, sign-crossing triangles)
+//     -> denominator = the full cumulative
+//     -> every requested kmax = prefix + the cut last piece,
+//        found by one multiply and a cast (uniform grid, no search)
+//
+// The old per-kmax Gauss-Legendre sweeps re-integrated the same
+// tabulated integrand once per kmax node, approximately; this
+// computes each entry exactly and roughly nkmax times faster.
+//
+// No vanishing-denominator guard: the xi_+/- responses mix the EE
+// rows into every entry, so the full cumulative is positive whenever
+// the tabulated response is not identically zero.
 //
 // Cache invalidation:
-// none (stateless); it only warms the k-cached
-// dlnxi table it reads.
+// none (stateless); the first call warms the dln cache
+// single-threaded, and each (row) samples it read-only afterwards.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
 //   nkmax   - number of ln kmax values
-//   NSIZE   - number of tomographic shear power spectra
-//   table   - output [2][NSIZE][nkmax][Ntheta], RF at each (kmax, theta)
-//             for both xi components
+//   NSIZE   - number of tomo shear power spectra
+//   table   - output [2][NSIZE][nkmax][Ntheta]: xi+ and xi-
 //
 // Returns:
-//   nothing; the result is written into table
+//   void (table filled for every kmax and angular bin)
 // ---------------------------------------------------------------------------
 void RF_xi_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1830,86 +1889,64 @@ void RF_xi_tomo_limber_work(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
-  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
-  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
-  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
-  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
-  // tables are nonzero)
-  const int hdi = abs(Ntable.high_def_integration);
-  const size_t szint = (0 == hdi) ? 256 :
-                       (1 == hdi) ? 512 : 1024; // predefined GSL tables
-  gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
-  const int npts = (int) w->n;
-  double* tq = (double*) malloc1d(npts);
-  double* wq = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
+  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
+  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+                    / ((double) nlnk - 1.0);
+  const double lnk1 = lnk0 + (nlnk - 1)*dx;
+  double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
+  for (int f = 0; f < nlnk; f++) {
+    kv[f] = exp(lnk0 + f*dx);
   }
-  gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once.
-  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
-  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
-  // kd2 = exp(-(1-t)/t) the mirror half
-  double* kd1 = (double*) malloc1d(npts);
-  double* kd2 = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    kd1[p] = exp((1. - tq[p])/tq[p]);
-    kd2[p] = exp(-(1. - tq[p])/tq[p]);
-  }
-  double*** den = (double***) malloc3d(2, NSIZE, Ntable.Ntheta);
   // build the k-cached dlnxi table single-threaded before the parallel
   // region below reads it
   (void) dlnxi_dlnk_pm_tomo(1.0, 1, 0, Z1(0), Z2(0));
   #pragma omp parallel
   {
-  #pragma omp for collapse(2) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int nt = 0; nt < Ntable.Ntheta; nt++) {
-      const int Z1NZ = Z1(nz);
-      const int Z2NZ = Z2(nz);
-      double sXP = 0.0;
-      double sXM = 0.0;
-      for (int p = 0; p < npts; p++) {
-        const double wt = wq[p]/(tq[p]*tq[p]);
-        sXP += (fabs(dlnxi_dlnk_pm_tomo(kd1[p], 1, nt, Z1NZ, Z2NZ)) +
-                fabs(dlnxi_dlnk_pm_tomo(kd2[p], 1, nt, Z1NZ, Z2NZ)))*wt;
-        sXM += (fabs(dlnxi_dlnk_pm_tomo(kd1[p], 0, nt, Z1NZ, Z2NZ)) +
-                fabs(dlnxi_dlnk_pm_tomo(kd2[p], 0, nt, Z1NZ, Z2NZ)))*wt;
-      }
-      den[0][nz][nt] = sXP;
-      den[1][nz][nt] = sXM;
-    }
-  } // implicit barrier: denominators complete before the division below
-  #pragma omp for collapse(3) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int m = 0; m < nkmax; m++) {
-      for (int nt = 0; nt < Ntable.Ntheta; nt++) {
-        const int Z1NZ = Z1(nz);
-        const int Z2NZ = Z2(nz);
-        double sXP = 0.0;
-        double sXM = 0.0;
-        for (int p = 0; p < npts; p++) {
-          const double k = exp(lnkmaxx[m] - (1. - tq[p])/tq[p]);
-          const double wt = wq[p]/(tq[p]*tq[p]);
-          sXP += fabs(dlnxi_dlnk_pm_tomo(k, 1, nt, Z1NZ, Z2NZ))*wt;
-          sXM += fabs(dlnxi_dlnk_pm_tomo(k, 0, nt, Z1NZ, Z2NZ))*wt;
+    double* prof = (double*) malloc1d(nlnk); // one row's response
+    double* cum  = (double*) malloc1d(nlnk); // its running integral
+    #pragma omp for collapse(3) schedule(static)
+    for (int sp = 0; sp < 2; sp++) {       // 0 = xi_+, 1 = xi_-
+      for (int nz = 0; nz < NSIZE; nz++) {
+        for (int nt = 0; nt < Ntable.Ntheta; nt++) {
+          const int Z1NZ = Z1(nz);
+          const int Z2NZ = Z2(nz);
+          const int pm = 1 - sp; // the lookup's flag: 1 = xi_+
+          for (int f = 0; f < nlnk; f++) {
+            prof[f] = dlnxi_dlnk_pm_tomo(kv[f], pm, nt, Z1NZ, Z2NZ);
+          }
+          cum[0] = 0.0;
+          for (int f = 1; f < nlnk; f++) {
+            cum[f] = cum[f-1] + scuts_abs_lin_full(prof[f-1], prof[f], dx);
+          }
+          const double dden = cum[nlnk-1];
+          for (int m = 0; m < nkmax; m++) {
+            const double L = lnkmaxx[m];
+            double num;
+            if (L <= lnk0) {
+              num = 0.0;
+            }
+            else if (L >= lnk1) {
+              num = dden;
+            }
+            else {
+              const double r = (L - lnk0)/dx;
+              int j = (int) r; // interval's left node (uniform grid)
+              if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+                j = nlnk - 2;
+              }
+              num = cum[j] +
+                    scuts_abs_lin_part(prof[j], prof[j+1], dx, (r - j)*dx);
+            }
+            table[sp][nz][m][nt] = num/dden;
+          }
         }
-        // no vanishing-denominator guard, unlike the Fourier workers:
-        // their zero rows come from dlnC_BB = 0 under NLA, while xi+/-
-        // mix the EE rows into every entry, so den > 0 whenever the
-        // tabulated response is not identically zero
-        table[0][nz][m][nt] = sXP/den[0][nz][nt];
-        table[1][nz][m][nt] = sXM/den[1][nz][nt];
       }
     }
-  }
+    free(prof);
+    free(cum);
   } // end of the parallel region
-  free(den);
-  free(kd1);
-  free(kd2);
-  free(tq);
-  free(wq);
+  free(kv);
 }
 
 // ---------------------------------------------------------------------------
@@ -1917,37 +1954,49 @@ void RF_xi_tomo_limber_work(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Batch computation of the real-space response function (2011.06469 eq 17)
+// RF of w_ks over kmax, exact from the tabulated response.
 //
-//   RF(kmax, theta) = int_{-infty}^{ln kmax} dlnk |dlnw_ks/dlnk|
-//                     / int_{-infty}^{+infty} dlnk |dlnw_ks/dlnk|
+// RF(kmax) is the fraction of the total absolute log response below
+// kmax,
 //
-// on a ln kmax grid, for every source bin and angular bin. Same design as
-// RF_xi_tomo_limber_work (the ks cross has one component per source bin,
-// so there is no xi+/xi- leading dimension): both integrals map onto t in
-// (0, 1] — the numerator through lnk = ln kmax - (1-t)/t, the denominator
-// through lnk = +-(1-t)/t — with the fixed Gauss-Legendre nodes and
-// weights precomputed into plain arrays.
+//   RF(kmax) = int_(-inf)^(ln kmax) |dlnX/dlnk| dlnk
+//            / int_(-inf)^(+inf)    |dlnX/dlnk| dlnk,
 //
-// The denominator does not depend on kmax, so one thread team first fills
-// one denominator value per (source bin, angular bin) and then, after the
-// loop's implicit barrier, accumulates the numerator for every
-// (bin, kmax, angular bin) output and divides. Every integrand evaluation
-// reads the k-cached dlnw_ks_dlnk_tomo table, built once, single-threaded,
-// before the parallel region.
+// and the response it integrates is the dlnw_ks_dlnk_tomo cache: a table on the uniform
+// Ntable.dCX_dlnk grid in ln k, read by LINEAR interpolation and
+// exactly zero outside the grid. The integrand is therefore
+// piecewise linear, and both integrals are CLOSED FORM (see
+// scuts_abs_lin_full/_part above): no quadrature rule, no error.
+//
+// Per (source bin, angular bin) row:
+//
+//   sample the response at the grid's own ln k nodes
+//     -> cumulative sum of the per-interval |v| integrals
+//        (trapezoids, sign-crossing triangles)
+//     -> denominator = the full cumulative
+//     -> every requested kmax = prefix + the cut last piece,
+//        found by one multiply and a cast (uniform grid, no search)
+//
+// The old per-kmax Gauss-Legendre sweeps re-integrated the same
+// tabulated integrand once per kmax node, approximately; this
+// computes each entry exactly and roughly nkmax times faster.
+//
+// No vanishing-denominator guard: w_ks has no identically-zero rows
+// (there is no BB analog here), so the full cumulative is positive
+// whenever the tabulated response is not identically zero.
 //
 // Cache invalidation:
-// none (stateless); it only warms the k-cached
-// dlnw_ks table it reads.
+// none (stateless); the first call warms the dln cache
+// single-threaded, and each (row) samples it read-only afterwards.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
 //   nkmax   - number of ln kmax values
 //   NSIZE   - number of source tomographic bins (= shear_nbin)
-//   table   - output [NSIZE][nkmax][Ntheta], RF at each (kmax, theta)
+//   table   - output [NSIZE][nkmax][Ntheta]
 //
 // Returns:
-//   nothing; the result is written into table
+//   void (table filled for every kmax and angular bin)
 // ---------------------------------------------------------------------------
 void RF_w_ks_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1963,75 +2012,59 @@ void RF_w_ks_tomo_limber_work(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
-  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
-  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
-  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
-  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
-  // tables are nonzero)
-  const int hdi = abs(Ntable.high_def_integration);
-  const size_t szint = (0 == hdi) ? 256 :
-                       (1 == hdi) ? 512 : 1024; // predefined GSL tables
-  gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
-  const int npts = (int) w->n;
-  double* tq = (double*) malloc1d(npts);
-  double* wq = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
+  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
+  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+                    / ((double) nlnk - 1.0);
+  const double lnk1 = lnk0 + (nlnk - 1)*dx;
+  double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
+  for (int f = 0; f < nlnk; f++) {
+    kv[f] = exp(lnk0 + f*dx);
   }
-  gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once.
-  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
-  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
-  // kd2 = exp(-(1-t)/t) the mirror half
-  double* kd1 = (double*) malloc1d(npts);
-  double* kd2 = (double*) malloc1d(npts);
-  for (int p = 0; p < npts; p++) {
-    kd1[p] = exp((1. - tq[p])/tq[p]);
-    kd2[p] = exp(-(1. - tq[p])/tq[p]);
-  }
-  double** den = (double**) malloc2d(NSIZE, Ntable.Ntheta);
-  // build the k-cached dlnw_ks table single-threaded before the parallel
-  // region below reads it
+  // build the k-cached dlnw_ks table single-threaded before the
+  // parallel region below reads it
   (void) dlnw_ks_dlnk_tomo(1.0, 0, 0);
   #pragma omp parallel
   {
-  #pragma omp for collapse(2) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int nt = 0; nt < Ntable.Ntheta; nt++) {
-      double sKS = 0.0;
-      for (int p = 0; p < npts; p++) {
-        const double wt = wq[p]/(tq[p]*tq[p]);
-        sKS += (fabs(dlnw_ks_dlnk_tomo(kd1[p], nt, nz)) +
-                fabs(dlnw_ks_dlnk_tomo(kd2[p], nt, nz)))*wt;
-      }
-      den[nz][nt] = sKS;
-    }
-  } // implicit barrier: denominators complete before the division below
-  #pragma omp for collapse(3) schedule(static)
-  for (int nz = 0; nz < NSIZE; nz++) {
-    for (int m = 0; m < nkmax; m++) {
+    double* prof = (double*) malloc1d(nlnk); // one row's response
+    double* cum  = (double*) malloc1d(nlnk); // its running integral
+    #pragma omp for collapse(2) schedule(static)
+    for (int nz = 0; nz < NSIZE; nz++) {
       for (int nt = 0; nt < Ntable.Ntheta; nt++) {
-        double sKS = 0.0;
-        for (int p = 0; p < npts; p++) {
-          const double k = exp(lnkmaxx[m] - (1. - tq[p])/tq[p]);
-          const double wt = wq[p]/(tq[p]*tq[p]);
-          sKS += fabs(dlnw_ks_dlnk_tomo(k, nt, nz))*wt;
+        for (int f = 0; f < nlnk; f++) {
+          prof[f] = dlnw_ks_dlnk_tomo(kv[f], nt, nz);
         }
-        // no vanishing-denominator guard, unlike the Fourier workers:
-        // w_ks has no identically-zero component (the NLA dlnC_BB = 0
-        // rows), so den > 0 whenever the tabulated response is not
-        // identically zero
-        table[nz][m][nt] = sKS/den[nz][nt];
+        cum[0] = 0.0;
+        for (int f = 1; f < nlnk; f++) {
+          cum[f] = cum[f-1] + scuts_abs_lin_full(prof[f-1], prof[f], dx);
+        }
+        const double dden = cum[nlnk-1];
+        for (int m = 0; m < nkmax; m++) {
+          const double L = lnkmaxx[m];
+          double num;
+          if (L <= lnk0) {
+            num = 0.0;
+          }
+          else if (L >= lnk1) {
+            num = dden;
+          }
+          else {
+            const double r = (L - lnk0)/dx;
+            int j = (int) r; // interval's left node (uniform grid)
+            if (j > nlnk - 2) { // shared endpoint, 1-ulp overshoot
+              j = nlnk - 2;
+            }
+            num = cum[j] +
+                  scuts_abs_lin_part(prof[j], prof[j+1], dx, (r - j)*dx);
+          }
+          table[nz][m][nt] = num/dden;
+        }
       }
     }
-  }
+    free(prof);
+    free(cum);
   } // end of the parallel region
-  free(den);
-  free(kd1);
-  free(kd2);
-  free(tq);
-  free(wq);
+  free(kv);
 }
 
 // ---------------------------------------------------------------------------
