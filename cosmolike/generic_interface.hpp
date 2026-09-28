@@ -1065,6 +1065,14 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
   }
   else if constexpr (2 == M) {
     if (1 == like.pos_pos) {
+      double** out = NULL; // Fourier space: every multipole in one batch
+      if constexpr (N != 0) {
+        out = (double**) malloc2d(tomo.clustering_Npowerspectra, Nlen[N]);
+        C_gg_tomo_limber_nointerp_ells(like.ell, 
+                                       Nlen[N],
+                                       tomo.clustering_Npowerspectra, 
+                                       out);
+      }
       for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
           const int index = start + Nlen[N]*nz + i;
@@ -1073,11 +1081,12 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
               dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
             }
             else {
-              dv(index) = C_gg_tomo_limber_nointerp(like.ell[i], nz, nz, 0);
+              dv(index) = out[nz][i];
             }
           }
         }
       }
+      if (out != NULL) free(out);
       add_calib_and_set_mask_X_N<N,M>(dv, start);
     }
   }

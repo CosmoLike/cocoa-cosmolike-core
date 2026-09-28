@@ -373,17 +373,6 @@ double C_gs_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-// galaxy-clustering C_l (limber) at one multipole and one auto pair
-double C_gg_tomo_limber_cpp(
-    const double l,   // multipole
-    const int nz      // lens redshift bin (auto pair nz-nz)
-  )
-{
-  return C_gg_tomo_limber_nointerp(l, nz, nz, 0);
-}
-
-// ---------------------------------------------------------------------------
-
 // galaxy-clustering C_l (limber) at every auto pair and many multipoles
 arma::Cube<double> C_gg_tomo_limber_cpp(
     const arma::Col<double> l    // multipoles
@@ -399,16 +388,39 @@ arma::Cube<double> C_gg_tomo_limber_cpp(
                             redshift.clustering_nbin,
                             redshift.clustering_nbin,
                             arma::fill::zeros);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
-    (void) C_gg_tomo_limber_nointerp(l(0), 0, 0, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz, nz) = C_gg_tomo_limber_nointerp(l(i), nz, nz, 0);
+  // batched computation: a single C_gg_tomo_limber_nointerp_ells call
+  const int nell = static_cast<int>(l.n_elem);
+  const int NSIZE = redshift.clustering_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_gg_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, nz, nz) = tmp[nz][i];
     }
   }
+  free(tmp);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+
+// galaxy-clustering C_l (limber) at one multipole and one auto pair
+double C_gg_tomo_limber_cpp(
+    const double l,   // multipole
+    const int nz      // lens redshift bin (auto pair nz-nz)
+  )
+{ // point diagnostic: runs the batch of the array overload above at a
+  // single multipole (every lens bin) and reads one entry. Loops over
+  // (l, nz) should call the array overload once and index the cube.
+  if (nz < 0 || nz > redshift.clustering_nbin - 1) {
+    spdlog::critical("{}: invalid bin input nz = {}",
+                     "C_gg_tomo_limber_cpp", nz);
+    exit(1);
+  }
+  arma::Col<double> ell(1);
+  ell(0) = l;
+  const arma::Cube<double> res = C_gg_tomo_limber_cpp(ell);
+  return res(0, nz, nz);
 }
 
 // ---------------------------------------------------------------------------
