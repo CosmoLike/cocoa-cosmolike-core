@@ -454,6 +454,9 @@ typedef struct
   int clustering_Npowerspectra;  // num galaxy-galaxy clustering tomo combinations
   int* ggl_exclude;              // l-s pairs that are excluded in ggl
   int N_ggl_exclude;             // number of l-s ggl pairs excluded
+  uint64_t random_ggl;           // new value whenever the ggl pair list can
+                                 // change (bins, ggl_exclude): the pair maps
+                                 // test_zoverlap/ZL/ZS/N_ggl rebuild on it
 } tomopara;
 
 typedef struct

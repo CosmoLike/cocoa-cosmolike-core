@@ -121,7 +121,9 @@ int test_zoverlap(int ni, int nj)
   }
   if (tomo.ggl_exclude != NULL) {
     static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-    if (N[0][0] < -1) {
+    static uint64_t cache = 0; // tomo.random_ggl the map was built with
+    if (N[0][0] < -1 || fdiff2(cache, tomo.random_ggl)) {
+      cache = tomo.random_ggl;
       for (int i=0; i<redshift.clustering_nbin; i++) {
         for (int j=0; j<redshift.shear_nbin; j++) {
           N[i][j] = 1;
@@ -151,7 +153,9 @@ int test_zoverlap(int ni, int nj)
 int ZL(int ni) 
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) {
+  static uint64_t cache = 0; // tomo.random_ggl the map was built with
+  if (N[0] < -1 || fdiff2(cache, tomo.random_ggl)) {
+    cache = tomo.random_ggl;
     int n = 0;
     for (int i=0; i<redshift.clustering_nbin; i++) {
       for (int j=0; j<redshift.shear_nbin; j++) {
@@ -174,7 +178,9 @@ int ZL(int ni)
 int ZS(int nj) 
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
-  if (N[0] < -1) {
+  static uint64_t cache = 0; // tomo.random_ggl the map was built with
+  if (N[0] < -1 || fdiff2(cache, tomo.random_ggl)) {
+    cache = tomo.random_ggl;
     int n = 0;
     for (int i = 0; i < redshift.clustering_nbin; i++) {
       for (int j = 0; j < redshift.shear_nbin; j++) {
@@ -197,7 +203,9 @@ int ZS(int nj)
 int N_ggl(int ni, int nj) 
 { // ni = redshift bin of the lens, nj = redshift bin of the source
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
-  if (N[0][0] < 0) {
+  static uint64_t cache = 0; // tomo.random_ggl the map was built with
+  if (N[0][0] < 0 || fdiff2(cache, tomo.random_ggl)) {
+    cache = tomo.random_ggl;
     int n = 0;
     for (int i=0; i<redshift.clustering_nbin; i++) {
       for (int j=0; j<redshift.shear_nbin; j++) {

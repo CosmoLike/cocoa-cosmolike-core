@@ -929,6 +929,11 @@ void init_ntomo_powerspectra()
     critical(errornset, fname, "redshift.clustering_nbin"); exit(1);
   }
   tomo.shear_Npowerspectra = redshift.shear_nbin * (redshift.shear_nbin + 1) / 2;
+  // The bins (and possibly ggl_exclude) of this model can differ from the
+  // previous model built in the same process (the unit tests build a 3x2pt
+  // model, then a cosmic-shear model with another ggl_exclude list): a new
+  // key makes the static pair maps of redshift_spline.c rebuild.
+  tomo.random_ggl = RandomNumber::get_instance().get();
   int n = 0;
   for (int i=0; i<redshift.clustering_nbin; i++) {
     for (int j=0; j<redshift.shear_nbin; j++) {
@@ -940,6 +945,12 @@ void init_ntomo_powerspectra()
   }
   tomo.ggl_Npowerspectra = n;
   tomo.clustering_Npowerspectra = redshift.clustering_nbin;
+  if (n > 0) { // rebuild the pair maps here, single-threaded, so no call
+               // inside an OpenMP region ever writes them
+    (void) ZL(0);
+    (void) ZS(0);
+    (void) N_ggl(ZL(0), ZS(0));
+  }
 
   debug("{}: tomo.shear_Npowerspectra = {}", fname, tomo.shear_Npowerspectra);
   debug("{}: tomo.ggl_Npowerspectra = {}", fname, tomo.ggl_Npowerspectra);
@@ -1030,6 +1041,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
     critical("array allocation failed"); exit(1);
   }
   tomo.N_ggl_exclude = int(nsize/2);  
+  tomo.random_ggl = RandomNumber::get_instance().get(); // pair maps rebuild
   debug("{}: {} ggl pairs excluded", fname, tomo.N_ggl_exclude);
   for(int i=0; i<nsize; i++) {
     if (std::isnan(ggl_exclude(i))) {
@@ -1143,10 +1155,19 @@ void set_IA_PS(
     FPTIA.N      = N;
     FPTIA.sigma4 = 0.0;                // Not relevant for IA
     FPTIA.k_cutoff = cutoff * coverH0; // input in units of h/Mpc
+    // FPTIA.tab_int aliases FPTIA.tab after a cfastpt call at the default
+    // internal boost; free a separate internal table only, and re-alias it
+    // to the new table (freeing tab alone would leave tab_int dangling, and
+    // the next cfastpt rebuild would free it a second time: a malloc abort).
+    if (FPTIA.tab_int != NULL && FPTIA.tab_int != FPTIA.tab) {
+      free(FPTIA.tab_int);
+    }
     if (FPTIA.tab != NULL) {
       free(FPTIA.tab);
     }
     FPTIA.tab = (double**) malloc2d(NIAPS, FPTIA.N);
+    FPTIA.tab_int = FPTIA.tab;
+    FPTIA.N_int = FPTIA.N;
     
     for (int i=0; i<NIAPS; i++) {
       for (int j=0; j<FPTIA.N; j++) {
@@ -1236,10 +1257,19 @@ void set_bias_PS(
     FPTbias.k_max    = kmax * coverH0;    // input in units of h/Mpc
     FPTbias.k_cutoff = cutoff *coverH0; // input in units of h/Mpc
     FPTbias.sigma4   = sigma4 / (coverH0cube);
+    // FPTbias.tab_int aliases FPTbias.tab after a cfastpt call at the default
+    // internal boost; free a separate internal table only, and re-alias it
+    // to the new table (freeing tab alone would leave tab_int dangling, and
+    // the next cfastpt rebuild would free it a second time: a malloc abort).
+    if (FPTbias.tab_int != NULL && FPTbias.tab_int != FPTbias.tab) {
+      free(FPTbias.tab_int);
+    }
     if (FPTbias.tab != NULL) {
       free(FPTbias.tab);
     }
     FPTbias.tab = (double**) malloc2d(NBIAS, FPTbias.N);
+    FPTbias.tab_int = FPTbias.tab;
+    FPTbias.N_int = FPTbias.N;
 
     for (int i=0; i<NBIAS; i++)  {
       for (int j=0; j<FPTbias.N; j++) {
@@ -2136,10 +2166,28 @@ void set_lens_sample(arma::Mat<double> input_table)
       (z_v[nzbins-1] - z_v[0]) / ((double) nzbins - 1.);
 
     for (int k=0; k<Ntomo; k++) { // Set tomography bin boundaries
-      auto nofz = input_table.col(k+1).eval();
-      arma::uvec idx = arma::find(nofz > 0.999e-8*nofz.max());
-      redshift.clustering_zdist_zmin[k] = z_v[idx(0)];
-      redshift.clustering_zdist_zmax[k] = z_v[idx(idx.n_elem-1)];
+      // The bin support is where n(z) exceeds 0.999e-8 of its maximum.
+      // Plain loops: under COSMOLIKE_AGGRESSIVE_MODE (-ffast-math, LTO)
+      // the equivalent arma::find(nofz > c*nofz.max()) expression has
+      // returned an empty index list for a valid n(z) column.
+      double nzmax = input_table(0, k+1);
+      for (int i=1; i<nzbins; i++) {
+        nzmax = fmax(nzmax, input_table(i, k+1));
+      }
+      int first = -1;
+      int last  = -1;
+      for (int i=0; i<nzbins; i++) {
+        if (input_table(i, k+1) > 0.999e-8*nzmax) {
+          if (first < 0) first = i;
+          last = i;
+        }
+      }
+      if (first < 0) [[unlikely]] {
+        critical("{}: n(z) of bin {} has no positive entry", fname, k);
+        exit(1);
+      }
+      redshift.clustering_zdist_zmin[k] = z_v[first];
+      redshift.clustering_zdist_zmax[k] = z_v[last];
     }
     // READ THE N(Z) FILE ENDS ------------
     redshift.random_clustering = RandomNumber::get_instance().get();
@@ -2237,10 +2285,28 @@ void set_source_sample(arma::Mat<double> input_table)
     redshift.shear_zdist_zmax_all = z_v[nzbins-1] + (z_v[nzbins-1] - z_v[0]) / ((double) nzbins - 1.);
 
     for (int k=0; k<Ntomo; k++)  { // Set tomography bin boundaries
-      auto nofz = input_table.col(k+1).eval();
-      arma::uvec idx = arma::find(nofz > 0.999e-8*nofz.max());
-      redshift.shear_zdist_zmin[k] = fmax(z_v[idx(0)], 1.001e-5);
-      redshift.shear_zdist_zmax[k] = z_v[idx(idx.n_elem-1)];
+      // The bin support is where n(z) exceeds 0.999e-8 of its maximum.
+      // Plain loops: under COSMOLIKE_AGGRESSIVE_MODE (-ffast-math, LTO)
+      // the equivalent arma::find(nofz > c*nofz.max()) expression has
+      // returned an empty index list for a valid n(z) column.
+      double nzmax = input_table(0, k+1);
+      for (int i=1; i<nzbins; i++) {
+        nzmax = fmax(nzmax, input_table(i, k+1));
+      }
+      int first = -1;
+      int last  = -1;
+      for (int i=0; i<nzbins; i++) {
+        if (input_table(i, k+1) > 0.999e-8*nzmax) {
+          if (first < 0) first = i;
+          last = i;
+        }
+      }
+      if (first < 0) [[unlikely]] {
+        critical("{}: n(z) of bin {} has no positive entry", fname, k);
+        exit(1);
+      }
+      redshift.shear_zdist_zmin[k] = fmax(z_v[first], 1.001e-5);
+      redshift.shear_zdist_zmax[k] = z_v[last];
     }
   
     // READ THE N(Z) FILE ENDS ------------

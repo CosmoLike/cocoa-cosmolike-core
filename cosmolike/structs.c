@@ -150,6 +150,7 @@ void reset_tomo_struct(void)
     tomo.ggl_exclude = NULL;
   }
   tomo.N_ggl_exclude = 0;
+  tomo.random_ggl = 0;
 }
 
 void reset_redshift_struct(void)

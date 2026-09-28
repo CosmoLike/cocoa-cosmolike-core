@@ -150,8 +150,15 @@ void get_FPT_bias(void)
     2.*(4./45.), 2.*(8./63.), 2.*(8./35.)
   };
   static uint64_t cache[MAX_SIZE_ARRAYS];
+  // FPTbias.tab as allocated here. set_bias_PS (python FAST-PT, IA_code = 1)
+  // replaces the table with its own grid; the next call from this function
+  // must then rebuild the grid and recompute, even if Ntable.random and
+  // cosmology.random did not change.
+  static double** owned_tab = NULL;
+  const int new_tables = (fdiff2(cache[1], Ntable.random) ||
+                          FPTbias.tab != owned_tab);
  
-  if (fdiff2(cache[1], Ntable.random))
+  if (new_tables)
   {
     FPTbias.k_min    = 0.05;
     FPTbias.k_max    = 1.0e+6;
@@ -173,6 +180,7 @@ void get_FPT_bias(void)
     FPTbias.tab = (double**) malloc2d(NTAB, FPTbias.N);
     FPTbias.tab_int = (FPTbias.N_int == FPTbias.N) ? FPTbias.tab
         : (double**) malloc2d(NTAB, FPTbias.N_int);
+    owned_tab = FPTbias.tab;
     if (regrid_coeff != NULL)
     {
       free(regrid_coeff);
@@ -181,7 +189,8 @@ void get_FPT_bias(void)
         : (double**) malloc2d(5, FPTbias.N_int); // one row per regridded spectrum
   }
  
-  if (fdiff2(cache[0], cosmology.random) ||
+  if (new_tables ||
+      fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random))
   {
     // Internal (convolution) grid: FPT_internal_accuracy_boost = 1 keeps
@@ -348,7 +357,13 @@ void get_FPT_IA(void)
   static double** regrid_coeff = NULL;  // fpt_regrid spline scratch [10][N_int]
   static fastpt_config fpt_config;      // FFTLog padding/window setup (nu = 0)
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  if (fdiff2(cache[1], Ntable.random))
+  // FPTIA.tab as allocated here. set_IA_PS (python FAST-PT, IA_code = 1)
+  // replaces the table with its own grid; the next call from this function
+  // must then rebuild the grid and recompute (see get_FPT_bias).
+  static double** owned_tab = NULL;
+  const int new_tables = (fdiff2(cache[1], Ntable.random) ||
+                          FPTIA.tab != owned_tab);
+  if (new_tables)
   {
     FPTIA.k_min    = 0.05;
     FPTIA.k_max    = 1.0e+6;
@@ -368,13 +383,16 @@ void get_FPT_IA(void)
     FPTIA.tab = (double**) malloc2d(NTAB, FPTIA.N);
     FPTIA.tab_int = (FPTIA.N_int == FPTIA.N) ? FPTIA.tab
         : (double**) malloc2d(NTAB, FPTIA.N_int);
+    owned_tab = FPTIA.tab;
     if (regrid_coeff != NULL) {
       free(regrid_coeff);
     }
     regrid_coeff = (FPTIA.N_int == FPTIA.N) ? NULL
         : (double**) malloc2d(10, FPTIA.N_int); // one row per regridded spectrum
   }
-  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random))
+  if (new_tables || 
+      fdiff2(cache[0], cosmology.random) || 
+      fdiff2(cache[1], Ntable.random))
   {
     // Internal (convolution) grid - same scheme as get_FPT_bias: boost = 1
     // aliases the output tables (exact legacy path); otherwise the ~184
