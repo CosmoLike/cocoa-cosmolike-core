@@ -95,8 +95,10 @@ int detect_uniform_segments(
 // ---------------------------------------------------------------------------
 typedef struct
 {
-  double xmin;   // cos(theta_max) — upper edge cosine (note reversed order)
-  double xmax;   // cos(theta_min) — lower edge cosine
+  double xmin;   // cos(theta_min) - lower theta edge, numerically the
+                 // larger cosine (the names track the theta edges)
+  double xmax;   // cos(theta_max) - upper theta edge, numerically the
+                 // smaller cosine
   double Pmin;   // P_l(xmin)
   double Pmax;   // P_l(xmax)
   double dPmin;  // dP_l/dx evaluated at xmin
