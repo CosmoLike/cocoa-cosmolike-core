@@ -342,9 +342,8 @@ double dC_ss_dlnk_tomo_limber(
       // The two axes coarsen independently because their smoothness
       // differs: the ell direction is smooth (as in cosmo2D.c), but
       // the ln k direction carries the BAO wiggles of P(k), so its
-      // knob's default (128 of 256) keeps the measured response
-      // error at the level the retired fixed quadrature imposed
-      // (see structs.c).
+      // knob needs the denser default (128 of 256, set in structs.c;
+      // the workspace note above states the accuracy target).
       // ---------------------------------------------------------------
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 0, tabc);
@@ -362,6 +361,8 @@ double dC_ss_dlnk_tomo_limber(
       }
     }
     else {
+      // exact fill: one single-node Limber evaluation per dense
+      // (ln k, ln l) node, no upsampling
       dC_ss_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 tomo.shear_Npowerspectra, 0, table);
     }
@@ -530,8 +531,8 @@ double dlnC_ss_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles; its default 128 holds the response error
-      // at the retired quadrature's level).
+      // the BAO wiggles; the workspace note above states the
+      // default's accuracy target).
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 1, tabc);
 
@@ -548,6 +549,8 @@ double dlnC_ss_dlnk_tomo_limber(
       }
     }
     else {
+      // exact fill: one single-node Limber evaluation per dense
+      // (ln k, ln l) node, no upsampling
       dC_ss_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 tomo.shear_Npowerspectra, 1, table);
     }
@@ -725,8 +728,8 @@ double dC_ks_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles; its default 128 holds the response error
-      // at the retired quadrature's level).
+      // the BAO wiggles; the workspace note above states the
+      // default's accuracy target).
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 0, tabc);
 
@@ -741,6 +744,8 @@ double dC_ks_dlnk_tomo_limber(
       }
     }
     else {
+      // exact fill: one single-node Limber evaluation per dense
+      // (ln k, ln l) node, no upsampling
       dC_ks_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 redshift.shear_nbin, 0, table);
     }
@@ -900,8 +905,8 @@ double dlnC_ks_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles; its default 128 holds the response error
-      // at the retired quadrature's level).
+      // the BAO wiggles; the workspace note above states the
+      // default's accuracy target).
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 1, tabc);
 
@@ -916,6 +921,8 @@ double dlnC_ks_dlnk_tomo_limber(
       }
     }
     else {
+      // exact fill: one single-node Limber evaluation per dense
+      // (ln k, ln l) node, no upsampling
       dC_ks_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 redshift.shear_nbin, 1, table);
     }
@@ -992,9 +999,12 @@ static inline double scuts_abs_lin_full(
     const double dx  // interval width (the uniform ln k spacing)
   )
 {
+  // no sign change on [0, dx]: |v| is the trapezoid over the interval
   if (va*vb >= 0.0) {
     return 0.5*(fabs(va) + fabs(vb))*dx;
   }
+  // v crosses zero at ts (similar triangles: |va| : |vb| splits dx),
+  // so |v| is two triangles, one on each side of the crossing
   const double ts = fabs(va)/(fabs(va) + fabs(vb))*dx;
   return 0.5*fabs(va)*ts + 0.5*fabs(vb)*(dx - ts);
 }
@@ -1006,10 +1016,17 @@ static inline double scuts_abs_lin_part(
     const double tt  // integrate |v| over [0, tt], 0 <= tt <= dx
   )
 {
+  // v at the cut point: the same straight line, evaluated at tt
   const double vt = va + (vb - va)*(tt/dx);
+  // no sign change on [0, tt]: the trapezoid closed by v(tt)
   if (va*vt >= 0.0) {
     return 0.5*(fabs(va) + fabs(vt))*tt;
   }
+  // v changes sign inside [0, tt]. The zero crossing is a property
+  // of the LINE, not of where the integral stops, so the
+  // full-interval formula (from va and vb) still locates it, and
+  // va*vt < 0 guarantees ts < tt. Two triangles again, the second
+  // one cut at tt with height |v(tt)|.
   const double ts = fabs(va)/(fabs(va) + fabs(vb))*dx;
   return 0.5*fabs(va)*ts + 0.5*fabs(vt)*(tt - ts);
 }
@@ -1570,6 +1587,7 @@ double dlnxi_dlnk_pm_tomo(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table = NULL; 
+  // lim = ln k grid: [0..2] = (min, max, step); [3..5] unused here
   static double lim[6];
   static int nlnk;
   static int nkc = 0;     // used coarse ln k count (= nlnk when exact)
@@ -1634,6 +1652,10 @@ double dlnxi_dlnk_pm_tomo(
       // upsamples every (xi_+/-, pair, angular bin) row onto the
       // unchanged dense ln k grid (spline_coeffs_uniform + Horner at
       // the offsets precomputed in the rebuild block above)
+      //
+      // the f loop stays serial: every nointerp call runs its own
+      // OpenMP-parallel fills inside, so threading it here would
+      // only nest parallel regions
       for (int f=0; f<nkc; f++) {
         double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*dkc));
         for (int p=0; p<2; p++) {
@@ -1653,6 +1675,20 @@ double dlnxi_dlnk_pm_tomo(
           spline_coeffs_uniform(tabc[p][q], nkc, dkc, cspl[p][q]);
         }
       }
+      // Evaluate each row's spline at every fine ln k node, in
+      // Horner form. On coarse interval [j, j+1] the cubic is
+      //
+      //   S(x_j + u) = y_j + b u + c_j u^2 + d u^3,
+      //
+      // with c_j = S''(x_j)/2 from spline_coeffs_uniform, and two
+      // conditions fix the remaining coefficients:
+      //
+      //   S(x_{j+1}) = y_{j+1} (hit the right node)  -> b
+      //   S'' linear from 2 c_j to 2 c_{j+1}         -> d
+      //
+      // - the same evaluation spline2d_upsample_uniform uses
+      // (basics.c). qidx/qdel hold each fine node's coarse interval
+      // j and offset u, precomputed once in the rebuild block.
       #pragma omp parallel for collapse(3) schedule(static)
       for (int p=0; p<2; p++) {
         for (int q=0; q<nrows; q++) {
@@ -1670,6 +1706,9 @@ double dlnxi_dlnk_pm_tomo(
       }
     }
     else {
+      // exact build: one nointerp call per dense ln k node (the f
+      // loop stays serial - each call parallelizes internally - and
+      // each call returns every row at that node)
       for (int f=0; f<nlnk; f++) {
         double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*lim[2]));
         for (int p=0; p<2; p++) {
@@ -1986,6 +2025,7 @@ double dlnw_ks_dlnk_tomo(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
+  // lim = ln k grid: (min, max, step)
   static double lim[3];
   static int nlnk;
   static int nkc = 0;     // used coarse ln k count (= nlnk when exact)
@@ -2050,7 +2090,8 @@ double dlnw_ks_dlnk_tomo(
   {
     if (nkc < nlnk) {
       // coarse exact nointerp builds + house cubic upsample in ln k,
-      // as in dlnxi_dlnk_pm_tomo above
+      // as in dlnxi_dlnk_pm_tomo above (serial f loop for the same
+      // nesting reason: each nointerp call parallelizes internally)
       for (int f=0; f<nkc; f++) {
         double* tmp = dlnw_ks_dlnk_tomo_nointerp(exp(lim[0] + f*dkc));
         for (int nz=0; nz<NSIZE; nz++) {
@@ -2066,6 +2107,9 @@ double dlnw_ks_dlnk_tomo(
       for (int q=0; q<nrows; q++) {
         spline_coeffs_uniform(tabc[q], nkc, dkc, cspl[q]);
       }
+      // same Horner spline evaluation as dlnxi_dlnk_pm_tomo above
+      // (b hits the right node, d makes S'' linear; qidx/qdel are
+      // the precomputed interval and offset of each fine node)
       #pragma omp parallel for collapse(2) schedule(static)
       for (int q=0; q<nrows; q++) {
         for (int f=0; f<nlnk; f++) {
@@ -2080,6 +2124,8 @@ double dlnw_ks_dlnk_tomo(
       }
     }
     else {
+      // exact build: one nointerp call per dense ln k node, as in
+      // dlnxi_dlnk_pm_tomo above
       for (int f=0; f<nlnk; f++) {
         double* tmp = dlnw_ks_dlnk_tomo_nointerp(exp(lim[0] + f*lim[2]));
         for (int nz=0; nz<NSIZE; nz++) {
