@@ -2700,6 +2700,13 @@ double C_ss_tomo_limber(
   static int nell;
   static gsl_integration_glfixed_table* w = NULL;
   static double* lx = NULL;
+  static int ncoarse = 0;  // active internal coarse grid size (0 = off)
+  static double dlnc = 0.; // coarse grid spacing in ln(ell)
+  static double* lxc = NULL;    // coarse ell nodes
+  static int* qidx = NULL;      // fine node -> coarse interval (uniform
+  static double* qdel = NULL;   //   grids: precomputed, no search)
+  static double*** tabc = NULL; // coarse C_ell values
+  static double*** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[4], Ntable.random))
   {
@@ -2731,6 +2738,66 @@ double C_ss_tomo_limber(
     for (int i = 0; i < nell; i++) {
       lx[i] = exp(lim[0] + i * lim[2]);
     }
+
+    // Coarse-grid workspace (the strategy is explained where the grid
+    // is used, in the refill block below): every allocation lives
+    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // fills. The pieces are:
+    //   lxc        - the ncoarse ell nodes, log-spaced over the same
+    //                [lim[0], lim[1]] range as the fine table
+    //   tabc, cspl - the coarse C_ell values and their cubic-spline
+    //                coefficients, one row per (EE/BB, bin pair)
+    //   qidx, qdel - for each fine node, the coarse interval it falls
+    //                in and its ln(ell) offset from that interval's
+    //                left node: both grids are uniform in ln(ell) with
+    //                shared endpoints, so this is pure grid geometry,
+    //                computed once - no search of any kind at refill
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nc = Ntable.N_ell_internal;
+    ncoarse = (nc > 3 && nc < nell) ? nc : 0;
+    if (ncoarse > 0) {
+      dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
+      lxc = (double*) malloc1d(ncoarse);
+      for (int i=0; i<ncoarse; i++) {
+        lxc[i] = exp(lim[0] + i*dlnc);
+      }
+      qidx = (int*) malloc(sizeof(int) * nell);
+      qdel = (double*) malloc1d(nell);
+      for (int i=0; i<nell; i++) {
+        // Where does fine node i sit on the coarse grid? Both grids
+        // run over the same [lim[0], lim[1]] in ln(ell), so the map
+        // is pure arithmetic:
+        //
+        //   fine node i -> ln(ell) = lim[0] + i*lim[2]
+        //               -> r = i*lim[2]/dlnc   (coarse spacings in)
+        //               -> j = (int) r         (interval's left node)
+        //               -> qdel = (r - j)*dlnc (offset inside it)
+        //
+        // The spline evaluates on interval [j, j+1], so the largest
+        // legal j is ncoarse-2, the left node of the LAST interval.
+        //
+        // Why the clamp: at the shared top endpoint, i*lim[2] and
+        // (ncoarse-1)*dlnc are two floating-point roundings of the
+        // same length lim[1] - lim[0]. r can therefore land one ulp
+        // above ncoarse-1 and truncate to j = ncoarse-1 - one past
+        // the last interval. The clamp moves that node back onto the
+        // last interval, where it evaluates at (at most one ulp
+        // past) the interval's right endpoint.
+        const double r = (double) i * lim[2] / dlnc;
+        int j = (int) r;
+        if (j > ncoarse - 2) {
+          j = ncoarse - 2;
+        }
+        qidx[i] = j;
+        qdel[i] = (r - j) * dlnc; // offset from node j, in ln(ell)
+      }
+      tabc = (double***) malloc3d(2, tomo.shear_Npowerspectra, ncoarse);
+      cspl = (double***) malloc3d(2, tomo.shear_Npowerspectra, ncoarse);
+    }
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -2744,45 +2811,83 @@ double C_ss_tomo_limber(
     
     cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 
-    const int nc = Ntable.N_ell_internal;
-    if (nc > 3 && nc < nell) {
-      // Internal coarse grid: the exact quadrature runs on nc log-spaced
-      // nodes over the same [lim[0], lim[1]] range and a cubic spline
-      // upsamples each (component, pair) row onto the unchanged N_ell
-      // grid. C_l^ss is smooth in ln l, so the spline error sits orders
-      // of magnitude below the quadrature accuracy; N_ell_internal = 0
-      // restores the exact per-node quadrature (the A/B switch).
-      const double dc = (lim[1] - lim[0]) / ((double) nc - 1.0);
-      double* lnlc = (double*) malloc1d(nc);
-      double* lxc  = (double*) malloc1d(nc);
-      for (int i=0; i<nc; i++) {
-        lnlc[i] = lim[0] + i*dc;
-        lxc[i]  = exp(lnlc[i]);
-      }
-      double*** tabc = (double***) malloc3d(2, tomo.shear_Npowerspectra, nc);
-      zero3d(tabc, 2, tomo.shear_Npowerspectra, nc);
+    if (ncoarse > 0) {
+      // ---------------------------------------------------------------
+      // The internal coarse grid: general strategy.
+      //
+      // The real-space projections (xi_pm_tomo, via the shared ss_
+      // struct and C_ss_tomo_limber_fill) read this table at every
+      // integer ell up to Ntable.LMAX ~ 1e5 inside their Legendre
+      // sums. At that call rate only the optimized, vectorized LINEAR
+      // read is affordable: a cubic-spline lookup per ell would
+      // dominate the whole evaluation.
+      //
+      // A linear read, however, is only accurate on a DENSE table -
+      // and each of the N_ell = 512 nodes costs one exact Limber
+      // quadrature, which is the expensive part.
+      //
+      // The coarse grid splits the difference: a cubic spline carries
+      // far more accuracy per node than a linear segment, so the
+      // expensive quadratures run on few nodes and a cheap cubic
+      // upsampling fills the dense table:
+      //
+      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //     -> spline_coeffs_uniform: one tridiagonal solve per row
+      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> the unchanged dense table
+      //     -> the same fast linear reads by every consumer
+      //
+      // This is safe because
+      // C_ss is smooth in ln(ell); C_gg keeps the exact grid - its
+      // BAO wiggles would be undersampled (see its header).
+      // ---------------------------------------------------------------
+      zero3d(tabc, 2, tomo.shear_Npowerspectra, ncoarse);
 
-      C_ss_tomo_limber_work(&cn, lxc, nc, tomo.shear_Npowerspectra, tabc);
+      C_ss_tomo_limber_work(&cn, lxc, ncoarse, tomo.shear_Npowerspectra,
+                            tabc);
 
+      const double hc = dlnc;
+      const double inv_hc = 1.0/dlnc;
       #pragma omp parallel for collapse(2) schedule(static)
       for (int c=0; c<2; c++) {
         for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-          gsl_interp_accel* acc = gsl_interp_accel_alloc();
-          gsl_spline* spl = gsl_spline_alloc(gsl_interp_cspline, nc);
-          gsl_spline_init(spl, lnlc, tabc[c][nz], nc);
-          for (int i=0; i<nell; i++) {
-            // clamp against 1-ulp overshoot of the shared endpoints
-            const double xq = fmin(fmax(lim[0] + i*lim[2], lnlc[0]),
-                                   lnlc[nc-1]);
-            table[c][nz][i] = gsl_spline_eval(spl, xq, acc);
-          }
-          gsl_spline_free(spl);
-          gsl_interp_accel_free(acc);
+          spline_coeffs_uniform(tabc[c][nz], ncoarse, hc, cspl[c][nz]);
         }
       }
-      free(tabc);
-      free(lxc);
-      free(lnlc);
+      // Upsampling. On interval [x_j, x_j + h] the house spline
+      // (spline_coeffs_uniform) is the cubic
+      //
+      //   S(x_j + dx) = y_j + b dx + c_j dx^2 + d dx^3
+      //
+      // where c is the coefficient array the tridiagonal solve above
+      // produced: the spline's second derivative / 2, with natural
+      // boundaries c_0 = c_{n-1} = 0.
+      //
+      // The other two coefficients follow from two conditions:
+      //
+      //   S'' runs linearly from 2 c_j to 2 c_{j+1}
+      //     -> d = (c_{j+1} - c_j) / (3 h)
+      //
+      //   S(x_{j+1}) = y_{j+1}, interpolate the right node
+      //     -> b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3
+      //
+      // The polynomial is evaluated in Horner form; qidx/qdel hold
+      // each fine node's precomputed interval j and offset dx.
+      #pragma omp parallel for collapse(3) schedule(static)
+      for (int c=0; c<2; c++) {
+        for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
+          for (int i=0; i<nell; i++) {
+            const double* restrict y = tabc[c][nz];
+            const double* restrict cc = cspl[c][nz];
+            const int j = qidx[i];
+            const double b = (y[j+1] - y[j])*inv_hc
+                             - hc*(cc[j+1] + 2.0*cc[j])/3.0;
+            const double d = (cc[j+1] - cc[j])/(3.0*hc);
+            table[c][nz][i] =
+                y[j] + qdel[i]*(b + qdel[i]*(cc[j] + qdel[i]*d));
+          }
+        }
+      }
     }
     else {
       C_ss_tomo_limber_work(&cn, lx, nell, tomo.shear_Npowerspectra, table);
@@ -3632,6 +3737,15 @@ double C_gs_tomo_limber(
   static double* lx = NULL;
   static double* ep = NULL;
   static double* ep2 = NULL;
+  static int ncoarse = 0;  // active internal coarse grid size (0 = off)
+  static double dlnc = 0.; // coarse grid spacing in ln(ell)
+  static double* lxc = NULL;   // coarse ell nodes
+  static double* epc = NULL;   // coarse ell prefactors (as ep/ep2)
+  static double* ep2c = NULL;
+  static int* qidx = NULL;     // fine node -> coarse interval (uniform
+  static double* qdel = NULL;  //   grids: precomputed, no search)
+  static double** tabc = NULL; // coarse C_ell values
+  static double** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[6], Ntable.random)) {
     nell   = Ntable.N_ell;
@@ -3664,12 +3778,100 @@ double C_gs_tomo_limber(
     if (ep2 != NULL) free(ep2);
     ep2 = (double*) malloc1d(nell);
 
+    // Curved-sky (extended Limber) ell prefactors, tabulated per node
+    // (1812.05995 eqs 74-79). The Limber kernel is evaluated at
+    // k = (l + 1/2)/chi, and each projected field carries the exact
+    // prefactor of its spin:
+    //
+    //   ep  = l(l+1)/(l+1/2)^2                  magnification (the
+    //         angular Laplacian eigenvalue l(l+1) over the flat-sky
+    //         (l+1/2)^2)
+    //
+    //   ep2 = sqrt((l-1)l(l+1)(l+2))/(l+1/2)^2  shear (the spin-2
+    //         factor sqrt((l+2)!/(l-2)!) from two covariant
+    //         derivatives acting on the lensing potential)
+    //
+    // Both approach 1 for l >> 1 (the flat-sky limit). At l = 1 the
+    // (l-1) factor makes ep2 exactly zero - a spin-2 field has no
+    // l < 2 multipoles - which the (tmp > 0) guard implements without
+    // taking the sqrt of a negative rounding.
     for (int i = 0; i < nell; i++) {
       lx[i] = exp(lim[0] + i * lim[2]);
       const double ell = lx[i] + 0.5;
       ep[i] = lx[i]*(lx[i]+1.)/(ell*ell);
       const double tmp = (lx[i]-1.)*lx[i]*(lx[i]+1.)*(lx[i]+2.);
       ep2[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
+    }
+
+    // Coarse-grid workspace (the strategy is explained where the grid
+    // is used, in the refill block below): every allocation lives
+    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // fills. The pieces are:
+    //   lxc, epc, ep2c - the ncoarse ell nodes, log-spaced over the
+    //                same [lim[0], lim[1]] range as the fine table,
+    //                and their curved-sky prefactors: the same
+    //                formulas tabulated for the fine grid above,
+    //                evaluated on the coarse nodes
+    //   tabc, cspl - the coarse C_ell values and their cubic-spline
+    //                coefficients, one row per (lens, source) pair
+    //   qidx, qdel - for each fine node, the coarse interval it falls
+    //                in and its ln(ell) offset from that interval's
+    //                left node: both grids are uniform in ln(ell) with
+    //                shared endpoints, so this is pure grid geometry,
+    //                computed once - no search of any kind at refill
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (epc  != NULL) { free(epc);  epc  = NULL; }
+    if (ep2c != NULL) { free(ep2c); ep2c = NULL; }
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nc = Ntable.N_ell_internal;
+    ncoarse = (nc > 3 && nc < nell) ? nc : 0;
+    if (ncoarse > 0) {
+      dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
+      lxc  = (double*) malloc1d(ncoarse);
+      epc  = (double*) malloc1d(ncoarse);
+      ep2c = (double*) malloc1d(ncoarse);
+      for (int i=0; i<ncoarse; i++) {
+        lxc[i] = exp(lim[0] + i*dlnc);
+        const double ell = lxc[i] + 0.5;
+        epc[i] = lxc[i]*(lxc[i]+1.)/(ell*ell);
+        const double tmp = (lxc[i]-1.)*lxc[i]*(lxc[i]+1.)*(lxc[i]+2.);
+        ep2c[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
+      }
+      qidx = (int*) malloc(sizeof(int) * nell);
+      qdel = (double*) malloc1d(nell);
+      for (int i=0; i<nell; i++) {
+        // Where does fine node i sit on the coarse grid? Both grids
+        // run over the same [lim[0], lim[1]] in ln(ell), so the map
+        // is pure arithmetic:
+        //
+        //   fine node i -> ln(ell) = lim[0] + i*lim[2]
+        //               -> r = i*lim[2]/dlnc   (coarse spacings in)
+        //               -> j = (int) r         (interval's left node)
+        //               -> qdel = (r - j)*dlnc (offset inside it)
+        //
+        // The spline evaluates on interval [j, j+1], so the largest
+        // legal j is ncoarse-2, the left node of the LAST interval.
+        //
+        // Why the clamp: at the shared top endpoint, i*lim[2] and
+        // (ncoarse-1)*dlnc are two floating-point roundings of the
+        // same length lim[1] - lim[0]. r can therefore land one ulp
+        // above ncoarse-1 and truncate to j = ncoarse-1 - one past
+        // the last interval. The clamp moves that node back onto the
+        // last interval, where it evaluates at (at most one ulp
+        // past) the interval's right endpoint.
+        const double r = (double) i * lim[2] / dlnc;
+        int j = (int) r;
+        if (j > ncoarse - 2) {
+          j = ncoarse - 2;
+        }
+        qidx[i] = j;
+        qdel[i] = (r - j) * dlnc; // offset from node j, in ln(ell)
+      }
+      tabc = (double**) malloc2d(tomo.ggl_Npowerspectra, ncoarse);
+      cspl = (double**) malloc2d(tomo.ggl_Npowerspectra, ncoarse);
     }
   }
 
@@ -3694,48 +3896,77 @@ double C_gs_tomo_limber(
       }
     }
 
-    const int nc = Ntable.N_ell_internal;
-    if (nc > 3 && nc < nell) {
-      // Internal coarse grid + cubic-spline upsampling, as in
-      // C_ss_tomo_limber (see the note there); C_l^gs is equally smooth
-      // in ln l. N_ell_internal = 0 restores the exact quadrature.
-      const double dc = (lim[1] - lim[0]) / ((double) nc - 1.0);
-      double* lnlc = (double*) malloc1d(nc);
-      double* lxc  = (double*) malloc1d(nc);
-      double* epc  = (double*) malloc1d(nc);
-      double* ep2c = (double*) malloc1d(nc);
-      for (int i=0; i<nc; i++) {
-        lnlc[i] = lim[0] + i*dc;
-        lxc[i]  = exp(lnlc[i]);
-        const double ell = lxc[i] + 0.5;
-        epc[i] = lxc[i]*(lxc[i]+1.)/(ell*ell);
-        const double tmp = (lxc[i]-1.)*lxc[i]*(lxc[i]+1.)*(lxc[i]+2.);
-        ep2c[i] = (tmp > 0) ? sqrt(tmp)/(ell*ell) : 0.0;
-      }
-      double** tabc = (double**) malloc2d(tomo.ggl_Npowerspectra, nc);
-      zero2d(tabc, tomo.ggl_Npowerspectra, nc);
+    if (ncoarse > 0) {
+      // ---------------------------------------------------------------
+      // The internal coarse grid: general strategy.
+      //
+      // The real-space projections (w_gammat_tomo, via the shared gs_
+      // struct and C_gs_tomo_limber_fill) read this table at every
+      // integer ell up to Ntable.LMAX ~ 1e5 inside their Legendre
+      // sums. At that call rate only the optimized, vectorized LINEAR
+      // read is affordable: a cubic-spline lookup per ell would
+      // dominate the whole evaluation.
+      //
+      // A linear read, however, is only accurate on a DENSE table -
+      // and each of the N_ell = 512 nodes costs one exact Limber
+      // quadrature, which is the expensive part.
+      //
+      // The coarse grid splits the difference: a cubic spline carries
+      // far more accuracy per node than a linear segment, so the
+      // expensive quadratures run on few nodes and a cheap cubic
+      // upsampling fills the dense table:
+      //
+      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //     -> spline_coeffs_uniform: one tridiagonal solve per row
+      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> the unchanged dense table
+      //     -> the same fast linear reads by every consumer
+      //
+      // This is safe because
+      // C_gs is smooth in ln(ell); C_gg keeps the exact grid - its
+      // BAO wiggles would be undersampled (see its header).
+      // ---------------------------------------------------------------
+      zero2d(tabc, tomo.ggl_Npowerspectra, ncoarse);
 
-      C_gs_tomo_limber_work(cn_all, lxc, epc, ep2c, nc, 0, tabc);
+      C_gs_tomo_limber_work(cn_all, lxc, epc, ep2c, ncoarse, 0, tabc);
 
+      const double hc = dlnc;
+      const double inv_hc = 1.0/dlnc;
       #pragma omp parallel for schedule(static)
       for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
-        gsl_interp_accel* acc = gsl_interp_accel_alloc();
-        gsl_spline* spl = gsl_spline_alloc(gsl_interp_cspline, nc);
-        gsl_spline_init(spl, lnlc, tabc[nz], nc);
-        for (int i=0; i<nell; i++) {
-          // clamp against 1-ulp overshoot of the shared endpoints
-          const double xq = fmin(fmax(lim[0] + i*lim[2], lnlc[0]),
-                                 lnlc[nc-1]);
-          table[nz][i] = gsl_spline_eval(spl, xq, acc);
-        }
-        gsl_spline_free(spl);
-        gsl_interp_accel_free(acc);
+        spline_coeffs_uniform(tabc[nz], ncoarse, hc, cspl[nz]);
       }
-      free(tabc);
-      free(lxc);
-      free(lnlc);
-      free(epc);
-      free(ep2c);
+      // Upsampling. On interval [x_j, x_j + h] the house spline
+      // (spline_coeffs_uniform) is the cubic
+      //
+      //   S(x_j + dx) = y_j + b dx + c_j dx^2 + d dx^3
+      //
+      // where c is the coefficient array the tridiagonal solve above
+      // produced: the spline's second derivative / 2, with natural
+      // boundaries c_0 = c_{n-1} = 0.
+      //
+      // The other two coefficients follow from two conditions:
+      //
+      //   S'' runs linearly from 2 c_j to 2 c_{j+1}
+      //     -> d = (c_{j+1} - c_j) / (3 h)
+      //
+      //   S(x_{j+1}) = y_{j+1}, interpolate the right node
+      //     -> b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3
+      //
+      // The polynomial is evaluated in Horner form; qidx/qdel hold
+      // each fine node's precomputed interval j and offset dx.
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
+        for (int i=0; i<nell; i++) {
+          const double* restrict y = tabc[nz];
+          const double* restrict cc = cspl[nz];
+          const int j = qidx[i];
+          const double b = (y[j+1] - y[j])*inv_hc
+                           - hc*(cc[j+1] + 2.0*cc[j])/3.0;
+          const double d = (cc[j+1] - cc[j])/(3.0*hc);
+          table[nz][i] = y[j] + qdel[i]*(b + qdel[i]*(cc[j] + qdel[i]*d));
+        }
+      }
     }
     else {
       C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, 0, table);
