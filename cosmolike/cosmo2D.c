@@ -6151,6 +6151,10 @@ typedef struct config
 //   N       - per-component sizes: N[j][0] = N_pad, N[j][1] = Nx,
 //             N[j][2] = FFT size
 //   Nmax    - max(N[j][2]) across all components
+//   active  - per-(row, component) activity mask [SIZE1][SIZE2], or NULL
+//             for all active: an inactive (i, j) slot skips its forward
+//             FFT and writes zero coefficients (callers whose slots hold
+//             identically zero kernels save the transform)
 //   SIZE1   - number of radial rows (bins)
 //   SIZE2   - number of radial components per row (2 or 3)
 //
@@ -6166,6 +6170,7 @@ void cfftlog_ells_p1(
     double* const* const eta_m,             // output Fourier frequencies [SIZE2][Nmax/2+1]
     int N[][3],                             // per-component sizes: N[j][0]=N_pad, N[j][1]=Nx, N[j][2]=FFT size
     int const Nmax,                         // max(N[j][2]) across all components
+    const int* const* const active,         // activity mask [SIZE1][SIZE2]; NULL = all active
     int const SIZE1,                        // number of radial rows (bins)
     int const SIZE2                         // number of radial components (2 without magnification, 3 with)
   )
@@ -6189,6 +6194,9 @@ void cfftlog_ells_p1(
   #pragma omp parallel for collapse(2) schedule(static)
   for(int i=0; i<SIZE1; i++) {
     for(int j=0; j<SIZE2; j++) {
+      if (active != NULL && !active[i][j]) {
+        continue; // slot skipped: fb never read (the FFT below skips too)
+      }
       for(int k=0; k<N[j][0]; k++) {
         fb[i][j][k] = 0.; // padding
       }
@@ -6257,6 +6265,12 @@ void cfftlog_ells_p1(
   #pragma omp parallel for collapse(2) schedule(static)
   for(int i=0; i<SIZE1; i++) {
     for(int j=0; j<SIZE2; j++) {
+      if (active != NULL && !active[i][j]) { // zero coefficients, no FFT
+        for (int q=0; q<Nmax/2+1; q++) {
+          toutfwd[i*SIZE2+j][q] = 0.0;
+        }
+        continue;
+      }
       fftw_execute_dft_r2c(planf[j], fb[i][j], toutfwd[i*SIZE2+j]);
       // c_window_cfft function begins -----------------------------------------
       const int halfN = N[j][2]/2;
@@ -6364,6 +6378,9 @@ void cfftlog_ells_p1(
 //   ke        - last multipole in this block (exclusive)
 //   converged - per-row skip flags [SIZE1]: row i is skipped when
 //               converged[i] = 1
+//   active    - per-(row, component) activity mask [SIZE1][SIZE2], or
+//               NULL for all active: an inactive (i, j) slot skips its
+//               inverse FFTs and zero-fills Fy[i][j] for the block
 //   SIZE1     - number of radial rows (bins)
 //   SIZE2     - number of radial components per row (2 or 3)
 //
@@ -6384,6 +6401,7 @@ void cfftlog_ells_p2(
     int const ks,                           // first multipole in this block (inclusive)
     int const ke,                           // last multipole in this block (exclusive)
     const int* const converged,             // per-row skip flags [SIZE1]; 1 = skip row i
+    const int* const* const active,         // activity mask [SIZE1][SIZE2]; NULL = all active
     int const SIZE1,                        // number of radial rows (bins)
     int const SIZE2                         // number of radial components (2 or 3)
   )
@@ -6690,6 +6708,12 @@ void cfftlog_ells_p2(
     #pragma omp parallel for collapse(2) schedule(static)
     for(int j=0; j<SIZE2; j++) {
       for (int k=ks; k<kmax; k++) { 
+        if (active != NULL && !active[i][j]) { // zero kernel: no inverse FFT
+          for (int q=0; q<Nx; q++) {
+            Fy[i][j][k][q] = 0.0;
+          }
+          continue;
+        }
 #ifdef _OPENMP
         const int id = omp_get_thread_num(); 
 #else
@@ -7025,6 +7049,7 @@ void C_cl_tomo(
                   (double* const* const) eta_m, 
                   N, 
                   Nmax, 
+                  NULL, // SIZE2 already drops the mag slot when bmag = 0
                   nbins, 
                   SIZE2);
 
@@ -7055,6 +7080,7 @@ void C_cl_tomo(
                      ks, 
                      ke,
                      converged,
+                     NULL, // all slots active (see the p1 call)
                      nbins, 
                      SIZE2);
     if (0 != is_bmag_zero) { // this is the case where gbmag = 0 (avoid garbage)
@@ -7487,6 +7513,30 @@ void C_gs_tomo(
       Nmax = N[j][2];
   }
 
+  // Per-(row, slot) activity mask: most slots hold identically zero
+  // kernels (see the fx assembly above), and cfftlog would transform
+  // zeros. Lens rows: density always; RSD only when include_RSD_GS;
+  // magnification only when some gbmag != 0 (the kernel is nonzero
+  // either way, but the Cl sum multiplies it by bmag). Source rows:
+  // the combined lensing + IA kernel lives in slot 2 alone.
+  int gs_bmag_zero = 1;
+  for (int i=0; i<nlens; i++) {
+    if (gbmag(0., i) != 0) {
+      gs_bmag_zero = 0;
+    }
+  }
+  int** active = (int**) malloc2d_int(SIZE1, SIZE2);
+  for (int i=0; i<nlens; i++) {
+    active[i][0] = 1;
+    active[i][1] = (1 == include_RSD_GS) ? 1 : 0;
+    active[i][2] = (0 == gs_bmag_zero) ? 1 : 0;
+  }
+  for (int js=0; js<nsrc; js++) {
+    active[nlens + js][0] = 0;
+    active[nlens + js][1] = 0;
+    active[nlens + js][2] = 1;
+  }
+
   fftw_complex** toutfwd = (fftw_complex**) malloc2d_fftwc(SIZE1*SIZE2, Nmax/2+1);
 
   double** eta_m = (double**) malloc2d(SIZE2, Nmax/2+1);
@@ -7499,6 +7549,7 @@ void C_gs_tomo(
                   (double* const* const) eta_m,
                   N,
                   Nmax,
+                  (const int* const* const) active,
                   SIZE1,
                   SIZE2);
 
@@ -7555,6 +7606,7 @@ void C_gs_tomo(
                      ks,
                      ke,
                      row_done,
+                     (const int* const* const) active,
                      SIZE1,
                      SIZE2);
 
@@ -7641,6 +7693,7 @@ void C_gs_tomo(
     }
   }
 
+  free((void*) active);
   free((void*) toutfwd);
   free((void*) eta_m);
   free((void*) PK);
