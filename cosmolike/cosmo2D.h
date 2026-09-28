@@ -156,7 +156,8 @@ void C_gs_tomo_limber_nointerp_ells(
   );
 
 // use_linear_ps = 1: the linear Limber term C_gs_tomo subtracts
-// (D(a)^2 P_lin(k,0), no one-loop bias, IA through C1 only); 0: the full
+// ((D(a)/D(a_piv))^2 P_lin(k, a_piv), the per-lens-bin pivot of the
+// FKEM split, no one-loop bias, IA through C1 only); 0: the full
 // model.
 void C_gs_tomo_limber_linpsopt_nointerp_ells(
     const double* ells,      // array of multipole values (length nell)

@@ -3070,7 +3070,8 @@ double C_gs_tomo_limber_nointerp(
 //   ell_prefactor2 - sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2 per ell (shear)
 //   nell   - number of multipole values
 //   use_linear_ps - 1: the linear counterpart of the FFTLog term of
-//                   C_gs_tomo (D(a)^2 P_lin(k,0), no one-loop
+//                   C_gs_tomo ((D(a)/D(a_piv))^2 P_lin(k, a_piv)
+//                   per lens bin, no one-loop
 //                   bias, IA through C1 only); 0: the full model (Limber
 //                   path)
 //   table  - output array [ggl_Npowerspectra][nell]
@@ -3174,6 +3175,22 @@ static void C_gs_tomo_limber_work(
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
   }
   
+  // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
+  // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
+  double apivw[MAX_SIZE_ARRAYS];
+  double invgf2w[MAX_SIZE_ARRAYS];
+  if (1 == use_linear_ps) {
+    for (int i=0; i<redshift.clustering_nbin; i++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+      apivw[i] = 1.0;
+#else
+      apivw[i] = 1.0/(1.0 + zmean(i));
+#endif
+      const double gfp = growfac(apivw[i]);
+      invgf2w[i] = 1.0/(gfp*gfp);
+    }
+  }
+
   #pragma omp parallel
   {
     // -----------------------------------------------------------------------
@@ -3218,15 +3235,17 @@ static void C_gs_tomo_limber_work(
           const double ell = lx[i] + 0.5;
           const double k = ell / fK;
           const double lnk = log(k);
-          // Linear term: the separable growth D(a)^2*P_lin(k, z=0) of the
-          // FFTLog term, not p_lin(k,a). CAMB's P_lin(k,a)/P_lin(k,1) is
-          // scale dependent (massive neutrinos) and differs from D^2 by
-          // ~1% at z ~ 1, which would keep the FFTLog/Limber pair from
-          // cancelling at high l; with D^2 the difference moves into the
-          // Limber P_delta term, where the FKEM split puts it.
+          // Linear term: the separable spectrum of the FFTLog term,
+          // (D(a)/D(a_piv))^2 * P_lin(k, a_piv) anchored per lens bin,
+          // never p_lin(k,a): CAMB's growth is scale dependent (massive
+          // neutrinos), and only an identical separable form on both
+          // sides lets the FFTLog/Limber pair cancel at high l. The
+          // scale-dependent part of the growth lives in the Limber
+          // P_delta term, where the FKEM split puts it.
           const double gf = cn->data[CN_GROWFAC][p];
           KIA[0][zl][i][p] = (0 == use_linear_ps) ? Pdelta(k, a) :
-                                                    gf*gf*p_lin(k, 1.0);
+                                                    gf*gf*invgf2w[zl]*
+                                       p_lin(k, apivw[zl]);
           if (1 == include_RSD_GS) {
             const double chi_0 = ell/k;
             const double chi_1 = (ell + 1.0)/k;
@@ -3350,7 +3369,8 @@ static void C_gs_tomo_limber_work(
 //   0 - the full model (P_delta, one-loop galaxy bias, NLA or TATT): the
 //       Limber C_l of the likelihood (C_gs_tomo_limber_nointerp_ells);
 //   1 - the linear term that the non-Limber C_gs_tomo subtracts:
-//       D(a)^2 * P_lin(k, z=0), b1 only, IA through C1 only (the exact
+//       (D(a)/D(a_piv))^2 * P_lin(k, a_piv) per lens bin, b1 only,
+//       IA through C1 only (the exact
 //       content of the FFTLog term).
 //
 // Example: w_gammat_tomo with like.adopt_limber_gs = 0 calls C_gs_tomo,
@@ -3776,7 +3796,8 @@ void C_gs_tomo_limber_fill(
 //   ni            - lens redshift bin index (0..redshift.clustering_nbin-1)
 //   nj            - second lens redshift bin index; must equal ni (the data
 //                   vector carries clustering auto spectra only)
-//   use_linear_ps - 1: separable linear spectrum D(a)^2 P_lin(k, z=0), no
+//   use_linear_ps - 1: separable linear spectrum
+//                   (D(a)/D(a_piv))^2 P_lin(k, a_piv) per lens bin, no
 //                   one-loop bias (the linear term C_cl_tomo subtracts);
 //                   0: the full model
 //
@@ -3851,7 +3872,8 @@ double C_gg_tomo_limber_nointerp(
 //
 // over the Gauss-Legendre nodes p of the bin (cn_all), with
 //   ep      = l (l+1) / (l + 1/2)^2           (magnification ell prefactor)
-//   PK      = P_delta(k, a), or D(a)^2 * P_lin(k, z=0) when use_linear_ps = 1,
+//   PK      = P_delta(k, a), or (D(a)/D(a_piv))^2 * P_lin(k, a_piv)
+//             per lens bin when use_linear_ps = 1,
 //             at the Limber wavenumber k = (l + 1/2)/fK
 //   WRSD    = W_RSD(l + 1/2, a_0, a_1, bin), chi_0 = fK, chi_1 = (l + 3/2)/k
 //             (zero unless include_RSD_GG)
@@ -3964,6 +3986,22 @@ static void C_gg_tomo_limber_work(
     KB = (double****) malloc4d(6, nbin, nell, npts);
   }
 
+  // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
+  // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
+  double apivw[MAX_SIZE_ARRAYS];
+  double invgf2w[MAX_SIZE_ARRAYS];
+  if (1 == use_linear_ps) {
+    for (int i=0; i<nbin; i++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+      apivw[i] = 1.0;
+#else
+      apivw[i] = 1.0/(1.0 + zmean(i));
+#endif
+      const double gfp = growfac(apivw[i]);
+      invgf2w[i] = 1.0/(gfp*gfp);
+    }
+  }
+
   #pragma omp parallel
   {
     // -----------------------------------------------------------------------
@@ -3999,16 +4037,17 @@ static void C_gg_tomo_limber_work(
           const double fK  = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
           const double k   = ell/fK;
-          // Linear term: the separable growth D(a)^2*P_lin(k, z=0) of the
-          // FFTLog term of C_cl_tomo, not p_lin(k,a). CAMB's
-          // P_lin(k,a)/P_lin(k,1) is scale dependent (massive neutrinos),
-          // so with p_lin(k,a) the FFTLog/Limber pair would never cancel
-          // at high l; with D^2 the scale-dependent part of the growth
-          // moves into the Limber P_delta term, where the FKEM split
-          // puts it.
+          // Linear term: the separable spectrum of the FFTLog term of
+          // C_cl_tomo, (D(a)/D(a_piv))^2 * P_lin(k, a_piv) anchored per
+          // lens bin, never p_lin(k,a): CAMB's growth is scale dependent
+          // (massive neutrinos), and only an identical separable form on
+          // both sides lets the FFTLog/Limber pair cancel at high l. The
+          // scale-dependent part of the growth lives in the Limber
+          // P_delta term, where the FKEM split puts it.
           const double gf = cn->data[CN_GROWFAC][p];
           KG[0][zl][i][p] = (0 == use_linear_ps) ? Pdelta(k, a) :
-                                                   gf*gf*p_lin(k, 1.0);
+                                                   gf*gf*invgf2w[zl]*
+                                       p_lin(k, apivw[zl]);
           KG[1][zl][i][p] = 0.0;
           KG[2][zl][i][p] = 1.0;
           if (1 == include_RSD_GG) {
@@ -4120,7 +4159,7 @@ static void C_gg_tomo_limber_work(
 // use_linear_ps selects the power spectrum:
 //   0 - the full model (P_delta, one-loop galaxy bias);
 //   1 - the linear term that the non-Limber C_cl_tomo subtracts,
-//       D(a)^2 * P_lin(k, z=0) with b1 only.
+//       (D(a)/D(a_piv))^2 * P_lin(k, a_piv) per lens bin, b1 only.
 //
 // Example: C_cl_tomo calls it twice with ells = 0, 1, ..., 149 to get both
 // Limber terms of the non-Limber split for every lens bin at once.
@@ -6754,9 +6793,11 @@ void cfftlog_ells_p2(
 // (C_gg_tomo_limber_linpsopt_nointerp_ells at l = 0..LMAX_NOLIMBER-1).
 //
 // The FFTLog term needs separable growth, P(k; z1, z2) = D(z1)*D(z2)*
-// P_lin(k, z=0), so the subtracted Limber term uses the same D(a)^2 *
-// P_lin(k, z=0). CAMB's P_lin(k, a) is not separable (massive neutrinos
-// make its growth scale dependent): D(a)^2 differs from P_lin(k,a)/P_lin(k,0)
+// P_lin(k, a_piv)/D(a_piv)^2 anchored per lens bin at
+// a_piv = 1/(1 + zmean(bin)), so the subtracted Limber term uses the
+// identical separable form. CAMB's P_lin(k, a) is not separable (massive
+// neutrinos make its growth scale dependent): D^2 ratios differ from
+// P_lin(k,a)/P_lin(k,a_piv)
 // by 0.7% to 1.6% at z = 0.3 to 1 for the wavenumbers of l ~ 100, and with
 // P_lin(k, a) in the subtracted term the pair never cancels. The
 // scale-dependent part of the growth is carried by the Limber P_delta term.
@@ -6958,6 +6999,24 @@ void C_cl_tomo(
   
   double** eta_m = (double**) malloc2d(SIZE2, Nmax/2+1);
 
+  // FKEM pivot: the separable linear spectrum is anchored per lens bin at
+  // a_piv = 1/(1 + zmean(bin)), where the separable form is exact; the
+  // residual of the separable-growth approximation then grows only across
+  // the bin width instead of from z = 0 (it matters when growth is scale
+  // dependent: massive neutrinos). growfac(1) = 1, so the
+  // COSMO2D_FKEM_PIVOT_Z0 fallback reproduces the z = 0 anchor exactly.
+  double apiv[nbins];
+  double invgf2piv[nbins];
+  for (int i=0; i<nbins; i++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+    apiv[i] = 1.0;
+#else
+    apiv[i] = 1.0/(1.0 + zmean(i));
+#endif
+    const double gfp = growfac(apiv[i]);
+    invgf2piv[i] = 1.0/(gfp*gfp);
+  }
+
   cfftlog_ells_p1((double* const) x, 
                   (double* const* const* const) fx, 
                   nchi, 
@@ -7023,7 +7082,8 @@ void C_cl_tomo(
           const double bmag = gbmag(0.,i);
           const double F = Fy[i][0][k][q] + Fy[i][1][k][q] + 
                            bmag*ell_prefactor*Fy[i][2][k][q]/(ty*ty);
-          vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+          vres[i][k][q] = F*F*(k1cH0*k1cH0*k1cH0)*
+                          p_lin(k1cH0, apiv[i])*invgf2piv[i];
         }
       }
       #pragma omp parallel for
@@ -7155,7 +7215,8 @@ void C_gg_tomo_ells(
 //   C_l = C_l^fftlog(P_lin) + C_l^limber(P_delta) - C_l^limber(P_lin)
 //
 // The first term is the exact projection of the linear power spectrum with
-// separable growth, P(k; z1, z2) = D(z1)*D(z2)*P_lin(k, z=0). The last two
+// separable growth, P(k; z1, z2) = D(z1)*D(z2)/D(z_piv)^2 *
+// P_lin(k, z_piv) anchored per lens bin at z_piv = zmean(bin). The last two
 // terms add in Limber what linear theory misses (nonlinear P_delta, one-loop
 // galaxy bias, TATT terms beyond the linear amplitude C1). The third term
 // uses the same separable spectrum as the first, so at high l the two
@@ -7164,7 +7225,8 @@ void C_gg_tomo_ells(
 //
 // EXACT (FFTLOG) TERM:
 //
-//   C_l^fftlog = (2/pi) * INT dlnk k^3 P_lin(k, 0) * F_lens(k) * F_src(k)
+//   C_l^fftlog = (2/pi) * INT dlnk k^3 P_lin(k, a_piv)/D(a_piv)^2 *
+//                F_lens(k) * F_src(k)
 //
 //   F_lens(k) = INT dlnchi fx_dens(chi) j_l(k chi)
 //             + INT dlnchi fx_rsd(chi) j_l''(k chi)
@@ -7441,7 +7503,21 @@ void C_gs_tomo(
                   SIZE2);
 
   const int BLOCK = 16;
-  double** PK  = (double**) malloc2d(BLOCK, nchi); // (k c/H0)^3 P_lin(k)
+  double*** PK = (double***) malloc3d(redshift.clustering_nbin, BLOCK,
+                                      nchi); // per lens bin (pivot spectrum)
+  // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
+  // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
+  double apivL[redshift.clustering_nbin];
+  double invgf2L[redshift.clustering_nbin];
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+#ifdef COSMO2D_FKEM_PIVOT_Z0
+    apivL[i] = 1.0;
+#else
+    apivL[i] = 1.0/(1.0 + zmean(i));
+#endif
+    const double gfp = growfac(apivL[i]);
+    invgf2L[i] = 1.0/(gfp*gfp);
+  }
   double** IY2 = (double**) malloc2d(BLOCK, nchi); // 1/y^2
   int converged[NSIZE]; // per lens-source pair
   int row_done[SIZE1];  // per radial row: every pair using it converged
@@ -7482,15 +7558,24 @@ void C_gs_tomo(
                      SIZE1,
                      SIZE2);
 
-    // y does not depend on the row, so P_lin is evaluated once per (l, q)
-    // and shared by every pair (C_cl_tomo evaluates it per bin).
+    // y does not depend on the row, so P_lin is evaluated once per
+    // (lens bin, l, q) and shared by every source pair of that lens bin
+    // (the pivot spectrum differs per lens bin).
     #pragma omp parallel for collapse(2) schedule(static)
     for (int k=ks; k<ke; k++) {
       for (int q=0; q<nchi; q++) {
-        const double ty    = y[0][k][q];
-        const double k1cH0 = ty*real_coverH0;
-        PK[k-ks][q]  = (k1cH0*k1cH0*k1cH0)*p_lin(k1cH0,1);
+        const double ty = y[0][k][q];
         IY2[k-ks][q] = 1.0/(ty*ty);
+      }
+    }
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int zl=0; zl<redshift.clustering_nbin; zl++) {
+      for (int k=ks; k<ke; k++) {
+        for (int q=0; q<nchi; q++) {
+          const double k1cH0 = y[0][k][q]*real_coverH0;
+          PK[zl][k-ks][q] = (k1cH0*k1cH0*k1cH0)*
+                            p_lin(k1cH0, apivL[zl])*invgf2L[zl];
+        }
       }
     }
 
@@ -7511,7 +7596,7 @@ void C_gs_tomo(
         const double* restrict fr  = Fy[zl][1][k];
         const double* restrict fm  = Fy[zl][2][k];
         const double* restrict fs  = Fy[nlens + zs][2][k];
-        const double* restrict pk  = PK[k-ks];
+        const double* restrict pk  = PK[zl][k-ks];
         const double* restrict iy2 = IY2[k-ks];
         double sum = 0.0;
         #pragma omp simd reduction(+:sum)
