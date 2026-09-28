@@ -171,7 +171,37 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
   `g_tomo`/`g2_tomo`/`g_lens` (factored cumulative trapezoid, P − chi*Q).
 - `cfftlog/` — non-Limber pipeline; `cfftlog_ells_cocoa0` hoists the
   ell-independent forward FFT out of the convergence loop.
-- `basics.c` — allocators, `zero*d`, interpolation utilities.
+- `basics.c` — allocators, `zero*d`, interpolation utilities
+  (`spline_coeffs_uniform` + direct-index Horner is the house spline;
+  `spline2d_upsample_uniform` its tensor-product 2D form).
+
+## Accuracy knobs
+
+`init_accuracy_boost(accuracy_boost, integration_accuracy)`
+(generic_interface.cpp) is the GLOBAL SUPER FUNCTION for sampling
+accuracy: one call scales every sampling knob from its first-call
+baseline (repeated calls rescale the same baselines — they never
+compound):
+
+- ceil(baseline x boost): `Ntable.N_a`, `N_ell`, `N_ell_internal`,
+  `dCX_dlnk_nlnk`, `dCX_dlnk_nlnk_internal`, `NL_Nchi`,
+  `nz_fine_sampling_factor`
+- baseline x boost (double): `Ntable.FPT_internal_accuracy_boost`
+- also written: `Ntable.FPTboost` (int(boost − 1) for boost > 1;
+  FAST-PT grids) and `Ntable.high_def_integration =
+  integration_accuracy` (the hdi quadrature-order ladders)
+
+The internal coarse grids scale together with their dense tables, so
+the coarse/dense ratios are boost-invariant, and a knob whose
+baseline is 0 (disabled — `dCX_dlnk_nlnk_internal` by default) stays
+0 under any boost. The dedicated setters (`init_ntable_ell_internal`,
+`init_ntable_dcx_dlnk_nlnk_internal`, `init_fpt_internal_boost`, ...)
+are individual overrides: called before the first boost call they
+define the baseline, called after they overwrite the boosted value.
+
+**When adding a new sampling knob, wire it into
+init_accuracy_boost's ladder in the same change** — users must never
+need a second call to shift overall accuracy.
 
 ## Patch review checklist
 

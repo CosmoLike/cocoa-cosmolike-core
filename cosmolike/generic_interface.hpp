@@ -598,6 +598,8 @@ void init_ntable_lmax(
 
 void init_ntable_ell_internal(const int nell_internal);
 
+void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal);
+
 void init_photoz_conventions(
     const int interpolation_type,
     const int zmid_convention

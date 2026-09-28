@@ -909,7 +909,7 @@ double interpol1d(
 //
 //   Dividing through by dx gives the symmetric tridiagonal system:
 //
-//     [1  4  1] [c_1, ..., c_{n-2}]^T = (6/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
+//     [1  4  1] [c_1, ..., c_{n-2}]^T = (3/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
 //
 //   with natural boundary conditions c_0 = c_{n-1} = 0.
 //
@@ -937,26 +937,157 @@ void spline_coeffs_uniform(
     double* restrict c
   )
 {
+  // Thomas algorithm on the system derived in the header: every
+  // interior row reads c_{i-1} + 4 c_i + c_{i+1} = rhs_i with
+  // rhs_i = (3/dx^2)(y_{i-1} - 2 y_i + y_{i+1}), and the natural
+  // boundaries pin c_0 = c_{n-1} = 0.
   double* scratch = (double*) malloc(n * sizeof(double));
-  const double inv_dx2 = 3.0 / (dx * dx);
+  const double inv_dx2 = 3.0 / (dx * dx); // the right side's scale
 
-  c[0] = 0.0;
-  scratch[0] = 0.0;
+  c[0] = 0.0;       // natural boundary: S'' = 0 at the first node
+  scratch[0] = 0.0; // row 1 has no subdiagonal term to eliminate
 
+  // Forward elimination. After this loop, scratch[i] holds the
+  // multiplier m_i = 1/(4 - m_{i-1}) (the off-diagonals are 1, so
+  // m_{i-1} is also the eliminated subdiagonal's weight), and c[i]
+  // holds the partially solved value (rhs_i - c_{i-1}) m_i.
   for (int i = 1; i < n - 1; i++) {
+    // second difference of y: the discrete curvature driving S''
     const double rhs = inv_dx2 * (y[i-1] - 2.0 * y[i] + y[i+1]);
     const double m = 1.0 / (4.0 - scratch[i-1]);
     c[i] = (rhs - c[i-1]) * m;
     scratch[i] = m;
   }
-  c[n-1] = 0.0;
+  c[n-1] = 0.0; // natural boundary: S'' = 0 at the last node
 
+  // Back substitution: remove each row's superdiagonal term (weight
+  // m_i after elimination), last interior row first.
   for (int i = n - 2; i > 0; i--) {
     c[i] -= scratch[i] * c[i+1];
   }
 
   free(scratch);
 }
+
+// ---------------------------------------------------------------------------
+// Natural bicubic upsampling between two uniform 2D grids.
+//
+// The 2D version of the 1D strategy (spline_coeffs_uniform + the
+// direct-index Horner evaluation): a coarse table zc, exact at its
+// nxc x nyc nodes, fills a dense table zf at nxf x nyf nodes. Both
+// grids are uniform along each axis and SHARE their endpoints - that
+// is the contract that makes every interval lookup pure arithmetic
+// (one multiply + one cast, no search).
+//
+// A tensor-product bicubic spline separates into two 1D passes:
+//
+//   pass 1 (along y): each coarse row -> 1D natural cubic spline
+//     -> evaluated at the nyf fine columns -> tmp[nxc][nyf]
+//   pass 2 (along x): each fine column of tmp -> 1D natural cubic
+//     spline -> evaluated at the nxf fine rows -> zf[nxf][nyf]
+//
+// The two passes commute: in exact arithmetic the result is the
+// unique tensor-product natural bicubic interpolant evaluated at the
+// fine nodes, so the order is a convention.
+//
+// Each 1D piece is exactly the house machinery: spline_coeffs_uniform
+// produces the c coefficients, and the cubic
+//
+//   S(x_q + dx) = y_q + b dx + c_q dx^2 + d dx^3
+//     with d = (c_{q+1} - c_q) / (3 h)
+//     and  b = (y_{q+1} - y_q)/h - h (c_{q+1} + 2 c_q)/3
+//
+// is evaluated in Horner form. The fine spacings follow from the
+// shared endpoints (dxf = dxc (nxc-1)/(nxf-1)), and the interval
+// index is clamped onto the last interval against a 1-ulp overshoot
+// of the shared top endpoint, exactly as in the 1D consumers.
+//
+// Cost: O(nxc (nyc + nyf) + nyf (nxc + nxf)) time, O(nxc nyf)
+// scratch. Called once per cache rebuild.
+//
+// PARAMETERS:
+//   zc       - coarse table [nxc][nyc] (malloc2d layout)
+//   nxc, nyc - coarse node counts (>= 4 each)
+//   dxc, dyc - coarse grid spacings along x and y
+//   zf       - output fine table [nxf][nyf] (malloc2d layout)
+//   nxf, nyf - fine node counts
+// ---------------------------------------------------------------------------
+void spline2d_upsample_uniform(
+    double** zc,
+    const int nxc,
+    const int nyc,
+    const double dxc,
+    const double dyc,
+    double** zf,
+    const int nxf,
+    const int nyf
+  )
+{
+  // Shared endpoints fix the fine spacings: both grids span the same
+  // length per axis, so (nxf - 1) dxf = (nxc - 1) dxc, and likewise
+  // along y.
+  const double dxf = dxc * ((double) (nxc - 1)) / ((double) (nxf - 1));
+  const double dyf = dyc * ((double) (nyc - 1)) / ((double) (nyf - 1));
+
+  double** tmp = (double**) malloc2d(nxc, nyf); // exact in x, fine in y
+  const int ncmax = (nxc > nyc) ? nxc : nyc;
+  double* cbuf = (double*) malloc(ncmax * sizeof(double)); // c coefficients
+  double* col  = (double*) malloc(nxc * sizeof(double));   // one x column
+
+  // pass 1 (along y): each coarse row onto the fine columns
+  for (int i=0; i<nxc; i++) {
+    // natural cubic spline through this row: cbuf[q] = S''(y_q)/2
+    spline_coeffs_uniform(zc[i], nyc, dyc, cbuf);
+    const double* restrict y = zc[i];
+    const double* restrict cc = cbuf;
+    for (int j=0; j<nyf; j++) {
+      // fractional coarse position of fine column j: uniform grids
+      // with shared endpoints, so the interval index is one multiply
+      // plus a cast - no search
+      const double r = (double) j * dyf / dyc;
+      int q = (int) r;      // left node of the spline interval [q, q+1]
+      if (q > nyc - 2) { // shared endpoint (up to 1 ulp overshoot)
+        q = nyc - 2;
+      }
+      const double del = (r - q) * dyc; // offset inside the interval
+      // cubic S(y_q + del) = y_q + b del + c_q del^2 + d del^3 with
+      //   S(y_{q+1}) = y_{q+1} (interpolate the right node)  -> b
+      //   S'' linear from 2 c_q to 2 c_{q+1}                 -> d
+      const double b = (y[q+1] - y[q])/dyc - dyc*(cc[q+1] + 2.0*cc[q])/3.0;
+      const double d = (cc[q+1] - cc[q])/(3.0*dyc);
+      tmp[i][j] = y[q] + del*(b + del*(cc[q] + del*d)); // Horner form
+    }
+  }
+
+  // pass 2 (along x): each fine column of tmp onto the fine table
+  for (int j=0; j<nyf; j++) {
+    // gather column j into a contiguous 1D array (tmp rows run
+    // along y, so the x direction is strided)
+    for (int i=0; i<nxc; i++) {
+      col[i] = tmp[i][j];
+    }
+    // same machinery as pass 1, now along x
+    spline_coeffs_uniform(col, nxc, dxc, cbuf);
+    for (int i=0; i<nxf; i++) {
+      const double r = (double) i * dxf / dxc;
+      int q = (int) r;      // left node of the spline interval [q, q+1]
+      if (q > nxc - 2) { // shared endpoint (up to 1 ulp overshoot)
+        q = nxc - 2;
+      }
+      const double del = (r - q) * dxc; // offset inside the interval
+      // the same two conditions fix b and d along x
+      const double b = (col[q+1] - col[q])/dxc
+                       - dxc*(cbuf[q+1] + 2.0*cbuf[q])/3.0;
+      const double d = (cbuf[q+1] - cbuf[q])/(3.0*dxc);
+      zf[i][j] = col[q] + del*(b + del*(cbuf[q] + del*d)); // Horner form
+    }
+  }
+
+  free(col);
+  free(cbuf);
+  free(tmp);
+}
+
 
 
 // ---------------------------------------------------------------------------

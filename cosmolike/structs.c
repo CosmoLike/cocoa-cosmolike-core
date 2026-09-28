@@ -277,7 +277,8 @@ void reset_Ntable_struct(void)
   Ntable.FPTboost=0;
   Ntable.dCX_dlnk_nlnk = 256;
   Ntable.dCX_dlnk_kmin = 1.e-5;
-  Ntable.dCX_dlnk_kmax = 1.e2; 
+  Ntable.dCX_dlnk_kmax = 1.e2;
+  Ntable.dCX_dlnk_nlnk_internal = 0; // exact: ln k carries BAO wiggles 
   Ntable.nz_fine_sampling_factor = 5; // nz fine-sampling (to ensure uniform points)
   Ntable.photoz_interpolation_type = 0; // 0: cspline, 1: linear, 2+: steffen
   Ntable.photoz_zmid_convention = 0;    // 0: z column = Z_LOW (left edges); 1: Z_MID (points)

@@ -2670,6 +2670,11 @@ static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
 // C_ss_tomo_limber_work, then caches it for subsequent lookups. Returns
 // the interpolated value at the requested l via interpol1d.
 //
+// When Ntable.N_ell_internal is active, the exact quadrature instead
+// runs on the internal coarse grid and the house cubic spline
+// upsamples onto the unchanged N_ell nodes (the strategy block inside
+// explains why this wins).
+//
 // Why the table is shared through the ss_ static struct: the
 // real-space projection (xi_pm_tomo) needs C_l at every integer
 // multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
@@ -2677,13 +2682,16 @@ static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
 // likelihood evaluation. Only the vectorized batch reader
 // (C_ss_tomo_limber_fill, which runs the interpol1d linear read four
 // multipoles at a time through AVX2 gathers) sustains that rate;
-// calling this scalar accessor once per multipole would dominate the
+// calling this function one multipole at a time would dominate the
 // whole evaluation.
 //
-// The struct hands that reader the table pointer and its grid
-// geometry directly: builder and reader are called from different
-// places, so the alternative - passing the table through function
-// arguments - would thread it across every call site in between.
+// The struct is how the table travels between the two functions.
+// The builder (this function) and the reader (the _fill) never call
+// each other - the real-space projection calls one, the C_ell paths
+// call the other - so no argument list connects them. Instead the
+// builder publishes the table pointer and the grid geometry (the
+// ln(ell) limits, spacing and node count) in the file-scope struct,
+// and the reader picks them up there.
 //
 // Cache invalidation: recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -3711,6 +3719,11 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 // precomputed ell prefactors, then caches it for subsequent lookups.
 // Returns the interpolated value at the requested l via interpol1d.
 //
+// When Ntable.N_ell_internal is active, the exact quadrature instead
+// runs on the internal coarse grid and the house cubic spline
+// upsamples onto the unchanged N_ell nodes (the strategy block inside
+// explains why this wins).
+//
 // Why the table is shared through the gs_ static struct: the
 // real-space projection (w_gammat_tomo) needs C_l at every integer
 // multipole up to Ntable.LMAX ~ 1e5, for every tomographic pair,
@@ -3718,13 +3731,16 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 // likelihood evaluation. Only the vectorized batch reader
 // (C_gs_tomo_limber_fill, which runs the interpol1d linear read four
 // multipoles at a time through AVX2 gathers) sustains that rate;
-// calling this scalar accessor once per multipole would dominate the
+// calling this function one multipole at a time would dominate the
 // whole evaluation.
 //
-// The struct hands that reader the table pointer and its grid
-// geometry directly: builder and reader are called from different
-// places, so the alternative - passing the table through function
-// arguments - would thread it across every call site in between.
+// The struct is how the table travels between the two functions.
+// The builder (this function) and the reader (the _fill) never call
+// each other - the real-space projection calls one, the C_ell paths
+// call the other - so no argument list connects them. Instead the
+// builder publishes the table pointer and the grid geometry (the
+// ln(ell) limits, spacing and node count) in the file-scope struct,
+// and the reader picks them up there.
 //
 // Only lens-source pairs with redshift overlap contribute (test_zoverlap).
 //
@@ -4677,13 +4693,16 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 // likelihood evaluation. Only the vectorized batch reader
 // (C_gg_tomo_limber_fill, which runs the interpol1d linear read four
 // multipoles at a time through AVX2 gathers) sustains that rate;
-// calling this scalar accessor once per multipole would dominate the
+// calling this function one multipole at a time would dominate the
 // whole evaluation.
 //
-// The struct hands that reader the table pointer and its grid
-// geometry directly: builder and reader are called from different
-// places, so the alternative - passing the table through function
-// arguments - would thread it across every call site in between.
+// The struct is how the table travels between the two functions.
+// The builder (this function) and the reader (the _fill) never call
+// each other - the real-space projection calls one, the C_ell paths
+// call the other - so no argument list connects them. Instead the
+// builder publishes the table pointer and the grid geometry (the
+// ln(ell) limits, spacing and node count) in the file-scope struct,
+// and the reader picks them up there.
 //
 // Cache invalidation: the static table and grid limits rebuild when the
 // table is NULL or Ntable.random changes; the values refill when any of
@@ -5261,16 +5280,24 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 // likelihood evaluation. Only the vectorized batch reader
 // (C_gk_tomo_limber_fill, which runs the interpol1d linear read four
 // multipoles at a time through AVX2 gathers) sustains that rate;
-// calling this scalar accessor once per multipole would dominate the
+// calling this function one multipole at a time would dominate the
 // whole evaluation.
 //
-// The struct hands that reader the table pointer and its grid
-// geometry directly: builder and reader are called from different
-// places, so the alternative - passing the table through function
-// arguments - would thread it across every call site in between.
+// The struct is how the table travels between the two functions.
+// The builder (this function) and the reader (the _fill) never call
+// each other - the real-space projection calls one, the C_ell paths
+// call the other - so no argument list connects them. Instead the
+// builder publishes the table pointer and the grid geometry (the
+// ln(ell) limits, spacing and node count) in the file-scope struct,
+// and the reader picks them up there.
 //
 // Stored values carry no CMB beam or pixel window; w_gk_tomo
 // multiplies its own copy by the beam_cmb/w_pixel filter.
+//
+// When Ntable.N_ell_internal is active, the exact quadrature instead
+// runs on the internal coarse grid and the house cubic spline
+// upsamples onto the unchanged N_ell nodes (the strategy block inside
+// explains why this wins).
 //
 // Cache invalidation: the static table and grid limits rebuild when the
 // table is NULL or Ntable.random changes; the values refill when any of
@@ -5293,6 +5320,14 @@ double C_gk_tomo_limber(const double l, const int ni)
   static double** table = NULL;
   static int nell;
   static double lim[3];
+  static double* lx = NULL;
+  static int ncoarse = 0;  // active internal coarse grid size (0 = off)
+  static double dlnc = 0.; // coarse grid spacing in ln(ell)
+  static double* lxc = NULL;   // coarse ell nodes
+  static int* qidx = NULL;     // fine node -> coarse interval (uniform
+  static double* qdel = NULL;  //   grids: precomputed, no search)
+  static double** tabc = NULL; // coarse C_ell values
+  static double** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[3], Ntable.random)) {
     nell = Ntable.N_ell;
@@ -5307,6 +5342,72 @@ double C_gk_tomo_limber(const double l, const int ni)
     gk_.lim[1] = lim[1];
     gk_.lim[2] = lim[2];
     gk_.nell   = nell;
+
+    if (lx != NULL) free(lx);
+    lx = (double*) malloc1d(nell);
+    for (int i=0; i<nell; i++) {
+      lx[i] = exp(lim[0] + i*lim[2]);
+    }
+
+    // Coarse-grid workspace (the strategy is explained where the grid
+    // is used, in the refill block below): every allocation lives
+    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // fills. The pieces are:
+    //   lxc        - the ncoarse ell nodes, log-spaced over the same
+    //                [lim[0], lim[1]] range as the fine table
+    //   tabc, cspl - the coarse C_ell values and their cubic-spline
+    //                coefficients, one row per lens (clustering) bin
+    //   qidx, qdel - for each fine node, the coarse interval it falls
+    //                in and its ln(ell) offset from that interval's
+    //                left node: both grids are uniform in ln(ell) with
+    //                shared endpoints, so this is pure grid geometry,
+    //                computed once - no search of any kind at refill
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nc = Ntable.N_ell_internal;
+    ncoarse = (nc > 3 && nc < nell) ? nc : 0;
+    if (ncoarse > 0) {
+      dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
+      lxc = (double*) malloc1d(ncoarse);
+      for (int i=0; i<ncoarse; i++) {
+        lxc[i] = exp(lim[0] + i*dlnc);
+      }
+      qidx = (int*) malloc(sizeof(int) * nell);
+      qdel = (double*) malloc1d(nell);
+      for (int i=0; i<nell; i++) {
+        // Where does fine node i sit on the coarse grid? Both grids
+        // run over the same [lim[0], lim[1]] in ln(ell), so the map
+        // is pure arithmetic:
+        //
+        //   fine node i -> ln(ell) = lim[0] + i*lim[2]
+        //               -> r = i*lim[2]/dlnc   (coarse spacings in)
+        //               -> j = (int) r         (interval's left node)
+        //               -> qdel = (r - j)*dlnc (offset inside it)
+        //
+        // The spline evaluates on interval [j, j+1], so the largest
+        // legal j is ncoarse-2, the left node of the LAST interval.
+        //
+        // Why the clamp: at the shared top endpoint, i*lim[2] and
+        // (ncoarse-1)*dlnc are two floating-point roundings of the
+        // same length lim[1] - lim[0]. r can therefore land one ulp
+        // above ncoarse-1 and truncate to j = ncoarse-1 - one past
+        // the last interval. The clamp moves that node back onto the
+        // last interval, where it evaluates at (at most one ulp
+        // past) the interval's right endpoint.
+        const double r = (double) i * lim[2] / dlnc;
+        int j = (int) r;
+        if (j > ncoarse - 2) {
+          j = ncoarse - 2;
+        }
+        qidx[i] = j;
+        qdel[i] = (r - j) * dlnc; // offset from node j, in ln(ell)
+      }
+      tabc = (double**) malloc2d(redshift.clustering_nbin, ncoarse);
+      cspl = (double**) malloc2d(redshift.clustering_nbin, ncoarse);
+    }
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -5315,12 +5416,79 @@ double C_gk_tomo_limber(const double l, const int ni)
       fdiff2(cache[3], Ntable.random) ||
       fdiff2(cache[4], nuisance.random_galaxy_bias))
   {
-    double* lxv = (double*) malloc1d(nell);
-    for (int i=0; i<nell; i++) {
-      lxv[i] = exp(lim[0] + i*lim[2]);
+    if (ncoarse > 0) {
+      // ---------------------------------------------------------------
+      // The internal coarse grid: general strategy.
+      //
+      // The real-space projection (w_gk_tomo, via the shared gk_
+      // struct and C_gk_tomo_limber_fill) reads this table at every
+      // integer ell up to Ntable.LMAX ~ 1e5 inside its Legendre
+      // sums. At that call rate only the optimized, vectorized LINEAR
+      // read is affordable: a cubic-spline lookup per ell would
+      // dominate the whole evaluation.
+      //
+      // A linear read, however, is only accurate on a DENSE table -
+      // and each of the N_ell = 512 nodes costs one exact Limber
+      // quadrature, which is the expensive part.
+      //
+      // The coarse grid splits the difference: a cubic spline carries
+      // far more accuracy per node than a linear segment, so the
+      // expensive quadratures run on few nodes and a cheap cubic
+      // upsampling fills the dense table:
+      //
+      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //     -> spline_coeffs_uniform: one tridiagonal solve per row
+      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> the unchanged dense table
+      //     -> the same fast linear reads by every consumer
+      //
+      // This is safe because the cross-spectrum's BAO features are
+      // mild; C_gg - the auto-spectrum, where the wiggles are
+      // strongest - keeps the exact grid (see its header).
+      // ---------------------------------------------------------------
+      C_gk_tomo_limber_nointerp_ells(lxc, ncoarse, redshift.clustering_nbin, tabc);
+
+      const double hc = dlnc;
+      const double inv_hc = 1.0/dlnc;
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+        spline_coeffs_uniform(tabc[nz], ncoarse, hc, cspl[nz]);
+      }
+      // Upsampling. On interval [x_j, x_j + h] the house spline
+      // (spline_coeffs_uniform) is the cubic
+      //
+      //   S(x_j + dx) = y_j + b dx + c_j dx^2 + d dx^3
+      //
+      // where c is the coefficient array the tridiagonal solve above
+      // produced: the spline's second derivative / 2, with natural
+      // boundaries c_0 = c_{n-1} = 0.
+      //
+      // The other two coefficients follow from two conditions:
+      //
+      //   S'' runs linearly from 2 c_j to 2 c_{j+1}
+      //     -> d = (c_{j+1} - c_j) / (3 h)
+      //
+      //   S(x_{j+1}) = y_{j+1}, interpolate the right node
+      //     -> b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3
+      //
+      // The polynomial is evaluated in Horner form; qidx/qdel hold
+      // each fine node's precomputed interval j and offset dx.
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int nz=0; nz<redshift.clustering_nbin; nz++) {
+        for (int i=0; i<nell; i++) {
+          const double* restrict y = tabc[nz];
+          const double* restrict cc = cspl[nz];
+          const int j = qidx[i];
+          const double b = (y[j+1] - y[j])*inv_hc
+                           - hc*(cc[j+1] + 2.0*cc[j])/3.0;
+          const double d = (cc[j+1] - cc[j])/(3.0*hc);
+          table[nz][i] = y[j] + qdel[i]*(b + qdel[i]*(cc[j] + qdel[i]*d));
+        }
+      }
     }
-    C_gk_tomo_limber_nointerp_ells(lxv, nell, redshift.clustering_nbin, table);
-    free(lxv);
+    else {
+      C_gk_tomo_limber_nointerp_ells(lx, nell, redshift.clustering_nbin, table);
+    }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
@@ -6088,13 +6256,21 @@ static struct { double** tab; double lim[3]; int nell; } ks_ = {0};
 // likelihood evaluation. Only the vectorized batch reader
 // (C_ks_tomo_limber_fill, which runs the interpol1d linear read four
 // multipoles at a time through AVX2 gathers) sustains that rate;
-// calling this scalar accessor once per multipole would dominate the
+// calling this function one multipole at a time would dominate the
 // whole evaluation.
 //
-// The struct hands that reader the table pointer and its grid
-// geometry directly: builder and reader are called from different
-// places, so the alternative - passing the table through function
-// arguments - would thread it across every call site in between.
+// The struct is how the table travels between the two functions.
+// The builder (this function) and the reader (the _fill) never call
+// each other - the real-space projection calls one, the C_ell paths
+// call the other - so no argument list connects them. Instead the
+// builder publishes the table pointer and the grid geometry (the
+// ln(ell) limits, spacing and node count) in the file-scope struct,
+// and the reader picks them up there.
+//
+// When Ntable.N_ell_internal is active, the exact quadrature instead
+// runs on the internal coarse grid and the house cubic spline
+// upsamples onto the unchanged N_ell nodes (the strategy block inside
+// explains why this wins).
 //
 // Cache invalidation: recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -6121,6 +6297,13 @@ double C_ks_tomo_limber(
   static int nell;
   static double lim[3];
   static double* lx = NULL;
+  static int ncoarse = 0;  // active internal coarse grid size (0 = off)
+  static double dlnc = 0.; // coarse grid spacing in ln(ell)
+  static double* lxc = NULL;   // coarse ell nodes
+  static int* qidx = NULL;     // fine node -> coarse interval (uniform
+  static double* qdel = NULL;  //   grids: precomputed, no search)
+  static double** tabc = NULL; // coarse C_ell values
+  static double** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
@@ -6142,6 +6325,66 @@ double C_ks_tomo_limber(
     for (int i = 0; i < nell; i++) {
       lx[i] = exp(lim[0] + i*lim[2]);
     }
+
+    // Coarse-grid workspace (the strategy is explained where the grid
+    // is used, in the refill block below): every allocation lives
+    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // fills. The pieces are:
+    //   lxc        - the ncoarse ell nodes, log-spaced over the same
+    //                [lim[0], lim[1]] range as the fine table
+    //   tabc, cspl - the coarse C_ell values and their cubic-spline
+    //                coefficients, one row per source bin
+    //   qidx, qdel - for each fine node, the coarse interval it falls
+    //                in and its ln(ell) offset from that interval's
+    //                left node: both grids are uniform in ln(ell) with
+    //                shared endpoints, so this is pure grid geometry,
+    //                computed once - no search of any kind at refill
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nc = Ntable.N_ell_internal;
+    ncoarse = (nc > 3 && nc < nell) ? nc : 0;
+    if (ncoarse > 0) {
+      dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
+      lxc = (double*) malloc1d(ncoarse);
+      for (int i=0; i<ncoarse; i++) {
+        lxc[i] = exp(lim[0] + i*dlnc);
+      }
+      qidx = (int*) malloc(sizeof(int) * nell);
+      qdel = (double*) malloc1d(nell);
+      for (int i=0; i<nell; i++) {
+        // Where does fine node i sit on the coarse grid? Both grids
+        // run over the same [lim[0], lim[1]] in ln(ell), so the map
+        // is pure arithmetic:
+        //
+        //   fine node i -> ln(ell) = lim[0] + i*lim[2]
+        //               -> r = i*lim[2]/dlnc   (coarse spacings in)
+        //               -> j = (int) r         (interval's left node)
+        //               -> qdel = (r - j)*dlnc (offset inside it)
+        //
+        // The spline evaluates on interval [j, j+1], so the largest
+        // legal j is ncoarse-2, the left node of the LAST interval.
+        //
+        // Why the clamp: at the shared top endpoint, i*lim[2] and
+        // (ncoarse-1)*dlnc are two floating-point roundings of the
+        // same length lim[1] - lim[0]. r can therefore land one ulp
+        // above ncoarse-1 and truncate to j = ncoarse-1 - one past
+        // the last interval. The clamp moves that node back onto the
+        // last interval, where it evaluates at (at most one ulp
+        // past) the interval's right endpoint.
+        const double r = (double) i * lim[2] / dlnc;
+        int j = (int) r;
+        if (j > ncoarse - 2) {
+          j = ncoarse - 2;
+        }
+        qidx[i] = j;
+        qdel[i] = (r - j) * dlnc; // offset from node j, in ln(ell)
+      }
+      tabc = (double**) malloc2d(redshift.shear_nbin, ncoarse);
+      cspl = (double**) malloc2d(redshift.shear_nbin, ncoarse);
+    }
   }
 
   if (fdiff2(cache[0], cosmology.random) ||
@@ -6150,7 +6393,79 @@ double C_ks_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    C_ks_tomo_limber_nointerp_ells(lx, nell, redshift.shear_nbin, table);
+    if (ncoarse > 0) {
+      // ---------------------------------------------------------------
+      // The internal coarse grid: general strategy.
+      //
+      // The real-space projection (w_ks_tomo, via the shared ks_
+      // struct and C_ks_tomo_limber_fill) reads this table at every
+      // integer ell up to Ntable.LMAX ~ 1e5 inside its Legendre
+      // sums. At that call rate only the optimized, vectorized LINEAR
+      // read is affordable: a cubic-spline lookup per ell would
+      // dominate the whole evaluation.
+      //
+      // A linear read, however, is only accurate on a DENSE table -
+      // and each of the N_ell = 512 nodes costs one exact Limber
+      // quadrature, which is the expensive part.
+      //
+      // The coarse grid splits the difference: a cubic spline carries
+      // far more accuracy per node than a linear segment, so the
+      // expensive quadratures run on few nodes and a cheap cubic
+      // upsampling fills the dense table:
+      //
+      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //     -> spline_coeffs_uniform: one tridiagonal solve per row
+      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> the unchanged dense table
+      //     -> the same fast linear reads by every consumer
+      //
+      // This is safe because C_ks is smooth in ln(ell) - both
+      // fields are lensing kernels, no galaxy density enters; C_gg
+      // keeps the exact grid (see its header).
+      // ---------------------------------------------------------------
+      C_ks_tomo_limber_nointerp_ells(lxc, ncoarse, redshift.shear_nbin, tabc);
+
+      const double hc = dlnc;
+      const double inv_hc = 1.0/dlnc;
+      #pragma omp parallel for schedule(static)
+      for (int nz=0; nz<redshift.shear_nbin; nz++) {
+        spline_coeffs_uniform(tabc[nz], ncoarse, hc, cspl[nz]);
+      }
+      // Upsampling. On interval [x_j, x_j + h] the house spline
+      // (spline_coeffs_uniform) is the cubic
+      //
+      //   S(x_j + dx) = y_j + b dx + c_j dx^2 + d dx^3
+      //
+      // where c is the coefficient array the tridiagonal solve above
+      // produced: the spline's second derivative / 2, with natural
+      // boundaries c_0 = c_{n-1} = 0.
+      //
+      // The other two coefficients follow from two conditions:
+      //
+      //   S'' runs linearly from 2 c_j to 2 c_{j+1}
+      //     -> d = (c_{j+1} - c_j) / (3 h)
+      //
+      //   S(x_{j+1}) = y_{j+1}, interpolate the right node
+      //     -> b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3
+      //
+      // The polynomial is evaluated in Horner form; qidx/qdel hold
+      // each fine node's precomputed interval j and offset dx.
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int nz=0; nz<redshift.shear_nbin; nz++) {
+        for (int i=0; i<nell; i++) {
+          const double* restrict y = tabc[nz];
+          const double* restrict cc = cspl[nz];
+          const int j = qidx[i];
+          const double b = (y[j+1] - y[j])*inv_hc
+                           - hc*(cc[j+1] + 2.0*cc[j])/3.0;
+          const double d = (cc[j+1] - cc[j])/(3.0*hc);
+          table[nz][i] = y[j] + qdel[i]*(b + qdel[i]*(cc[j] + qdel[i]*d));
+        }
+      }
+    }
+    else {
+      C_ks_tomo_limber_nointerp_ells(lx, nell, redshift.shear_nbin, table);
+    }
 
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;

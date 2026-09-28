@@ -509,11 +509,11 @@ int line_count(
 //
 //   For a UNIFORM grid (h_i = dx for all i), this simplifies to:
 //
-//     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (6/dx)(y_{i-1} − 2y_i + y_{i+1})
+//     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (3/dx)(y_{i-1} − 2y_i + y_{i+1})
 //
 //   Dividing through by dx gives the symmetric tridiagonal system:
 //
-//     [1  4  1] [c_1, ..., c_{n-2}]^T = (6/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
+//     [1  4  1] [c_1, ..., c_{n-2}]^T = (3/dx^2) [y_0−2y_1+y_2, ..., y_{n-3}−2y_{n-2}+y_{n-1}]^T
 //
 //   with natural boundary conditions c_0 = c_{n-1} = 0.
 //
@@ -539,6 +539,60 @@ void spline_coeffs_uniform(
     const int n,
     const double dx,
     double* RESTRICT c
+  );
+
+// ---------------------------------------------------------------------------
+// Natural bicubic upsampling between two uniform 2D grids.
+//
+// The 2D version of the 1D strategy (spline_coeffs_uniform + the
+// direct-index Horner evaluation): a coarse table zc, exact at its
+// nxc x nyc nodes, fills a dense table zf at nxf x nyf nodes. Both
+// grids are uniform along each axis and SHARE their endpoints - that
+// is the contract that makes every interval lookup pure arithmetic
+// (one multiply + one cast, no search).
+//
+// A tensor-product bicubic spline separates into two 1D passes:
+//
+//   pass 1 (along y): each coarse row -> 1D natural cubic spline
+//     -> evaluated at the nyf fine columns -> tmp[nxc][nyf]
+//   pass 2 (along x): each fine column of tmp -> 1D natural cubic
+//     spline -> evaluated at the nxf fine rows -> zf[nxf][nyf]
+//
+// The two passes commute: in exact arithmetic the result is the
+// unique tensor-product natural bicubic interpolant evaluated at the
+// fine nodes, so the order is a convention.
+//
+// Each 1D piece is exactly the house machinery: spline_coeffs_uniform
+// produces the c coefficients, and the cubic
+//
+//   S(x_q + dx) = y_q + b dx + c_q dx^2 + d dx^3
+//     with d = (c_{q+1} - c_q) / (3 h)
+//     and  b = (y_{q+1} - y_q)/h - h (c_{q+1} + 2 c_q)/3
+//
+// is evaluated in Horner form. The fine spacings follow from the
+// shared endpoints (dxf = dxc (nxc-1)/(nxf-1)), and the interval
+// index is clamped onto the last interval against a 1-ulp overshoot
+// of the shared top endpoint, exactly as in the 1D consumers.
+//
+// Cost: O(nxc (nyc + nyf) + nyf (nxc + nxf)) time, O(nxc nyf)
+// scratch. Called once per cache rebuild.
+//
+// PARAMETERS:
+//   zc       - coarse table [nxc][nyc] (malloc2d layout)
+//   nxc, nyc - coarse node counts (>= 4 each)
+//   dxc, dyc - coarse grid spacings along x and y
+//   zf       - output fine table [nxf][nyf] (malloc2d layout)
+//   nxf, nyf - fine node counts
+// ---------------------------------------------------------------------------
+void spline2d_upsample_uniform(
+    double** zc,
+    const int nxc,
+    const int nyc,
+    const double dxc,
+    const double dyc,
+    double** zf,
+    const int nxf,
+    const int nyf
   );
 
 // ---------------------------------------------------------------------------

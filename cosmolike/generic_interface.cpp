@@ -435,18 +435,24 @@ void init_ntable_lmax(const int lmax) {
 }
 
 // ---------------------------------------------------------------------------
-// Set the internal coarse ell grid of the C_ss/C_gs interpolation tables.
+// Set the internal coarse ell grid of the Limber C_l tables.
 //
-// The tables keep Ntable.N_ell nodes with linear interpolation (the
-// real-space Legendre sums interpolate ~100k multipoles through the
-// vectorized gather fill), but their construction cost is
-// N_ell x N_pairs Limber quadratures. C_l^ss and C_l^gs are smooth in
-// ln l, so the exact quadrature runs on this coarse grid and a cubic
-// spline upsamples to the unchanged N_ell nodes at cache-build time.
-// 0 disables the trick (exact quadrature at every node): the A/B
-// switch for validation. Galaxy clustering never uses it (BAO
-// wiggles; see C_gg_tomo_limber).
+// The C_ss, C_gs, C_gk and C_ks tables keep Ntable.N_ell nodes with
+// linear interpolation (the real-space Legendre sums interpolate
+// ~100k multipoles through the vectorized gather fill), but their
+// construction cost is N_ell x N_pairs Limber quadratures. Those
+// spectra are smooth in ln l, so the exact quadrature runs on this
+// coarse grid and a cubic spline upsamples to the unchanged N_ell
+// nodes at cache-build time. The same knob coarsens the ell axis of
+// the dC_X/dlnk scale-cut tables (their ln k axis has its own knob,
+// init_ntable_dcx_dlnk_nlnk_internal). 0 disables the trick (exact
+// quadrature at every node): the A/B switch for validation. Galaxy
+// clustering never uses it (BAO wiggles; see C_gg_tomo_limber).
 //
+//
+// init_accuracy_boost (the catch-all) also scales this knob from its
+// first-boost-call baseline; calling this setter afterwards
+// overwrites the boosted value.
 // Cache invalidation:
 // bumps Ntable.random so every table rebuilds.
 //
@@ -467,6 +473,48 @@ void init_ntable_ell_internal(const int nell_internal) {
     exit(1);
   }
   Ntable.N_ell_internal = nell_internal;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Set the internal coarse ln k grid of the dC_X/dlnk scale-cut tables.
+//
+// The (ln k, ln l) tables in cosmo2D_scuts.c cost one exact
+// single-node Limber evaluation per entry. When a coarse axis is
+// active, the exact evaluations run on the coarse nodes and a
+// tensor-product bicubic (spline2d_upsample_uniform, basics.c) fills
+// the unchanged dense table. This knob coarsens the ln k axis; the
+// ell axis follows Ntable.N_ell_internal. The ln k direction carries
+// the BAO wiggles of P(k), so this knob defaults to 0 (exact).
+//
+//
+// init_accuracy_boost (the catch-all) also scales this knob from its
+// first-boost-call baseline; calling this setter afterwards
+// overwrites the boosted value.
+// Cache invalidation:
+// bumps Ntable.random so every table rebuilds.
+//
+// Parameters:
+//   nlnk_internal - coarse ln k node count
+//                   (4 <= n <= Ntable.dCX_dlnk_nlnk), or 0 for exact
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
+  static constexpr std::string_view fname =
+      "init_ntable_dcx_dlnk_nlnk_internal"sv;
+  debug("{}: {}", fname, errbegins);
+  if (nlnk_internal != 0 &&
+      (nlnk_internal < 4 ||
+       nlnk_internal > Ntable.dCX_dlnk_nlnk)) [[unlikely]] {
+    critical("{}: nlnk_internal = {} not 0 and outside [4, {}]",
+             fname, nlnk_internal, Ntable.dCX_dlnk_nlnk);
+    exit(1);
+  }
+  Ntable.dCX_dlnk_nlnk_internal = nlnk_internal;
   Ntable.random = RandomNumber::get_instance().get(); // update cache
   debug("{}: {}", fname, errends);
   return;
@@ -532,6 +580,10 @@ void init_photoz_conventions(
 //
 // Validation: internal_boost > 0, else critical() + exit(1).
 //
+//
+// init_accuracy_boost (the catch-all) also scales this knob from its
+// first-boost-call baseline; calling this setter afterwards
+// overwrites the boosted value.
 // Parameters:
 //   internal_boost - internal-grid fraction of the output grid (> 0)
 //
@@ -638,15 +690,34 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Scale the Cosmolike table sizes by a single accuracy knob.
+// Scale every Cosmolike sampling knob with one accuracy boost (the
+// catch-all: a single call shifts them all).
 //
-// The first call snapshots the incoming values of Ntable.N_a, N_ell,
-// dCX_dlnk_nlnk, NL_Nchi and nz_fine_sampling_factor in a static cache;
-// every call rescales from those baselines, ceil(baseline * boost), so
-// repeated calls do not compound. Also writes Ntable.FPTboost
-// (int(boost - 1) for boost > 1, else 0; enlarges the FAST-PT grids in
-// pt_cfastpt.c) and Ntable.high_def_integration = integration_accuracy
-// (selects larger fixed-order quadrature tables downstream).
+// The first call snapshots the incoming values of the knobs below in
+// a static cache; every call rescales from those baselines, so
+// repeated calls do not compound:
+//
+//   Ntable.N_a                     -> ceil(baseline * boost)
+//   Ntable.N_ell                   -> ceil(baseline * boost)
+//   Ntable.N_ell_internal          -> ceil(baseline * boost)
+//   Ntable.dCX_dlnk_nlnk           -> ceil(baseline * boost)
+//   Ntable.dCX_dlnk_nlnk_internal  -> ceil(baseline * boost)
+//   Ntable.NL_Nchi                 -> ceil(baseline * boost)
+//   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
+//   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
+//
+// The internal coarse grids scale together with their dense tables,
+// so the coarse/dense ratios are boost-invariant, and a knob whose
+// baseline is 0 (disabled - dCX_dlnk_nlnk_internal by default) stays
+// 0 under any boost. The dedicated setters (init_ntable_ell_internal,
+// init_ntable_dcx_dlnk_nlnk_internal, init_fpt_internal_boost) remain
+// for individual overrides: called BEFORE the first boost call they
+// define the baseline, called after they overwrite the boosted value.
+//
+// Also writes Ntable.FPTboost (int(boost - 1) for boost > 1, else 0;
+// enlarges the FAST-PT grids in pt_cfastpt.c) and
+// Ntable.high_def_integration = integration_accuracy (selects larger
+// fixed-order quadrature tables downstream).
 //
 // Cache invalidation:
 // bumps Ntable.random so all tables keyed on it rebuild.
@@ -665,6 +736,7 @@ void init_accuracy_boost(
 {
   static constexpr std::string_view fname = "init_accuracy_boost"sv;
   static int cache[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS]; // standard: static vars init to zero
+  static double fptcache = 0.0; // FPT_internal_accuracy_boost baseline
   debug("{}: {}", fname, errbegins);
 
   if (0 == cache[0]) cache[0] = Ntable.N_a;
@@ -682,6 +754,17 @@ void init_accuracy_boost(
   if (0 == cache[4]) cache[4] = Ntable.nz_fine_sampling_factor;
   Ntable.nz_fine_sampling_factor = 
                                 static_cast<int>(ceil(cache[4]*accuracy_boost));
+
+  if (0 == cache[5]) cache[5] = Ntable.N_ell_internal;
+  Ntable.N_ell_internal = static_cast<int>(ceil(cache[5]*accuracy_boost));
+
+  if (0 == cache[6]) cache[6] = Ntable.dCX_dlnk_nlnk_internal;
+  Ntable.dCX_dlnk_nlnk_internal =
+      static_cast<int>(ceil(cache[6]*accuracy_boost));
+
+  if (0 == fptcache) fptcache = Ntable.FPT_internal_accuracy_boost;
+  Ntable.FPT_internal_accuracy_boost = fptcache*accuracy_boost;
+
   if (accuracy_boost>1) {
     Ntable.FPTboost = static_cast<int>(accuracy_boost-1.0);
   }

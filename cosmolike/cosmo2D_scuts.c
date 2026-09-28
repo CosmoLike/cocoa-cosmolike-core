@@ -106,6 +106,12 @@
 // covering every l >= 1; lookups interpolate bilinearly in (ln k, ln l)
 // and a (k, l) outside the table returns 0.
 //
+// When the internal coarse grids are active (Ntable.N_ell_internal on
+// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// evaluations run on the coarse nodes and a tensor-product bicubic
+// upsamples onto the unchanged dense table (see the strategy note in
+// the refill block).
+//
 // Cache invalidation:
 // recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -136,6 +142,15 @@ double dC_ss_dlnk_tomo_limber(
   static double lim[6];
   static int nell;
   static int nlnk;
+  static double* lnkx = NULL; // fine ln k nodes
+  static double* lxv = NULL;  // fine ell values
+  static int nkc = 0;         // used ln k node count (= nlnk when exact)
+  static int nlc = 0;         // used ell node count  (= nell when exact)
+  static double dkc = 0.;     // used grid spacings (ln k, ln l)
+  static double dlc = 0.;
+  static double* lnkc = NULL; // coarse ln k nodes
+  static double* lxc = NULL;  // coarse ell values
+  static double**** tabc = NULL; // coarse dC values
   
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
@@ -150,6 +165,44 @@ double dC_ss_dlnk_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double****) malloc4d(2, tomo.shear_Npowerspectra, nlnk, nell);
+  
+    if (lnkx != NULL) free(lnkx);
+    lnkx = (double*) malloc1d(nlnk);
+    for (int f=0; f<nlnk; f++) {
+      lnkx[f] = lim[3] + f*lim[5];
+    }
+    if (lxv != NULL) free(lxv);
+    lxv = (double*) malloc1d(nell);
+    for (int i=0; i<nell; i++) {
+      lxv[i] = exp(lim[0] + i*lim[2]);
+    }
+
+    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // rebuild block; the per-cosmology refill only fills. Each axis
+    // coarsens independently: Ntable.N_ell_internal on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // (where the BAO wiggles live, so its default stays exact). An
+    // axis whose knob is 0 or out of range keeps its exact count.
+    if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    const int nl_int = Ntable.N_ell_internal;
+    nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
+    nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
+    dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
+    dlc = (lim[1] - lim[0]) / ((double) nlc - 1.0);
+    if (nkc < nlnk || nlc < nell) {
+      lnkc = (double*) malloc1d(nkc);
+      for (int f=0; f<nkc; f++) {
+        lnkc[f] = lim[3] + f*dkc;
+      }
+      lxc = (double*) malloc1d(nlc);
+      for (int i=0; i<nlc; i++) {
+        lxc[i] = exp(lim[0] + i*dlc);
+      }
+      tabc = (double****) malloc4d(2, tomo.shear_Npowerspectra, nkc, nlc);
+    }
   }
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
@@ -157,18 +210,49 @@ double dC_ss_dlnk_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    double* lnkx = (double*) malloc1d(nlnk);
-    double* lx = (double*) malloc1d(nell);
-    for (int f=0; f<nlnk; f++) {
-      lnkx[f] = lim[3] + f*lim[5];
+    if (nkc < nlnk || nlc < nell) {
+      // ---------------------------------------------------------------
+      // The internal coarse grid, in 2D: general strategy.
+      //
+      // Every entry of this (ln k, ln l) table costs one exact
+      // single-node Limber evaluation, and the full table is
+      // 2 x pairs x nlnk x nell of them - the expensive part. The
+      // consumers then read the table through bilinear interpolation
+      // (interpol2d), which needs DENSE nodes to be accurate.
+      //
+      // So, exactly as in the 1D C_XY tables (cosmo2D.c): run the
+      // exact evaluations on a coarse grid and upsample with a cubic
+      // spline - here the tensor-product natural bicubic of
+      // spline2d_upsample_uniform (basics.c), two 1D passes of the
+      // house spline - and hand every consumer the same dense table:
+      //
+      //   exact single-node Limber on (nkc x nlc) nodes
+      //     -> spline pass along ln l, one per coarse k row
+      //     -> spline pass along ln k, one per fine ell column
+      //     -> the unchanged (nlnk x nell) dense table
+      //     -> the same bilinear reads by every consumer
+      //
+      // The two axes coarsen independently because their smoothness
+      // differs: the ell direction is smooth (as in cosmo2D.c), but
+      // the ln k direction carries the BAO wiggles of P(k), so its
+      // knob defaults to exact (see structs.c).
+      // ---------------------------------------------------------------
+      dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
+                                tomo.shear_Npowerspectra, 0, tabc);
+
+      // one tensor-product bicubic upsample per stored plane; an
+      // axis left exact passes through (near-)unchanged
+      for (int c=0; c<2; c++) {
+        for (int q=0; q<tomo.shear_Npowerspectra; q++) {
+          spline2d_upsample_uniform(tabc[c][q], nkc, nlc, dkc, dlc,
+                                    table[c][q], nlnk, nell);
+        }
+      }
     }
-    for (int i=0; i<nell; i++) {
-      lx[i] = exp(lim[0] + i*lim[2]);
-    }
-    dC_ss_dlnk_tomo_limber_work(lnkx, nlnk, lx, nell,
+    else {
+      dC_ss_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 tomo.shear_Npowerspectra, 0, table);
-    free(lnkx);
-    free(lx);
+    }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -221,6 +305,12 @@ double dC_ss_dlnk_tomo_limber(
 // lookups interpolate bilinearly in (ln k, ln l) and a (k, l) outside
 // the table returns 0.
 //
+// When the internal coarse grids are active (Ntable.N_ell_internal on
+// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// evaluations run on the coarse nodes and a tensor-product bicubic
+// upsamples onto the unchanged dense table (see the strategy note in
+// the refill block).
+//
 // Cache invalidation:
 // recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -251,6 +341,15 @@ double dlnC_ss_dlnk_tomo_limber(
   static double lim[6];
   static int nell;
   static int nlnk;
+  static double* lnkx = NULL; // fine ln k nodes
+  static double* lxv = NULL;  // fine ell values
+  static int nkc = 0;         // used ln k node count (= nlnk when exact)
+  static int nlc = 0;         // used ell node count  (= nell when exact)
+  static double dkc = 0.;     // used grid spacings (ln k, ln l)
+  static double dlc = 0.;
+  static double* lnkc = NULL; // coarse ln k nodes
+  static double* lxc = NULL;  // coarse ell values
+  static double**** tabc = NULL; // coarse dC values
   
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
@@ -265,6 +364,44 @@ double dlnC_ss_dlnk_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double****) malloc4d(2, tomo.shear_Npowerspectra, nlnk, nell);
+  
+    if (lnkx != NULL) free(lnkx);
+    lnkx = (double*) malloc1d(nlnk);
+    for (int f=0; f<nlnk; f++) {
+      lnkx[f] = lim[3] + f*lim[5];
+    }
+    if (lxv != NULL) free(lxv);
+    lxv = (double*) malloc1d(nell);
+    for (int i=0; i<nell; i++) {
+      lxv[i] = exp(lim[0] + i*lim[2]);
+    }
+
+    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // rebuild block; the per-cosmology refill only fills. Each axis
+    // coarsens independently: Ntable.N_ell_internal on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // (where the BAO wiggles live, so its default stays exact). An
+    // axis whose knob is 0 or out of range keeps its exact count.
+    if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    const int nl_int = Ntable.N_ell_internal;
+    nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
+    nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
+    dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
+    dlc = (lim[1] - lim[0]) / ((double) nlc - 1.0);
+    if (nkc < nlnk || nlc < nell) {
+      lnkc = (double*) malloc1d(nkc);
+      for (int f=0; f<nkc; f++) {
+        lnkc[f] = lim[3] + f*dkc;
+      }
+      lxc = (double*) malloc1d(nlc);
+      for (int i=0; i<nlc; i++) {
+        lxc[i] = exp(lim[0] + i*dlc);
+      }
+      tabc = (double****) malloc4d(2, tomo.shear_Npowerspectra, nkc, nlc);
+    }
   }
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
@@ -272,18 +409,29 @@ double dlnC_ss_dlnk_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    double* lnkx = (double*) malloc1d(nlnk);
-    double* lx = (double*) malloc1d(nell);
-    for (int f=0; f<nlnk; f++) {
-      lnkx[f] = lim[3] + f*lim[5];
+    if (nkc < nlnk || nlc < nell) {
+      // Internal coarse grid, in 2D: exact single-node Limber on the
+      // (nkc x nlc) coarse nodes, then the tensor-product natural
+      // bicubic of spline2d_upsample_uniform fills the unchanged
+      // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
+      // refill above; the ell axis is smooth, the ln k axis carries
+      // the BAO wiggles and defaults to exact).
+      dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
+                                tomo.shear_Npowerspectra, 1, tabc);
+
+      // one tensor-product bicubic upsample per stored plane; an
+      // axis left exact passes through (near-)unchanged
+      for (int c=0; c<2; c++) {
+        for (int q=0; q<tomo.shear_Npowerspectra; q++) {
+          spline2d_upsample_uniform(tabc[c][q], nkc, nlc, dkc, dlc,
+                                    table[c][q], nlnk, nell);
+        }
+      }
     }
-    for (int i=0; i<nell; i++) {
-      lx[i] = exp(lim[0] + i*lim[2]);
-    }
-    dC_ss_dlnk_tomo_limber_work(lnkx, nlnk, lx, nell,
+    else {
+      dC_ss_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 tomo.shear_Npowerspectra, 1, table);
-    free(lnkx);
-    free(lx);
+    }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -341,6 +489,12 @@ double dlnC_ss_dlnk_tomo_limber(
 // (ln k, ln l) grid as the ss tables: the Ntable.dCX_dlnk k range and
 // every multipole l >= 1; a (k, l) outside the table returns 0.
 //
+// When the internal coarse grids are active (Ntable.N_ell_internal on
+// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// evaluations run on the coarse nodes and a tensor-product bicubic
+// upsamples onto the unchanged dense table (see the strategy note in
+// the refill block).
+//
 // Cache invalidation:
 // recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -368,6 +522,15 @@ double dC_ks_dlnk_tomo_limber(
   static double lim[6];
   static int nell;
   static int nlnk;
+  static double* lnkx = NULL; // fine ln k nodes
+  static double* lxv = NULL;  // fine ell values
+  static int nkc = 0;         // used ln k node count (= nlnk when exact)
+  static int nlc = 0;         // used ell node count  (= nell when exact)
+  static double dkc = 0.;     // used grid spacings (ln k, ln l)
+  static double dlc = 0.;
+  static double* lnkc = NULL; // coarse ln k nodes
+  static double* lxc = NULL;  // coarse ell values
+  static double*** tabc = NULL; // coarse dC values
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
@@ -382,6 +545,44 @@ double dC_ks_dlnk_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double***) malloc3d(redshift.shear_nbin, nlnk, nell);
+  
+    if (lnkx != NULL) free(lnkx);
+    lnkx = (double*) malloc1d(nlnk);
+    for (int f=0; f<nlnk; f++) {
+      lnkx[f] = lim[3] + f*lim[5];
+    }
+    if (lxv != NULL) free(lxv);
+    lxv = (double*) malloc1d(nell);
+    for (int i=0; i<nell; i++) {
+      lxv[i] = exp(lim[0] + i*lim[2]);
+    }
+
+    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // rebuild block; the per-cosmology refill only fills. Each axis
+    // coarsens independently: Ntable.N_ell_internal on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // (where the BAO wiggles live, so its default stays exact). An
+    // axis whose knob is 0 or out of range keeps its exact count.
+    if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    const int nl_int = Ntable.N_ell_internal;
+    nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
+    nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
+    dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
+    dlc = (lim[1] - lim[0]) / ((double) nlc - 1.0);
+    if (nkc < nlnk || nlc < nell) {
+      lnkc = (double*) malloc1d(nkc);
+      for (int f=0; f<nkc; f++) {
+        lnkc[f] = lim[3] + f*dkc;
+      }
+      lxc = (double*) malloc1d(nlc);
+      for (int i=0; i<nlc; i++) {
+        lxc[i] = exp(lim[0] + i*dlc);
+      }
+      tabc = (double***) malloc3d(redshift.shear_nbin, nkc, nlc);
+    }
   }
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
@@ -389,18 +590,27 @@ double dC_ks_dlnk_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    double* lnkx = (double*) malloc1d(nlnk);
-    double* lx = (double*) malloc1d(nell);
-    for (int f=0; f<nlnk; f++) {
-      lnkx[f] = lim[3] + f*lim[5];
+    if (nkc < nlnk || nlc < nell) {
+      // Internal coarse grid, in 2D: exact single-node Limber on the
+      // (nkc x nlc) coarse nodes, then the tensor-product natural
+      // bicubic of spline2d_upsample_uniform fills the unchanged
+      // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
+      // refill above; the ell axis is smooth, the ln k axis carries
+      // the BAO wiggles and defaults to exact).
+      dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
+                                redshift.shear_nbin, 0, tabc);
+
+      // one tensor-product bicubic upsample per stored plane; an
+      // axis left exact passes through (near-)unchanged
+      for (int nz=0; nz<redshift.shear_nbin; nz++) {
+        spline2d_upsample_uniform(tabc[nz], nkc, nlc, dkc, dlc,
+                                  table[nz], nlnk, nell);
+      }
     }
-    for (int i=0; i<nell; i++) {
-      lx[i] = exp(lim[0] + i*lim[2]);
-    }
-    dC_ks_dlnk_tomo_limber_work(lnkx, nlnk, lx, nell,
+    else {
+      dC_ks_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 redshift.shear_nbin, 0, table);
-    free(lnkx);
-    free(lx);
+    }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -447,6 +657,12 @@ double dC_ks_dlnk_tomo_limber(
 // dC_ks_dlnk_tomo_limber); lookups interpolate bilinearly in
 // (ln k, ln l) and a (k, l) outside the table returns 0.
 //
+// When the internal coarse grids are active (Ntable.N_ell_internal on
+// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// evaluations run on the coarse nodes and a tensor-product bicubic
+// upsamples onto the unchanged dense table (see the strategy note in
+// the refill block).
+//
 // Cache invalidation:
 // recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
@@ -474,6 +690,15 @@ double dlnC_ks_dlnk_tomo_limber(
   static double lim[6];
   static int nell;
   static int nlnk;
+  static double* lnkx = NULL; // fine ln k nodes
+  static double* lxv = NULL;  // fine ell values
+  static int nkc = 0;         // used ln k node count (= nlnk when exact)
+  static int nlc = 0;         // used ell node count  (= nell when exact)
+  static double dkc = 0.;     // used grid spacings (ln k, ln l)
+  static double dlc = 0.;
+  static double* lnkc = NULL; // coarse ln k nodes
+  static double* lxc = NULL;  // coarse ell values
+  static double*** tabc = NULL; // coarse dC values
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nell = Ntable.N_ell;
@@ -488,6 +713,44 @@ double dlnC_ks_dlnk_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double***) malloc3d(redshift.shear_nbin, nlnk, nell);
+  
+    if (lnkx != NULL) free(lnkx);
+    lnkx = (double*) malloc1d(nlnk);
+    for (int f=0; f<nlnk; f++) {
+      lnkx[f] = lim[3] + f*lim[5];
+    }
+    if (lxv != NULL) free(lxv);
+    lxv = (double*) malloc1d(nell);
+    for (int i=0; i<nell; i++) {
+      lxv[i] = exp(lim[0] + i*lim[2]);
+    }
+
+    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // rebuild block; the per-cosmology refill only fills. Each axis
+    // coarsens independently: Ntable.N_ell_internal on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // (where the BAO wiggles live, so its default stays exact). An
+    // axis whose knob is 0 or out of range keeps its exact count.
+    if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
+    if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    const int nl_int = Ntable.N_ell_internal;
+    nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
+    nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
+    dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
+    dlc = (lim[1] - lim[0]) / ((double) nlc - 1.0);
+    if (nkc < nlnk || nlc < nell) {
+      lnkc = (double*) malloc1d(nkc);
+      for (int f=0; f<nkc; f++) {
+        lnkc[f] = lim[3] + f*dkc;
+      }
+      lxc = (double*) malloc1d(nlc);
+      for (int i=0; i<nlc; i++) {
+        lxc[i] = exp(lim[0] + i*dlc);
+      }
+      tabc = (double***) malloc3d(redshift.shear_nbin, nkc, nlc);
+    }
   }
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
@@ -495,18 +758,27 @@ double dlnC_ks_dlnk_tomo_limber(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    double* lnkx = (double*) malloc1d(nlnk);
-    double* lx = (double*) malloc1d(nell);
-    for (int f=0; f<nlnk; f++) {
-      lnkx[f] = lim[3] + f*lim[5];
+    if (nkc < nlnk || nlc < nell) {
+      // Internal coarse grid, in 2D: exact single-node Limber on the
+      // (nkc x nlc) coarse nodes, then the tensor-product natural
+      // bicubic of spline2d_upsample_uniform fills the unchanged
+      // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
+      // refill above; the ell axis is smooth, the ln k axis carries
+      // the BAO wiggles and defaults to exact).
+      dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
+                                redshift.shear_nbin, 1, tabc);
+
+      // one tensor-product bicubic upsample per stored plane; an
+      // axis left exact passes through (near-)unchanged
+      for (int nz=0; nz<redshift.shear_nbin; nz++) {
+        spline2d_upsample_uniform(tabc[nz], nkc, nlc, dkc, dlc,
+                                  table[nz], nlnk, nell);
+      }
     }
-    for (int i=0; i<nell; i++) {
-      lx[i] = exp(lim[0] + i*lim[2]);
-    }
-    dC_ks_dlnk_tomo_limber_work(lnkx, nlnk, lx, nell,
+    else {
+      dC_ks_dlnk_tomo_limber_work(lnkx, nlnk, lxv, nell,
                                 redshift.shear_nbin, 1, table);
-    free(lnkx);
-    free(lx);
+    }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;

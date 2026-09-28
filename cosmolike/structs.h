@@ -72,8 +72,9 @@ typedef struct
   int N_k_lin;
   int N_k_nlin;
   int N_ell;
-  int N_ell_internal; // coarse exact-quadrature ell nodes of the C_ss/C_gs
-                      // tables, cubic-spline upsampled to N_ell; 0 = exact
+  int N_ell_internal; // coarse exact-quadrature ell nodes of the C_ss, C_gs,
+                      // C_gk and C_ks tables, cubic-spline upsampled to
+                      // N_ell; 0 = exact (C_gg always exact: BAO wiggles)
   int Ntheta;
   int N_M;
   int NL_Nell_block;   // Cosmo2D - NL = NonLimber
@@ -99,6 +100,10 @@ typedef struct
   int dCX_dlnk_nlnk;
   double dCX_dlnk_kmin;
   double dCX_dlnk_kmax;
+  int dCX_dlnk_nlnk_internal; // coarse exact ln k nodes of the dC_X/dlnk
+                              // scale-cut tables (the ell axis pairs with
+                              // N_ell_internal; bicubic upsampled);
+                              // 0 = exact (ln k carries the BAO wiggles)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED BY FASPT
