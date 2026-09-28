@@ -487,7 +487,10 @@ void init_ntable_ell_internal(const int nell_internal) {
 // tensor-product bicubic (spline2d_upsample_uniform, basics.c) fills
 // the unchanged dense table. This knob coarsens the ln k axis; the
 // ell axis follows Ntable.N_ell_internal. The ln k direction carries
-// the BAO wiggles of P(k), so this knob defaults to 0 (exact).
+// the BAO wiggles of P(k); the default (128 of the 256-node grid)
+// keeps the measured response error at or below what the retired
+// fixed quadrature imposed (max |dRF| 5.9e-3, medians ~1e-6) at
+// twice the refill speed. 0 = exact: the A/B switch.
 //
 //
 // init_accuracy_boost (the catch-all) also scales this knob from its
@@ -777,8 +780,7 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 //
 // The internal coarse grids scale together with their dense tables,
 // so the coarse/dense ratios are boost-invariant, and a knob whose
-// baseline is 0 (disabled - dCX_dlnk_nlnk_internal by default) stays
-// 0 under any boost. The dedicated setters (init_ntable_ell_internal,
+// baseline is 0 (disabled) stays 0 under any boost. The dedicated setters (init_ntable_ell_internal,
 // init_ntable_dcx_dlnk_nlnk_internal, init_fpt_internal_boost) remain
 // for individual overrides: called BEFORE the first boost call they
 // define the baseline, called after they overwrite the boosted value.

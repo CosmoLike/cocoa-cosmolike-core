@@ -72,6 +72,103 @@
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Shared state between the cached dC tables (which own the static
+// storage) and the dln*_nointerp node fills (which read it).
+//
+// At one fixed k, evaluating a dC table on its own ell nodes is a
+// single fixed-weight blend of the two k-rows that bracket k - the
+// same weight for every (pair, ell) entry. The nointerp fills read
+// the rows through these structs instead of paying the scalar
+// lookup (cache-key checks, bin mapping, one bilinear read) once
+// per entry. Builder and reader never call each other, so the
+// file-scope struct carries the table pointer and the grid geometry
+// between them - the ss_/gs_ pattern of cosmo2D.c.
+//
+//   tab        - the cached table ([2][pairs][nlnk][nell] for ss,
+//                [nbin][nlnk][nell] for ks), owned by the builder
+//   lim        - its grid: [0..2] = ln l (min, max, step),
+//                [3..5] = ln k (min, max, step)
+//   nlnk, nell - node counts along ln k and ln l
+// ---------------------------------------------------------------------------
+static struct { double**** tab; double lim[6]; int nlnk; int nell; }
+    dCss_ = {0};
+static struct { double*** tab; double lim[6]; int nlnk; int nell; }
+    dCks_ = {0};
+
+typedef simde__m256d v4d; // 4 doubles, AVX2-width (as in cosmo2D.c)
+
+// ---------------------------------------------------------------------------
+// Blend two k-rows of a cached (ln k, ln l) table at one fixed weight.
+//
+// At a fixed k, reading a bilinear table on its own ell nodes
+// reduces to out[i] = r0[i] + t (r1[i] - r0[i]) with the SAME t for
+// every entry: linear interpolation between the two k-rows that
+// bracket k. The nointerp fills below call this once per (plane,
+// pair) row instead of one scalar table lookup per entry.
+//
+// Why explicit SIMDe instead of an omp simd pragma: the fill loops
+// of this family read through pointer-to-pointer tables, and
+// experience with limber_fill_interp (cosmo2D.c) showed compilers
+// refuse to auto-vectorize them - the pragma silently produces
+// scalar code. The SIMDe intrinsics guarantee the vector form from
+// one source (AVX2 on x86, NEON on Apple Silicon).
+//
+// Why this is simpler than limber_fill_interp: there, every output
+// multipole lands at a DIFFERENT grid position, so each vector lane
+// needs its own index and the loads must be gathers. Here the
+// weight t and the row offset are the same for every entry - the k
+// bracket is fixed - so the body is two contiguous 4-wide loads and
+// one fused multiply-add per lane, no gathers, plus a scalar tail
+// for the last nell % 4 entries.
+//
+// Parameters:
+//   ntab - number of planes blended together (1 or 2)
+//   row0 - left k-row per plane [ntab][nell]
+//   row1 - right k-row per plane [ntab][nell]
+//   out  - output rows [ntab][nell]
+//   t    - the fixed blend weight, in [0, 1) on the interior
+//   nell - row length
+//
+// Returns:
+//   void (out filled)
+// ---------------------------------------------------------------------------
+static void limber_krow_blend(
+    const int ntab,               // number of planes (1 or 2)
+    const double** restrict row0, // left k-row per plane [ntab][nell]
+    const double** restrict row1, // right k-row per plane [ntab][nell]
+    double** restrict out,        // output rows [ntab][nell]
+    const double t,               // fixed blend weight
+    const int nell                // row length
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  for (int q = 0; q < ntab; q++) {
+    for (int i = 0; i < nell; i++) {
+      out[q][i] = row0[q][i] + t*(row1[q][i] - row0[q][i]);
+    }
+  }
+#else
+  const v4d vt = simde_mm256_set1_pd(t); // the weight in all 4 lanes
+  for (int q = 0; q < ntab; q++) {
+    const double* restrict a = row0[q];
+    const double* restrict b = row1[q];
+    double* restrict o = out[q];
+    int i = 0;
+    for (; i <= nell - 4; i += 4) { // 4 entries per iteration
+      const v4d v0 = simde_mm256_loadu_pd(a + i);
+      const v4d v1 = simde_mm256_loadu_pd(b + i);
+      // out = v0 + t*(v1 - v0): one fused multiply-add per lane
+      simde_mm256_storeu_pd(o + i,
+        simde_mm256_fmadd_pd(vt, simde_mm256_sub_pd(v1, v0), v0));
+    }
+    for (; i < nell; i++) { // scalar tail
+      o[i] = a[i] + t*(b[i] - a[i]);
+    }
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Cached dC_ss/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l)
 // table filled by dC_ss_dlnk_tomo_limber_work (cosmo2D.c).
 //
@@ -165,6 +262,13 @@ double dC_ss_dlnk_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double****) malloc4d(2, tomo.shear_Npowerspectra, nlnk, nell);
+
+    dCss_.tab = table;
+    for (int j=0; j<6; j++) {
+      dCss_.lim[j] = lim[j];
+    }
+    dCss_.nlnk = nlnk;
+    dCss_.nell = nell;
   
     if (lnkx != NULL) free(lnkx);
     lnkx = (double*) malloc1d(nlnk);
@@ -181,7 +285,8 @@ double dC_ss_dlnk_tomo_limber(
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
-    // (where the BAO wiggles live, so its default stays exact). An
+    // (where the BAO wiggles live; the default 128 keeps the response
+    // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
     // nodes a natural cubic spline needs, or not below the exact
     // count - keeps its exact count.
@@ -237,7 +342,9 @@ double dC_ss_dlnk_tomo_limber(
       // The two axes coarsen independently because their smoothness
       // differs: the ell direction is smooth (as in cosmo2D.c), but
       // the ln k direction carries the BAO wiggles of P(k), so its
-      // knob defaults to exact (see structs.c).
+      // knob's default (128 of 256) keeps the measured response
+      // error at the level the retired fixed quadrature imposed
+      // (see structs.c).
       // ---------------------------------------------------------------
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 0, tabc);
@@ -385,7 +492,8 @@ double dlnC_ss_dlnk_tomo_limber(
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
-    // (where the BAO wiggles live, so its default stays exact). An
+    // (where the BAO wiggles live; the default 128 keeps the response
+    // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
     // nodes a natural cubic spline needs, or not below the exact
     // count - keeps its exact count.
@@ -422,7 +530,8 @@ double dlnC_ss_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles and defaults to exact).
+      // the BAO wiggles; its default 128 holds the response error
+      // at the retired quadrature's level).
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 1, tabc);
 
@@ -555,6 +664,13 @@ double dC_ks_dlnk_tomo_limber(
 
     if (table != NULL) free(table);
     table = (double***) malloc3d(redshift.shear_nbin, nlnk, nell);
+
+    dCks_.tab = table;
+    for (int j=0; j<6; j++) {
+      dCks_.lim[j] = lim[j];
+    }
+    dCks_.nlnk = nlnk;
+    dCks_.nell = nell;
   
     if (lnkx != NULL) free(lnkx);
     lnkx = (double*) malloc1d(nlnk);
@@ -571,7 +687,8 @@ double dC_ks_dlnk_tomo_limber(
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
-    // (where the BAO wiggles live, so its default stays exact). An
+    // (where the BAO wiggles live; the default 128 keeps the response
+    // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
     // nodes a natural cubic spline needs, or not below the exact
     // count - keeps its exact count.
@@ -608,7 +725,8 @@ double dC_ks_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles and defaults to exact).
+      // the BAO wiggles; its default 128 holds the response error
+      // at the retired quadrature's level).
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 0, tabc);
 
@@ -744,7 +862,8 @@ double dlnC_ks_dlnk_tomo_limber(
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell_internal on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
-    // (where the BAO wiggles live, so its default stays exact). An
+    // (where the BAO wiggles live; the default 128 keeps the response
+    // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
     // nodes a natural cubic spline needs, or not below the exact
     // count - keeps its exact count.
@@ -781,7 +900,8 @@ double dlnC_ks_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles and defaults to exact).
+      // the BAO wiggles; its default 128 holds the response error
+      // at the retired quadrature's level).
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 1, tabc);
 
@@ -1319,13 +1439,27 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
     const int nell = Ntable.N_ell;
     const double la = 0.0; // ln(l = 1): the dC table's multipole grid start
     const double ldx = (log(Ntable.LMAX + 1.) - la)/((double) nell - 1.);
-    #pragma omp parallel for collapse(2) schedule(static)
+    // At fixed k the bilinear table read at an exact ell node is one
+    // fixed-weight blend of the two bracketing k-rows - the same
+    // weight tk for every (pair, ell) entry - so read the rows
+    // through the dCss_ struct instead of one scalar lookup per
+    // entry (cache-key checks, bin mapping, bilinear read, nell x
+    // pairs times per k)
+    const double rk = (log(k) - dCss_.lim[3])/dCss_.lim[5];
+    int fk = (int) rk;
+    if (fk > dCss_.nlnk - 2) { // 1-ulp division overshoot near kmax
+      fk = dCss_.nlnk - 2;
+    }
+    const double tk = rk - fk;
+    // SIMDe-vectorized fixed-weight blend (limber_krow_blend, the
+    // limber_fill_interp companion), both planes per pair at once
+    #pragma omp parallel for schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<nell; i++) {
-        const double lg = exp(la + i*ldx);
-        dCgrid[0][nz][i] = dC_ss_dlnk_tomo_limber(k, lg, Z1(nz), Z2(nz), 1);
-        dCgrid[1][nz][i] = dC_ss_dlnk_tomo_limber(k, lg, Z1(nz), Z2(nz), 0);
-      }
+      const double* r0[2] = {dCss_.tab[0][nz][fk], dCss_.tab[1][nz][fk]};
+      const double* r1[2] = {dCss_.tab[0][nz][fk+1],
+                             dCss_.tab[1][nz][fk+1]};
+      double* out2[2] = {dCgrid[0][nz], dCgrid[1][nz]};
+      limber_krow_blend(2, r0, r1, out2, tk, nell);
     }
     // gather onto every integer multipole (vectorized linear interpolation)
     #pragma omp parallel for schedule(static)
@@ -1438,6 +1572,12 @@ double dlnxi_dlnk_pm_tomo(
   static double*** table = NULL; 
   static double lim[6];
   static int nlnk;
+  static int nkc = 0;     // used coarse ln k count (= nlnk when exact)
+  static double dkc = 0.; // coarse grid spacing in ln k
+  static int* qidx = NULL;      // fine node -> coarse interval (uniform
+  static double* qdel = NULL;   //   grids: precomputed, no search)
+  static double*** tabc = NULL; // coarse dlnxi values
+  static double*** cspl = NULL; // natural-cubic-spline c coefficients
   const int NSIZE = tomo.shear_Npowerspectra;
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nlnk = Ntable.dCX_dlnk_nlnk;
@@ -1446,6 +1586,41 @@ double dlnxi_dlnk_pm_tomo(
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nlnk);
+
+    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // rebuild block; the per-cosmology refill only fills. Unlike the
+    // dC tables (whose nodes are cheap), every ln k node of THIS
+    // cache costs one full nointerp build - the expensive-node case
+    // the coarse-exact + cubic-upsample pattern exists for. The same
+    // scale-cut k knob gates both grids
+    // (Ntable.dCX_dlnk_nlnk_internal; 0 or out of range = exact;
+    // > 3 because a natural cubic spline needs 4 nodes).
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
+    dkc = (lim[1] - lim[0]) / ((double) nkc - 1.0);
+    if (nkc < nlnk) {
+      qidx = (int*) malloc(sizeof(int)*nlnk);
+      qdel = (double*) malloc1d(nlnk);
+      for (int f=0; f<nlnk; f++) {
+        // fine node f -> its coarse interval and offset: both grids
+        // are uniform in ln k with shared endpoints, so the map is
+        // one multiply and a cast, clamped onto the last interval
+        // against a 1-ulp division overshoot near the top endpoint
+        const double r = (double) f * lim[2] / dkc;
+        int j = (int) r;
+        if (j > nkc - 2) {
+          j = nkc - 2;
+        }
+        qidx[f] = j;
+        qdel[f] = (r - j) * dkc;
+      }
+      tabc = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nkc);
+      cspl = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nkc);
+    }
   }
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
@@ -1453,17 +1628,60 @@ double dlnxi_dlnk_pm_tomo(
       fdiff2(cache[3], redshift.random_shear) ||
       fdiff2(cache[4], Ntable.random))
   {
-    for (int f=0; f<nlnk; f++) {  
-      double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*lim[2]));
+    if (nkc < nlnk) {
+      // exact nointerp builds on the coarse ln k nodes only - the
+      // expensive part - then the house natural cubic spline
+      // upsamples every (xi_+/-, pair, angular bin) row onto the
+      // unchanged dense ln k grid (spline_coeffs_uniform + Horner at
+      // the offsets precomputed in the rebuild block above)
+      for (int f=0; f<nkc; f++) {
+        double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*dkc));
+        for (int p=0; p<2; p++) {
+          for (int nz=0; nz<NSIZE; nz++) {
+            for (int i=0; i<Ntable.Ntheta; i++) {
+              const int q = nz * Ntable.Ntheta + i;
+              tabc[p][q][f] = tmp[p][q];
+            }
+          }
+        }
+        free(tmp);
+      }
+      const int nrows = NSIZE*Ntable.Ntheta;
+      #pragma omp parallel for collapse(2) schedule(static)
       for (int p=0; p<2; p++) {
-        for (int nz=0; nz<NSIZE; nz++) {
-          for (int i=0; i<Ntable.Ntheta; i++) {
-            const int q = nz * Ntable.Ntheta + i;
-            table[p][q][f] =  tmp[p][q];
+        for (int q=0; q<nrows; q++) {
+          spline_coeffs_uniform(tabc[p][q], nkc, dkc, cspl[p][q]);
+        }
+      }
+      #pragma omp parallel for collapse(3) schedule(static)
+      for (int p=0; p<2; p++) {
+        for (int q=0; q<nrows; q++) {
+          for (int f=0; f<nlnk; f++) {
+            const double* restrict y = tabc[p][q];
+            const double* restrict cc = cspl[p][q];
+            const int j = qidx[f];
+            const double b = (y[j+1] - y[j])/dkc
+                             - dkc*(cc[j+1] + 2.0*cc[j])/3.0;
+            const double d = (cc[j+1] - cc[j])/(3.0*dkc);
+            table[p][q][f] =
+                y[j] + qdel[f]*(b + qdel[f]*(cc[j] + qdel[f]*d));
           }
         }
       }
-      free(tmp);
+    }
+    else {
+      for (int f=0; f<nlnk; f++) {
+        double** tmp = dlnxi_dlnk_pm_tomo_nointerp(exp(lim[0] + f*lim[2]));
+        for (int p=0; p<2; p++) {
+          for (int nz=0; nz<NSIZE; nz++) {
+            for (int i=0; i<Ntable.Ntheta; i++) {
+              const int q = nz * Ntable.Ntheta + i;
+              table[p][q][f] = tmp[p][q];
+            }
+          }
+        }
+        free(tmp);
+      }
     }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
@@ -1652,12 +1870,22 @@ double* dlnw_ks_dlnk_tomo_nointerp(
     const int nell = Ntable.N_ell;
     const double la = 0.0; // ln(l = 1): the dC table's multipole grid start
     const double ldx = (log(Ntable.LMAX + 1.) - la)/((double) nell - 1.);
-    #pragma omp parallel for collapse(2) schedule(static)
+    // the same fixed-weight two-row blend as the ss fill above, on
+    // the dCks_ struct (one weight tk for every (bin, ell) entry)
+    const double rk = (log(k) - dCks_.lim[3])/dCks_.lim[5];
+    int fk = (int) rk;
+    if (fk > dCks_.nlnk - 2) { // 1-ulp division overshoot near kmax
+      fk = dCks_.nlnk - 2;
+    }
+    const double tk = rk - fk;
+    // SIMDe-vectorized fixed-weight blend (limber_krow_blend), one
+    // plane per source bin
+    #pragma omp parallel for schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<nell; i++) {
-        const double lg = exp(la + i*ldx);
-        dCgrid[nz][i] = dC_ks_dlnk_tomo_limber(k, lg, nz);
-      }
+      const double* r0[1] = {dCks_.tab[nz][fk]};
+      const double* r1[1] = {dCks_.tab[nz][fk+1]};
+      double* out1[1] = {dCgrid[nz]};
+      limber_krow_blend(1, r0, r1, out1, tk, nell);
     }
     // gather onto every integer multipole (vectorized linear interpolation)
     #pragma omp parallel for schedule(static)
@@ -1760,6 +1988,12 @@ double dlnw_ks_dlnk_tomo(
   static double** table = NULL;
   static double lim[3];
   static int nlnk;
+  static int nkc = 0;     // used coarse ln k count (= nlnk when exact)
+  static double dkc = 0.; // coarse grid spacing in ln k
+  static int* qidx = NULL;      // fine node -> coarse interval (uniform
+  static double* qdel = NULL;   //   grids: precomputed, no search)
+  static double** tabc = NULL;  // coarse dlnw values
+  static double** cspl = NULL;  // natural-cubic-spline c coefficients
   const int NSIZE = redshift.shear_nbin;
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
@@ -1771,6 +2005,41 @@ double dlnw_ks_dlnk_tomo(
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
     if (table != NULL) free(table);
     table = (double**) malloc2d(NSIZE*Ntable.Ntheta, nlnk);
+
+    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // rebuild block; the per-cosmology refill only fills. Unlike the
+    // dC tables (whose nodes are cheap), every ln k node of THIS
+    // cache costs one full dlnw nointerp build - the expensive-node case
+    // the coarse-exact + cubic-upsample pattern exists for. The same
+    // scale-cut k knob gates both grids
+    // (Ntable.dCX_dlnk_nlnk_internal; 0 or out of range = exact;
+    // > 3 because a natural cubic spline needs 4 nodes).
+    if (qidx != NULL) { free(qidx); qidx = NULL; }
+    if (qdel != NULL) { free(qdel); qdel = NULL; }
+    if (tabc != NULL) { free(tabc); tabc = NULL; }
+    if (cspl != NULL) { free(cspl); cspl = NULL; }
+    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
+    dkc = (lim[1] - lim[0]) / ((double) nkc - 1.0);
+    if (nkc < nlnk) {
+      qidx = (int*) malloc(sizeof(int)*nlnk);
+      qdel = (double*) malloc1d(nlnk);
+      for (int f=0; f<nlnk; f++) {
+        // fine node f -> its coarse interval and offset: both grids
+        // are uniform in ln k with shared endpoints, so the map is
+        // one multiply and a cast, clamped onto the last interval
+        // against a 1-ulp division overshoot near the top endpoint
+        const double r = (double) f * lim[2] / dkc;
+        int j = (int) r;
+        if (j > nkc - 2) {
+          j = nkc - 2;
+        }
+        qidx[f] = j;
+        qdel[f] = (r - j) * dkc;
+      }
+      tabc = (double**) malloc2d(NSIZE*Ntable.Ntheta, nkc);
+      cspl = (double**) malloc2d(NSIZE*Ntable.Ntheta, nkc);
+    }
   }
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
@@ -1779,15 +2048,48 @@ double dlnw_ks_dlnk_tomo(
       fdiff2(cache[4], Ntable.random) ||
       fdiff2(cache[5], cmb.random))
   {
-    for (int f=0; f<nlnk; f++) {
-      double* tmp = dlnw_ks_dlnk_tomo_nointerp(exp(lim[0] + f*lim[2]));
-      for (int nz=0; nz<NSIZE; nz++) {
-        for (int i=0; i<Ntable.Ntheta; i++) {
-          const int q = nz * Ntable.Ntheta + i;
-          table[q][f] = tmp[q];
+    if (nkc < nlnk) {
+      // coarse exact nointerp builds + house cubic upsample in ln k,
+      // as in dlnxi_dlnk_pm_tomo above
+      for (int f=0; f<nkc; f++) {
+        double* tmp = dlnw_ks_dlnk_tomo_nointerp(exp(lim[0] + f*dkc));
+        for (int nz=0; nz<NSIZE; nz++) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            const int q = nz * Ntable.Ntheta + i;
+            tabc[q][f] = tmp[q];
+          }
+        }
+        free(tmp);
+      }
+      const int nrows = NSIZE*Ntable.Ntheta;
+      #pragma omp parallel for schedule(static)
+      for (int q=0; q<nrows; q++) {
+        spline_coeffs_uniform(tabc[q], nkc, dkc, cspl[q]);
+      }
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int q=0; q<nrows; q++) {
+        for (int f=0; f<nlnk; f++) {
+          const double* restrict y = tabc[q];
+          const double* restrict cc = cspl[q];
+          const int j = qidx[f];
+          const double b = (y[j+1] - y[j])/dkc
+                           - dkc*(cc[j+1] + 2.0*cc[j])/3.0;
+          const double d = (cc[j+1] - cc[j])/(3.0*dkc);
+          table[q][f] = y[j] + qdel[f]*(b + qdel[f]*(cc[j] + qdel[f]*d));
         }
       }
-      free(tmp);
+    }
+    else {
+      for (int f=0; f<nlnk; f++) {
+        double* tmp = dlnw_ks_dlnk_tomo_nointerp(exp(lim[0] + f*lim[2]));
+        for (int nz=0; nz<NSIZE; nz++) {
+          for (int i=0; i<Ntable.Ntheta; i++) {
+            const int q = nz * Ntable.Ntheta + i;
+            table[q][f] = tmp[q];
+          }
+        }
+        free(tmp);
+      }
     }
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;

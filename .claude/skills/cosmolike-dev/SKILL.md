@@ -193,7 +193,7 @@ compound):
 
 The internal coarse grids scale together with their dense tables, so
 the coarse/dense ratios are boost-invariant, and a knob whose
-baseline is 0 (disabled — `dCX_dlnk_nlnk_internal` by default) stays
+baseline is 0 (disabled) stays
 0 under any boost. The dedicated setters (`init_ntable_ell_internal`,
 `init_ntable_dcx_dlnk_nlnk_internal`, `init_fpt_internal_boost`, ...)
 are individual overrides: called before the first boost call they
