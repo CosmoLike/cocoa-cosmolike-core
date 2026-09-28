@@ -143,11 +143,10 @@ void dC_ss_dlnk_tomo_limber_work(
   );
 
 double C_gs_tomo_limber_nointerp(
-    const double l, 
-    const int ni, 
-    const int nj,
-    const int init
-  );
+    const double l,   // multipole moment
+    const int nl,     // lens redshift bin index
+    const int ns      // source bin index; (nl, ns) must be an enumerated pair
+  ); // slow (whole-tomography batch per call) - use the batch version
 
 void C_gs_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
@@ -176,8 +175,12 @@ void C_gs_tomo_limber_nointerp_batch(
     double** Cl
   );
 
-double C_gg_tomo_limber_nointerp(const double l, const int ni, const int nj, 
-  const int init);
+// Single-ell point diagnostics on the gg batch engine; nj must equal ni
+// (auto spectra only). Slow: whole-tomography batch cost per call.
+double C_gg_tomo_limber_linpsopt_nointerp(const double l, const int ni,
+  const int nj, const int use_linear_ps);
+
+double C_gg_tomo_limber_nointerp(const double l, const int ni, const int nj);
 
 // Batch galaxy-clustering C_l (auto spectra) at arbitrary multipole values.
 // use_linear_ps = 1: the linear Limber term C_cl_tomo subtracts; 0: the
@@ -206,10 +209,34 @@ void C_gg_tomo_limber_nointerp_batch(
     double** Cl       // output [NSIZE][>=lmax], indexed as Cl[nz][l]
   );
 
-double C_gk_tomo_limber_nointerp(const double l, const int nl, const int init);
+double C_gk_tomo_limber_nointerp(
+    const double l,   // multipole moment
+    const int ni      // lens redshift bin index
+  ); // slow (whole-tomography batch per call) - use the batch version
+
+void C_gk_tomo_limber_nointerp_ells(
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of lens tomographic bins (= clustering_nbin)
+    double** out         // output [NSIZE][nell], indexed as out[nz][i]
+  );
+
+// Batch computation at integer multipoles lmin..lmax-1.
+// Thin wrapper around C_gk_tomo_limber_nointerp_ells.
+void C_gk_tomo_limber_nointerp_batch(
+    const int lmin,
+    const int lmax,
+    const int NSIZE,
+    double** Cl
+  );
 
 // Batch CMB-lensing x shear C_l at arbitrary multipole values
 // (the CMB is a single lens plane, so one spectrum per source bin).
+double C_ks_tomo_limber_nointerp(
+    const double l,   // multipole moment
+    const int ns      // source redshift bin index
+  ); // slow (whole-tomography batch per call) - use the batch version
+
 void C_ks_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
@@ -249,12 +276,6 @@ double C_kk_limber_nointerp(const double l, const int init);
 // ----------------------------------------------------------------------------
 // Integrands 
 // ----------------------------------------------------------------------------
-
-double int_for_C_gs_tomo_limber(double a, void* params);
-
-double int_for_C_gg_tomo_limber(double a, void* params);
-
-double int_for_C_gk_tomo_limber(double a, void* params);
 
 double int_for_C_kk_limber(double a, void* params);
 

@@ -24,6 +24,21 @@
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Lower scale-factor bound for line-of-sight integrals over source bin ni.
+//
+//   a_min = 1 / (1 + zmax_all)
+//
+// where zmax_all = redshift.shear_zdist_zmax_all, the upper edge of the
+// tabulated source n(z) range. The same bound applies to every source bin;
+// ni is only validated.
+//
+// Parameters:
+//   ni - source tomographic bin index (0 .. shear_nbin-1)
+//
+// Returns:
+//   smallest scale factor with source n(z) support.
+// ---------------------------------------------------------------------------
 double amin_source(int ni) 
 {
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
@@ -33,11 +48,38 @@ double amin_source(int ni)
   return 1. / (redshift.shear_zdist_zmax_all + 1.);
 }
 
+// ---------------------------------------------------------------------------
+// Upper scale-factor bound for line-of-sight integrals over the source
+// sample.
+//
+//   a_max = 1 / (1 + max(zmin_all, 0.001))
+//
+// where zmin_all = redshift.shear_zdist_zmin_all, the lower edge of the
+// tabulated source n(z) range; the z >= 0.001 floor keeps a_max strictly
+// below 1. The bin argument is unused: the bound is common to all bins.
+//
+// Parameters:
+//   i - source tomographic bin index; unused (the bound is bin-independent).
+//
+// Returns:
+//   largest scale factor with source n(z) support.
+// ---------------------------------------------------------------------------
 double amax_source(int i __attribute__((unused))) 
 {
   return 1. / (1. + fmax(redshift.shear_zdist_zmin_all, 0.001));
 }
 
+// ---------------------------------------------------------------------------
+// Upper scale-factor bound for intrinsic-alignment integrals over source
+// bin ni. Identical value to amax_source; this variant validates the bin
+// index.
+//
+// Parameters:
+//   ni - source tomographic bin index (0 .. shear_nbin-1)
+//
+// Returns:
+//   1 / (1 + max(shear_zdist_zmin_all, 0.001)).
+// ---------------------------------------------------------------------------
 double amax_source_IA(int ni) 
 {
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
@@ -47,6 +89,26 @@ double amax_source_IA(int ni)
   return 1. / (1. + fmax(redshift.shear_zdist_zmin_all, 0.001));
 }
 
+// ---------------------------------------------------------------------------
+// Lower scale-factor bound for line-of-sight integrals over lens bin ni.
+//
+// The tabulated per-bin upper edge is stretched about the fiducial mean
+// redshift by the photo-z stretch parameter, then padded by twice the
+// absolute photo-z shift:
+//
+//   zmax  = (zdist_zmax[ni] - zmean[ni]) * sigma_ni + zmean[ni]
+//   a_min = 1 / (1 + zmax + 2*|dz_ni|)
+//
+// with sigma_ni = nuisance.photoz[1][1][ni] (stretch) and
+// dz_ni = nuisance.photoz[1][0][ni] (shift), so the bound covers the
+// support of nz_lens_photoz after its shift-and-stretch mapping.
+//
+// Parameters:
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//
+// Returns:
+//   smallest scale factor with lens n(z) support for bin ni.
+// ---------------------------------------------------------------------------
 double amin_lens(int ni) 
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
@@ -60,6 +122,28 @@ double amin_lens(int ni)
   return 1. / (1 + zmax + 2.*fabs(nuisance.photoz[1][0][ni]));
 }
 
+// ---------------------------------------------------------------------------
+// Upper scale-factor bound for line-of-sight integrals over lens bin ni.
+//
+// Mirror of amin_lens: the tabulated per-bin lower edge is stretched about
+// the fiducial mean redshift and padded by twice the absolute photo-z
+// shift,
+//
+//   zmin  = (zdist_zmin[ni] - zmean[ni]) * sigma_ni + zmean[ni]
+//   a_max = 1 / (1 + max(zmin - 2*|dz_ni|, 0.001))
+//
+// with sigma_ni = nuisance.photoz[1][1][ni] and dz_ni =
+// nuisance.photoz[1][0][ni]. When magnification bias is active for the
+// bin (gbmag(0, ni) != 0), the kernel W_mag has support well in front of
+// the lens galaxies, and the bound widens to the source-sample value
+// 1 / (1 + max(shear_zdist_zmin_all, 0.001)) (same as amax_source).
+//
+// Parameters:
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//
+// Returns:
+//   largest scale factor the bin's projection kernels support.
+// ---------------------------------------------------------------------------
 double amax_lens(int ni) 
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
@@ -82,8 +166,32 @@ double amax_lens(int ni)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-int test_kmax(double l, int ni) // return 1 if true, 0 otherwise
-{ // test whether the (l, ni) bin is in the linear clustering regime
+// ---------------------------------------------------------------------------
+// Linear-regime scale cut for galaxy clustering.
+//
+// Tests whether multipole l in lens bin ni maps to a wavenumber inside the
+// range where the bias model is trusted:
+//
+//   k = (l + 0.5) / chiref[ni]  <  kmax = 2*pi / Rmin_bias * coverH0
+//
+// with like.Rmin_bias in Mpc/h and cosmology.coverH0 converting kmax to
+// 1/(c/H0) units, matching chiref. chiref[ni] is the comoving distance to
+// the midpoint of the bin's tabulated n(z) range,
+// z = (zdist_zmin[ni] + zdist_zmax[ni]) / 2.
+//
+// Cache invalidation: chiref is built on the first call (sentinel
+// chiref[0] = -1) and never rebuilt, so later cosmology changes do not
+// move the cut. First call must happen outside OpenMP regions.
+//
+// Parameters:
+//   l  - multipole
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//
+// Returns:
+//   1 when (l, ni) passes the cut, 0 otherwise.
+// ---------------------------------------------------------------------------
+int test_kmax(double l, int ni)
+{
   static double chiref[MAX_SIZE_ARRAYS] = {-1.};
     
   if (chiref[0] < 0) {
@@ -112,6 +220,30 @@ int test_kmax(double l, int ni) // return 1 if true, 0 otherwise
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GGL pair admission test: is (lens bin ni, source bin nj) a usable
+// galaxy-galaxy lensing pair?
+//
+// With no exclusion list (tomo.ggl_exclude == NULL) every pair is
+// admitted. Otherwise a static lookup table N[lens][source] is built from
+// the flat exclusion list: pair k is (ggl_exclude[2k], ggl_exclude[2k+1]),
+// k < tomo.N_ggl_exclude. Excluded pairs store 0, all others 1.
+//
+// Cache invalidation: the table is stamped with the tomo.random_ggl key
+// it was built with and rebuilds when the stamp differs or while the
+// static-initializer sentinel is present (N[0][0] = -42 < -1; built
+// entries are 0 or 1). init_ntomo_powerspectra draws a fresh random_ggl
+// key and evaluates every pair single-threaded, so parallel callers only
+// read; the first call after a key change must happen outside OpenMP
+// regions.
+//
+// Parameters:
+//   ni - lens (clustering) tomographic bin index
+//   nj - source (shear) tomographic bin index
+//
+// Returns:
+//   1 when the pair enters the GGL data vector, 0 when excluded.
+// ---------------------------------------------------------------------------
 int test_zoverlap(int ni, int nj) 
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
@@ -150,6 +282,25 @@ int test_zoverlap(int ni, int nj)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Lens bin of the ni-th galaxy-galaxy lensing power spectrum.
+//
+// Admitted (lens, source) pairs are flattened in row-major order (lens
+// outer, source inner, test_zoverlap deciding admission); returns the
+// lens bin of pair ni.
+//
+// Cache invalidation: static map with sentinel N[0] = -42; rebuilds while
+// N[0] < -1 (never built; built entries are bin indices >= 0) or when the
+// stored tomo.random_ggl stamp changes. Warmed single-threaded by
+// init_ntomo_powerspectra; the first call after a key change must happen
+// outside OpenMP regions.
+//
+// Parameters:
+//   ni - GGL power spectrum index (0 .. ggl_Npowerspectra-1)
+//
+// Returns:
+//   lens (clustering) tomographic bin of that pair.
+// ---------------------------------------------------------------------------
 int ZL(int ni) 
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
@@ -175,6 +326,24 @@ int ZL(int ni)
   return N[ni];
 }
 
+// ---------------------------------------------------------------------------
+// Source bin of the nj-th galaxy-galaxy lensing power spectrum.
+//
+// Same admitted-pair flattening as ZL (lens outer, source inner); returns
+// the source bin of pair nj.
+//
+// Cache invalidation: static map with sentinel N[0] = -42; rebuilds while
+// N[0] < -1 (never built; built entries are bin indices >= 0) or when the
+// stored tomo.random_ggl stamp changes. Warmed single-threaded by
+// init_ntomo_powerspectra; the first call after a key change must happen
+// outside OpenMP regions.
+//
+// Parameters:
+//   nj - GGL power spectrum index (0 .. ggl_Npowerspectra-1)
+//
+// Returns:
+//   source (shear) tomographic bin of that pair.
+// ---------------------------------------------------------------------------
 int ZS(int nj) 
 {
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
@@ -200,8 +369,30 @@ int ZS(int nj)
   return N[nj];
 }
 
-int N_ggl(int ni, int nj) 
-{ // ni = redshift bin of the lens, nj = redshift bin of the source
+// ---------------------------------------------------------------------------
+// GGL power spectrum index of lens bin ni and source bin nj.
+//
+// Inverse of (ZL, ZS): admitted pairs are numbered in row-major order
+// (lens outer, source inner) and excluded pairs store -1.
+//
+// Cache invalidation: static map stamped with tomo.random_ggl. The
+// rebuild guard is N[0][0] < 0, so the static-initializer sentinel (-42)
+// triggers the first build and a changed stamp triggers later ones; when
+// pair (0, 0) itself is excluded, its stored -1 keeps the guard true and
+// the map is rebuilt on every call. Warmed single-threaded by
+// init_ntomo_powerspectra; the first call after a key change must happen
+// outside OpenMP regions.
+//
+// Parameters:
+//   ni - lens (clustering) tomographic bin index
+//   nj - source (shear) tomographic bin index
+//
+// Returns:
+//   pair index (0 .. ggl_Npowerspectra-1), or -1 when the pair is
+//   excluded.
+// ---------------------------------------------------------------------------
+int N_ggl(int ni, int nj)
+{
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
   static uint64_t cache = 0; // tomo.random_ggl the map was built with
   if (N[0][0] < 0 || fdiff2(cache, tomo.random_ggl)) {
@@ -228,8 +419,25 @@ int N_ggl(int ni, int nj)
   return N[ni][nj];
 }
 
-int Z1(int ni) 
-{ // find z1 of tomography combination (z1, z2) constituting shear tomo bin Nbin
+// ---------------------------------------------------------------------------
+// First source bin of the ni-th shear-shear power spectrum.
+//
+// Shear pairs (z1, z2) with z1 <= z2 are numbered in row-major order:
+// (0,0), (0,1), ..., (0,nbin-1), (1,1), ...; returns z1 of pair ni.
+//
+// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// rebuilt while N[0] < -1; built entries are >= 0). There is no
+// invalidation key: the layout depends only on redshift.shear_nbin.
+// First call must happen outside OpenMP regions.
+//
+// Parameters:
+//   ni - shear power spectrum index (0 .. shear_Npowerspectra-1)
+//
+// Returns:
+//   first source bin z1 of that pair.
+// ---------------------------------------------------------------------------
+int Z1(int ni)
+{
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
   if (N[0] < -1) 
   {
@@ -253,8 +461,24 @@ int Z1(int ni)
   return N[ni];
 }
 
-int Z2(int nj) 
-{ // find z2 of tomography combination (z1,z2) constituting shear tomo bin Nbin
+// ---------------------------------------------------------------------------
+// Second source bin of the nj-th shear-shear power spectrum.
+//
+// Same z1 <= z2 row-major pair layout as Z1; returns z2 of pair nj.
+//
+// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// rebuilt while N[0] < -1; built entries are >= 0). There is no
+// invalidation key: the layout depends only on redshift.shear_nbin.
+// First call must happen outside OpenMP regions.
+//
+// Parameters:
+//   nj - shear power spectrum index (0 .. shear_Npowerspectra-1)
+//
+// Returns:
+//   second source bin z2 of that pair.
+// ---------------------------------------------------------------------------
+int Z2(int nj)
+{
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
   if (N[0] < -1) 
   {
@@ -278,8 +502,26 @@ int Z2(int nj)
   return N[nj];
 }
 
-int N_shear(int ni, int nj) 
-{ // find shear tomography bin number N_shear of tomography combination (z1, z2)
+// ---------------------------------------------------------------------------
+// Shear-shear power spectrum index of source bin pair (ni, nj).
+//
+// Inverse of (Z1, Z2) with symmetric storage, N[i][j] = N[j][i], so the
+// bin order does not matter. Indices follow the Z1/Z2 row-major layout
+// over pairs with z1 <= z2.
+//
+// Cache invalidation: built once, on the first call (sentinel
+// N[0][0] = -42, rebuilt while N[0][0] < -1; built entries are >= 0).
+// There is no invalidation key: the layout depends only on
+// redshift.shear_nbin. First call must happen outside OpenMP regions.
+//
+// Parameters:
+//   ni, nj - source tomographic bin indices (0 .. shear_nbin-1)
+//
+// Returns:
+//   shear power spectrum index (0 .. shear_Npowerspectra-1).
+// ---------------------------------------------------------------------------
+int N_shear(int ni, int nj)
+{
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
   if (N[0][0] < -1) 
   {
@@ -304,8 +546,26 @@ int N_shear(int ni, int nj)
   return N[ni][nj];
 }
 
-int ZCL1(int ni) 
-{ // find ZCL1 of tomography combination (zcl1, zcl2) constituting tomo bin Nbin
+// ---------------------------------------------------------------------------
+// First lens bin of the ni-th clustering bin pair.
+//
+// Clustering pairs (zcl1, zcl2) with zcl1 <= zcl2 are numbered in
+// row-major order, as in Z1; returns zcl1 of pair ni. The bound check
+// uses tomo.clustering_Npowerspectra.
+//
+// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// rebuilt while N[0] < -1; built entries are >= 0). There is no
+// invalidation key: the layout depends only on redshift.clustering_nbin.
+// First call must happen outside OpenMP regions.
+//
+// Parameters:
+//   ni - clustering power spectrum index (0 .. clustering_Npowerspectra-1)
+//
+// Returns:
+//   first lens bin zcl1 of that pair.
+// ---------------------------------------------------------------------------
+int ZCL1(int ni)
+{
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
   if (N[0] < -1) 
   {
@@ -329,8 +589,25 @@ int ZCL1(int ni)
   return N[ni];
 }
 
-int ZCL2(int nj) 
-{ // find ZCL2 of tomography combination (zcl1, zcl2) constituting tomo bin Nbin
+// ---------------------------------------------------------------------------
+// Second lens bin of the nj-th clustering bin pair.
+//
+// Same zcl1 <= zcl2 row-major pair layout as ZCL1; returns zcl2 of pair
+// nj. The bound check uses tomo.clustering_Npowerspectra.
+//
+// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// rebuilt while N[0] < -1; built entries are >= 0). There is no
+// invalidation key: the layout depends only on redshift.clustering_nbin.
+// First call must happen outside OpenMP regions.
+//
+// Parameters:
+//   nj - clustering power spectrum index (0 .. clustering_Npowerspectra-1)
+//
+// Returns:
+//   second lens bin zcl2 of that pair.
+// ---------------------------------------------------------------------------
+int ZCL2(int nj)
+{
   static int N[MAX_SIZE_ARRAYS*MAX_SIZE_ARRAYS] = {-42};
   if (N[0] < -1) 
   {
@@ -354,7 +631,25 @@ int ZCL2(int nj)
   return N[nj];
 }
 
-int N_CL(int ni, int nj) 
+// ---------------------------------------------------------------------------
+// Clustering pair index of lens bin pair (ni, nj).
+//
+// Inverse of (ZCL1, ZCL2) with symmetric storage, N[i][j] = N[j][i], over
+// the zcl1 <= zcl2 row-major pair layout.
+//
+// Cache invalidation: built once, on the first call (sentinel
+// N[0][0] = -42, rebuilt while N[0][0] < -1; built entries are >= 0).
+// There is no invalidation key: the layout depends only on
+// redshift.clustering_nbin. First call must happen outside OpenMP
+// regions.
+//
+// Parameters:
+//   ni, nj - lens tomographic bin indices (0 .. clustering_nbin-1)
+//
+// Returns:
+//   pair index in the zcl1 <= zcl2 enumeration.
+// ---------------------------------------------------------------------------
+int N_CL(int ni, int nj)
 {
   static int N[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS] = {{-42}};
   if (N[0][0] < -1) 
@@ -388,11 +683,23 @@ int N_CL(int ni, int nj)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Raw (unnormalized) histogram lookup for the source galaxy redshift
+// distribution in tomography bin ni.
+//
+// Locates the histogram cell containing z by direct index on the uniform
+// grid stored in redshift.shear_zdist_table (row ntomo holds the z nodes)
+// and returns its stored density.
+//
+// Parameters:
+//   z  - redshift
+//   ni - source tomographic bin index (0 .. shear_nbin-1)
+//
+// Returns:
+//   tabulated n(z) value; 0 outside [zmin_all, zmax_all).
+// ---------------------------------------------------------------------------
 double zdistr_histo_n(double z, const int ni)
-{ // Raw (unnormalized) histogram lookup for the source galaxy redshift
-  // distribution in tomography bin ni. Returns the tabulated n(z) value
-  // at redshift z by finding the histogram bin that contains z and
-  // returning its stored density. Returns 0 outside the tabulated range.
+{
   if (redshift.shear_zdist_table == NULL) {
     log_fatal("redshift n(z) not loaded");
     exit(1);
@@ -463,16 +770,19 @@ double zdistr_histo_n(double z, const int ni)
 //       compute the grid index (no binary search, no GSL function pointer
 //       dispatch), then Horner-form cubic polynomial evaluation.
 //
-// CACHE INVALIDATION:
+// Cache invalidation:
 //   Recomputes when redshift.random_shear changes, which tracks:
 //     - source n(z) histogram values
 //     - number of bins, redshift range, bin edges
+//   Also recomputes when Ntable.photoz_interpolation_type or
+//   Ntable.photoz_zmid_convention change, via the packed settings key
+//   described above the rebuild condition.
 //
-// PARAMETERS:
+// Parameters:
 //   zz — redshift at which to evaluate (before photo-z shift)
 //   nj — source tomographic bin index (0 .. shear_nbin − 1)
 //
-// RETURNS:
+// Returns:
 //   n(z − Δz_nj, nj). Returns 0 outside the tabulated range.
 // ---------------------------------------------------------------------------
 double nz_source_photoz(double zz, const int nj)
@@ -671,9 +981,21 @@ double nz_source_photoz(double zz, const int nj)
 #endif
 }
 
-double int_for_zmean_source(double z, void* params) 
-{ // Integrand for computing the mean source redshift: z * n_j(z).
-  // params[0] = bin index j (cast to double). Used with GSL-quad in zmean_source.
+// ---------------------------------------------------------------------------
+// Integrand for the mean source redshift: z * n_j(z).
+//
+// GSL quadrature callback used by zmean_source, with n_j =
+// nz_source_photoz.
+//
+// Parameters:
+//   z      - redshift
+//   params - double[1]; params[0] = source bin index (cast to double)
+//
+// Returns:
+//   z * nz_source_photoz(z, bin).
+// ---------------------------------------------------------------------------
+double int_for_zmean_source(double z, void* params)
+{
   double* ar = (double*) params;
   const int ni = (int) ar[0];
   
@@ -683,10 +1005,28 @@ double int_for_zmean_source(double z, void* params)
   return z * nz_source_photoz(z, ni);
 }
 
-double zmean_source(int ni) 
-{ // Mean true redshift of source galaxies in tomography bin ni,
-  // computed as ∫ z * n_i(z) dz over the bin's redshift range,
-  // where n_i = nz_source_photoz (already normalized to unit integral).
+// ---------------------------------------------------------------------------
+// Mean true redshift of source galaxies in tomography bin ni.
+//
+//   zmean_source(ni) = int_{zmin[ni]}^{zmax[ni]} z * n_i(z) dz
+//
+// over the bin's tabulated range, with n_i = nz_source_photoz (already
+// normalized to unit integral, so no norm division is needed). All bins
+// are tabulated at once with fixed-order Gauss-Legendre quadrature
+// (256/512/1024 nodes, chosen by |Ntable.high_def_integration|).
+//
+// Cache invalidation: the table rebuilds when Ntable.random or
+// redshift.random_shear change. nz_source_photoz is warmed
+// single-threaded before the parallel loop over bins.
+//
+// Parameters:
+//   ni - source tomographic bin index (0 .. shear_nbin-1)
+//
+// Returns:
+//   tabulated mean redshift of bin ni.
+// ---------------------------------------------------------------------------
+double zmean_source(int ni)
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
   static gsl_integration_glfixed_table* w = NULL;
@@ -727,11 +1067,23 @@ double zmean_source(int ni)
 // Lenses routines for redshift distributions
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
-double pf_histo_n(double z, const int ni) 
-{ // Raw (unnormalized) histogram lookup for the lens galaxy redshift
-  // distribution in tomography bin ni. Returns the tabulated n(z) value
-  // at redshift z by finding the histogram bin that contains z and
-  // returning its stored density. Returns 0 outside the tabulated range.
+// ---------------------------------------------------------------------------
+// Raw (unnormalized) histogram lookup for the lens galaxy redshift
+// distribution in tomography bin ni.
+//
+// Locates the histogram cell containing z by direct index on the uniform
+// grid stored in redshift.clustering_zdist_table (row ntomo holds the z
+// nodes) and returns its stored density.
+//
+// Parameters:
+//   z  - redshift
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//
+// Returns:
+//   tabulated n(z) value; 0 outside [zmin_all, zmax_all).
+// ---------------------------------------------------------------------------
+double pf_histo_n(double z, const int ni)
+{
 
   if (redshift.clustering_zdist_table == NULL) 
   {
@@ -813,16 +1165,19 @@ double pf_histo_n(double z, const int ni)
 //   accounted for ~6% of wall time due to binary search overhead and
 //   function pointer indirection in the inner Limber loops.
 //
-// CACHE INVALIDATION:
+// Cache invalidation:
 //   Recomputes when redshift.random_clustering changes, which tracks:
 //     - lens n(z) histogram values
 //     - number of bins, redshift range, bin edges
+//   Also recomputes when Ntable.photoz_interpolation_type or
+//   Ntable.photoz_zmid_convention change, via the packed settings key
+//   described above the rebuild condition.
 //
-// PARAMETERS:
+// Parameters:
 //   zz — redshift at which to evaluate (before photo-z transformation)
 //   nj — lens tomographic bin index (0 .. clustering_nbin − 1)
 //
-// RETURNS:
+// Returns:
 //   n(z_transformed, nj) / σ_nj, the stretch-corrected normalized
 //   redshift distribution. Returns 0 outside the tabulated range.
 // ---------------------------------------------------------------------------
@@ -1035,10 +1390,20 @@ double nz_lens_photoz(double zz, int nj)
 #endif
 }
 
-double int_for_zmean(double z, void* params) 
-{ 
-  // Integrand for computing the mean lens redshift: z * n_j(z).
-  // params[0] = bin index j (cast to double). Used with GSL quadrature in zmean.
+// ---------------------------------------------------------------------------
+// Integrand for the mean lens redshift: z * n_j(z).
+//
+// GSL quadrature callback used by zmean, with n_j = nz_lens_photoz.
+//
+// Parameters:
+//   z      - redshift
+//   params - double[1]; params[0] = lens bin index (cast to double)
+//
+// Returns:
+//   z * nz_lens_photoz(z, bin).
+// ---------------------------------------------------------------------------
+double int_for_zmean(double z, void* params)
+{
   double* ar = (double*) params;
   const int ni = (int) ar[0];
   
@@ -1050,10 +1415,21 @@ double int_for_zmean(double z, void* params)
   return z * nz_lens_photoz(z, ni);
 }
 
-double norm_for_zmean(double z, void* params) 
-{ 
-  // Integrand for the norm of the mean lens redshift: n_j(z).
-  // params[0] = bin index j. Used with GSL-quad in zmean to compute ∫ n_j(z) dz.
+// ---------------------------------------------------------------------------
+// Normalization integrand for the mean lens redshift: n_j(z).
+//
+// GSL quadrature callback used by zmean to compute the denominator
+// int n_j(z) dz, with n_j = nz_lens_photoz.
+//
+// Parameters:
+//   z      - redshift
+//   params - double[1]; params[0] = lens bin index (cast to double)
+//
+// Returns:
+//   nz_lens_photoz(z, bin).
+// ---------------------------------------------------------------------------
+double norm_for_zmean(double z, void* params)
+{
   double* ar = (double*) params;
   const int ni = (int) ar[0];
   
@@ -1065,11 +1441,30 @@ double norm_for_zmean(double z, void* params)
   return nz_lens_photoz(z, ni);
 }
 
+// ---------------------------------------------------------------------------
+// Mean true redshift of lens galaxies in tomography bin ni.
+//
+//   zmean(ni) = int z * n_i(z) dz / int n_i(z) dz
+//
+// over the bin's tabulated range [zdist_zmin[ni], zdist_zmax[ni]], with
+// n_i = nz_lens_photoz. Unlike zmean_source, this explicitly divides by
+// the norm because nz_lens_photoz includes a stretch factor that breaks
+// unit normalization. All bins are tabulated at once with fixed-order
+// Gauss-Legendre quadrature (256/512/1024 nodes, chosen by
+// |Ntable.high_def_integration|).
+//
+// Cache invalidation: the table rebuilds when Ntable.random or
+// redshift.random_clustering change. nz_lens_photoz is warmed
+// single-threaded before the parallel loop over bins.
+//
+// Parameters:
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//
+// Returns:
+//   tabulated mean redshift of bin ni.
+// ---------------------------------------------------------------------------
 double zmean(const int ni)
-{ // Mean true redshift of lens galaxies in tomography bin ni,
-  // computed as ∫ z * n_i(z) dz / ∫ n_i(z) dz, where n_i = pf_photoz.
-  // Unlike zmean_source, this explicitly divides by the norm because
-  // pf_photoz includes a stretch factor that breaks unit normalization.
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
   static gsl_integration_glfixed_table* w = NULL;
@@ -1148,7 +1543,7 @@ double zmean(const int ni)
 //
 //     Fine grid:   Na = x·(N_a − 1) + 1 points on [a_min, a_max]
 //     Coarse grid: N_a points (every x-th fine point)
-//     x = 25·(1 + |high_def_integration|)
+//     x = 60·(1 + |high_def_integration|)
 //
 //   Step 1 — Sample integrands on the fine grid (parallel over bins × points):
 //     Pint[j][i] = n_j(z(a_i)) / a_i^2
@@ -1160,23 +1555,18 @@ double zmean(const int ni)
 //
 //   Step 3 — At query time, linearly interpolate table[ni] at a.
 //
-// NOTE:
-//   The Step 2 loop is not parallelized over bins (unlike g_lens). Adding
-//   #pragma omp parallel for schedule(static) over j would be safe here
-//   since each bin's running sum is independent.
-//
-// CACHE INVALIDATION:
+// Cache invalidation:
 //   Recomputes when any of these change:
 //     - Ntable.random             (grid parameters: N_a, high_def_integration)
 //     - cosmology.random          (χ(a) depends on cosmological parameters)
 //     - nuisance.random_photoz_shear  (source photo-z nuisance shifts)
 //     - redshift.random_shear         (source n(z) distribution)
 //
-// PARAMETERS:
+// Parameters:
 //   ainput — scale factor at which to evaluate the lensing efficiency
 //   ni     — source tomographic bin index (0 .. shear_nbin − 1)
 //
-// RETURNS:
+// Returns:
 //   g(a, ni), linearly interpolated from the precomputed table.
 //   Returns 0 if a ≤ a_min or a > 1 − dac (outside the tabulated range).
 // ---------------------------------------------------------------------------
@@ -1301,18 +1691,18 @@ double g_tomo(double ainput, const int ni) {
 //
 //   Step 3 — At query time, linearly interpolate table[ni] at a.
 //
-// CACHE INVALIDATION:
+// Cache invalidation:
 //   Recomputes when any of these change:
 //     - Ntable.random             (grid parameters)
 //     - cosmology.random          (χ(a) depends on cosmology)
 //     - nuisance.random_photoz_shear  (source photo-z shifts)
 //     - redshift.random_shear         (source n(z) distribution)
 //
-// PARAMETERS:
+// Parameters:
 //   a  — scale factor at which to evaluate
 //   ni — source tomographic bin index (0 .. shear_nbin − 1)
 //
-// RETURNS:
+// Returns:
 //   g2(a, ni), linearly interpolated from the precomputed table.
 //   Returns 0 if a is outside the tabulated range.
 // ---------------------------------------------------------------------------
@@ -1432,7 +1822,7 @@ double g2_tomo(double a, int ni)
 //
 //     Fine grid:   Na = x·(N_a − 1) + 1 points on [a_min, a_max]
 //                  spacing da = (a_max − a_min) / (Na − 1)
-//                  x = 25·(1 + |high_def_integration|), so x ∈ {25, 50, ...}
+//                  x = 60·(1 + |high_def_integration|), so x ∈ {60, 120, ...}
 //
 //     Coarse grid: N_a points on [a_min, a_max]
 //                  spacing dac = (a_max − a_min) / (N_a − 1)
@@ -1450,18 +1840,18 @@ double g2_tomo(double a, int ni)
 //
 //   Step 3 — At query time, linearly interpolate table[ni] at the requested a.
 //
-// CACHE INVALIDATION:
+// Cache invalidation:
 //   Recomputes when any of these change:
 //     - Ntable.random          (grid parameters: N_a, high_def_integration)
 //     - cosmology.random       (χ(a) depends on cosmological parameters)
 //     - nuisance.random_photoz_clustering  (photo-z nuisance shifts)
 //     - redshift.random_clustering         (lens n(z) distribution)
 //
-// PARAMETERS:
+// Parameters:
 //   a  — scale factor at which to evaluate the lensing efficiency
 //   ni — lens tomographic bin index (0 .. clustering_nbin − 1)
 //
-// RETURNS:
+// Returns:
 //   g(a, ni), linearly interpolated from the precomputed table.
 //   Returns 0 if a < a_min or a > 1 − dac (outside the tabulated range).
 // ---------------------------------------------------------------------------
@@ -1531,6 +1921,26 @@ double g_lens(double a, int ni)
     interpol1d(table[ni], Ntable.N_a, amin, amax, dac, a);
 }
 
+// ---------------------------------------------------------------------------
+// Lensing efficiency of the CMB source plane.
+//
+//   g_cmb(a) = f_K(chi_cmb - chi(a)) / f_K(chi_cmb)
+//
+// with chi_cmb = chi(a = 1/1091), the comoving distance to z = 1090, and
+// f_K the curvature-dependent comoving angular diameter distance. The
+// single-source analog of g_tomo; it enters the CMB lensing convergence
+// kernel W_k.
+//
+// Cache invalidation: chi_cmb and f_K(chi_cmb) are recomputed when
+// cosmology.random changes. The first call after a cosmology change must
+// happen outside OpenMP regions.
+//
+// Parameters:
+//   a - scale factor
+//
+// Returns:
+//   g_cmb(a) (dimensionless).
+// ---------------------------------------------------------------------------
 double g_cmb(double a) 
 {
   static uint64_t cache_cosmo_params;

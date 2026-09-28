@@ -51,6 +51,14 @@ namespace cosmolike_interface
 // array: the 3d analogue of cosmo2D_wrapper.hpp's to_np4d, used by the
 // ks diagnostics, whose single component (no EE/BB or xi+/xi- split, one
 // source bin instead of a pair) drops one dimension from the ss outputs.
+//
+// Parameters:
+//   f - field of equally shaped (rows, cols) matrices; a shape mismatch
+//       aborts (spdlog::critical + exit)
+//
+// Returns:
+//   Fortran-ordered numpy array of shape (n_elem, rows, cols); an empty
+//   field gives a (0, 0, 0) array
 // ---------------------------------------------------------------------------
 static py::array_t<double,py::array::f_style> to_np3d(
     const arma::field<arma::Mat<double>>& f
@@ -100,6 +108,14 @@ static py::array_t<double,py::array::f_style> to_np3d(
 // dlnxi_dlnk_pm_tomo_nointerp call at wavenumber k (which computes every
 // tomographic pair and angular bin at once), scattered into the
 // (theta, ni, nj) cubes with both bin orderings filled (xi is symmetric).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   XP - output xi+ cube (Ntheta, shear_nbin, shear_nbin)
+//   XM - output xi- cube (Ntheta, shear_nbin, shear_nbin)
+//
+// Returns:
+//   nothing; the result is written into XP and XM
 // ---------------------------------------------------------------------------
 static void dlnxi_dlnk_cubes(
     const double k,           // wavenumber in (Mpc/h)^-1
@@ -130,6 +146,14 @@ static void dlnxi_dlnk_cubes(
 // dlnxi_pm/dlnk at one wavenumber, every tomographic pair and angular bin
 // (one wavenumber is already a full batch: dlnxi_dlnk_cubes computes all
 // pairs and bins in one call).
+//
+// Parameters:
+//   k - wavenumber in (Mpc/h)^-1
+//
+// Returns:
+//   (xi+, xi-) tuple of numpy arrays of shape
+//   (Ntheta, shear_nbin, shear_nbin): rows = angular bin, both bin
+//   orderings filled (xi is symmetric)
 // ---------------------------------------------------------------------------
 py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
     const double k    // wavenumber in (Mpc/h)^-1
@@ -153,6 +177,20 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// dlnxi_pm/dlnk at many wavenumbers, stacked by to_np4d from one
+// dlnxi_dlnk_cubes call per k (serial loop; each call is already a full
+// batch over pairs and bins).
+//
+// Parameters:
+//   k - wavenumbers in (Mpc/h)^-1; an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   (xi+, xi-) tuple of numpy arrays of shape
+//   (nk, Ntheta, shear_nbin, shear_nbin): leading axis = wavenumber,
+//   both bin orderings filled (xi is symmetric)
+// ---------------------------------------------------------------------------
 py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
     const arma::Col<double> k    // wavenumbers in (Mpc/h)^-1
   )
@@ -191,6 +229,13 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
 // dlnw_ks_dlnk_tomo_nointerp call at wavenumber k (which computes every
 // source bin and angular bin at once), scattered into the (theta, ni)
 // matrix (one source bin per column: the CMB is a single lens plane).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   WK - output matrix (Ntheta, shear_nbin)
+//
+// Returns:
+//   nothing; the result is written into WK
 // ---------------------------------------------------------------------------
 static void dlnw_ks_dlnk_mat(
     const double k,        // wavenumber in (Mpc/h)^-1
@@ -214,6 +259,13 @@ static void dlnw_ks_dlnk_mat(
 // dlnw_ks/dlnk at one wavenumber, every source bin and angular bin (one
 // wavenumber is already a full batch: dlnw_ks_dlnk_mat computes all bins
 // in one call).
+//
+// Parameters:
+//   k - wavenumber in (Mpc/h)^-1
+//
+// Returns:
+//   arma::Mat (Ntheta, shear_nbin): rows = angular bin, columns =
+//   source bin
 // ---------------------------------------------------------------------------
 arma::Mat<double> dlnw_ks_dlnk_tomo_cpp(
     const double k    // wavenumber in (Mpc/h)^-1
@@ -231,6 +283,19 @@ arma::Mat<double> dlnw_ks_dlnk_tomo_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// dlnw_ks/dlnk at many wavenumbers, stacked by to_np3d from one
+// dlnw_ks_dlnk_mat call per k (serial loop; each call is already a full
+// batch over bins).
+//
+// Parameters:
+//   k - wavenumbers in (Mpc/h)^-1; an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   numpy array of shape (nk, Ntheta, shear_nbin): leading axis =
+//   wavenumber, then angular bin, then source bin
+// ---------------------------------------------------------------------------
 py::array_t<double,py::array::f_style> dlnw_ks_dlnk_tomo_cpp(
     const arma::Col<double> k    // wavenumbers in (Mpc/h)^-1
   )
@@ -267,6 +332,16 @@ py::array_t<double,py::array::f_style> dlnw_ks_dlnk_tomo_cpp(
 // mode of dC_ss_dlnk_tomo_limber_work, indexed [2][NSIZE][nk][nl] with
 // row nz the pair (Z1(nz), Z2(nz)). The caller owns (and frees) the
 // returned array.
+//
+// Parameters:
+//   lnkx  - ln k grid values (length nk), k in (Mpc/h)^-1
+//   nk    - number of k values
+//   lx    - multipole values (length nl)
+//   nl    - number of multipole values
+//   NSIZE - number of tomo shear power spectra
+//
+// Returns:
+//   malloc4d array [2][NSIZE][nk][nl] ([0] = EE, [1] = BB)
 // ---------------------------------------------------------------------------
 static double**** dlnC_ss_dlnk_grid(
     const double* lnkx, // ln k grid values (length nk), k in (Mpc/h)^-1
@@ -284,16 +359,33 @@ static double**** dlnC_ss_dlnk_grid(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// dlnC_ss/dlnk at one (k, l) for the (ni, nj) source pair in either
+// ordering; 0 when the Limber node chi = (l + 1/2)/k falls outside the
+// source support.
+//
+// Point diagnostic: runs the full batch of dlnC_ss_dlnk_grid at a
+// single (k, l) and reads one entry, so it pays the whole-tomography
+// batch cost per call. Loops over (k, l, ni, nj) should call the array
+// overload once and index the returned arrays instead.
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1; k <= 0 aborts (spdlog::critical +
+//        exit)
+//   l  - multipole
+//   ni - first source redshift bin; outside [0, shear_nbin) aborts
+//   nj - second source redshift bin; same validation as ni
+//
+// Returns:
+//   (EE, BB) tuple of doubles
+// ---------------------------------------------------------------------------
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
     const double k,   // wavenumber in (Mpc/h)^-1
     const double l,   // multipole
     const int ni,     // first source redshift bin
     const int nj      // second source redshift bin
   )
-{ // point diagnostic: runs the full batch of dlnC_ss_dlnk_grid at a single
-  // (k, l) and reads one entry, so it pays the whole-tomography batch cost
-  // per call. Loops over (k, l, ni, nj) should call the array overload
-  // once and index the returned arrays instead.
+{
   if (!(k > 0)) {
     spdlog::critical("{}: k = {} not positive",
                      "dlnC_ss_dlnk_tomo_limber_cpp", k);
@@ -321,6 +413,21 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// dlnC_ss/dlnk on a (k, l) grid, scattered from one dlnC_ss_dlnk_grid
+// call; only the enumerated Z1 <= Z2 ordering is filled, the reversed
+// entries stay zero.
+//
+// Parameters:
+//   k - wavenumbers in (Mpc/h)^-1; an empty array or any k(m) <= 0
+//       aborts (spdlog::critical + exit)
+//   l - multipoles; an empty array aborts
+//
+// Returns:
+//   (EE, BB) tuple of numpy arrays of shape
+//   (nk, nl, shear_nbin, shear_nbin): leading axis = wavenumber, then
+//   multipole, then the source bin pair
+// ---------------------------------------------------------------------------
 py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
     const arma::Col<double> k,   // wavenumbers in (Mpc/h)^-1
     const arma::Col<double> l    // multipoles
@@ -388,6 +495,16 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
 // mode of dC_ks_dlnk_tomo_limber_work, indexed [NSIZE][nk][nl] with row
 // nz the source bin (one component per bin: the CMB is a single lens
 // plane). The caller owns (and frees) the returned array.
+//
+// Parameters:
+//   lnkx  - ln k grid values (length nk), k in (Mpc/h)^-1
+//   nk    - number of k values
+//   lx    - multipole values (length nl)
+//   nl    - number of multipole values
+//   NSIZE - number of source tomographic bins (= shear_nbin)
+//
+// Returns:
+//   malloc3d array [NSIZE][nk][nl]
 // ---------------------------------------------------------------------------
 static double*** dlnC_ks_dlnk_grid(
     const double* lnkx, // ln k grid values (length nk), k in (Mpc/h)^-1
@@ -405,15 +522,30 @@ static double*** dlnC_ks_dlnk_grid(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// dlnC_ks/dlnk at one (k, l) for source bin ni; 0 when the Limber node
+// chi = (l + 1/2)/k falls outside the bin's source support.
+//
+// Point diagnostic: runs the full batch of dlnC_ks_dlnk_grid at a
+// single (k, l) and reads one entry, so it pays the whole-tomography
+// batch cost per call. Loops over (k, l, ni) should call the array
+// overload once and index the returned array instead.
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1; k <= 0 aborts (spdlog::critical +
+//        exit)
+//   l  - multipole
+//   ni - source redshift bin; outside [0, shear_nbin) aborts
+//
+// Returns:
+//   dlnC_ks/dlnk as a double
+// ---------------------------------------------------------------------------
 double dlnC_ks_dlnk_tomo_limber_cpp(
     const double k,   // wavenumber in (Mpc/h)^-1
     const double l,   // multipole
     const int ni      // source redshift bin
   )
-{ // point diagnostic: runs the full batch of dlnC_ks_dlnk_grid at a single
-  // (k, l) and reads one entry, so it pays the whole-tomography batch cost
-  // per call. Loops over (k, l, ni) should call the array overload once
-  // and index the returned array instead.
+{
   if (!(k > 0)) {
     spdlog::critical("{}: k = {} not positive",
                      "dlnC_ks_dlnk_tomo_limber_cpp", k);
@@ -438,6 +570,19 @@ double dlnC_ks_dlnk_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// dlnC_ks/dlnk on a (k, l) grid, scattered from one dlnC_ks_dlnk_grid
+// call (one column per source bin).
+//
+// Parameters:
+//   k - wavenumbers in (Mpc/h)^-1; an empty array or any k(m) <= 0
+//       aborts (spdlog::critical + exit)
+//   l - multipoles; an empty array aborts
+//
+// Returns:
+//   numpy array of shape (nk, nl, shear_nbin): leading axis =
+//   wavenumber, then multipole, then source bin
+// ---------------------------------------------------------------------------
 py::array_t<double,py::array::f_style> dlnC_ks_dlnk_tomo_limber_cpp(
     const arma::Col<double> k,   // wavenumbers in (Mpc/h)^-1
     const arma::Col<double> l    // multipoles
@@ -497,6 +642,14 @@ py::array_t<double,py::array::f_style> dlnC_ks_dlnk_tomo_limber_cpp(
 // RF computed by RF_xi_tomo_limber_work on the ln kmax grid, indexed
 // [2][NSIZE][nk][Ntheta] with row nz the pair (Z1(nz), Z2(nz)). The
 // caller owns (and frees) the returned array.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nk), k in (Mpc/h)^-1
+//   nk      - number of kmax values
+//   NSIZE   - number of tomo shear power spectra
+//
+// Returns:
+//   malloc4d array [2][NSIZE][nk][Ntheta] ([0] = xi+, [1] = xi-)
 // ---------------------------------------------------------------------------
 static double**** RF_xi_grid(
     const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
@@ -512,16 +665,32 @@ static double**** RF_xi_grid(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Real-space response function RF(kmax, theta_nt) (2011.06469 eq 17)
+// for the (ni, nj) source pair in either ordering.
+//
+// Point diagnostic: runs the full batch of RF_xi_grid at a single kmax
+// and reads one entry, so it pays the whole-tomography batch cost per
+// call. Loops over (kmax, nt, ni, nj) should call the array overload
+// once and index the returned arrays instead.
+//
+// Parameters:
+//   k  - cutoff wavenumber kmax in (Mpc/h)^-1; k <= 0 aborts
+//        (spdlog::critical + exit)
+//   nt - angular bin index; outside [0, Ntheta) aborts
+//   ni - first source redshift bin; outside [0, shear_nbin) aborts
+//   nj - second source redshift bin; same validation as ni
+//
+// Returns:
+//   (RF for xi+, RF for xi-) tuple of doubles
+// ---------------------------------------------------------------------------
 py::tuple RF_xi_tomo_limber_cpp(
     const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
     const int nt,     // angular bin index (0..Ntheta-1)
     const int ni,     // first source redshift bin
     const int nj      // second source redshift bin
   )
-{ // point diagnostic: runs the full batch of RF_xi_grid at a single kmax
-  // and reads one entry, so it pays the whole-tomography batch cost per
-  // call. Loops over (kmax, nt, ni, nj) should call the array overload
-  // once and index the returned arrays instead.
+{
   if (!(k > 0)) {
     spdlog::critical("{}: k = {} not positive",
                      "RF_xi_tomo_limber_cpp", k);
@@ -553,6 +722,20 @@ py::tuple RF_xi_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Real-space response function RF(kmax, theta) (2011.06469 eq 17) on a
+// kmax grid, scattered from one RF_xi_grid call with both bin orderings
+// filled (xi is symmetric).
+//
+// Parameters:
+//   k - cutoff wavenumbers kmax in (Mpc/h)^-1; an empty array or any
+//       k(m) <= 0 aborts (spdlog::critical + exit)
+//
+// Returns:
+//   (xi+, xi-) tuple of numpy arrays of shape
+//   (nk, Ntheta, shear_nbin, shear_nbin): leading axis = kmax, then
+//   angular bin, then the source bin pair
+// ---------------------------------------------------------------------------
 py::tuple RF_xi_tomo_limber_cpp(
     const arma::Col<double> k    // cutoff wavenumbers kmax in (Mpc/h)^-1
   )
@@ -612,6 +795,14 @@ py::tuple RF_xi_tomo_limber_cpp(
 // by RF_w_ks_tomo_limber_work on the ln kmax grid, indexed
 // [NSIZE][nk][Ntheta] with row nz the source bin. The caller owns (and
 // frees) the returned array.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nk), k in (Mpc/h)^-1
+//   nk      - number of kmax values
+//   NSIZE   - number of source tomographic bins (= shear_nbin)
+//
+// Returns:
+//   malloc3d array [NSIZE][nk][Ntheta]
 // ---------------------------------------------------------------------------
 static double*** RF_w_ks_grid(
     const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
@@ -627,15 +818,30 @@ static double*** RF_w_ks_grid(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CMB-lensing x shear response function RF(kmax, theta_nt) (2011.06469
+// eq 17) for source bin ni.
+//
+// Point diagnostic: runs the full batch of RF_w_ks_grid at a single
+// kmax and reads one entry, so it pays the whole-tomography batch cost
+// per call. Loops over (kmax, nt, ni) should call the array overload
+// once and index the returned array instead.
+//
+// Parameters:
+//   k  - cutoff wavenumber kmax in (Mpc/h)^-1; k <= 0 aborts
+//        (spdlog::critical + exit)
+//   nt - angular bin index; outside [0, Ntheta) aborts
+//   ni - source redshift bin; outside [0, shear_nbin) aborts
+//
+// Returns:
+//   RF as a double
+// ---------------------------------------------------------------------------
 double RF_w_ks_tomo_cpp(
     const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
     const int nt,     // angular bin index (0..Ntheta-1)
     const int ni      // source redshift bin
   )
-{ // point diagnostic: runs the full batch of RF_w_ks_grid at a single kmax
-  // and reads one entry, so it pays the whole-tomography batch cost per
-  // call. Loops over (kmax, nt, ni) should call the array overload once
-  // and index the returned array instead.
+{
   if (!(k > 0)) {
     spdlog::critical("{}: k = {} not positive",
                      "RF_w_ks_tomo_cpp", k);
@@ -664,6 +870,19 @@ double RF_w_ks_tomo_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CMB-lensing x shear response function RF(kmax, theta) (2011.06469
+// eq 17) on a kmax grid, scattered from one RF_w_ks_grid call (one
+// column per source bin).
+//
+// Parameters:
+//   k - cutoff wavenumbers kmax in (Mpc/h)^-1; an empty array or any
+//       k(m) <= 0 aborts (spdlog::critical + exit)
+//
+// Returns:
+//   numpy array of shape (nk, Ntheta, shear_nbin): leading axis =
+//   kmax, then angular bin, then source bin
+// ---------------------------------------------------------------------------
 py::array_t<double,py::array::f_style> RF_w_ks_tomo_cpp(
     const arma::Col<double> k    // cutoff wavenumbers kmax in (Mpc/h)^-1
   )
@@ -713,6 +932,16 @@ py::array_t<double,py::array::f_style> RF_w_ks_tomo_cpp(
 // RF computed by RF_C_ss_tomo_limber_work on the (ln kmax, ell) grid,
 // indexed [2][NSIZE][nk][nl] with row nz the pair (Z1(nz), Z2(nz)).
 // The caller owns (and frees) the returned array.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nk), k in (Mpc/h)^-1
+//   nk      - number of kmax values
+//   lx      - multipole values (length nl)
+//   nl      - number of multipole values
+//   NSIZE   - number of tomo shear power spectra
+//
+// Returns:
+//   malloc4d array [2][NSIZE][nk][nl] ([0] = EE, [1] = BB)
 // ---------------------------------------------------------------------------
 static double**** RF_C_ss_grid(
     const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
@@ -730,16 +959,32 @@ static double**** RF_C_ss_grid(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Fourier-space response function RF(kmax, l) (2011.06469 eq 17) for
+// the (ni, nj) source pair in either ordering.
+//
+// Point diagnostic: runs the full batch of RF_C_ss_grid at a single
+// (kmax, l) and reads one entry, so it pays the whole-tomography batch
+// cost per call. Loops over (kmax, l, ni, nj) should call the array
+// overload once and index the returned arrays instead.
+//
+// Parameters:
+//   k  - cutoff wavenumber kmax in (Mpc/h)^-1; k <= 0 aborts
+//        (spdlog::critical + exit)
+//   l  - multipole
+//   ni - first source redshift bin; outside [0, shear_nbin) aborts
+//   nj - second source redshift bin; same validation as ni
+//
+// Returns:
+//   (RF for EE, RF for BB) tuple of doubles
+// ---------------------------------------------------------------------------
 py::tuple RF_C_ss_tomo_limber_cpp(
     const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
     const double l,   // multipole
     const int ni,     // first source redshift bin
     const int nj      // second source redshift bin
   )
-{ // point diagnostic: runs the full batch of RF_C_ss_grid at a single
-  // (kmax, l) and reads one entry, so it pays the whole-tomography batch
-  // cost per call. Loops over (kmax, l, ni, nj) should call the array
-  // overload once and index the returned arrays instead.
+{
   if (!(k > 0)) {
     spdlog::critical("{}: k = {} not positive",
                      "RF_C_ss_tomo_limber_cpp", k);
@@ -767,6 +1012,22 @@ py::tuple RF_C_ss_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Fourier-space response function RF(kmax, l) (2011.06469 eq 17) on a
+// (kmax, l) grid, scattered from one RF_C_ss_grid call; only the
+// enumerated Z1 <= Z2 ordering is filled, the reversed entries stay
+// zero.
+//
+// Parameters:
+//   k - cutoff wavenumbers kmax in (Mpc/h)^-1; an empty array or any
+//       k(m) <= 0 aborts (spdlog::critical + exit)
+//   l - multipoles; an empty array aborts
+//
+// Returns:
+//   (EE, BB) tuple of numpy arrays of shape
+//   (nk, nl, shear_nbin, shear_nbin): leading axis = kmax, then
+//   multipole, then the source bin pair
+// ---------------------------------------------------------------------------
 py::tuple RF_C_ss_tomo_limber_cpp(
     const arma::Col<double> k,   // cutoff wavenumbers kmax in (Mpc/h)^-1
     const arma::Col<double> l    // multipoles
@@ -833,6 +1094,16 @@ py::tuple RF_C_ss_tomo_limber_cpp(
 // RF computed by RF_C_ks_tomo_limber_work on the (ln kmax, ell) grid,
 // indexed [NSIZE][nk][nl] with row nz the source bin. The caller owns
 // (and frees) the returned array.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nk), k in (Mpc/h)^-1
+//   nk      - number of kmax values
+//   lx      - multipole values (length nl)
+//   nl      - number of multipole values
+//   NSIZE   - number of source tomographic bins (= shear_nbin)
+//
+// Returns:
+//   malloc3d array [NSIZE][nk][nl]
 // ---------------------------------------------------------------------------
 static double*** RF_C_ks_grid(
     const double* lnkmaxx, // ln kmax values (length nk), k in (Mpc/h)^-1
@@ -850,15 +1121,30 @@ static double*** RF_C_ks_grid(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CMB-lensing x shear fourier-space response function RF(kmax, l)
+// (2011.06469 eq 17) for source bin ni.
+//
+// Point diagnostic: runs the full batch of RF_C_ks_grid at a single
+// (kmax, l) and reads one entry, so it pays the whole-tomography batch
+// cost per call. Loops over (kmax, l, ni) should call the array
+// overload once and index the returned array instead.
+//
+// Parameters:
+//   k  - cutoff wavenumber kmax in (Mpc/h)^-1; k <= 0 aborts
+//        (spdlog::critical + exit)
+//   l  - multipole
+//   ni - source redshift bin; outside [0, shear_nbin) aborts
+//
+// Returns:
+//   RF as a double
+// ---------------------------------------------------------------------------
 double RF_C_ks_tomo_limber_cpp(
     const double k,   // cutoff wavenumber kmax in (Mpc/h)^-1
     const double l,   // multipole
     const int ni      // source redshift bin
   )
-{ // point diagnostic: runs the full batch of RF_C_ks_grid at a single
-  // (kmax, l) and reads one entry, so it pays the whole-tomography batch
-  // cost per call. Loops over (kmax, l, ni) should call the array
-  // overload once and index the returned array instead.
+{
   if (!(k > 0)) {
     spdlog::critical("{}: k = {} not positive",
                      "RF_C_ks_tomo_limber_cpp", k);
@@ -883,6 +1169,20 @@ double RF_C_ks_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// CMB-lensing x shear fourier-space response function RF(kmax, l)
+// (2011.06469 eq 17) on a (kmax, l) grid, scattered from one
+// RF_C_ks_grid call (one column per source bin).
+//
+// Parameters:
+//   k - cutoff wavenumbers kmax in (Mpc/h)^-1; an empty array or any
+//       k(m) <= 0 aborts (spdlog::critical + exit)
+//   l - multipoles; an empty array aborts
+//
+// Returns:
+//   numpy array of shape (nk, nl, shear_nbin): leading axis = kmax,
+//   then multipole, then source bin
+// ---------------------------------------------------------------------------
 py::array_t<double,py::array::f_style> RF_C_ks_tomo_limber_cpp(
     const arma::Col<double> k,   // cutoff wavenumbers kmax in (Mpc/h)^-1
     const arma::Col<double> l    // multipoles

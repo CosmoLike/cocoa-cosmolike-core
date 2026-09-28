@@ -41,10 +41,41 @@
 
 // ---------------------------------------------------------------------------
 // Cached dC_ss/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l) table
-// filled by dC_ss_dlnk_tomo_limber_work. The table spans the
-// Ntable.dCX_dlnk k range and every multipole l >= 1, rebuilt when the
-// cosmology, the shear nuisances or Ntable change; a (k, l) outside the
-// table returns 0.
+// filled by dC_ss_dlnk_tomo_limber_work (cosmo2D.c). At fixed ell the
+// Limber relation k = (l + 1/2)/chi maps each k onto one line-of-sight
+// node, so each table entry is a single evaluation of the same integrand
+// core as the C_ss quadrature (TATT, reducing identically to NLA) times
+// the change-of-variables amplitude:
+//
+//   dC_ss/dlnk(k, l) = core * ell_prefactor/fK,
+//
+// with ell_prefactor = l*(l-1)*(l+1)*(l+2)/(l+1/2)^4 and fK the comoving
+// angular diameter distance of the node chi(a) = (l + 1/2)/k; the entry
+// is exactly 0 when that node falls outside the source support. See the
+// _work header for the derivation and the normalize-mode contract; this
+// accessor fills its table in the raw mode (normalize = 0), so the
+// entries are dC itself, not dC/C.
+//
+// Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
+// nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
+// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell log-spaced multipoles
+// covering every l >= 1; lookups interpolate bilinearly in (ln k, ln l)
+// and a (k, l) outside the table returns 0.
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
+//   redshift.random_shear, Ntable.random
+// (allocation and grid limits rebuild on Ntable.random alone).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   l  - multipole (continuous)
+//   ni - first source redshift bin
+//   nj - second source redshift bin
+//   EE - 1 = E-mode, 0 = B-mode
+//
+// Returns:
+//   dC_ss/dlnk at (k, l) for the (ni, nj) pair; 0 outside the table
 // ---------------------------------------------------------------------------
 double dC_ss_dlnk_tomo_limber(
     const double k,   // wavenumber in (Mpc/h)^-1
@@ -121,9 +152,43 @@ double dC_ss_dlnk_tomo_limber(
 
 // ---------------------------------------------------------------------------
 // Cached dlnC_ss/dlnk = (dC_ss/dlnk)/C_ss (2011.06469 eq 17): interpolates
-// a (ln k, ln l) table filled by the normalized mode of
-// dC_ss_dlnk_tomo_limber_work, on the same grid and with the same rebuild
-// keys as the dC table above; a (k, l) outside the table returns 0.
+// a (ln k, ln l) table filled by the normalized (normalize = 1) mode of
+// dC_ss_dlnk_tomo_limber_work, which computes the C_ss rows with its own
+// quadrature and divides each dC row in place (see the dC_ss accessor
+// above for the tabulated node amplitude and the _work header for the
+// fill).
+//
+// Each tabulated numerator entry is the single Limber-node evaluation
+//
+//   dC_ss/dlnk(k, l) = core * ell_prefactor/fK,
+//
+// at chi(a) = (l + 1/2)/k (see dC_ss_dlnk_tomo_limber above), and the
+// denominator C_ss(l) row comes from the _work function's own
+// Gauss-Legendre quadrature. The division is guarded: an effectively
+// zero dC entry passes through unnormalized and an effectively zero
+// C_ss maps the entry to 0.
+//
+// Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
+// nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
+// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell log-spaced multipoles
+// covering every l >= 1 (the same grid as dC_ss_dlnk_tomo_limber);
+// lookups interpolate bilinearly in (ln k, ln l) and a (k, l) outside
+// the table returns 0.
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
+//   redshift.random_shear, Ntable.random
+// (allocation and grid limits rebuild on Ntable.random alone).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   l  - multipole (continuous)
+//   ni - first source redshift bin
+//   nj - second source redshift bin
+//   EE - 1 = E-mode, 0 = B-mode
+//
+// Returns:
+//   dlnC_ss/dlnk at (k, l) for the (ni, nj) pair; 0 outside the table
 // ---------------------------------------------------------------------------
 double dlnC_ss_dlnk_tomo_limber(
     const double k,   // wavenumber in (Mpc/h)^-1
@@ -200,12 +265,38 @@ double dlnC_ss_dlnk_tomo_limber(
 
 // ---------------------------------------------------------------------------
 // Cached dC_ks/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l) table
-// filled by dC_ks_dlnk_tomo_limber_work. The table spans the
-// Ntable.dCX_dlnk k range and every multipole l >= 1, rebuilt when the
-// cosmology, the shear nuisances or Ntable change (the same keys as the
-// C_ks C_ell cache; the CMB beam enters only downstream, in the w_ks
-// projection, so cmb.random is not a key here); a (k, l) outside the
-// table returns 0.
+// filled by dC_ks_dlnk_tomo_limber_work (cosmo2D.c). As in the ss case,
+// each entry is a single evaluation of the C_ks integrand core,
+// (W_kappa - W_source*IA_A1)*W_k*P_delta, at the Limber node
+// chi(a) = (l + 1/2)/k, times the change-of-variables amplitude:
+//
+//   dC_ks/dlnk(k, l) = core * pf1*pf2/fK,
+//
+// with the spin-0 x spin-2 prefactors pf1 = l*(l+1)/(l+1/2)^2 and
+// pf2 = sqrt((l-1)*l*(l+1)*(l+2))/(l+1/2)^2 (1812.05995 eqs 74-79); the
+// entry is exactly 0 when the node falls outside bin ni's source
+// support. See the _work header for the derivation and the
+// normalize-mode contract; this accessor fills its table in the raw
+// mode (normalize = 0), so the entries are dC itself, not dC/C.
+//
+// Table design: [shear_nbin][nlnk][nell] (the ks cross has one component
+// per source bin, so there is no EE/BB leading dimension), on the same
+// (ln k, ln l) grid as the ss tables: the Ntable.dCX_dlnk k range and
+// every multipole l >= 1; a (k, l) outside the table returns 0.
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
+//   redshift.random_shear, Ntable.random
+// (the same keys as the C_ks C_ell cache; the CMB beam enters only
+// downstream, in the w_ks projection, so cmb.random is not a key here).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   l  - multipole (continuous)
+//   ni - source redshift bin
+//
+// Returns:
+//   dC_ks/dlnk at (k, l) for bin ni; 0 outside the table
 // ---------------------------------------------------------------------------
 double dC_ks_dlnk_tomo_limber(
     const double k,   // wavenumber in (Mpc/h)^-1
@@ -275,9 +366,41 @@ double dC_ks_dlnk_tomo_limber(
 
 // ---------------------------------------------------------------------------
 // Cached dlnC_ks/dlnk = (dC_ks/dlnk)/C_ks (2011.06469 eq 17): interpolates
-// a (ln k, ln l) table filled by the normalized mode of
-// dC_ks_dlnk_tomo_limber_work, on the same grid and with the same rebuild
-// keys as the dC table above; a (k, l) outside the table returns 0.
+// a (ln k, ln l) table filled by the normalized (normalize = 1) mode of
+// dC_ks_dlnk_tomo_limber_work, which computes the C_ks rows with its own
+// per-bin quadrature and divides each dC row in place (see the dC_ks
+// accessor above for the tabulated node amplitude).
+//
+// Each tabulated numerator entry is the single Limber-node evaluation
+//
+//   dC_ks/dlnk(k, l) = core * pf1*pf2/fK,
+//
+// at chi(a) = (l + 1/2)/k (see dC_ks_dlnk_tomo_limber above for the
+// spin-0 x spin-2 prefactors), and the denominator C_ks(l) row comes
+// from the _work function's own per-bin Gauss-Legendre quadrature. The
+// division is guarded: an effectively zero dC entry passes through
+// unnormalized and an effectively zero C_ks maps the entry to 0.
+//
+// Table design: [shear_nbin][nlnk][nell] (one component per source
+// bin), with nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in
+// [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell
+// log-spaced multipoles covering every l >= 1 (the same grid as
+// dC_ks_dlnk_tomo_limber); lookups interpolate bilinearly in
+// (ln k, ln l) and a (k, l) outside the table returns 0.
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
+//   redshift.random_shear, Ntable.random
+// (cmb.random is not a key: the CMB beam enters only downstream, in the
+// w_ks projection).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   l  - multipole (continuous)
+//   ni - source redshift bin
+//
+// Returns:
+//   dlnC_ks/dlnk at (k, l) for bin ni; 0 outside the table
 // ---------------------------------------------------------------------------
 double dlnC_ks_dlnk_tomo_limber(
     const double k,   // wavenumber in (Mpc/h)^-1
@@ -377,6 +500,17 @@ double dlnC_ks_dlnk_tomo_limber(
 // (pair, kmax, ell) output and divides. Every integrand evaluation reads
 // the cached dlnC_ss_dlnk_tomo_limber table, built once, single-threaded,
 // before the parallel region.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
+//   nkmax   - number of ln kmax values
+//   lx      - multipole values (length nl)
+//   nl      - number of multipole values
+//   NSIZE   - number of tomographic shear power spectra
+//   table   - output [2][NSIZE][nkmax][nl], RF at each (kmax, l): EE and BB
+//
+// Returns:
+//   nothing; the result is written into table
 // ---------------------------------------------------------------------------
 void RF_C_ss_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -485,6 +619,17 @@ void RF_C_ss_tomo_limber_work(
 // (bin, kmax, ell) output and divides. Every integrand evaluation reads
 // the cached dlnC_ks_dlnk_tomo_limber table, built once, single-threaded,
 // before the parallel region.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
+//   nkmax   - number of ln kmax values
+//   lx      - multipole values (length nl)
+//   nl      - number of multipole values
+//   NSIZE   - number of source tomographic bins (= shear_nbin)
+//   table   - output [NSIZE][nkmax][nl], RF at each (kmax, l)
+//
+// Returns:
+//   nothing; the result is written into table
 // ---------------------------------------------------------------------------
 void RF_C_ks_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -598,6 +743,16 @@ void RF_C_ks_tomo_limber_work(
 //   ln_ell[LMAX]          - log(l) at every integer multipole
 //   dCgrid[2][NSIZE][N_ell], cx[2][NSIZE][LMAX] - work arrays the
 //                           pipeline overwrites on every call
+//
+// Parameters:
+//   k - wavenumber in (Mpc/h)^-1
+//
+// Returns:
+//   newly allocated [2][NSIZE*Ntheta] array of dlnxi_pm/dlnk values
+//   (caller frees), one row per xi component, each row flattened as
+//   nz*Ntheta + i over (tomo pair nz, angular bin i) with
+//   NSIZE = tomo.shear_Npowerspectra; all zeros when k is outside the
+//   open interval (Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax)
 // ---------------------------------------------------------------------------
 double** dlnxi_dlnk_pm_tomo_nointerp(
     const double k    // wavenumber in (Mpc/h)^-1
@@ -775,9 +930,39 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
 
 // ---------------------------------------------------------------------------
 // Cached dlnxi_pm/dlnk: interpolates in ln k a table of
-// dlnxi_dlnk_pm_tomo_nointerp results on the Ntable.dCX_dlnk k grid,
-// rebuilt when the cosmology, the shear nuisances or Ntable change; a k
-// outside the grid returns 0. This is what the RF_xi integrals read.
+// dlnxi_dlnk_pm_tomo_nointerp results (see that header for the quantity
+// and the pipeline). This is what the RF_xi integrals read.
+//
+// The tabulated quantity (2011.06469 eq 17) is
+//
+//   dxi_pm/dlnk(theta) = sum_l Glpm(theta, l) * (dC_EE +- dC_BB)(k, l)
+//   dlnxi_pm/dlnk      = (dxi_pm/dlnk) / xi_pm(theta),
+//
+// with each dC read from the cached dC_ss_dlnk_tomo_limber table (one
+// Limber node per (k, l), amplitude ell_prefactor/fK) and Glpm the
+// bin-averaged Legendre kernels of xi_pm_tomo.
+//
+// Table design: [2][shear_Npowerspectra*Ntheta][nlnk], one row per
+// (xi component, tomo pair x angular bin), with nlnk =
+// Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
+// Ntable.dCX_dlnk_kmax]; lookups interpolate linearly in ln k and a k
+// outside the grid returns 0. The fill calls the nointerp pipeline once
+// per k node (each call returns every pair and angular bin).
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
+//   redshift.random_shear, Ntable.random
+// (allocation and grid limits rebuild on Ntable.random alone).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   pm - 1 = xi_+, 0 = xi_-
+//   nt - angular bin index (0..Ntheta-1)
+//   ni - first source redshift bin
+//   nj - second source redshift bin
+//
+// Returns:
+//   dlnxi_pm/dlnk at k for (theta_nt, ni, nj); 0 outside the grid
 // ---------------------------------------------------------------------------
 double dlnxi_dlnk_pm_tomo(
     const double k,   // wavenumber in (Mpc/h)^-1
@@ -875,6 +1060,16 @@ double dlnxi_dlnk_pm_tomo(
 //   dCgrid[NSIZE][N_ell], cx[NSIZE][LMAX] - work arrays the pipeline
 //                      overwrites on every call
 //   cmbf[LMAX]       - CMB filter, refilled when cmb or Ntable change
+//
+// Parameters:
+//   k - wavenumber in (Mpc/h)^-1
+//
+// Returns:
+//   newly allocated [NSIZE*Ntheta] array of dlnw_ks/dlnk values (caller
+//   frees), flattened as nz*Ntheta + i over (source bin nz, angular
+//   bin i) with NSIZE = redshift.shear_nbin; all zeros when k is
+//   outside the open interval (Ntable.dCX_dlnk_kmin,
+//   Ntable.dCX_dlnk_kmax)
 // ---------------------------------------------------------------------------
 double* dlnw_ks_dlnk_tomo_nointerp(
     const double k    // wavenumber in (Mpc/h)^-1
@@ -1040,11 +1235,39 @@ double* dlnw_ks_dlnk_tomo_nointerp(
 
 // ---------------------------------------------------------------------------
 // Cached dlnw_ks/dlnk: interpolates in ln k a table of
-// dlnw_ks_dlnk_tomo_nointerp results on the Ntable.dCX_dlnk k grid,
-// rebuilt when the cosmology, the shear nuisances, the CMB filter or
-// Ntable change (cmb.random is a key here — unlike the Fourier-space dC
-// tables — because the CMB beam enters the w_ks projection); a k outside
-// the grid returns 0. This is what the RF_w_ks integrals read.
+// dlnw_ks_dlnk_tomo_nointerp results (see that header for the quantity
+// and the pipeline). This is what the RF_w_ks integrals read.
+//
+// The tabulated quantity (2011.06469 eq 17) is
+//
+//   dw_ks/dlnk(theta) = sum_l Pl(theta, l) * cmbf(l) * dC_ks(k, l)
+//   dlnw_ks/dlnk      = (dw_ks/dlnk) / w_ks(theta),
+//
+// with each dC read from the cached dC_ks_dlnk_tomo_limber table (one
+// Limber node per (k, l), amplitude pf1*pf2/fK), Pl the bin-averaged
+// spin-0 x spin-2 Legendre kernel of w_ks_tomo, and cmbf the CMB
+// beam/pixel-window filter w_ks_tomo applies.
+//
+// Table design: [shear_nbin*Ntheta][nlnk], one row per (source bin x
+// angular bin), with nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in
+// [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax]; lookups interpolate
+// linearly in ln k and a k outside the grid returns 0. The fill calls
+// the nointerp pipeline once per k node (each call returns every bin).
+//
+// Cache invalidation: recomputes when any of these change:
+//   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
+//   redshift.random_shear, Ntable.random, cmb.random
+// (cmb.random is a key here, unlike the Fourier-space dC tables, because
+// the CMB beam enters the w_ks projection; allocation and grid limits
+// rebuild on Ntable.random alone).
+//
+// Parameters:
+//   k  - wavenumber in (Mpc/h)^-1
+//   nt - angular bin index (0..Ntheta-1)
+//   ni - source redshift bin
+//
+// Returns:
+//   dlnw_ks/dlnk at k for (theta_nt, ni); 0 outside the grid
 // ---------------------------------------------------------------------------
 double dlnw_ks_dlnk_tomo(
     const double k,   // wavenumber in (Mpc/h)^-1
@@ -1143,6 +1366,16 @@ double dlnw_ks_dlnk_tomo(
 // (pair, kmax, angular bin) output and divides. Every integrand
 // evaluation reads the k-cached dlnxi_dlnk_pm_tomo table, built once,
 // single-threaded, before the parallel region.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
+//   nkmax   - number of ln kmax values
+//   NSIZE   - number of tomographic shear power spectra
+//   table   - output [2][NSIZE][nkmax][Ntheta], RF at each (kmax, theta)
+//             for both xi components
+//
+// Returns:
+//   nothing; the result is written into table
 // ---------------------------------------------------------------------------
 void RF_xi_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1251,6 +1484,15 @@ void RF_xi_tomo_limber_work(
 // (bin, kmax, angular bin) output and divides. Every integrand evaluation
 // reads the k-cached dlnw_ks_dlnk_tomo table, built once, single-threaded,
 // before the parallel region.
+//
+// Parameters:
+//   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
+//   nkmax   - number of ln kmax values
+//   NSIZE   - number of source tomographic bins (= shear_nbin)
+//   table   - output [NSIZE][nkmax][Ntheta], RF at each (kmax, theta)
+//
+// Returns:
+//   nothing; the result is written into table
 // ---------------------------------------------------------------------------
 void RF_w_ks_tomo_limber_work(
     const double* lnkmaxx, // ln kmax values (length nkmax), k in (Mpc/h)^-1

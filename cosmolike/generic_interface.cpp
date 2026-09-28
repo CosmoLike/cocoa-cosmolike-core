@@ -48,57 +48,46 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// -----------------------------------------------------------------------------
-// parse_double_or_throw
-// -----------------------------------------------------------------------------
-// Parse a single whitespace-trimmed token as a double, with fault-tolerant
-// handling of floating-point range errors.
+// ---------------------------------------------------------------------------
+// Parse one whitespace-trimmed token as a double, accepting underflow and
+// rejecting overflow.
 //
-// Behavior
-// --------
-//   - Returns the parsed double on success.
-//   - Throws std::runtime_error if the token contains no numeric prefix
-//     (i.e. strtod consumes zero characters).
-//   - Throws std::runtime_error on overflow: errno == ERANGE and the result
-//     is +/-HUGE_VAL (non-finite).
-//   - ACCEPTS underflow: errno == ERANGE but the result is a finite value
-//     (subnormal or zero). The returned value is used as-is.
-//
-// Why this exists (and why we no longer use std::stod / std::stold)
-// -----------------------------------------------------------------
 // Cosmolike covariance and data-vector tables routinely contain entries
-// well below DBL_MIN (~2.2e-308) -- think deep-tail covariance off-diagonals
-// or noise-model entries pre-multiplied by tiny prefactors. These values are
+// well below DBL_MIN (~2.2e-308), e.g. deep-tail covariance off-diagonals
+// or noise-model entries pre-multiplied by tiny prefactors. Such values are
 // numerically fine: they round to a subnormal or to 0.0, which is exactly
-// what the downstream Cholesky / matrix-vector code expects.
+// what the downstream Cholesky / matrix-vector code expects. std::stod and
+// std::stold throw std::out_of_range on any ERANGE, with no distinction
+// between
 //
-// std::stod (and std::stold) throws std::out_of_range on ANY ERANGE, making
-// no distinction between:
+//     (a) overflow  -> result is +/-HUGE_VAL, truly unusable, rejected here;
+//     (b) underflow -> result is a finite subnormal or 0.0, perfectly safe;
 //
-//     (a) overflow  -> result is +/-HUGE_VAL, truly unusable, MUST be rejected.
-//     (b) underflow -> result is a finite subnormal or 0.0, perfectly safe.
+// under which a table holding a legitimate 1e-320 aborts the run before a
+// single likelihood is evaluated. std::strtod keeps the two cases apart:
+// errno is set on either range error, and std::isfinite(v) is false for
+// +/-HUGE_VAL and NaN but true for every normal, subnormal and zero value,
+// so only the non-finite branch is treated as fatal.
 //
-// In practice this means a table containing a legitimate 1e-320 aborts the
-// entire run before a single likelihood is evaluated. That is the bug this
-// helper is built to fix.
-//
-// std::strtod gives us what stod hides: errno is set on range errors, but the
-// returned value distinguishes the two cases via std::isfinite(). We treat
-// only the non-finite branch as fatal.
-//
-// Implementation notes
-// --------------------
+// Implementation notes:
 //   - errno must be cleared before the call. strtod sets errno on range
 //     errors but never clears it, so a stale ERANGE from elsewhere would
 //     otherwise be misattributed to this parse.
 //   - end == tok.c_str() is the canonical "no digits consumed" check;
 //     this catches empty tokens, pure whitespace, and garbage like "abc".
-//   - std::isfinite(v) returns false for +/-HUGE_VAL and any NaN, and true
-//     for every normal, subnormal, and zero value. This is exactly the
-//     "accept underflow, reject overflow" discriminator we need.
-//   - Tokens like "nan" parse successfully and are NOT finite, so they will
-//     be rejected here -- which is what we want for table data.
-// -----------------------------------------------------------------------------
+//   - Tokens like "nan" parse successfully and are not finite, so they are
+//     rejected here -- the right outcome for table data.
+//
+// Error behavior: throws std::runtime_error when the token contains no
+// numeric prefix (strtod consumes zero characters) or on overflow
+// (errno == ERANGE with a non-finite result).
+//
+// Parameters:
+//   tok - the token to parse
+//
+// Returns:
+//   the parsed double; underflowed input comes back as subnormal or 0.0
+// ---------------------------------------------------------------------------
 double parse_double_or_throw(const std::string& tok) {
   errno = 0;
   char* end = nullptr;
@@ -115,6 +104,26 @@ double parse_double_or_throw(const std::string& tok) {
   return v;
 }
 
+// ---------------------------------------------------------------------------
+// Read a whitespace-delimited numeric ASCII table into an arma matrix.
+//
+// Stages:
+//   1. Slurp the whole file into one string (single read).
+//   2. Split into lines; drop lines starting with "#".
+//   3. Tokenize the first line to fix the column count, then parse the
+//      remaining lines in parallel (OpenMP) with parse_double_or_throw.
+//
+// Validation / error behavior: critical() + exit(1) when the file cannot be
+// opened, is empty, or a row disagrees with the first-row column count;
+// parse_double_or_throw throws std::runtime_error on unparsable or
+// overflowing tokens (underflow to subnormal/zero is accepted).
+//
+// Parameters:
+//   file_name - path of the ASCII table
+//
+// Returns:
+//   (nrows x ncols) matrix of the parsed values
+// ---------------------------------------------------------------------------
 arma::Mat<double> read_table(const std::string file_name)
 {
   std::ifstream input_file(file_name);
@@ -230,6 +239,24 @@ arma::Mat<double> read_table(const std::string file_name)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Normalize a user-facing baryon-simulation label into (name, tag).
+//
+// Stages: trim and lowercase; restore the canonical family spelling
+// (owls_AGN, BAHAMAS, HzAGN, TNG) and translate the legacy temperature
+// suffixes (_t80/_t85/_t87, _t78/_t76) into numeric tags; split at the last
+// "-" into name and integer tag; a label without "-" gets tag = 1.
+//
+// Validation: more than one "-" is rejected with critical() + exit(1)
+// (the two-dash range syntax is expanded earlier, in
+// BaryonScenario::set_scenarios).
+//
+// Parameters:
+//   sim - scenario label from python, case-insensitive (e.g. "owls_agn_t80")
+//
+// Returns:
+//   std::tuple(name, tag), e.g. ("owls_AGN", 1)
+// ---------------------------------------------------------------------------
 std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 {
   static constexpr std::string_view fname = "get_baryon_sim_name_and_tag"sv;
@@ -300,6 +327,25 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Reset every Cosmolike global struct to a defined startup state.
+//
+// Zeroes the probe flags (like.shear_shear/shear_pos/pos_pos, gk/kk/ks),
+// the Fourier binning (like.Ncl/lmin/lmax) and the cluster flags, then runs
+// the reset_*_struct family (redshift, nuisance, cosmology, tomo, Ntable,
+// like, cmb). Afterwards sets the defaults like.adopt_limber_gg = 0,
+// like.adopt_limber_gs = 1 and pdeltaparams.runmode = "Halofit", and loads
+// the spdlog verbosity from the environment (SPDLOG_LEVEL).
+//
+// Runs once, before any other init_/set_ call, so later writes land on a
+// defined state.
+//
+// Parameters:
+//   (none)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void initial_setup()
 {
   static constexpr std::string_view fname = "initial_setup"sv;
@@ -349,6 +395,16 @@ void initial_setup()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set Ntable.LMAX, the highest multipole of the 2D projection tables, and
+// bump Ntable.random so every table keyed on it rebuilds.
+//
+// Parameters:
+//   lmax - new Ntable.LMAX
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_ntable_lmax(const int lmax) {
   static constexpr std::string_view fname = "init_ntable_lmax"sv;
   debug("{}: {}", fname, errbegins);
@@ -365,14 +421,30 @@ void init_ntable_lmax(const int lmax) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Select the n(z) ingestion conventions.
+//
+// Writes Ntable.photoz_interpolation_type, the n(z) stage-1 interpolant
+// (0 = cspline, 1 = linear, 2+ = steffen), and
+// Ntable.photoz_zmid_convention, the reading of the n(z) file z column
+// (0 = Z_LOW left bin edges, values at cell centers z + dz/2; 1 = Z_MID
+// sample points). The n(z) table caches watch both values, so a runtime
+// change rebuilds the tables.
+//
+// Cache invalidation: bumps Ntable.random.
+//
+// Parameters:
+//   interpolation_type - 0 = cspline, 1 = linear, 2+ = steffen
+//   zmid_convention    - 0 = Z_LOW left edges, 1 = Z_MID sample points
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_photoz_conventions(
     const int interpolation_type,
     const int zmid_convention
   )
-{ // n(z) stage-1 interpolant (0: cspline, 1: linear, 2+: steffen) and the
-  // reading of the n(z) file z column (0: Z_LOW left bin edges, values at
-  // cell centers z + dz/2; 1: Z_MID sample points). The n(z) table caches
-  // watch both values, so a runtime change rebuilds the tables.
+{
   static constexpr std::string_view fname = "init_photoz_conventions"sv;
   debug("{}: {}", fname, errbegins);
   Ntable.photoz_interpolation_type = interpolation_type;
@@ -389,11 +461,25 @@ void init_photoz_conventions(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the C-FAST-PT internal (convolution) grid as a fraction of the output
+// table: Ntable.FPT_internal_accuracy_boost = internal_boost. 1.0 keeps the
+// two grids equal (the exact reference path); smaller values run the FFTLog
+// convolutions on fewer points and cubic-spline upsample onto the output
+// table (see pt_cfastpt.c: fpt_regrid).
+//
+// Cache invalidation: bumps Ntable.random.
+//
+// Validation: internal_boost > 0, else critical() + exit(1).
+//
+// Parameters:
+//   internal_boost - internal-grid fraction of the output grid (> 0)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_fpt_internal_boost(const double internal_boost)
-{ // C-FAST-PT internal (convolution) grid as a fraction of the output
-  // table: 1.0 keeps the two grids equal (the exact legacy path); smaller
-  // values run the FFTLog convolutions on fewer points and cubic-spline
-  // upsample onto the output table (see pt_cfastpt.c: fpt_regrid).
+{
   static constexpr std::string_view fname = "init_fpt_internal_boost"sv;
   debug("{}: {}", fname, errbegins);
   if (!(internal_boost > 0)) {
@@ -413,14 +499,26 @@ void init_fpt_internal_boost(const double internal_boost)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Choose the galaxy-galaxy lensing C_l^gs computation, writing
+// like.adopt_limber_gs: 1 = Limber at every multipole (the default); 0 =
+// the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in gamma_t
+// (w_gammat_tomo) and in the Fourier-space data vectors (C_gs_tomo_ells).
+// Likelihood yaml key: adopt_limber_gs. Example: adopt_limber_gs: 0 in
+// combo_3x2pt.yaml -> the likelihood calls init_adopt_limber_gs(0) and the
+// next data vector uses the non-Limber path. No cache key is bumped here:
+// w_gammat_tomo keys its cache on the flag itself.
+//
+// Validation: the value must be 0 or 1, else critical() + exit(1).
+//
+// Parameters:
+//   adopt_limber_gs - 1 = Limber everywhere, 0 = non-Limber at low ell
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_adopt_limber_gs(const int adopt_limber_gs)
-{ // Galaxy-galaxy lensing C_l^gs: 1 = Limber at every multipole (the
-  // default); 0 = the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in
-  // gamma_t (w_gammat_tomo) and in the Fourier-space data vectors
-  // (C_gs_tomo_ells). Likelihood yaml key: adopt_limber_gs.
-  // Example: adopt_limber_gs: 0 in combo_3x2pt.yaml -> the likelihood
-  // calls init_adopt_limber_gs(0) and the next data vector uses the
-  // non-Limber path (w_gammat_tomo keys its cache on the flag).
+{
   static constexpr std::string_view fname = "init_adopt_limber_gs"sv;
   debug("{}: {}", fname, errbegins);
   if (adopt_limber_gs != 0 && adopt_limber_gs != 1) {
@@ -439,16 +537,28 @@ void init_adopt_limber_gs(const int adopt_limber_gs)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Choose the galaxy clustering C_l^gg computation, writing
+// like.adopt_limber_gg: 0 = the non-Limber C_cl_tomo below
+// limits.LMAX_NOLIMBER (the default of the real-space projects), in
+// w(theta) (w_gg_tomo) and in the Fourier-space data vectors
+// (C_gg_tomo_ells); 1 = Limber at every multipole (the default of the
+// Fourier-space projects, set in their likelihood yamls). Likelihood yaml
+// key: adopt_limber_gg. Example: adopt_limber_gg: 1 in combo_3x2pt.yaml of
+// lsst_y1 -> the likelihood calls init_adopt_limber_gg(1) and the next
+// data vector uses Limber w(theta). No cache key is bumped here: w_gg_tomo
+// keys its cache on the flag itself.
+//
+// Validation: the value must be 0 or 1, else critical() + exit(1).
+//
+// Parameters:
+//   adopt_limber_gg - 0 = non-Limber at low ell, 1 = Limber everywhere
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_adopt_limber_gg(const int adopt_limber_gg)
-{ // Galaxy clustering C_l^gg: 0 = the non-Limber C_cl_tomo below
-  // limits.LMAX_NOLIMBER (the default of the real-space projects), in
-  // w(theta) (w_gg_tomo) and in the Fourier-space data vectors
-  // (C_gg_tomo_ells); 1 = Limber at every multipole (the default of the
-  // Fourier-space projects, set in their likelihood yamls). Likelihood yaml
-  // key: adopt_limber_gg.
-  // Example: adopt_limber_gg: 1 in combo_3x2pt.yaml of lsst_y1 -> the
-  // likelihood calls init_adopt_limber_gg(1) and the next data vector uses
-  // Limber w(theta) (w_gg_tomo keys its cache on the flag).
+{
   static constexpr std::string_view fname = "init_adopt_limber_gg"sv;
   debug("{}: {}", fname, errbegins);
   if (adopt_limber_gg != 0 && adopt_limber_gg != 1) {
@@ -467,8 +577,28 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Scale the Cosmolike table sizes by a single accuracy knob.
+//
+// The first call snapshots the incoming values of Ntable.N_a, N_ell,
+// dCX_dlnk_nlnk, NL_Nchi and nz_fine_sampling_factor in a static cache;
+// every call rescales from those baselines, ceil(baseline * boost), so
+// repeated calls do not compound. Also writes Ntable.FPTboost
+// (int(boost - 1) for boost > 1, else 0; enlarges the FAST-PT grids in
+// pt_cfastpt.c) and Ntable.high_def_integration = integration_accuracy
+// (selects larger fixed-order quadrature tables downstream).
+//
+// Cache invalidation: bumps Ntable.random so all tables keyed on it rebuild.
+//
+// Parameters:
+//   accuracy_boost       - multiplier on the baseline table sizes (ceil)
+//   integration_accuracy - written to Ntable.high_def_integration
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_accuracy_boost(
-    const double accuracy_boost, 
+    const double accuracy_boost,
     const int integration_accuracy
   )
 {
@@ -522,8 +652,20 @@ void init_accuracy_boost(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Contaminate the matter power spectrum with a fixed baryon scenario from
+// the library compiled into baryons.c. Parses sim with
+// get_baryon_sim_name_and_tag and forwards "name-tag" to init_baryons,
+// which fills the bary struct 2D interpolator read by PkRatio_baryons.
+//
+// Parameters:
+//   sim - scenario label, case-insensitive (see get_baryon_sim_name_and_tag)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_baryons_contamination(std::string sim)
-{ // OLD API
+{
   static constexpr std::string_view fname = "init_baryons_contamination"sv;
   debug("{}: {}", fname, errbegins);
   auto [name, tag] = get_baryon_sim_name_and_tag(sim);
@@ -541,8 +683,19 @@ void init_baryons_contamination(std::string sim)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Overload of the above that reads the scenario from an HDF5 library file:
+// forwards (name, tag, all_sims_file) to init_baryons_from_hdf5_file.
+//
+// Parameters:
+//   sim           - scenario label, case-insensitive
+//   all_sims_file - HDF5 library with the scenario suppression tables
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_baryons_contamination(std::string sim, std::string all_sims_file)
-{ // NEW API
+{
   static constexpr std::string_view fname = "init_baryons_contamination"sv;
   debug("{}: {}", fname, errbegins);
   auto [name, tag] = get_baryon_sim_name_and_tag(sim);
@@ -559,6 +712,25 @@ void init_baryons_contamination(std::string sim, std::string all_sims_file)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Select the redshift-evolution model of each galaxy-bias parameter.
+//
+// Writes like.galaxy_bias_model[i] (model codes, not amplitudes; bias.c
+// dispatches on them, e.g. [0] = b1 evolution: B1_PER_BIN,
+// B1_PER_BIN_EVOLV, B1_PER_BIN_PASS_EVOLV, B1_GROWTH_SCALING,
+// B1_POWER_LAW). Amplitudes arrive separately via set_nuisance_*_bias.
+// No cache key is bumped.
+//
+// Validation: input size <= MAX_SIZE_ARRAYS and no NaN entries, else
+// critical() + exit(1).
+//
+// Parameters:
+//   bias_z_evol_model - evolution-model code per bias slot (layout in the
+//                       body comment); size <= MAX_SIZE_ARRAYS
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_bias(vector bias_z_evol_model)
 {
   static constexpr std::string_view fname = "init_bias"sv;
@@ -596,9 +768,28 @@ void init_bias(vector bias_z_evol_model)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Define the Fourier-space band powers of the data vector.
+//
+// Writes like.Ncl, like.lmin, like.lmax, like.lmax_shear and reallocates
+// like.ell with the Ncl log-spaced bin centers
+//   ell_i = exp(ln(lmin) + (i + 0.5) dlnl),  dlnl = ln(lmax/lmin)/Ncl.
+// No cache key is bumped.
+//
+// Validation: nells > 0, else critical() + exit(1).
+//
+// Parameters:
+//   nells      - number of band powers (> 0), written to like.Ncl
+//   lmin       - lowest multipole (like.lmin)
+//   lmax       - highest multipole (like.lmax)
+//   lmax_shear - highest shear-shear multipole (like.lmax_shear)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_binning_fourier(
-    const int nells, 
-    const int lmin, 
+    const int nells,
+    const int lmin,
     const int lmax,
     const int lmax_shear
   )
@@ -650,9 +841,27 @@ void init_binning_fourier(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Define the real-space angular binning of the data vector.
+//
+// Writes Ntable.Ntheta and the angular range Ntable.vtmin/vtmax (input in
+// arcmin, stored in rad). Bin centers derive from these in
+// compute_binning_real_space and in the real-space projections (cosmo2D.c).
+// No cache key is bumped.
+//
+// Validation: Ntheta > 0, else critical() + exit(1).
+//
+// Parameters:
+//   Ntheta           - number of angular bins (> 0)
+//   theta_min_arcmin - lower edge of the angular range (arcmin)
+//   theta_max_arcmin - upper edge of the angular range (arcmin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_binning_real_space(
-    const int Ntheta, 
-    const double theta_min_arcmin, 
+    const int Ntheta,
+    const double theta_min_arcmin,
     const double theta_max_arcmin
   )
 {
@@ -679,12 +888,31 @@ void init_binning_real_space(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Configure the w_xk real-space cross correlation with CMB lensing through
+// the IPCMB singleton (a front end to the C global struct cmb).
+//
+// Writes cmb.fwhm (input beam fwhm in arcmin, stored in rad),
+// cmb.lmink_wxk/lmaxk_wxk, and the tabulated HealPix window
+// (cmb.healpixwin = column 1 of healpixwin_filename).
+//
+// Cache invalidation: bumps cmb.random so tables keyed on it rebuild.
+//
+// Parameters:
+//   lmin                - lowest multipole of the w_xk sum (cmb.lmink_wxk)
+//   lmax                - highest multipole of the w_xk sum (cmb.lmaxk_wxk)
+//   fwhm                - CMB beam fwhm (arcmin; stored in rad)
+//   healpixwin_filename - table whose column 1 is the HealPix window
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_cmb_cross_correlation (
-    const int lmin, 
-    const int lmax, 
+    const int lmin,
+    const int lmax,
     const double fwhm, // fwhm = beam size in arcmin
     std::string healpixwin_filename
-  ) 
+  )
 {
   static constexpr std::string_view fname = "init_cmb_cross_correlation"sv;
   debug("{}: {}", fname, errbegins);
@@ -712,11 +940,33 @@ void init_cmb_cross_correlation (
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Configure the CMB lensing auto-spectrum (kk) bandpower compression
+// through the IPCMB singleton.
+//
+// Writes cmb.nbp_kk/lminbp_kk/lmaxbp_kk, the nbins x (lmax - lmin + 1)
+// binning matrix, the per-band theory offsets (zeros when theory_offset is
+// an empty string) and the Hartlap alpha that IP::set_inv_cov applies to
+// the kkkk covariance block.
+//
+// Cache invalidation: bumps cmb.random so tables keyed on it rebuild.
+//
+// Parameters:
+//   nbins          - number of kk band powers (> 0)
+//   lmin           - lowest multipole entering the bands (> 0)
+//   lmax           - highest multipole entering the bands (> 0)
+//   binning_matrix - file with the nbins x (lmax - lmin + 1) matrix
+//   theory_offset  - file with per-band offsets ("" = zeros)
+//   alpha          - Hartlap alpha for the kkkk covariance block
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_cmb_auto_bandpower (
-    const int nbins, 
-    const int lmin, 
+    const int nbins,
+    const int lmin,
     const int lmax,
-    std::string binning_matrix, 
+    std::string binning_matrix,
     std::string theory_offset,
     const double alpha
   )
@@ -740,6 +990,16 @@ void init_cmb_auto_bandpower (
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Select the matter power spectrum consumed downstream:
+// pdeltaparams.runmode = "linear" or "Halofit" (string parsed in cosmo3D.c).
+//
+// Parameters:
+//   is_linear - true = "linear", false = "Halofit"
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_cosmo_runmode(const bool is_linear)
 {
   static constexpr std::string_view fname = "init_cosmo_runmode"sv;
@@ -759,6 +1019,25 @@ void init_cosmo_runmode(const bool is_linear)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Select the intrinsic-alignment model.
+//
+// Writes nuisance.IA_MODEL (0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT),
+// nuisance.IA (redshift dependence: NO_IA, IA_NLA_LF, IA_REDSHIFT_BINNING
+// or IA_REDSHIFT_EVOLUTION, see IA.h) and nuisance.IA_code (0 = CFASTPT,
+// 1 = python FAST-PT fed through set_IA_PS). No cache key is bumped.
+//
+// Validation: values outside these sets are critical() + exit(1).
+//
+// Parameters:
+//   IA_MODEL         - 0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT
+//   IA_REDSHIFT_EVOL - NO_IA, IA_NLA_LF, IA_REDSHIFT_BINNING or
+//                      IA_REDSHIFT_EVOLUTION
+//   IA_code          - 0 = CFASTPT, 1 = python FAST-PT via set_IA_PS
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA_code)
 {
   static constexpr std::string_view fname = "init_IA"sv;
@@ -798,7 +1077,16 @@ void init_IA_fastpt(const int IA_MODEL, const int IA_REDSHIFT_EVOL, const int IA
   return;
 }
 
-// backward compatibility
+// ---------------------------------------------------------------------------
+// Backward-compatible alias: init_IA_fastpt with IA_code = 0 (CFASTPT).
+//
+// Parameters:
+//   IA_MODEL         - 0 = IA_MODEL_NLA, 1 = IA_MODEL_TATT
+//   IA_REDSHIFT_EVOL - redshift-dependence mode (see init_IA_fastpt)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 {
 	init_IA_fastpt(IA_MODEL, IA_REDSHIFT_EVOL, 0);
@@ -811,6 +1099,24 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Turn on the probes that enter the data vector.
+//
+// Writes the flags like.shear_shear, like.shear_pos, like.pos_pos, like.gk,
+// like.ks, like.kk from a named combination (probe_map keys: "xi",
+// "gammat", "wtheta", "2x2pt", "3x2pt", "5x2pt", "6x2pt" and the partial
+// ss/sg/gg/gk/sk/kk combinations below; input trimmed and lowercased for
+// the lookup). IP::set_mask reads these flags to zero the mask entries of
+// disabled probes. No cache key is bumped.
+//
+// Validation: unknown names are critical() + exit(1).
+//
+// Parameters:
+//   possible_probes - probe-combination name (probe_map key, case-insensitive)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_probes(std::string possible_probes)
 {
   static constexpr std::string_view fname = "init_probes"sv;
@@ -881,6 +1187,20 @@ void init_probes(std::string possible_probes)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Read an n(z) file: column 0 = redshift grid, columns 1..Ntomo = per-bin
+// histograms (read_table format, "#" comment lines allowed).
+//
+// Validation: non-empty filename, 0 < Ntomo <= MAX_SIZE_ARRAYS and a
+// monotonically increasing z column, else critical() + exit(1).
+//
+// Parameters:
+//   multihisto_file - path of the n(z) file
+//   Ntomo           - number of tomographic bins (columns after z)
+//
+// Returns:
+//   the parsed (nz x (Ntomo+1)) table
+// ---------------------------------------------------------------------------
 arma::Mat<double> read_nz_sample(std::string multihisto_file, const int Ntomo)
 {
   static constexpr std::string_view fname = "read_nz_sample"sv;
@@ -912,6 +1232,17 @@ arma::Mat<double> read_nz_sample(std::string multihisto_file, const int Ntomo)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Lens n(z) from file: set_lens_sample_size(Ntomo), then set_lens_sample on
+// the table returned by read_nz_sample.
+//
+// Parameters:
+//   multihisto_file - path of the lens n(z) file
+//   Ntomo           - number of lens tomographic bins
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_lens_sample(std::string multihisto_file, const int Ntomo)
 {
   static constexpr std::string_view fname = "init_lens_sample v2.0"sv;
@@ -929,6 +1260,17 @@ void init_lens_sample(std::string multihisto_file, const int Ntomo)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Source n(z) from file: set_source_sample_size(Ntomo), then
+// set_source_sample on the table returned by read_nz_sample.
+//
+// Parameters:
+//   multihisto_file - path of the source n(z) file
+//   Ntomo           - number of source tomographic bins
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_source_sample(std::string multihisto_file, const int Ntomo)
 {
   static constexpr std::string_view fname = "init_source_sample"sv;
@@ -946,6 +1288,29 @@ void init_source_sample(std::string multihisto_file, const int Ntomo)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Count the tomographic power spectra entering the data vector and warm the
+// GGL pair maps.
+//
+// Writes tomo.shear_Npowerspectra = nbin (nbin + 1) / 2 (auto + cross),
+// tomo.ggl_Npowerspectra = number of lens-source pairs with
+// test_zoverlap(l, s) = 1 (all pairs minus the init_ggl_exclude list) and
+// tomo.clustering_Npowerspectra = clustering_nbin (auto only).
+//
+// Cache invalidation: bumps tomo.random_ggl, then (when any pair survives)
+// touches ZL(0)/ZS(0)/N_ggl so the static pair maps of redshift_spline.c
+// rebuild here, single-threaded - never inside an OpenMP region (see the
+// inline comments).
+//
+// Validation: redshift.shear_nbin and redshift.clustering_nbin must already
+// be set, else critical() + exit(1).
+//
+// Parameters:
+//   (none)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_ntomo_powerspectra()
 {
   static constexpr std::string_view fname = "init_ntomo_powerspectra"sv;
@@ -994,6 +1359,20 @@ void init_ntomo_powerspectra()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Read both n(z) files and return them to python as a (lens, source) tuple
+// of numpy arrays. No C global is written; the init_ companion below
+// installs the tables instead.
+//
+// Parameters:
+//   lens_multihisto_file   - path of the lens n(z) file
+//   lens_ntomo             - number of lens bins
+//   source_multihisto_file - path of the source n(z) file
+//   source_ntomo           - number of source bins
+//
+// Returns:
+//   py::tuple(lens table, source table) as numpy arrays
+// ---------------------------------------------------------------------------
 py::tuple read_redshift_distributions_from_files(
   std::string lens_multihisto_file, const int lens_ntomo,
   std::string source_multihisto_file, const int source_ntomo)
@@ -1010,6 +1389,19 @@ py::tuple read_redshift_distributions_from_files(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// One-call n(z) setup: init_lens_sample, init_source_sample, then
+// init_ntomo_powerspectra (pair counts + pair-map warm-up).
+//
+// Parameters:
+//   lens_multihisto_file   - path of the lens n(z) file
+//   lens_ntomo             - number of lens bins
+//   source_multihisto_file - path of the source n(z) file
+//   source_ntomo           - number of source bins
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_redshift_distributions_from_files(
   std::string lens_multihisto_file, const int lens_ntomo,
   std::string source_multihisto_file, const int source_ntomo)
@@ -1026,9 +1418,24 @@ void init_redshift_distributions_from_files(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the survey identity: survey.name (trimmed, lowercased), survey.area
+// (deg^2) and survey.sigma_e. No cache key is bumped.
+//
+// Validation: name non-empty and shorter than CHAR_MAX_SIZE, else
+// critical() + exit(1).
+//
+// Parameters:
+//   surveyname - survey label (trimmed and lowercased before storing)
+//   area       - survey area (deg^2)
+//   sigma_e    - shape-noise dispersion
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_survey(
-    std::string surveyname, 
-    double area, 
+    std::string surveyname,
+    double area,
     double sigma_e)
 {
   static constexpr std::string_view fname = "init_survey"sv;
@@ -1056,6 +1463,25 @@ void init_survey(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install the lens-source pairs excluded from galaxy-galaxy lensing.
+//
+// Writes tomo.ggl_exclude as a flat [lens0, src0, lens1, src1, ...] array
+// and tomo.N_ggl_exclude = input size / 2; test_zoverlap(l, s) returns 0
+// for listed pairs. tomo.ggl_Npowerspectra is not recounted here; that (and
+// the single-threaded pair-map warm-up) happens in init_ntomo_powerspectra.
+//
+// Cache invalidation: bumps tomo.random_ggl so the static pair maps
+// (test_zoverlap/ZL/ZS/N_ggl in redshift_spline.c) rebuild on next use.
+//
+// Validation: NaN entries and allocation failure are critical() + exit(1).
+//
+// Parameters:
+//   ggl_exclude - flat (lens0, src0, lens1, src1, ...) pair list
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void init_ggl_exclude(arma::Col<int> ggl_exclude)
 {
   static constexpr std::string_view fname = "init_ggl_exclude"sv;
@@ -1094,6 +1520,23 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Update the background parameters Cosmolike keeps (Cobaya supplies P(k,z),
+// distances and growth through the other set_ functions).
+//
+// When either input changed (fdiff): writes cosmology.Omega_m,
+// Omega_v = 1 - Omega_m, h0 = hubble/100 (input H0 in km/s/Mpc), a fixed
+// nonzero Omega_nu placeholder and MGSigma = MGmu = 0, and bumps
+// cosmology.random so every table keyed on the cosmology rebuilds.
+// Unchanged inputs leave the cache key alone.
+//
+// Parameters:
+//   omega_matter - Omega_m today
+//   hubble       - H0 (km/s/Mpc)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_cosmological_parameters(
     const double omega_matter,
     const double hubble
@@ -1123,6 +1566,35 @@ void set_cosmological_parameters(
   return;
 }
 
+// ---------------------------------------------------------------------------
+// Install the python FAST-PT intrinsic-alignment tables (nuisance.IA_code
+// = 1 path), replacing FPTIA.tab wholesale.
+//
+// Units: input k in h/Mpc, spectra in (Mpc/h)^3; stored as k * coverH0 and
+// P / coverH0^3 (row 10 is the k row, every other row a spectrum).
+//
+// The rebuild is skipped when N, k_min, k_max, k_cutoff and every table
+// entry match the stored values (fdiff). On update: frees a separate
+// internal table only, then the output table (see the aliasing comment
+// below), reallocates tab as 12 x N, re-aliases tab_int = tab and
+// N_int = N, and bumps nuisance.random_ia so the C_ell caches recompute.
+// get_FPT_IA (pt_cfastpt.c, the IA_code = 0 path) detects the replaced
+// table through its owned-table pointer and rebuilds its own grid on its
+// next call.
+//
+// Validation: PS must hold exactly 12 x N elements (out-of-bounds guard,
+// see below) and no NaN entries, else critical() + exit(1).
+//
+// Parameters:
+//   PS     - flattened 12 x N table, row-major (row 10 = k grid)
+//   kmin   - lower k edge (h/Mpc)
+//   kmax   - upper k edge (h/Mpc)
+//   cutoff - high-k cutoff (h/Mpc)
+//   N      - number of k points per row
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_IA_PS(
     vector PS,
     const double kmin,
@@ -1214,6 +1686,37 @@ void set_IA_PS(
   } 
 }
 
+// ---------------------------------------------------------------------------
+// Install the python FAST-PT galaxy-bias tables (nuisance.IA_code = 1
+// path), replacing FPTbias.tab wholesale.
+//
+// Units: input k in h/Mpc and spectra in (Mpc/h)^3; stored as k * coverH0,
+// P / coverH0^3 (row 6 is the k row) and sigma4 / coverH0^3.
+//
+// The rebuild is skipped when N, k_min, k_max, k_cutoff, sigma4 and every
+// table entry match the stored values (fdiff). On update: frees a separate
+// internal table only, then the output table (see the aliasing comment
+// below), reallocates tab as 8 x N, re-aliases tab_int = tab and N_int = N,
+// and bumps nuisance.random_galaxy_bias so the C_ell caches recompute.
+// get_FPT_bias (pt_cfastpt.c, the IA_code = 0 path) detects the replaced
+// table through its owned-table pointer and rebuilds its own grid on its
+// next call.
+//
+// Validation: PS must hold exactly 8 x N elements (see the NBIAS comment
+// below for the abort a mismatch caused) and no NaN entries, else
+// critical() + exit(1).
+//
+// Parameters:
+//   PS     - flattened 8 x N table, row-major (row 6 = k grid)
+//   kmin   - lower k edge (h/Mpc)
+//   kmax   - upper k edge (h/Mpc)
+//   cutoff - high-k cutoff (h/Mpc)
+//   sigma4 - FAST-PT sigma^4 constant (stored / coverH0^3)
+//   N      - number of k points per row
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_bias_PS(
     vector PS,
     const double kmin,
@@ -1323,6 +1826,25 @@ void set_bias_PS(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install the comoving-distance table chi(z) from Cobaya.
+//
+// When the size or any entry changed (fdiff scan): writes cosmology.chi
+// (row 0 = z, row 1 = chi) and cosmology.chi_nz, precomputes the
+// direct-index segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM
+// (detect_uniform_segments), NaN-scans during the parallel fill, and bumps
+// cosmology.random. Unchanged input leaves the cache key alone.
+//
+// Validation: equal input sizes and at least 5 points, else critical() +
+// exit(1); NaN entries abort inside the fill.
+//
+// Parameters:
+//   io_z   - redshift grid (>= 5 points)
+//   io_chi - comoving distance at io_z (same length)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_distances(vector io_z, vector io_chi)
 {
   static constexpr std::string_view fname = "set_cosmological_parameters"sv;
@@ -1394,8 +1916,27 @@ void set_distances(vector io_z, vector io_chi)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install the growth table G(z) from Cobaya (D = G * a).
+//
+// When the size or any entry changed (fdiff scan): writes cosmology.G
+// (row 0 = z, row 1 = G) and cosmology.G_nz, precomputes the direct-index
+// segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM (consumed by
+// f_growth/growfac and friends), NaN-scans during the parallel fill, and
+// bumps cosmology.random. Unchanged input leaves the cache key alone.
+//
+// Validation: equal input sizes, else critical() + exit(1); NaN entries
+// abort inside the fill.
+//
+// Parameters:
+//   io_z - redshift grid
+//   io_G - growth G at io_z, with D = G * a (same length)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_growth(vector io_z, vector io_G)
-{ // Growth: D = G * a
+{
   static constexpr std::string_view fname = "set_growth"sv;
   debug("{}: {}", fname, errbegins);
   if (io_z.n_elem != io_G.n_elem) [[unlikely]] {
@@ -1454,6 +1995,29 @@ void set_growth(vector io_z, vector io_G)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install ln P_lin(log10k, z) from Cobaya.
+//
+// Table layout (structs.h): (nk+1) x (nz+1), values in [i<nk][j<nz], the
+// log10k axis in column nz and the z axis in row nk. When sizes, values or
+// either axis changed (fdiff scans): reallocates cosmology.lnPL, writes
+// lnPL_nk/lnPL_nz, NaN-scans during the parallel fill, and bumps
+// cosmology.random. Unchanged input leaves the cache key alone.
+//
+// Under COSMO3D_ASSUME_PIECEWISE_UNIFORM the log10k axis must be one
+// uniform segment (critical() otherwise) and the z axis may be piecewise
+// uniform; p_lin uses the stored metadata for direct indexing.
+//
+// Validation: io_lnP size must equal nk * nz, else critical() + exit(1).
+//
+// Parameters:
+//   io_log10k - log10 k grid
+//   io_z      - redshift grid
+//   io_lnP    - flattened ln P_lin, io_lnP(i*nz + j) = ln P(k_i, z_j)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 {
   static constexpr std::string_view fname = "set_linear_power_spectrum"sv;
@@ -1571,6 +2135,24 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install ln P_nonlin(log10k, z) from Cobaya.
+//
+// Same machinery as set_linear_power_spectrum, applied to cosmology.lnP /
+// lnP_nk / lnP_nz: fdiff change scans, uniform-grid metadata under
+// COSMO3D_ASSUME_PIECEWISE_UNIFORM (consumed by p_nonlin), NaN scan during
+// the parallel fill, and a cosmology.random bump on update.
+//
+// Validation: io_lnP size must equal nk * nz, else critical() + exit(1).
+//
+// Parameters:
+//   io_log10k - log10 k grid
+//   io_z      - redshift grid
+//   io_lnP    - flattened ln P_nonlin, io_lnP(i*nz + j) = ln P(k_i, z_j)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 {
   static constexpr std::string_view fname = "set_non_linear_power_spectrum"sv;
@@ -1617,10 +2199,11 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
     cosmology.lnP_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnP_nz = static_cast<int>(io_z.n_elem);
 #ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-    // -------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
-    // p_lin uses these fields to skip the per-call binary search on log10k & z
-    // -------------------------------------------------------------------------
+    // p_nonlin uses these fields to skip the per-call binary search on
+    // log10k & z
+    // -----------------------------------------------------------------------
     {
       // log10k axis: required to be a single uniform segment.
       int    s_start[MAX_GRID_SEGMENTS], s_len[MAX_GRID_SEGMENTS];
@@ -1688,6 +2271,21 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin multiplicative shear calibration
+// nuisance.shear_calibration_m[i]. No cache key exists for m: the (1 + m)
+// factors are applied at data-vector assembly (compute_*_masked in
+// generic_interface.hpp), not through cached tables.
+//
+// Validation: shear_nbin set and equal to the input size, no NaN entries,
+// else critical() + exit(1).
+//
+// Parameters:
+//   M - per-bin multiplicative shear bias m_i (length shear_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_shear_calib(vector M)
 {
   static constexpr std::string_view fname = "set_nuisance_shear_calib"sv;
@@ -1714,6 +2312,23 @@ void set_nuisance_shear_calib(vector M)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin source photo-z shift nuisance.photoz[0][0][i]
+// (nz_source_photoz evaluates n(z - shift)).
+//
+// Cache invalidation: bumps nuisance.random_photoz_shear when any value
+// changed (fdiff), so the source-side kernels and C_ell caches recompute;
+// unchanged input leaves the key alone.
+//
+// Validation: shear_nbin set and equal to the input size, no NaN entries,
+// else critical() + exit(1).
+//
+// Parameters:
+//   SP - per-bin source photo-z shifts (length shear_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_shear_photoz(vector SP)
 {
   static constexpr std::string_view fname = "set_nuisance_shear_photoz"sv;
@@ -1747,6 +2362,22 @@ void set_nuisance_shear_photoz(vector SP)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin lens photo-z shift nuisance.photoz[1][0][i]
+// (nz_lens_photoz shifts z before the stretch transform).
+//
+// Cache invalidation: bumps nuisance.random_photoz_clustering when any
+// value changed (fdiff); unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set and equal to the input size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   CP - per-bin lens photo-z shifts (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_clustering_photoz(vector CP)
 {
   static constexpr std::string_view fname = "set_nuisance_clustering_photoz"sv;
@@ -1784,6 +2415,23 @@ void set_nuisance_clustering_photoz(vector CP)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin lens photo-z stretch nuisance.photoz[1][1][i]
+// (nz_lens_photoz rescales z around the fiducial bin mean
+// redshift.clustering_zdist_zmean by 1/stretch).
+//
+// Cache invalidation: bumps nuisance.random_photoz_clustering when any
+// value changed (fdiff); unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set and equal to the input size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   CPS - per-bin lens photo-z stretch factors (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_clustering_photoz_stretch(vector CPS)
 {
   static constexpr std::string_view fname = "set_nuisance_clustering_photoz_stretch"sv;
@@ -1822,6 +2470,22 @@ void set_nuisance_clustering_photoz_stretch(vector CPS)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin linear galaxy bias b1 = nuisance.gb[0][i] (row layout in
+// the block comment below).
+//
+// Cache invalidation: bumps nuisance.random_galaxy_bias when any value
+// changed (fdiff); unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set and equal to the input size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   B1 - per-bin linear bias b1 (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_linear_bias(vector B1)
 {
   static constexpr std::string_view fname = "set_nuisance_linear_bias"sv;
@@ -1863,6 +2527,24 @@ void set_nuisance_linear_bias(vector B1)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin quadratic bias b2 = nuisance.gb[1][i] and derive the
+// coevolution tidal bias gb[2][i] = bs2 = -(4/7)(b1 - 1) (zero when b2 is
+// zero). Both writes happen only for bins whose b2 changed (fdiff on B2).
+//
+// Cache invalidation: bumps nuisance.random_galaxy_bias when any b2
+// changed; unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set, both inputs of that size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   B1 - per-bin linear bias (enters only the derived bs2)
+//   B2 - per-bin quadratic bias b2 (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_nonlinear_bias(vector B1, vector B2)
 {
   static constexpr std::string_view fname = "set_nuisance_nonlinear_bias"sv;
@@ -1908,6 +2590,21 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin magnification-bias amplitude b_mag = nuisance.gb[4][i].
+//
+// Cache invalidation: bumps nuisance.random_galaxy_bias when any value
+// changed (fdiff); unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set and equal to the input size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   B_MAG - per-bin magnification-bias amplitude (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_magnification_bias(vector B_MAG)
 {
   static constexpr std::string_view fname = "set_nuisance_magnification_bias"sv;
@@ -1949,6 +2646,23 @@ void set_nuisance_magnification_bias(vector B_MAG)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the per-bin third-order bias b3nl = nuisance.gb[3][i] and nonlocal
+// bias bK = nuisance.gb[5][i].
+//
+// Cache invalidation: bumps nuisance.random_galaxy_bias when any value
+// changed (fdiff); unchanged input leaves the key alone.
+//
+// Validation: clustering_nbin set, both inputs of that size, no NaN
+// entries, else critical() + exit(1).
+//
+// Parameters:
+//   B3nl - per-bin third-order bias b3nl (length clustering_nbin)
+//   BK   - per-bin nonlocal bias bK (length clustering_nbin)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_nonlocal_bias(vector B3nl, vector BK)
 {
   static constexpr std::string_view fname = "set_nuisance_nonlocal_bias"sv;
@@ -2001,6 +2715,20 @@ void set_nuisance_nonlocal_bias(vector B3nl, vector BK)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Sampler-facing bias update: b1, b2 (+ derived bs2), b_mag, then b3nl/bK.
+// Each stage bumps nuisance.random_galaxy_bias only on change.
+//
+// Parameters:
+//   B1    - per-bin linear bias b1
+//   B2    - per-bin quadratic bias b2
+//   B_MAG - per-bin magnification-bias amplitude
+//   B3nl  - per-bin third-order bias b3nl
+//   BK    - per-bin nonlocal bias bK
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_bias_fastpt(vector B1, vector B2, vector B_MAG, vector B3nl, vector BK)
 {
   set_nuisance_linear_bias(B1);
@@ -2016,7 +2744,18 @@ void set_nuisance_bias_fastpt(vector B1, vector B2, vector B_MAG, vector B3nl, v
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-// backwards compatibility
+// ---------------------------------------------------------------------------
+// Backward-compatible bias update: as set_nuisance_bias_fastpt without the
+// nonlocal b3nl/bK stage.
+//
+// Parameters:
+//   B1    - per-bin linear bias b1
+//   B2    - per-bin quadratic bias b2
+//   B_MAG - per-bin magnification-bias amplitude
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_bias(vector B1, vector B2, vector B_MAG)
 {
   set_nuisance_linear_bias(B1);
@@ -2031,6 +2770,31 @@ void set_nuisance_bias(vector B1, vector B2, vector B_MAG)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Set the intrinsic-alignment amplitudes for the active nuisance.IA mode
+// (array layout in the block comment below).
+//
+// IA_REDSHIFT_BINNING: per-bin ia[0][i] = A1, ia[1][i] = A2, ia[2][i] =
+// b_TA, with a NaN scan. IA_REDSHIFT_EVOLUTION: ia[0][0..1] = (A_ia,
+// eta_ia), ia[1][0..1] = (A2_ia, eta_ia_tt), ia[2][0] = b_TA, and the
+// pivot nuisance.oneplusz0_ia = 1.62. Every call writes
+// nuisance.c1rhocrit_ia = 0.01389; other IA modes change nothing else.
+//
+// Cache invalidation: bumps nuisance.random_ia when any stored value
+// changed (fdiff); unchanged input leaves the key alone.
+//
+// Validation: shear_nbin set and each input at least shear_nbin long, else
+// critical() + exit(1).
+//
+// Parameters:
+//   A1  - tidal-alignment amplitudes: per bin, or (A_ia, eta_ia) in
+//         slots 0-1 for IA_REDSHIFT_EVOLUTION
+//   A2  - tidal-torque amplitudes: per bin, or (A2_ia, eta_ia_tt)
+//   BTA - b_TA amplitudes: per bin, or slot 0 only
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_nuisance_IA(vector A1, vector A2, vector BTA)
 {
   static constexpr std::string_view fname = "set_nuisance_IA"sv;
@@ -2114,6 +2878,18 @@ void set_nuisance_IA(vector A1, vector A2, vector BTA)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Declare the lens tomography: redshift.clustering_nbin = Ntomo and
+// redshift.clustering_photoz = 4.
+//
+// Validation: 0 < Ntomo <= MAX_SIZE_ARRAYS, else critical() + exit(1).
+//
+// Parameters:
+//   Ntomo - number of lens tomographic bins
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_lens_sample_size(const int Ntomo)
 {
   static constexpr std::string_view fname = "set_lens_sample_size"sv;
@@ -2132,6 +2908,33 @@ void set_lens_sample_size(const int Ntomo)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install the lens n(z) table and derive the per-bin support.
+//
+// When the table changed (size or any entry, fdiff): rebuilds
+// redshift.clustering_zdist_table as (Ntomo + 1) x nzbins with the z grid
+// in row Ntomo, sets clustering_zdist_zmin_all = max(z_0, 1e-5) and
+// clustering_zdist_zmax_all one grid spacing beyond the last z, and scans
+// each column for its support: entries above 0.999e-8 of the column
+// maximum, zmin = z of the first such entry, zmax = z of the last (plain
+// loops on purpose - see the inline comment). A column with no entry above
+// the threshold is critical() + exit(1).
+//
+// Cache invalidation: bumps redshift.random_clustering first, then calls
+// nz_lens_photoz(0.1, 0) so the static interpolant rebuilds here,
+// single-threaded, and stores clustering_zdist_zmean[k] = zmean(k) (the
+// fiducial means the photo-z stretch transform rescales around).
+//
+// Validation: redshift.clustering_nbin already set and within
+// MAX_SIZE_ARRAYS, else critical() + exit(1).
+//
+// Parameters:
+//   input_table - (nz x (Ntomo+1)) table: column 0 = z grid, column k+1 =
+//                 n(z) of lens bin k (read_nz_sample layout)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_lens_sample(arma::Mat<double> input_table)
 {
   static constexpr std::string_view fname = "set_lens_sample"sv;
@@ -2237,6 +3040,18 @@ void set_lens_sample(arma::Mat<double> input_table)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Declare the source tomography: redshift.shear_nbin = Ntomo and
+// redshift.shear_photoz = 4.
+//
+// Validation: 0 < Ntomo <= MAX_SIZE_ARRAYS, else critical() + exit(1).
+//
+// Parameters:
+//   Ntomo - number of source tomographic bins
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_source_sample_size(const int Ntomo)
 {
   static constexpr std::string_view fname = "set_source_sample_size"sv;
@@ -2255,6 +3070,34 @@ void set_source_sample_size(const int Ntomo)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Install the source n(z) table and derive the per-bin support (source
+// twin of set_lens_sample).
+//
+// When the table changed (size or any entry, fdiff): rebuilds
+// redshift.shear_zdist_table as (Ntomo + 1) x nzbins with the z grid in
+// row Ntomo, sets shear_zdist_zmin_all = max(z_0, 1e-5) and
+// shear_zdist_zmax_all one grid spacing beyond the last z, and scans each
+// column for its support: entries above 0.999e-8 of the column maximum,
+// zmin = z of the first such entry (clamped to at least 1.001e-5), zmax =
+// z of the last (plain loops on purpose - see the inline comment). A
+// column with no entry above the threshold is critical() + exit(1), and so
+// is a per-bin range outside the global [zmin_all, zmax_all].
+//
+// Cache invalidation: warms the static interpolant with
+// nz_source_photoz(0.1, 0), prints zmean_source(k) at debug level, then
+// bumps redshift.random_shear.
+//
+// Validation: redshift.shear_nbin already set and within MAX_SIZE_ARRAYS,
+// else critical() + exit(1).
+//
+// Parameters:
+//   input_table - (nz x (Ntomo+1)) table: column 0 = z grid, column k+1 =
+//                 n(z) of source bin k (read_nz_sample layout)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void set_source_sample(arma::Mat<double> input_table)
 {
   static constexpr std::string_view fname = "set_source_sample"sv;
@@ -2370,6 +3213,18 @@ void set_source_sample(arma::Mat<double> input_table)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Baryonic suppression ratio P_hydro / P_DMO at (log10 k [h/Mpc], a), from
+// the 2D interpolant loaded by init_baryons_contamination
+// (PkRatio_baryons; returns 1 when no scenario is loaded).
+//
+// Parameters:
+//   log10k - log10 of the wavenumber (h/Mpc)
+//   a      - scale factor
+//
+// Returns:
+//   P_hydro / P_DMO at (k, a); 1 when no scenario is loaded
+// ---------------------------------------------------------------------------
 double get_baryon_power_spectrum_ratio(const double log10k, const double a)
 {
   const double KNL = pow(10.0, log10k)*cosmology.coverH0;
@@ -2390,6 +3245,19 @@ double get_baryon_power_spectrum_ratio(const double log10k, const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Point-mass contribution to gamma_t for lens bin zl, source bin zs at
+// angle theta (rad); forwards to PointMass::get_pm with the amplitudes
+// stored via PointMass::set_pm_vector.
+//
+// Parameters:
+//   zl    - lens tomographic bin
+//   zs    - source tomographic bin
+//   theta - angular scale (rad)
+//
+// Returns:
+//   the point-mass gamma_t contribution for the (zl, zs) pair at theta
+// ---------------------------------------------------------------------------
 double compute_pm(const int zl, const int zs, const double theta)
 {
   return PointMass::get_instance().get_pm(zl, zs, theta);
@@ -2402,6 +3270,22 @@ double compute_pm(const int zl, const int zs, const double theta)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Area-weighted centers of the log-spaced angular bins:
+//
+//   theta_i = (2/3) (th_max^3 - th_min^3) / (th_max^2 - th_min^2)
+//
+// over Ntable.Ntheta bins spanning [Ntable.vtmin, Ntable.vtmax].
+//
+// Validation: Ntheta and the (vtmin, vtmax) range must be set (via
+// init_binning_real_space), else critical() + exit(1).
+//
+// Parameters:
+//   (none)
+//
+// Returns:
+//   vector of Ntable.Ntheta bin-center angles (rad)
+// ---------------------------------------------------------------------------
 vector compute_binning_real_space()
 {
   static constexpr std::string_view fname = "compute_binning_real_space"sv;
@@ -2438,6 +3322,24 @@ vector compute_binning_real_space()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Add the baryon principal-component expansion to a data vector:
+//
+//   dv(j) += sum_i Q(i) * PC(j, i)   wherever the IP mask is 1
+//
+// with the PCs from BaryonScenario::set_pcs; masked-out entries pass
+// through unchanged.
+//
+// Validation: PCs set, PC column count >= size of Q, PC row count == size
+// of dv, else critical() + exit(1).
+//
+// Parameters:
+//   Q  - PC amplitudes (one per retained principal component)
+//   dv - data vector to contaminate (full length)
+//
+// Returns:
+//   the contaminated data vector (modified copy of dv)
+// ---------------------------------------------------------------------------
 vector compute_add_baryons_pcs(vector Q, vector dv)
 {
   static constexpr std::string_view fname = "compute_add_baryons_pcs"sv;
@@ -2478,6 +3380,24 @@ vector compute_add_baryons_pcs(vector Q, vector dv)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Load the measured data vector (column 1 of the file) into the
+// full-length masked view and the squeezed (masked-entries-only) view.
+//
+// Writes data_masked_(i) = value * mask(i) over the full ndata_ range and
+// data_masked_sqzd_ at the compact index get_index_sqzd(i) for unmasked
+// entries. Requires set_mask first (ndata_ and the index map come from
+// it). Sets is_data_set_.
+//
+// Validation: mask set, file row count == ndata_, consistent squeezed
+// indices, else critical() + exit(1).
+//
+// Parameters:
+//   datavector_filename - data-vector file (column 1 = value, rows = ndata_)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void IP::set_data(std::string datavector_filename)
 {
   static constexpr std::string_view fname = "IP::set_data"sv;
@@ -2510,6 +3430,30 @@ void IP::set_data(std::string datavector_filename)
   debug("{}: {}", fname, errends);
 }
 
+// ---------------------------------------------------------------------------
+// Load the covariance, mask and invert it, and build the squeezed copies.
+//
+// Accepted formats (read_table columns): 3 = (i, j, cov); 4 = (i, j,
+// gauss, non-gauss) summed; 10 = legacy CosmoCov layout, cov = col 8 +
+// col 9. The stored triangle is symmetrized; off-diagonal entries are
+// zeroed when either index is masked.
+//
+// When the kk bandpower probe is configured, the trailing kk block (last
+// nbins_kk rows/columns) is divided by the Hartlap alpha from
+// init_cmb_auto_bandpower before inversion.
+//
+// Stages after assembly: eigenvalue scan (any negative eigenvalue is
+// critical() + exit(1)), arma::inv, re-masking of the inverse (masked
+// rows/columns zeroed, diagonal included, so they cannot leak into chi2),
+// then compaction of covariance and inverse into the ndata_sqzd_ square
+// matrices. Sets is_inv_cov_set_.
+//
+// Parameters:
+//   cov_filename - covariance file in one of the accepted column layouts
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void IP::set_inv_cov(std::string cov_filename)
 {
   static constexpr std::string_view fname = "IP::set_inv_cov"sv;
@@ -2654,6 +3598,23 @@ void IP::set_inv_cov(std::string cov_filename)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// chi2 of a theory vector against the stored data on the squeezed views:
+//
+//   delta = sqzd(theory) - data_masked_sqzd_
+//   chi2  = delta^T inv_cov_masked_sqzd_ delta
+//
+// Masked entries never enter (the squeezed views drop them).
+//
+// Validation: data, mask and inverse covariance set; theory vector of full
+// length like.Ndata; a negative chi2 is critical() + exit(1).
+//
+// Parameters:
+//   datavector - theory vector at full (unmasked) length like.Ndata
+//
+// Returns:
+//   chi2 (non-negative)
+// ---------------------------------------------------------------------------
 double IP::get_chi2(vector datavector) const
 {
   static constexpr std::string_view fname = "IP::get_chi2"sv;
@@ -2694,6 +3655,20 @@ double IP::get_chi2(vector datavector) const
   return chi2;
 }
 
+// ---------------------------------------------------------------------------
+// Scatter a squeezed vector back to full length: unmasked entries return
+// to their original positions, masked entries are 0 (inverse of
+// sqzd_theory_data_vector).
+//
+// Validation: input length == ndata_sqzd_ and consistent squeezed indices,
+// else critical() + exit(1).
+//
+// Parameters:
+//   input - squeezed vector (length ndata_sqzd_)
+//
+// Returns:
+//   the full-length vector (masked entries zero)
+// ---------------------------------------------------------------------------
 vector IP::expand_theory_data_vector_from_sqzd(vector input) const
 {
   static constexpr std::string_view fname = "IP::expand_theory_data_vector_from_sqzd"sv;
@@ -2721,6 +3696,19 @@ vector IP::expand_theory_data_vector_from_sqzd(vector input) const
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Compact a full-length vector to its unmasked entries, ordered by
+// get_index_sqzd (the layout data_masked_sqzd_ and the squeezed
+// covariance use).
+//
+// Validation: input length == ndata_, else critical() + exit(1).
+//
+// Parameters:
+//   input - full-length vector (length ndata_)
+//
+// Returns:
+//   the squeezed vector of unmasked entries (length ndata_sqzd_)
+// ---------------------------------------------------------------------------
 vector IP::sqzd_theory_data_vector(vector input) const
 {
   static constexpr std::string_view fname = "IP::sqzd_theory_data_vector"sv;
@@ -2746,6 +3734,26 @@ vector IP::sqzd_theory_data_vector(vector input) const
 // ---------------------------------------------------------------------------
 
 /*
+// ---------------------------------------------------------------------------
+// Disabled code: the enclosing block comment keeps this RealData method out
+// of the build.
+//
+// Point-mass marginalization of gamma_t: updates the masked inverse
+// covariance in place with the Sherman-Morrison-Woodbury identity
+//
+//   invC -= invC U (I + U^T invC U)^-1 U^T invC
+//
+// with the (ndata x Nlens) template U read from U_PMmarg_file as (row,
+// lens bin, value) triples, masked rows zeroed. Checks the central block
+// and the corrected inverse for positive definiteness, then refreshes the
+// reduced-dimension covariance and inverse copies.
+//
+// Parameters:
+//   U_PMmarg_file - three-column (row index, lens bin, value) table for U
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void ima::RealData::set_PMmarg(std::string U_PMmarg_file)
 {
   if (!(this->is_mask_set_))
@@ -2856,6 +3864,17 @@ void ima::RealData::set_PMmarg(std::string U_PMmarg_file)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Load the HealPix window applied to the w_xk real-space cross
+// correlation: cmb.healpixwin[l] = column 1 of the file,
+// cmb.healpixwin_ncls = row count. Sets is_wxk_healpix_window_set_.
+//
+// Parameters:
+//   healpixwin_filename - table whose column 1 is the window (row = l)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void IPCMB::set_wxk_healpix_window(std::string healpixwin_filename) {
   static constexpr std::string_view fname = "IPCMB::set_wxk_healpix_window"sv;
   debug("{}: {}", fname, errbegins);
@@ -2879,6 +3898,18 @@ void IPCMB::set_wxk_healpix_window(std::string healpixwin_filename) {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Load the kk bandpower binning matrix, nbins x (lmax - lmin + 1), into
+// cmb.binning_matrix_kk. Requires set_kk_binning_bandpower first (sizes
+// and the bandpower flag), else critical() + exit(1). Sets
+// is_kk_binning_matrix_set_.
+//
+// Parameters:
+//   binned_matrix_filename - file with the nbins x (lmax - lmin + 1) matrix
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void IPCMB::set_kk_binning_mat(std::string binned_matrix_filename)
 {
   static constexpr std::string_view fname = "IPCMB::set_kk_binning_mat"sv;
@@ -2916,6 +3947,17 @@ void IPCMB::set_kk_binning_mat(std::string binned_matrix_filename)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Load the per-band kk theory offsets (column 0 of the file), or zeros
+// when the filename is empty. Requires set_kk_binning_bandpower first,
+// else critical() + exit(1). Sets is_kk_offset_set_.
+//
+// Parameters:
+//   theory_offset_filename - column-0 offsets file; "" installs zeros
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void IPCMB::set_kk_theory_offset(std::string theory_offset_filename)
 {
   static constexpr std::string_view fname = "IPCMB::set_kk_theory_offset"sv;
@@ -2952,9 +3994,24 @@ void IPCMB::set_kk_theory_offset(std::string theory_offset_filename)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Declare the kk bandpower compression: cmb.nbp_kk bands over multipoles
+// [lmin, lmax], and raise the is_kk_bandpower_ flag that gates the other
+// kk setters and the Hartlap scaling in IP::set_inv_cov.
+//
+// Validation: nb, lmin, lmax > 0, else critical() + exit(1).
+//
+// Parameters:
+//   nb   - number of kk band powers (cmb.nbp_kk)
+//   lmin - lowest multipole entering the bands (cmb.lminbp_kk)
+//   lmax - highest multipole entering the bands (cmb.lmaxbp_kk)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void IPCMB::set_kk_binning_bandpower (
-    const int nb, 
-    const int lmin, 
+    const int nb,
+    const int lmin,
     const int lmax
   )
 {
@@ -2993,12 +4050,30 @@ void IPCMB::set_kk_binning_bandpower (
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Point-mass contribution to gamma_t(theta) for lens bin zl, source bin zs:
+//
+//   pm = 4 pi (G/c^2) B_zl 1e13 g_tomo(a_l, zs) / (theta^2 chi_l a_l^3)
+//
+// with a_l = 1/(1 + zmean(zl)), chi_l = chi(a_l), B_zl = pm_[zl] from
+// set_pm_vector, g_tomo the lens efficiency of source bin zs, and
+// Goverc2 = 1.6e-23. The a_l^3 (rather than a_l) in the denominator
+// matches the DES y3_production convention.
+//
+// Parameters:
+//   zl    - lens tomographic bin
+//   zs    - source tomographic bin
+//   theta - angular scale (rad)
+//
+// Returns:
+//   the point-mass gamma_t contribution for the (zl, zs) pair at theta
+// ---------------------------------------------------------------------------
 double PointMass::get_pm(
-    const int zl, 
-    const int zs, 
+    const int zl,
+    const int zs,
     const double theta
   ) const
-{ // JX: add alens^2 in the den to be consistent with y3_production
+{
   static constexpr std::string_view fname = "PointMass::get_pm"sv;
   debug("{}: {}", fname, errbegins);
   constexpr double Goverc2 = 1.6e-23;
@@ -3024,6 +4099,20 @@ double PointMass::get_pm(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Register the baryon scenarios entering the PCA from one delimited string
+// (separators: "/", space, tab). Each token is normalized by
+// get_baryon_sim_name_and_tag and stored as "name-tag"; writes nscenarios_
+// and sets is_scenarios_set_.
+//
+// Validation: an empty string is critical() + exit(1).
+//
+// Parameters:
+//   scenarios - delimited scenario list (separators "/", space, tab)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
 void BaryonScenario::set_scenarios(std::string scenarios)
 {
   static constexpr std::string_view fname = "BaryonScenario::set_scenarios"sv;
@@ -3051,7 +4140,20 @@ void BaryonScenario::set_scenarios(std::string scenarios)
   debug("{}: {}", fname, errends);
 }
 
-void BaryonScenario::set_scenarios(std::string data_sims, std::string scenarios) 
+// ---------------------------------------------------------------------------
+// Overload that also records the scenario library file (set_sims_file) and
+// expands range tokens: "root-a-b" (two dashes) registers root-min(a,b)
+// through root-(max(a,b) - 1), the upper tag exclusive. Single-tag tokens
+// behave as in the one-argument overload.
+//
+// Parameters:
+//   data_sims - scenario library file recorded via set_sims_file
+//   scenarios - delimited scenario list; "root-a-b" expands a tag range
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void BaryonScenario::set_scenarios(std::string data_sims, std::string scenarios)
 {
   static constexpr std::string_view fname = "BaryonScenario::set_scenarios"sv;
   debug("{}: {}", fname, errbegins);
