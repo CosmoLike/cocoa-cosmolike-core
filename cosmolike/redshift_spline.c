@@ -1,3 +1,43 @@
+// ---------------------------------------------------------------------------
+// redshift_spline.c
+//
+// Tomographic redshift distributions and the projection kernels built
+// from them. Everything downstream of the survey n(z) file lives here:
+//
+//   survey n(z) file
+//     -> redshift.shear_zdist_table / clustering_zdist_table histograms
+//     -> per-bin normalized splines (nz_source_photoz, nz_lens_photoz)
+//     -> uniform fine grids (hot-path direct-index evaluation)
+//     -> kernels g_tomo / g2_tomo / g_lens / g_cmb
+//     -> Limber projections in cosmo2D.c
+//
+// The file also owns the tomographic pair bookkeeping (Z1/Z2/N_shear,
+// ZL/ZS/N_ggl, ZCL1/ZCL2/N_CL) and the integration bounds amin_* and
+// amax_*.
+//
+// Photo-z nuisance parameters enter through the global
+//
+//   nuisance.photoz[sample][param][bin]
+//
+//   sample = 0 (source/shear)   1 (lens/clustering)
+//   param  = 0 (shift dz)       1 (stretch sigma)
+//
+// so e.g. nuisance.photoz[1][0][3] is the shift of lens bin 3. This
+// file applies the stretch only to the lens sample; the source model
+// is shift-only.
+//
+// Caching idiom, shared by every function here with static tables:
+// each global (cosmology, redshift, nuisance, tomo, Ntable) carries a
+// random_* stamp that changes whenever its contents do; a table stores
+// the stamps it was built with and rebuilds when fdiff2 sees a
+// mismatch. Static tables start from a sentinel no valid entry can
+// equal (-42 in the int maps, NULL pointers, zeroed stamps kept
+// nonzero by construction), so the first call always builds. Rebuilds
+// are not thread-safe: the first call after any stamp change must
+// happen outside OpenMP regions, which is why builders warm the caches
+// single-threaded, e.g. "(void) nz_source_photoz(0., 0)".
+// ---------------------------------------------------------------------------
+
 #include <assert.h>
 #include <gsl/gsl_integration.h>
 #include <gsl/gsl_math.h>
@@ -101,7 +141,9 @@ double amax_source_IA(int ni)
 //
 // with sigma_ni = nuisance.photoz[1][1][ni] (stretch) and
 // dz_ni = nuisance.photoz[1][0][ni] (shift), so the bound covers the
-// support of nz_lens_photoz after its shift-and-stretch mapping.
+// support of nz_lens_photoz after its shift-and-stretch mapping. The
+// mapping moves the stretched edge by exactly dz_ni: one |dz_ni| of
+// padding covers either sign of the shift, the second is margin.
 //
 // Parameters:
 //   ni - lens tomographic bin index (0 .. clustering_nbin-1)
@@ -133,9 +175,11 @@ double amin_lens(int ni)
 //   a_max = 1 / (1 + max(zmin - 2*|dz_ni|, 0.001))
 //
 // with sigma_ni = nuisance.photoz[1][1][ni] and dz_ni =
-// nuisance.photoz[1][0][ni]. When magnification bias is active for the
-// bin (gbmag(0, ni) != 0), the kernel W_mag has support well in front of
-// the lens galaxies, and the bound widens to the source-sample value
+// nuisance.photoz[1][0][ni]; as in amin_lens, one |dz_ni| of padding
+// covers either sign of the shift and the second is margin. When
+// magnification bias is active for the bin (gbmag(0, ni) != 0), the
+// kernel W_mag has support well in front of the lens galaxies, and
+// the bound widens to the source-sample value
 // 1 / (1 + max(shear_zdist_zmin_all, 0.001)) (same as amax_source).
 //
 // Parameters:
@@ -179,7 +223,8 @@ double amax_lens(int ni)
 // the midpoint of the bin's tabulated n(z) range,
 // z = (zdist_zmin[ni] + zdist_zmax[ni]) / 2.
 //
-// Cache invalidation: chiref is built on the first call (sentinel
+// Cache invalidation:
+// chiref is built on the first call (sentinel
 // chiref[0] = -1) and never rebuilt, so later cosmology changes do not
 // move the cut. First call must happen outside OpenMP regions.
 //
@@ -229,13 +274,15 @@ int test_kmax(double l, int ni)
 // the flat exclusion list: pair k is (ggl_exclude[2k], ggl_exclude[2k+1]),
 // k < tomo.N_ggl_exclude. Excluded pairs store 0, all others 1.
 //
-// Cache invalidation: the table is stamped with the tomo.random_ggl key
+// Cache invalidation:
+// the table is stamped with the tomo.random_ggl key
 // it was built with and rebuilds when the stamp differs or while the
 // static-initializer sentinel is present (N[0][0] = -42 < -1; built
-// entries are 0 or 1). init_ntomo_powerspectra draws a fresh random_ggl
-// key and evaluates every pair single-threaded, so parallel callers only
-// read; the first call after a key change must happen outside OpenMP
-// regions.
+// entries are 0 or 1).
+//
+// init_ntomo_powerspectra draws a fresh random_ggl key and evaluates
+// every pair single-threaded, so parallel callers only read; the first
+// call after a key change must happen outside OpenMP regions.
 //
 // Parameters:
 //   ni - lens (clustering) tomographic bin index
@@ -283,17 +330,33 @@ int test_zoverlap(int ni, int nj)
 // -----------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Pair bookkeeping. Every 2-point data vector runs over a flat pair
+// index n; the maps below convert between n and the tomographic bin
+// pair (i, j). All enumerations are row-major (i outer, j inner):
+//
+//   GGL, admitted (lens i, source j) pairs only:
+//     (i, j) -> test_zoverlap admits? -> counted in order -> n
+//     n -> (ZL(n), ZS(n))          (i, j) -> N_ggl(i, j) (-1 = excluded)
+//
+//   shear-shear / clustering, unordered pairs with z1 <= z2:
+//     n -> (Z1(n), Z2(n))          (i, j) -> N_shear(i, j)
+//     n -> (ZCL1(n), ZCL2(n))      (i, j) -> N_CL(i, j)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Lens bin of the ni-th galaxy-galaxy lensing power spectrum.
 //
 // Admitted (lens, source) pairs are flattened in row-major order (lens
 // outer, source inner, test_zoverlap deciding admission); returns the
 // lens bin of pair ni.
 //
-// Cache invalidation: static map with sentinel N[0] = -42; rebuilds while
+// Cache invalidation:
+// static map with sentinel N[0] = -42; rebuilds while
 // N[0] < -1 (never built; built entries are bin indices >= 0) or when the
-// stored tomo.random_ggl stamp changes. Warmed single-threaded by
-// init_ntomo_powerspectra; the first call after a key change must happen
-// outside OpenMP regions.
+// stored tomo.random_ggl stamp changes.
+//
+// Warmed single-threaded by init_ntomo_powerspectra; the first call
+// after a key change must happen outside OpenMP regions.
 //
 // Parameters:
 //   ni - GGL power spectrum index (0 .. ggl_Npowerspectra-1)
@@ -332,11 +395,13 @@ int ZL(int ni)
 // Same admitted-pair flattening as ZL (lens outer, source inner); returns
 // the source bin of pair nj.
 //
-// Cache invalidation: static map with sentinel N[0] = -42; rebuilds while
+// Cache invalidation:
+// static map with sentinel N[0] = -42; rebuilds while
 // N[0] < -1 (never built; built entries are bin indices >= 0) or when the
-// stored tomo.random_ggl stamp changes. Warmed single-threaded by
-// init_ntomo_powerspectra; the first call after a key change must happen
-// outside OpenMP regions.
+// stored tomo.random_ggl stamp changes.
+//
+// Warmed single-threaded by init_ntomo_powerspectra; the first call
+// after a key change must happen outside OpenMP regions.
 //
 // Parameters:
 //   nj - GGL power spectrum index (0 .. ggl_Npowerspectra-1)
@@ -375,13 +440,15 @@ int ZS(int nj)
 // Inverse of (ZL, ZS): admitted pairs are numbered in row-major order
 // (lens outer, source inner) and excluded pairs store -1.
 //
-// Cache invalidation: static map stamped with tomo.random_ggl. The
+// Cache invalidation:
+// static map stamped with tomo.random_ggl. The
 // rebuild guard is N[0][0] < -1, so the static-initializer sentinel (-42)
 // triggers the first build and a changed stamp triggers later ones; when
 // pair (0, 0) itself is excluded, its stored -1 keeps the guard true and
-// the map is rebuilt on every call. Warmed single-threaded by
-// init_ntomo_powerspectra; the first call after a key change must happen
-// outside OpenMP regions.
+// the map is rebuilt on every call.
+//
+// Warmed single-threaded by init_ntomo_powerspectra; the first call
+// after a key change must happen outside OpenMP regions.
 //
 // Parameters:
 //   ni - lens (clustering) tomographic bin index
@@ -425,7 +492,8 @@ int N_ggl(int ni, int nj)
 // Shear pairs (z1, z2) with z1 <= z2 are numbered in row-major order:
 // (0,0), (0,1), ..., (0,nbin-1), (1,1), ...; returns z1 of pair ni.
 //
-// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// Cache invalidation:
+// built once, on the first call (sentinel N[0] = -42,
 // rebuilt while N[0] < -1; built entries are >= 0). There is no
 // invalidation key: the layout depends only on redshift.shear_nbin.
 // First call must happen outside OpenMP regions.
@@ -466,7 +534,8 @@ int Z1(int ni)
 //
 // Same z1 <= z2 row-major pair layout as Z1; returns z2 of pair nj.
 //
-// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// Cache invalidation:
+// built once, on the first call (sentinel N[0] = -42,
 // rebuilt while N[0] < -1; built entries are >= 0). There is no
 // invalidation key: the layout depends only on redshift.shear_nbin.
 // First call must happen outside OpenMP regions.
@@ -509,7 +578,8 @@ int Z2(int nj)
 // bin order does not matter. Indices follow the Z1/Z2 row-major layout
 // over pairs with z1 <= z2.
 //
-// Cache invalidation: built once, on the first call (sentinel
+// Cache invalidation:
+// built once, on the first call (sentinel
 // N[0][0] = -42, rebuilt while N[0][0] < -1; built entries are >= 0).
 // There is no invalidation key: the layout depends only on
 // redshift.shear_nbin. First call must happen outside OpenMP regions.
@@ -553,7 +623,8 @@ int N_shear(int ni, int nj)
 // row-major order, as in Z1; returns zcl1 of pair ni. The bound check
 // uses tomo.clustering_Npowerspectra.
 //
-// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// Cache invalidation:
+// built once, on the first call (sentinel N[0] = -42,
 // rebuilt while N[0] < -1; built entries are >= 0). There is no
 // invalidation key: the layout depends only on redshift.clustering_nbin.
 // First call must happen outside OpenMP regions.
@@ -595,7 +666,8 @@ int ZCL1(int ni)
 // Same zcl1 <= zcl2 row-major pair layout as ZCL1; returns zcl2 of pair
 // nj. The bound check uses tomo.clustering_Npowerspectra.
 //
-// Cache invalidation: built once, on the first call (sentinel N[0] = -42,
+// Cache invalidation:
+// built once, on the first call (sentinel N[0] = -42,
 // rebuilt while N[0] < -1; built entries are >= 0). There is no
 // invalidation key: the layout depends only on redshift.clustering_nbin.
 // First call must happen outside OpenMP regions.
@@ -637,7 +709,8 @@ int ZCL2(int nj)
 // Inverse of (ZCL1, ZCL2) with symmetric storage, N[i][j] = N[j][i], over
 // the zcl1 <= zcl2 row-major pair layout.
 //
-// Cache invalidation: built once, on the first call (sentinel
+// Cache invalidation:
+// built once, on the first call (sentinel
 // N[0][0] = -42, rebuilt while N[0][0] < -1; built entries are >= 0).
 // There is no invalidation key: the layout depends only on
 // redshift.clustering_nbin. First call must happen outside OpenMP
@@ -689,7 +762,10 @@ int N_CL(int ni, int nj)
 //
 // Locates the histogram cell containing z by direct index on the uniform
 // grid stored in redshift.shear_zdist_table (row ntomo holds the z nodes)
-// and returns its stored density.
+// and returns its stored density:
+//
+//   nj = floor((z - z_v[0]) / dz),  dz = (z_v[nzbins-1] - z_v[0])
+//                                        / (nzbins - 1)
 //
 // Parameters:
 //   z  - redshift
@@ -751,24 +827,26 @@ double zdistr_histo_n(double z, const int ni)
 // NUMERICAL SCHEME:
 //   Two-stage interpolation for speed on the hot path:
 //
-//   Stage 1 (cache rebuild, runs once when redshift.random_shear changes):
-//     - Normalize the raw histograms and fit GSL splines (type set by
-//       Ntable.photoz_interpolation_type: cspline default, linear, or
-//       Steffen monotone) on the original bin-center grid. The node
-//       positions follow Ntable.photoz_zmid_convention: the file z
-//       column is read as Z_LOW left bin edges (default, values at
-//       centers z + dz/2) or as Z_MID sample points (values at z).
-//     - Resample each spline onto a uniform fine grid
-//       (Ntable.nz_fine_sampling_factor x the original resolution)
-//       and precompute cubic spline coefficients via a tridiagonal
-//       solve (spline_coeffs_uniform).
-//     - Controlled by DONT_NZ_FAST_SUMBSAMPLE: when defined, the fine
-//       grid is skipped and the hot path falls back to GSL evaluation.
+//   raw histogram -> normalize per bin -> GSL spline on the node grid
+//     -> resample onto a uniform fine grid
+//     -> tridiagonal solve for the cubic coefficients
+//     -> hot path: direct-index lookup + Horner cubic
 //
-//   Stage 2 (hot path, called millions of times per likelihood):
-//     - Direct-index lookup on the uniform fine grid: one multiply to
-//       compute the grid index (no binary search, no GSL function pointer
-//       dispatch), then Horner-form cubic polynomial evaluation.
+//   Stage 1 (cache rebuild, runs once when redshift.random_shear
+//   changes) covers the first four links. The GSL spline type is set
+//   by Ntable.photoz_interpolation_type (cspline default, linear, or
+//   Steffen monotone). The node positions follow
+//   Ntable.photoz_zmid_convention: the file z column is read as Z_LOW
+//   left bin edges (default, values at centers z + dz/2) or as Z_MID
+//   sample points (values at z). The fine grid holds
+//   Ntable.nz_fine_sampling_factor x the original resolution, with
+//   cubic coefficients from spline_coeffs_uniform. Defining
+//   DONT_NZ_FAST_SUMBSAMPLE skips the fine grid and sends the hot
+//   path back to GSL evaluation.
+//
+//   Stage 2 (hot path, called millions of times per likelihood): one
+//   multiply computes the fine-grid index (no binary search, no GSL
+//   function-pointer dispatch), then a Horner-form cubic.
 //
 // Cache invalidation:
 //   Recomputes when redshift.random_shear changes, which tracks:
@@ -790,7 +868,12 @@ double nz_source_photoz(double zz, const int nj)
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
+// DONT_NZ_FAST_SUMBSAMPLE (sic - SUBSAMPLE) is the escape hatch:
+// defining it removes the uniform fine grid, and the hot path falls
+// back to GSL spline evaluation on the node grid.
 #ifndef DONT_NZ_FAST_SUMBSAMPLE
+  // uniform fine grid for direct-index evaluation (no binary search)
+  // fine[0] = table_fine (y values), fine[1] = c_fine (spline coefficients)
   static double*** fine = NULL;
   static double zmin_fine;
   static double inv_dz_fine;
@@ -805,14 +888,17 @@ double nz_source_photoz(double zz, const int nj)
   // Read it like a two-digit number whose "ones digit" is the
   // interpolation type (0-7) and whose "eights digit" is the z-column
   // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
-  // type 0 with convention 1 gives 1 + 0 + 8 = 9. Because the type can
-  // never reach 8, two DIFFERENT settings pairs can never produce the
-  // SAME packed number. (With a multiplier of 2 they could: type 2 with
-  // convention 0 and type 0 with convention 1 would both give 3, and
-  // that settings change would be mistaken for "nothing changed" -
-  // stale n(z) tables, silently wrong physics.) The 1+ offset keeps a
-  // stamped slot nonzero, so it can never equal the zero that C puts in
-  // the static cache array before the first build.
+  // type 0 with convention 1 gives 1 + 0 + 8 = 9.
+  //
+  // Because the type can never reach 8, two DIFFERENT settings pairs
+  // can never produce the SAME packed number. (With a multiplier of 2
+  // they could: type 2 with convention 0 and type 0 with convention 1
+  // would both give 3, and that settings change would be mistaken for
+  // "nothing changed" - stale n(z) tables, silently wrong physics.)
+  //
+  // The 1+ offset keeps a stamped slot nonzero, so it can never equal
+  // the zero that C puts in the static cache array before the first
+  // build.
   if (table == NULL || fdiff2(cache[0], redshift.random_shear) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
                                 + 8*Ntable.photoz_zmid_convention)) {
@@ -828,6 +914,12 @@ double nz_source_photoz(double zz, const int nj)
     const double zmin = redshift.shear_zdist_zmin_all;
     const double zmax = redshift.shear_zdist_zmax_all;
     const double dz_histo = (zmax - zmin) / ((double) nzbins);
+    // dz_histo here is the width of the nzbins cells spanning
+    // [zmin_all, zmax_all). It equals the node spacing zdistr_histo_n
+    // computes as range/(nzbins - 1) over the nzbins file nodes,
+    // because the loader places zmax_all one node spacing past the
+    // last file node.
+    //
     // Z_LOW convention (default): the file z column holds left bin edges,
     // so the tabulated value belongs at the cell center z + dz/2.
     // Z_MID: the column holds the sample points themselves.
@@ -836,6 +928,22 @@ double nz_source_photoz(double zz, const int nj)
       table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
 
+    // Row layout of table (ntomo + 2 rows, nzbins columns):
+    //
+    //   table[0]        = combined n(z) of the whole sample
+    //   table[1..ntomo] = per-bin n(z), each normalized to unit integral
+    //   table[ntomo+1]  = the z nodes shared by every row
+    //
+    // NORM[i] = bin i's raw-histogram integral (cell sum times width
+    // dz_histo) and norm = sum_i NORM[i], the whole sample's. Dividing
+    // bin i by NORM[i] makes rows 1..ntomo unit-normalized; the
+    // combined row then reweights them by the sample fractions
+    // NORM[i]/norm:
+    //
+    //   table[0][k] = sum_i (raw_i(z_k)/NORM[i]) * (NORM[i]/norm)
+    //               = sum_i raw_i(z_k) / norm
+    //
+    // the raw histograms stacked, normalized to unit total integral.
     double NORM[MAX_SIZE_ARRAYS];
     double norm = 0;
     #pragma omp parallel for reduction( + : norm )
@@ -871,7 +979,16 @@ double nz_source_photoz(double zz, const int nj)
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
 #ifndef DONT_NZ_FAST_SUMBSAMPLE
+    // -----------------------------------------------------------------
+    // Resample each spline onto a uniform fine grid. The GSL spline on
+    // the node grid is evaluated once here; the hot path below uses
+    // direct-index lookup with no binary search.
+    // -----------------------------------------------------------------
     nzbins_fine = Ntable.nz_fine_sampling_factor*nzbins + 1;
+    // eps nudges both fine-grid endpoints just inside the spline's
+    // native domain [z_0, z_{nzbins-1}], so rounding in the node
+    // formula below can never hand gsl_interp_eval_e a point outside
+    // it (outside the domain, GSL fails with GSL_EDOM).
     const double eps = 1e-15;
     zmin_fine = table[ntomo+1][0] + eps;
     const double zmax_fine = table[ntomo+1][nzbins - 1] - eps;
@@ -950,23 +1067,39 @@ double nz_source_photoz(double zz, const int nj)
   }
   return res;
 #else
+  // out-of-support test; the upper bound rebuilds the grid edge:
+  // zmin_fine + (nzbins_fine - 1)*dz_fine = zmax_fine
   if (zz <= zmin_fine || zz >= zmin_fine + (nzbins_fine - 1) / inv_dz_fine) {
     return 0.0;
   }
   // -----------------------------------------------------------------------
   // Hot-path cubic spline evaluation on the uniform fine grid.
   //
-  // Direct-index lookup: the uniform spacing allows computing the grid
-  // index from a single multiply (no binary search, no accelerator).
-  //   r     = fractional grid index (floating point)
-  //   index = integer part → left bracket
-  //   delx  = (r - index) * dx → distance from left grid point
+  // Direct-index lookup: the uniform spacing turns the interval search
+  // into one multiply (no binary search, no accelerator):
   //
-  // The cubic polynomial on interval [z_index, z_{index+1}] is:
-  //   S(z) = y_i + delx * (b + delx * (c_i + delx * d))
-  // with coefficients b, c_i, d derived from the precomputed spline
-  // coefficients c_i, c_{i+1} and the local slope dy/dx, following
-  // the same formulation as GSL's cspline_eval (Horner form).
+  //   r     = fractional grid index (floating point)
+  //   index = integer part -> left node of the bracketing interval
+  //   delx  = (r - index) * dx -> offset from that node, in z
+  //
+  // On interval [z_i, z_i + dx] the house spline (spline_coeffs_uniform)
+  // is the cubic
+  //
+  //   S(z_i + delx) = y_i + b delx + c_i delx^2 + d delx^3
+  //
+  // where c = fine[1][..] is the coefficient array the tridiagonal
+  // solve in the rebuild produced: the spline's second derivative / 2,
+  // with natural boundaries c_0 = c_{n-1} = 0.
+  //
+  // The other two coefficients follow from two conditions:
+  //
+  //   S'' runs linearly from 2 c_i to 2 c_{i+1}
+  //     -> d = (c_{i+1} - c_i) / (3 dx)
+  //
+  //   S(z_{i+1}) = y_{i+1}, interpolate the right node
+  //     -> b = (y_{i+1} - y_i)/dx - dx (c_{i+1} + 2 c_i)/3
+  //
+  // The polynomial is evaluated in Horner form.
   // -----------------------------------------------------------------------
   const double r = (zz - zmin_fine) * inv_dz_fine;
   const int index = (int) r;
@@ -1015,7 +1148,8 @@ double int_for_zmean_source(double z, void* params)
 // are tabulated at once with fixed-order Gauss-Legendre quadrature
 // (256/512/1024 nodes, chosen by |Ntable.high_def_integration|).
 //
-// Cache invalidation: the table rebuilds when Ntable.random or
+// Cache invalidation:
+// the table rebuilds when Ntable.random or
 // redshift.random_shear change. nz_source_photoz is warmed
 // single-threaded before the parallel loop over bins.
 //
@@ -1073,7 +1207,10 @@ double zmean_source(int ni)
 //
 // Locates the histogram cell containing z by direct index on the uniform
 // grid stored in redshift.clustering_zdist_table (row ntomo holds the z
-// nodes) and returns its stored density.
+// nodes) and returns its stored density:
+//
+//   nj = floor((z - z_v[0]) / dz),  dz = (z_v[nzbins-1] - z_v[0])
+//                                        / (nzbins - 1)
 //
 // Parameters:
 //   z  - redshift
@@ -1144,26 +1281,26 @@ double pf_histo_n(double z, const int ni)
 // NUMERICAL SCHEME:
 //   Two-stage interpolation for speed on the hot path:
 //
-//   Stage 1 (cache rebuild, runs once per parameter change):
-//     - Fit GSL splines (type set by Ntable.photoz_interpolation_type:
-//       cspline default, linear, or Steffen monotone) to the
-//       normalized histograms on the original bin-center grid. The
-//       node positions follow Ntable.photoz_zmid_convention: the file
-//       z column is read as Z_LOW left bin edges (default, values at
-//       centers z + dz/2) or as Z_MID sample points (values at z).
-//     - Resample each spline onto a uniform fine grid
-//       (Ntable.nz_fine_sampling_factor x the original resolution)
-//       and precompute cubic spline coefficients on that grid via a
-//       tridiagonal solve.
+//   raw histogram -> normalize per bin -> GSL spline on the node grid
+//     -> resample onto a uniform fine grid
+//     -> tridiagonal solve for the cubic coefficients
+//     -> hot path: direct-index lookup + Horner cubic
 //
-//   Stage 2 (hot path, called millions of times per likelihood):
-//     - Direct-index lookup on the uniform fine grid: one multiply
-//       to compute the grid index (no binary search, no GSL function
-//       pointer dispatch), then Horner-form cubic polynomial evaluation.
+//   Stage 1 (cache rebuild, runs once when redshift.random_clustering
+//   changes) covers the first four links. The GSL spline type is set
+//   by Ntable.photoz_interpolation_type (cspline default, linear, or
+//   Steffen monotone). The node positions follow
+//   Ntable.photoz_zmid_convention: the file z column is read as Z_LOW
+//   left bin edges (default, values at centers z + dz/2) or as Z_MID
+//   sample points (values at z). The fine grid holds
+//   Ntable.nz_fine_sampling_factor x the original resolution, with
+//   cubic coefficients from spline_coeffs_uniform. Defining
+//   DONT_NZ_FAST_SUMBSAMPLE skips the fine grid and sends the hot
+//   path back to GSL evaluation.
 //
-//   This replaces the original GSL gsl_interp_eval_e call, which
-//   accounted for ~6% of wall time due to binary search overhead and
-//   function pointer indirection in the inner Limber loops.
+//   Stage 2 (hot path, called millions of times per likelihood): one
+//   multiply computes the fine-grid index (no binary search, no GSL
+//   function-pointer dispatch), then a Horner-form cubic.
 //
 // Cache invalidation:
 //   Recomputes when redshift.random_clustering changes, which tracks:
@@ -1203,14 +1340,17 @@ double nz_lens_photoz(double zz, int nj)
   // Read it like a two-digit number whose "ones digit" is the
   // interpolation type (0-7) and whose "eights digit" is the z-column
   // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
-  // type 0 with convention 1 gives 1 + 0 + 8 = 9. Because the type can
-  // never reach 8, two DIFFERENT settings pairs can never produce the
-  // SAME packed number. (With a multiplier of 2 they could: type 2 with
-  // convention 0 and type 0 with convention 1 would both give 3, and
-  // that settings change would be mistaken for "nothing changed" -
-  // stale n(z) tables, silently wrong physics.) The 1+ offset keeps a
-  // stamped slot nonzero, so it can never equal the zero that C puts in
-  // the static cache array before the first build.
+  // type 0 with convention 1 gives 1 + 0 + 8 = 9.
+  //
+  // Because the type can never reach 8, two DIFFERENT settings pairs
+  // can never produce the SAME packed number. (With a multiplier of 2
+  // they could: type 2 with convention 0 and type 0 with convention 1
+  // would both give 3, and that settings change would be mistaken for
+  // "nothing changed" - stale n(z) tables, silently wrong physics.)
+  //
+  // The 1+ offset keeps a stamped slot nonzero, so it can never equal
+  // the zero that C puts in the static cache array before the first
+  // build.
   if (NULL == table || fdiff2(cache[0], redshift.random_clustering) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
                                 + 8*Ntable.photoz_zmid_convention))
@@ -1228,6 +1368,12 @@ double nz_lens_photoz(double zz, int nj)
     const double zmin = redshift.clustering_zdist_zmin_all;
     const double zmax = redshift.clustering_zdist_zmax_all;
     const double dz_histo = (zmax - zmin) / ((double) nzbins);
+    // dz_histo here is the width of the nzbins cells spanning
+    // [zmin_all, zmax_all). It equals the node spacing pf_histo_n
+    // computes as range/(nzbins - 1) over the nzbins file nodes,
+    // because the loader places zmax_all one node spacing past the
+    // last file node.
+    //
     // Z_LOW convention (default): the file z column holds left bin edges,
     // so the tabulated value belongs at the cell center z + dz/2.
     // Z_MID: the column holds the sample points themselves.
@@ -1236,6 +1382,22 @@ double nz_lens_photoz(double zz, int nj)
       table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
 
+    // Row layout of table (ntomo + 2 rows, nzbins columns):
+    //
+    //   table[0]        = combined n(z) of the whole sample
+    //   table[1..ntomo] = per-bin n(z), each normalized to unit integral
+    //   table[ntomo+1]  = the z nodes shared by every row
+    //
+    // NORM[i] = bin i's raw-histogram integral (cell sum times width
+    // dz_histo) and norm = sum_i NORM[i], the whole sample's. Dividing
+    // bin i by NORM[i] makes rows 1..ntomo unit-normalized; the
+    // combined row then reweights them by the sample fractions
+    // NORM[i]/norm:
+    //
+    //   table[0][k] = sum_i (raw_i(z_k)/NORM[i]) * (NORM[i]/norm)
+    //               = sum_i raw_i(z_k) / norm
+    //
+    // the raw histograms stacked, normalized to unit total integral.
     double NORM[MAX_SIZE_ARRAYS];
     double norm = 0;
     #pragma omp parallel for reduction( + : norm )
@@ -1286,12 +1448,15 @@ double nz_lens_photoz(double zz, int nj)
 #ifndef DONT_NZ_FAST_SUMBSAMPLE
     // -----------------------------------------------------------------
     // Resample each spline onto a uniform fine grid. The GSL spline on
-    // the original (possibly non-uniform) histogram grid is evaluated
-    // once here; the hot path below uses direct-index lookup with no
-    // binary search.
+    // the node grid is evaluated once here; the hot path below uses
+    // direct-index lookup with no binary search.
     // -----------------------------------------------------------------
     nzbins_fine = Ntable.nz_fine_sampling_factor*nzbins + 1;
     
+    // eps nudges both fine-grid endpoints just inside the spline's
+    // native domain [z_0, z_{nzbins-1}], so rounding in the node
+    // formula below can never hand gsl_interp_eval_e a point outside
+    // it (outside the domain, GSL fails with GSL_EDOM).
     const double eps = 1e-15;
     zmin_fine = table[ntomo+1][0] + eps;
     const double zmax_fine = table[ntomo+1][nzbins - 1] - eps;
@@ -1357,21 +1522,36 @@ double nz_lens_photoz(double zz, int nj)
   // -----------------------------------------------------------------------
   // Hot-path cubic spline evaluation on the uniform fine grid.
   //
-  // Direct-index lookup: the uniform spacing allows computing the grid
-  // index from a single multiply (no binary search, no accelerator).
+  // Direct-index lookup: the uniform spacing turns the interval search
+  // into one multiply (no binary search, no accelerator):
+  //
   //   r     = fractional grid index (floating point)
-  //   index = integer part → left bracket
-  //   delx  = (r - index) * dx → distance from left grid point
+  //   index = integer part -> left node of the bracketing interval
+  //   delx  = (r - index) * dx -> offset from that node, in z
   //
-  // The cubic polynomial on interval [z_index, z_{index+1}] is:
-  //   S(z) = y_i + delx * (b + delx * (c_i + delx * d))
-  // with coefficients b, c_i, d derived from the precomputed spline
-  // coefficients c_i, c_{i+1} and the local slope dy/dx, following
-  // the same formulation as GSL's cspline_eval (Horner form).
+  // On interval [z_i, z_i + dx] the house spline (spline_coeffs_uniform)
+  // is the cubic
   //
-  // The final division by nuisance.photoz[1][1][nj] applies the
-  // photo-z stretch factor to the interpolated n(z) value.
+  //   S(z_i + delx) = y_i + b delx + c_i delx^2 + d delx^3
+  //
+  // where c = fine[1][..] is the coefficient array the tridiagonal
+  // solve in the rebuild produced: the spline's second derivative / 2,
+  // with natural boundaries c_0 = c_{n-1} = 0.
+  //
+  // The other two coefficients follow from two conditions:
+  //
+  //   S'' runs linearly from 2 c_i to 2 c_{i+1}
+  //     -> d = (c_{i+1} - c_i) / (3 dx)
+  //
+  //   S(z_{i+1}) = y_{i+1}, interpolate the right node
+  //     -> b = (y_{i+1} - y_i)/dx - dx (c_{i+1} + 2 c_i)/3
+  //
+  // The polynomial is evaluated in Horner form. The final division by
+  // nuisance.photoz[1][1][nj] applies the photo-z stretch factor to
+  // the interpolated n(z) value.
   // -----------------------------------------------------------------------
+  // out-of-support test; the upper bound rebuilds the grid edge:
+  // zmin_fine + (nzbins_fine - 1)*dz_fine = zmax_fine
   if (zz <= zmin_fine || zz >= zmin_fine + (nzbins_fine - 1) / inv_dz_fine) {
     return 0.0;
   }
@@ -1453,7 +1633,8 @@ double norm_for_zmean(double z, void* params)
 // Gauss-Legendre quadrature (256/512/1024 nodes, chosen by
 // |Ntable.high_def_integration|).
 //
-// Cache invalidation: the table rebuilds when Ntable.random or
+// Cache invalidation:
+// the table rebuilds when Ntable.random or
 // redshift.random_clustering change. nz_lens_photoz is warmed
 // single-threaded before the parallel loop over bins.
 //
@@ -1474,6 +1655,8 @@ double zmean(const int ni)
       fdiff2(cache[1], redshift.random_clustering))
   {
     if (table != NULL) free(table);
+    // one slot of slack: only the first clustering_nbin entries are
+    // ever written or read
     table = (double*) malloc1d(redshift.clustering_nbin+1);
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 256 : 
@@ -1518,13 +1701,15 @@ double zmean(const int ni)
 // PHYSICS:
 //   The lensing convergence kernel W_κ(a) for source bin j involves the
 //   cumulative lensing efficiency — the integrated geometric weight of all
-//   sources behind scale factor a:
+//   sources behind scale factor a. For a flat cosmology (f_K = χ) it
+//   reads:
 //
 //     g(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
 //                           × [1 − χ(a)/χ(a')]  da'
 //
 //   where n_j = nz_source_photoz is the (normalized) source photometric
-//   redshift distribution for bin j.  This is the same functional form as
+//   redshift distribution for bin j and the 1/a'^2 Jacobian converts
+//   dz → da.  This is the same functional form as
 //   g_lens, but integrated against the source distribution rather than the
 //   lens distribution.  It appears in W_κ(a, j) = g(a, j) / χ(a), which
 //   enters every shear-related angular power spectrum (shear-shear,
@@ -1571,21 +1756,17 @@ double zmean(const int ni)
 //   Returns 0 if a ≤ a_min or a > 1 − dac (outside the tabulated range).
 // ---------------------------------------------------------------------------
 double g_tomo(double ainput, const int ni) {
-  // Bin-averaged lensing efficiency for *source* tomography bin ni.
-  // Assumes flat cosmology: f_K(x) = x, so the lensing kernel factors as
-  //   g(a_i) = P(a_i) - chi(a_i) * Q(a_i)
-  // where
-  //   P(a) = ∫_{amin}^{a} n_j(z') / a'^2           da'
-  //   Q(a) = ∫_{amin}^{a} n_j(z') / (chi(a') a'^2) da'
-  // and n_j = nz_source_photoz (the source photo-z distribution for bin j).
   static uint64_t cache[MAX_SIZE_ARRAYS]; 
   static double** table = NULL;
   static double** Pint = NULL; // P integrand samples on fine grid
   static double** Qint = NULL; // Q integrand samples on fine grid
 
+  // x = fine trapezoid steps per coarse table cell (Na - 1 = x*(N_a - 1))
   const int x  = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0/(redshift.shear_zdist_zmax_all + 1.0);
+  // amax stops just short of a = 1 (today): chi(1) = 0 and the Q
+  // integrand divides by chi(a')
   const double amax = 0.999999;
   
   if (NULL == table || fdiff2(cache[0], Ntable.random))  { 
@@ -1620,10 +1801,13 @@ double g_tomo(double ainput, const int ni) {
     for (int j=0; j<redshift.shear_nbin; j++) {
       double P = 0.0;
       double Q = 0.0;
+      // 1st point: 0 (P = Q = 0; the source n(z) support starts at amin)
       table[j][0] = 0.0;
       for (int i=1; i<Na; i++) {
         P += 0.5 * da * (Pint[j][i-1] + Pint[j][i]);
         Q += 0.5 * da * (Qint[j][i-1] + Qint[j][i]);
+        // every x-th fine step lands on coarse node k; assemble the
+        // kernel there from the running sums: g = P - chi * Q
         if (i % x == 0) {
           const int k = i / x;
           table[j][k] = P - chi(amin+i*da) * Q; // that is glens
@@ -1649,7 +1833,8 @@ double g_tomo(double ainput, const int ni) {
 // PHYSICS:
 //   Several terms in the angular power spectrum of source galaxy clustering
 //   (and magnification–magnification correlations) involve the integral of
-//   the *squared* lensing efficiency kernel over the source distribution:
+//   the *squared* lensing efficiency kernel over the source distribution,
+//   here in its flat-cosmology (f_K = χ) form:
 //
 //     g2(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
 //                            × [1 − χ(a)/χ(a')]^2  da'
@@ -1714,9 +1899,12 @@ double g2_tomo(double a, int ni)
   static double** Qint  = NULL;  // Q integrand on fine grid
   static double** Rint  = NULL;  // R integrand on fine grid
 
+  // x = fine trapezoid steps per coarse table cell (Na - 1 = x*(N_a - 1))
   const int x = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.shear_zdist_zmax_all + 1.0);
+  // amax stops just short of a = 1 (today): chi(1) = 0 and the Q and R
+  // integrands divide by chi(a')
   const double amax = 0.999999;
 
   if (NULL == table || fdiff2(cache[0], Ntable.random)) {
@@ -1862,9 +2050,12 @@ double g_lens(double a, int ni)
   static double** Pint  = NULL; // P integrand samples on fine grid
   static double** Qint  = NULL; // Q integrand samples on fine grid
 
+  // x = fine trapezoid steps per coarse table cell (Na - 1 = x*(N_a - 1))
   const int x = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
   const double amin = 1.0 / (redshift.clustering_zdist_zmax_all + 1.0);
+  // amax stops just short of a = 1 (today): chi(1) = 0 and the Q
+  // integrand divides by chi(a')
   const double amax = 0.999999;
 
   if (table == NULL || fdiff2(cache[0], Ntable.random)) {
@@ -1931,7 +2122,8 @@ double g_lens(double a, int ni)
 // single-source analog of g_tomo; it enters the CMB lensing convergence
 // kernel W_k.
 //
-// Cache invalidation: chi_cmb and f_K(chi_cmb) are recomputed when
+// Cache invalidation:
+// chi_cmb and f_K(chi_cmb) are recomputed when
 // cosmology.random changes. The first call after a cosmology change must
 // happen outside OpenMP regions.
 //

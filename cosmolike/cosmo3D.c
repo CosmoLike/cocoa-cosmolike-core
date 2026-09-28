@@ -17,6 +17,40 @@
 #include "cosmo3D.h"
 #include "structs.h"
 
+// ---------------------------------------------------------------------------
+// cosmo3D.c: background, growth and P(k) lookup functions over CAMB-fed
+// tables.
+//
+// Data flow:
+//
+//   CAMB (via the C-interface setters)
+//     set_distances                 -> cosmology.chi  (z, chi(z) in Mpc/h)
+//     set_growth                    -> cosmology.G    (z, G(z); D = G*a)
+//     set_linear_power_spectrum     -> cosmology.lnPL (ln P on log10k x z)
+//     set_non_linear_power_spectrum -> cosmology.lnP  (same layout)
+//   -> the lookup functions below (chi_all, norm_growfac*, f_growth, p_lin,
+//      p_nonlin, ...) interpolate those tables
+//   -> radial weights and Limber integrands (cosmo2D.c) consume them.
+//
+// Unit conventions, once for the whole file (cosmology.coverH0 = c/H0
+// in Mpc/h = 2997.92458):
+//
+//   distances = c/H0 units        (table Mpc/h, divided by coverH0)
+//   k         = (c/H0)^-1 units   (k[h/Mpc]*coverH0)
+//   P(k)      = (c/H0)^3 units    (table (Mpc/h)^3, divided by coverH0^3)
+//
+// COSMO3D_ASSUME_PIECEWISE_UNIFORM contract: each setter lays its z
+// grid out as a few uniform segments and records them in the *_z_seg_*
+// metadata (lnPL/lnP additionally use one uniform segment in log10 k).
+// With the macro defined, every bracket lookup except a_chi's (the chi
+// column is not uniform) becomes a direct index computed from that
+// metadata instead of a binary search. The metadata is trusted, never
+// checked: a table filled without it, or with a grid that is not
+// piecewise-uniform, makes the lookups land in wrong brackets and
+// return silently wrong interpolants. Without the macro every lookup
+// binary-searches and needs no metadata.
+// ---------------------------------------------------------------------------
+
 #ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -141,7 +175,8 @@ double dchi_da(const double a)
 // set_distances) and clamps j so the j+2 read of the "up" slope stays in
 // bounds; the fallback variant keeps the binary search.
 //
-// Cache invalidation: no static state. The cosmology.chi table and its
+// Cache invalidation:
+// no static state. The cosmology.chi table and its
 // grid metadata are replaced by set_distances, which also bumps
 // cosmology.random so downstream caches rebuild.
 //
@@ -206,8 +241,8 @@ struct chis chi_all(const double a)
       : (cj1 - cj  ) / (zj1 - zj  );
   const double dchidz = down + dy * (up - down);
 
-  // Convert from (Mpc/h) to (Mpc/h)/(c/H0=100)^3 (dimensionless),
-  // and from d(chi)/dz to d(chi)/da via z = 1/a - 1.
+  // convert Mpc/h -> c/H0 units (divide by coverH0 = c/H0 in Mpc/h =
+  // 2997.92458), and d(chi)/dz -> d(chi)/da via |dz/da| = 1/a^2
   struct chis result;
   result.chi    = chi_interp / cosmology.coverH0;
   result.dchida = dchidz / cosmology.coverH0 / (a * a);
@@ -229,6 +264,7 @@ struct chis chi_all(const double a)
   double out[2];
   const double z = 1.0/a - 1.0;
 
+  // bracket the query z by binary search on the z column
   int j = 0;
   {
     size_t ilo = 0;
@@ -248,10 +284,14 @@ struct chis chi_all(const double a)
     j = cosmology.chi_nz - 3;
   }
 
+  // chi(z) by linear interpolation between nodes j and j+1
   const double dy = (z                     - cosmology.chi[0][j])/
                     (cosmology.chi[0][j+1] - cosmology.chi[0][j]);
   out[0] = cosmology.chi[1][j] + dy*(cosmology.chi[1][j+1]-cosmology.chi[1][j]);
 
+  // dchi/dz by linear interpolation of the two slopes "up" (over
+  // [j, j+2]) and "down" (over [j-1, j+1]; one-sided over [j, j+1]
+  // at the j = 0 boundary)
   if (j>0)
   {
     const double up = (cosmology.chi[1][j+2] - cosmology.chi[1][j])/
@@ -271,7 +311,8 @@ struct chis chi_all(const double a)
     out[1] = down + dy*(up-down);
   }
 
-  // convert from (Mpc/h) to (Mpc/h)/(c/H0=100)^3 (dimensioneless)
+  // convert Mpc/h -> c/H0 units (divide by coverH0 = c/H0 in Mpc/h =
+  // 2997.92458)
   out[1] = (out[1]/cosmology.coverH0);
   // convert from d\chi/dz to d\chi/da
   out[1] = out[1]/(a*a);
@@ -343,7 +384,8 @@ double hoverh0v2(const double a, const double dchida)
 // this direction keeps the binary search even in the piecewise-uniform
 // build.
 //
-// Cache invalidation: no static state; the table is maintained by
+// Cache invalidation:
+// no static state; the table is maintained by
 // set_distances (see chi_all).
 //
 // Parameters:
@@ -354,7 +396,8 @@ double hoverh0v2(const double a, const double dchida)
 // ---------------------------------------------------------------------------
 double a_chi(const double io_chi)
 {
-  // convert from (Mpc/h)/(c/H0=100)^3 (dimensioneless) to (Mpc/h)
+  // convert c/H0 units -> the table's Mpc/h (multiply by coverH0 =
+  // c/H0 in Mpc/h = 2997.92458)
   const double chi = io_chi*cosmology.coverH0;
 
   int j = 0;
@@ -417,7 +460,8 @@ double growfac(const double a)
 // piecewise-uniform z grid (cosmology.G_z_* metadata) in the fast
 // variant, a binary search in the fallback.
 //
-// Cache invalidation: no static state. The cosmology.G table and its
+// Cache invalidation:
+// no static state. The cosmology.G table and its
 // grid metadata are replaced by set_growth, which also bumps
 // cosmology.random.
 //
@@ -490,6 +534,7 @@ double norm_growfac(const double a, const bool normalize_z0)
 // ---------------------------------------------------------------------------
 double norm_growfac(const double a, const bool normalize_z0)
 {
+  // first lookup: G(0) for the z = 0 normalization (binary search)
   double growfact1;
   {
     const double z = 0.0;
@@ -512,6 +557,7 @@ double norm_growfac(const double a, const bool normalize_z0)
     growfact1 = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
   }
 
+  // second lookup: G at the query redshift (binary search)
   const double z = 1.0/a-1.0;
 
   int j = 0;
@@ -554,7 +600,8 @@ double norm_growfac(const double a, const bool normalize_z0)
 // z = 0 lookup is needed. Bracket selection: direct-index lookup in the
 // fast variant, binary search in the fallback (see norm_growfac).
 //
-// Cache invalidation: no static state; the table is maintained by
+// Cache invalidation:
+// no static state; the table is maintained by
 // set_growth.
 //
 // Parameters:
@@ -612,6 +659,7 @@ double f_growth(const double z)
 // ---------------------------------------------------------------------------
 double f_growth(const double z)
 {
+  // bracket the query z by binary search on the z column
   int j = 0;
   {
     size_t ilo = 0;
@@ -652,7 +700,8 @@ double f_growth(const double z)
 // plus the j = 0 (fast variant) or binary-search (fallback) lookup of
 // the G(0) normalization.
 //
-// Cache invalidation: no static state; the table is maintained by
+// Cache invalidation:
+// no static state; the table is maintained by
 // set_growth.
 //
 // Parameters:
@@ -736,6 +785,7 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
 // ---------------------------------------------------------------------------
 struct growths norm_growfac_all(const double a, const bool normalize_z0)
 {
+  // first lookup: G(0) for the z = 0 normalization (binary search)
   double growfact1;
   {
     const double z = 0.0;
@@ -759,6 +809,7 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
     growfact1 = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
   }
 
+  // second lookup: G at the query redshift (binary search)
   const double z = 1.0/a-1.0;
 
   int j = 0;
@@ -843,7 +894,8 @@ struct growths growfac_all(const double a)
 // uniform segment in log10 k, piecewise-uniform z segments, via the
 // cosmology.lnPL_* metadata); the fallback uses two binary searches.
 //
-// Cache invalidation: no static state. The cosmology.lnPL table and its
+// Cache invalidation:
+// no static state. The cosmology.lnPL table and its
 // grid metadata are replaced by set_linear_power_spectrum, which also
 // bumps cosmology.random.
 //
@@ -931,6 +983,7 @@ double p_lin(const double k, const double a)
   // logk = cosmology.lnPL[0:nk,cosmology.lnPL_nz]
   // z    = cosmology.lnPL[cosmology.lnPL_nk,0:nz]
   
+  // bracket log10k by binary search on the k-axis row
   int i = 0;
   {
     size_t ilo = 0;
@@ -946,6 +999,7 @@ double p_lin(const double k, const double a)
     i = ilo;
   }
 
+  // bracket z by binary search on the z-axis row
   int j = 0;
   {
     size_t ilo = 0;
@@ -961,6 +1015,7 @@ double p_lin(const double k, const double a)
     j = ilo;
   }
 
+  // bilinear ln P interpolation on the [i, i+1] x [j, j+1] cell
   double dx = (log10k                                 - cosmology.lnPL[i][cosmology.lnPL_nz])/
               (cosmology.lnPL[i+1][cosmology.lnPL_nz] - cosmology.lnPL[i][cosmology.lnPL_nz]);
 
@@ -992,7 +1047,8 @@ double p_lin(const double k, const double a)
 // bary.is_Pk_bary == 1 the result is multiplied by the hydro-sim
 // suppression PkRatio_baryons(k, a).
 //
-// Cache invalidation: no static state. The cosmology.lnP table and its
+// Cache invalidation:
+// no static state. The cosmology.lnP table and its
 // grid metadata are replaced by set_non_linear_power_spectrum, which
 // also bumps cosmology.random.
 //
@@ -1026,9 +1082,10 @@ double p_nonlin(const double k, const double a)
   // z    = cosmology.lnP[cosmology.lnP_nk, 0:nz]
 
   // -----------------------------------------------------------------
-  // Direct-index lookup; see p_lin for the rationale and seam-correctness
-  // argument. The lnP_* metadata fields are set in
-  // set_non_linear_power_spectrum.
+  // Direct-index lookup, as in p_lin: single uniform segment in
+  // log10 k, piecewise-uniform z, with the same clamping (an
+  // out-of-range query snaps to the nearest interior bracket). The
+  // lnP_* metadata fields are set in set_non_linear_power_spectrum.
   // -----------------------------------------------------------------
   int i = (int)((log10k - cosmology.lnP_log10k_min) * cosmology.lnP_log10k_inv_dx);
   if (i < 0)                     i = 0;
@@ -1078,6 +1135,7 @@ double p_nonlin(const double k, const double a)
   // logk = cosmology.lnP[0:nk,cosmology.lnP_nz]
   // z    = cosmology.lnP[cosmology.lnP_nk,0:nz]
   
+  // bracket log10k by binary search on the k-axis row
   int i = 0;
   {
     size_t ilo = 0;
@@ -1093,6 +1151,7 @@ double p_nonlin(const double k, const double a)
     i = ilo;
   }
 
+  // bracket z by binary search on the z-axis row
   int j = 0;
   {
     size_t ilo = 0;
@@ -1108,6 +1167,7 @@ double p_nonlin(const double k, const double a)
     j = ilo;
   }
 
+  // bilinear ln P interpolation on the [i, i+1] x [j, j+1] cell
   double dx = (log10k                               - cosmology.lnP[i][cosmology.lnP_nz])/
               (cosmology.lnP[i+1][cosmology.lnP_nz] - cosmology.lnP[i][cosmology.lnP_nz]);
 
@@ -1137,7 +1197,8 @@ double p_nonlin(const double k, const double a)
 // first call and reused for the rest of the process, so the run mode
 // must be set before the first evaluation.
 //
-// Cache invalidation: none. The static P_type latch never rebuilds; only
+// Cache invalidation:
+// none. The static P_type latch never rebuilds; only
 // the tables read by p_lin/p_nonlin refresh (see those headers).
 //
 // Parameters:
@@ -1158,6 +1219,9 @@ double Pdelta(double io_kNL, double io_a)
       P_type = 3;
     }
   }
+  // P_type encoding: 3 = linear (latched above when runmode is
+  // "linear"); every other value - including the -1 "unset" latch -
+  // falls through to p_nonlin
   switch (P_type) 
   {
     case 3:
@@ -1176,16 +1240,23 @@ double Pdelta(double io_kNL, double io_a)
 // ----------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Comoving angular diameter distance f_K(chi). BS01 2.4, 2.30: f_K is a
-// radial function that, depending on the curvature of the Universe, is a
-// trigonometric, linear, or hyperbolic function of chi.
+// Comoving angular diameter distance f_K(chi). Bartelmann & Schneider
+// 2001 (BS01) eqs 2.4, 2.30: f_K is a trigonometric, linear, or
+// hyperbolic function of chi, depending on the curvature of the
+// Universe.
 //
-// With K = Omega_m + Omega_v - 1 in (H0/c)^2 units and chi in c/H0
+// With K = Omega_m + Omega_v - 1 in (H0/c)^2 units (so the K_h =
+// sqrt(|K|) of the code below is in H0/c units) and chi in c/H0
 // units:
 //
 //   K >  1e-6:  f_K = sin(sqrt(K)*chi)/sqrt(K)
 //   K < -1e-6:  f_K = sinh(sqrt(-K)*chi)/sqrt(-K)
 //   else:       f_K = chi                          (flat)
+//
+// The 1e-6 threshold: at K = 0 the closed forms are 0/0, and their
+// K -> 0 limit is chi. Treating |K| <= 1e-6 as flat drops the leading
+// curvature term -K*chi^3/6, a fractional error |K|*chi^2/6 of at
+// most a few times 1e-6 over the tabulated chi range.
 //
 // Parameters:
 //   chi - comoving distance in c/H0 units
@@ -1227,7 +1298,8 @@ double f_K(double chi)
 // with k_NL/coverH0), with extrapolation outside the grid, and returns
 // 10^result. Aborts on GSL error.
 //
-// Cache invalidation: no static state; the bary tables are maintained by
+// Cache invalidation:
+// no static state; the bary tables are maintained by
 // the baryons module (baryons.c).
 //
 // Parameters:
@@ -1315,6 +1387,10 @@ double int_for_sigma2(double x, void* params) // inner integral
   if (status) {
     log_fatal(gsl_strerror(status)); exit(1);
   }
+  // not the window W(x) = 3 j1(x)/x: the k^2 measure cancels the
+  // window's 1/x^2 after the x = k*R substitution, and the surviving
+  // factors are grouped so tmp^2/(R * 2 pi^2) equals the header's
+  // 9 j1(x)^2 / (2 pi^2 R^3)   (ar[0] = R)
   const double tmp = 3.0*J1.val/ar[0];
   return PK*tmp*tmp/(ar[0] * 2.0 * M_PI * M_PI);
 }
@@ -1337,7 +1413,8 @@ double int_for_sigma2(double x, void* params) // inner integral
 // quadrature table below exists before its threaded table fill (no lazy
 // init inside a parallel region).
 //
-// Cache invalidation: the static Gauss-Legendre table w rebuilds when
+// Cache invalidation:
+// the static Gauss-Legendre table w rebuilds when
 // Ntable.random changes (cache[0]); its size is
 // 500 + 500*Ntable.high_def_integration points.
 //
@@ -1360,12 +1437,17 @@ double sigma2_nointerp(
   static gsl_integration_glfixed_table* w = NULL;
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
+    // high_def_integration enters unwrapped here, while the cosmo2D
+    // quadrature ladders take abs() of it: a negative setting shrinks
+    // (or zeroes) this table instead of growing it
     const size_t szint = 500 + 500 * (Ntable.high_def_integration);
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
   }
   
+  // ar = {R(M), a} with R(M) = (3M/(4 pi rho_crit Omega_m))^(1/3) the
+  // top-hat Lagrangian radius (0.75/M_PI = 3/(4 pi)), in c/H0 units
   double ar[2] = {pow(0.75*M/(M_PI*cosmology.rho_crit*cosmology.Omega_m),1./3.),
                   a};
   const double xmin = 0;

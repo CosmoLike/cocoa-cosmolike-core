@@ -26,6 +26,38 @@
 #include "log.c/src/log.h"
 
 // ---------------------------------------------------------------------------
+// Physical scale cuts from the response function RF (2011.06469 eq 17).
+//
+// For an observable X, the weight of the modes below a candidate cut
+// kmax is measured by
+//
+//   RF(kmax) = int_{-infty}^{ln kmax} dlnk |dlnX/dlnk|
+//              / int_{-infty}^{+infty} dlnk |dlnX/dlnk|,
+//
+// the fraction of X's total logarithmic response contributed by
+// k < kmax (RF grows monotonically from 0 to 1). A data point's scale
+// cut is the kk solving RF(kk) = alpha for a chosen threshold alpha:
+// the modes beyond kk carry less than the fraction 1 - alpha of the
+// response.
+//
+// Pipeline:
+//
+//   CAMB P(k)
+//     -> dC_X/dlnk tables, one Limber node per (k, l) entry
+//        (filled by the _work functions in cosmo2D.c; cached here)
+//     -> dlnC_X/dlnk = (dC_X/dlnk)/C_X (Fourier space) and, through
+//        the Legendre sums below, dlnxi_pm/dlnk and dlnw_ks/dlnk
+//        (real space)
+//     -> RF(kmax, l) and RF(kmax, theta) tables (the RF_*_work
+//        functions)
+//     -> root-find RF = alpha, one kmax per data point.
+//
+// Observables: Fourier C_ss (EE and BB) and C_ks; real-space xi_pm and
+// w_ks. This file only tabulates RF: the root-find happens downstream
+// of the cosmo2D_scuts_wrapper.cpp exports.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -40,21 +72,33 @@
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Cached dC_ss/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l) table
-// filled by dC_ss_dlnk_tomo_limber_work (cosmo2D.c). At fixed ell the
-// Limber relation k = (l + 1/2)/chi maps each k onto one line-of-sight
-// node, so each table entry is a single evaluation of the same integrand
-// core as the C_ss quadrature (TATT, reducing identically to NLA) times
-// the change-of-variables amplitude:
+// Cached dC_ss/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l)
+// table filled by dC_ss_dlnk_tomo_limber_work (cosmo2D.c).
+//
+// One table entry = one Limber node. At fixed l, the Limber relation
+// k = (l + 1/2)/chi makes each k select a single line-of-sight point:
+//
+//   fixed l:  k -> chi = (l + 1/2)/k -> a(chi) -> one evaluation of
+//   the C_ss integrand core at that node
+//
+// where the "core" is the radial-weights x P_delta combination of the
+// C_ss quadrature, TATT IA terms included (reducing identically to
+// NLA) - everything under the C_ss line-of-sight integral except the
+// measure and the ell prefactor. Each entry is the core times the
+// change-of-variables amplitude:
 //
 //   dC_ss/dlnk(k, l) = core * ell_prefactor/fK,
 //
-// with ell_prefactor = l*(l-1)*(l+1)*(l+2)/(l+1/2)^4 and fK the comoving
-// angular diameter distance of the node chi(a) = (l + 1/2)/k; the entry
-// is exactly 0 when that node falls outside the source support. See the
-// _work header for the derivation and the normalize-mode contract; this
-// accessor fills its table in the raw mode (normalize = 0), so the
-// entries are dC itself, not dC/C.
+// with fK the comoving angular diameter distance of the node and
+// ell_prefactor = l*(l-1)*(l+1)*(l+2)/(l+1/2)^4 the curved-sky spin-2
+// prefactor: one factor sqrt((l+2)!/(l-2)!)/(l+1/2)^2 per shear field,
+// -> 1 for l >> 1 (see the prefactor blocks in cosmo2D.c).
+//
+// The entry is exactly 0 when the node falls outside the source
+// support. See the _work header for the derivation (the dchida
+// cancellation) and the normalize-mode contract; this lookup function fills
+// its table in the raw mode (normalize = 0), so the entries are dC
+// itself, not dC/C.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
 // nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
@@ -62,7 +106,8 @@
 // covering every l >= 1; lookups interpolate bilinearly in (ln k, ln l)
 // and a (k, l) outside the table returns 0.
 //
-// Cache invalidation: recomputes when any of these change:
+// Cache invalidation:
+// recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
 //   redshift.random_shear, Ntable.random
 // (allocation and grid limits rebuild on Ntable.random alone).
@@ -87,6 +132,7 @@ double dC_ss_dlnk_tomo_limber(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double**** table;
+  // lim = table grid: [0..2] = ln l (min, max, step), [3..5] = ln k
   static double lim[6];
   static int nell;
   static int nlnk;
@@ -154,7 +200,7 @@ double dC_ss_dlnk_tomo_limber(
 // Cached dlnC_ss/dlnk = (dC_ss/dlnk)/C_ss (2011.06469 eq 17): interpolates
 // a (ln k, ln l) table filled by the normalized (normalize = 1) mode of
 // dC_ss_dlnk_tomo_limber_work, which computes the C_ss rows with its own
-// quadrature and divides each dC row in place (see the dC_ss accessor
+// quadrature and divides each dC row in place (see the dC_ss_dlnk lookup function
 // above for the tabulated node amplitude and the _work header for the
 // fill).
 //
@@ -175,7 +221,8 @@ double dC_ss_dlnk_tomo_limber(
 // lookups interpolate bilinearly in (ln k, ln l) and a (k, l) outside
 // the table returns 0.
 //
-// Cache invalidation: recomputes when any of these change:
+// Cache invalidation:
+// recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
 //   redshift.random_shear, Ntable.random
 // (allocation and grid limits rebuild on Ntable.random alone).
@@ -200,6 +247,7 @@ double dlnC_ss_dlnk_tomo_limber(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double**** table;
+  // lim = table grid: [0..2] = ln l (min, max, step), [3..5] = ln k
   static double lim[6];
   static int nell;
   static int nlnk;
@@ -264,19 +312,28 @@ double dlnC_ss_dlnk_tomo_limber(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Cached dC_ks/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l) table
-// filled by dC_ks_dlnk_tomo_limber_work (cosmo2D.c). As in the ss case,
-// each entry is a single evaluation of the C_ks integrand core,
-// (W_kappa - W_source*IA_A1)*W_k*P_delta, at the Limber node
-// chi(a) = (l + 1/2)/k, times the change-of-variables amplitude:
+// Cached dC_ks/dlnk (2011.06469 eq 17): interpolates a (ln k, ln l)
+// table filled by dC_ks_dlnk_tomo_limber_work (cosmo2D.c).
+//
+// One table entry = one Limber node, as in the ss case:
+//
+//   fixed l:  k -> chi = (l + 1/2)/k -> a(chi) -> one evaluation of
+//   the C_ks integrand core (W_kappa - W_source*IA_A1)*W_k*P_delta
+//
+// times the change-of-variables amplitude:
 //
 //   dC_ks/dlnk(k, l) = core * pf1*pf2/fK,
 //
-// with the spin-0 x spin-2 prefactors pf1 = l*(l+1)/(l+1/2)^2 and
-// pf2 = sqrt((l-1)*l*(l+1)*(l+2))/(l+1/2)^2 (1812.05995 eqs 74-79); the
-// entry is exactly 0 when the node falls outside bin ni's source
+// with fK the comoving angular diameter distance of the node and the
+// curved-sky prefactors of the spin-0 x spin-2 cross (1812.05995
+// eqs 74-79):
+//
+//   pf1 = l*(l+1)/(l+1/2)^2                    (CMB kappa, spin-0)
+//   pf2 = sqrt((l-1)*l*(l+1)*(l+2))/(l+1/2)^2  (shear, spin-2)
+//
+// The entry is exactly 0 when the node falls outside bin ni's source
 // support. See the _work header for the derivation and the
-// normalize-mode contract; this accessor fills its table in the raw
+// normalize-mode contract; this lookup function fills its table in the raw
 // mode (normalize = 0), so the entries are dC itself, not dC/C.
 //
 // Table design: [shear_nbin][nlnk][nell] (the ks cross has one component
@@ -284,7 +341,8 @@ double dlnC_ss_dlnk_tomo_limber(
 // (ln k, ln l) grid as the ss tables: the Ntable.dCX_dlnk k range and
 // every multipole l >= 1; a (k, l) outside the table returns 0.
 //
-// Cache invalidation: recomputes when any of these change:
+// Cache invalidation:
+// recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
 //   redshift.random_shear, Ntable.random
 // (the same keys as the C_ks C_ell cache; the CMB beam enters only
@@ -306,6 +364,7 @@ double dC_ks_dlnk_tomo_limber(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table;
+  // lim = table grid: [0..2] = ln l (min, max, step), [3..5] = ln k
   static double lim[6];
   static int nell;
   static int nlnk;
@@ -368,8 +427,8 @@ double dC_ks_dlnk_tomo_limber(
 // Cached dlnC_ks/dlnk = (dC_ks/dlnk)/C_ks (2011.06469 eq 17): interpolates
 // a (ln k, ln l) table filled by the normalized (normalize = 1) mode of
 // dC_ks_dlnk_tomo_limber_work, which computes the C_ks rows with its own
-// per-bin quadrature and divides each dC row in place (see the dC_ks
-// accessor above for the tabulated node amplitude).
+// per-bin quadrature and divides each dC row in place (see the dC_ks_dlnk
+// lookup function above for the tabulated node amplitude).
 //
 // Each tabulated numerator entry is the single Limber-node evaluation
 //
@@ -388,7 +447,8 @@ double dC_ks_dlnk_tomo_limber(
 // dC_ks_dlnk_tomo_limber); lookups interpolate bilinearly in
 // (ln k, ln l) and a (k, l) outside the table returns 0.
 //
-// Cache invalidation: recomputes when any of these change:
+// Cache invalidation:
+// recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
 //   redshift.random_shear, Ntable.random
 // (cmb.random is not a key: the CMB beam enters only downstream, in the
@@ -410,6 +470,7 @@ double dlnC_ks_dlnk_tomo_limber(
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table;
+  // lim = table grid: [0..2] = ln l (min, max, step), [3..5] = ln k
   static double lim[6];
   static int nell;
   static int nlnk;
@@ -473,6 +534,10 @@ double dlnC_ks_dlnk_tomo_limber(
 // ---------------------------------------------------------------------------
 // physical mode cut-off (R = response function): FOURIER SPACE
 // find kk such that RF \equiv \int_{-\infty}^{ln(kk)} dlnk |dlnXdlnk| = alpha
+// (RF is normalized by its kk -> infty value, so RF runs from 0 to 1;
+// alpha = the kept response fraction. The functions below tabulate
+// RF(kmax, l) on a kmax grid - the root-find for kk happens downstream.
+// See the file preamble.)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -489,10 +554,9 @@ double dlnC_ks_dlnk_tomo_limber(
 //
 // on a (ln kmax, ell) grid, for every tomographic pair. Both integrals
 // map onto t in (0, 1] — the numerator through lnk = ln kmax - (1-t)/t,
-// the denominator through lnk = +-(1-t)/t — and use the same fixed
-// Gauss-Legendre rule the retired scalar version used, with the nodes
-// and weights precomputed into plain arrays instead of driving a GSL
-// integrand callback per point.
+// the denominator through lnk = +-(1-t)/t — and use a fixed
+// Gauss-Legendre rule with the nodes and weights precomputed into
+// plain arrays (no GSL integrand callback per point).
 //
 // The denominator does not depend on kmax, so one thread team first
 // fills one denominator value per (tomo pair, ell) and then, after the
@@ -500,6 +564,10 @@ double dlnC_ks_dlnk_tomo_limber(
 // (pair, kmax, ell) output and divides. Every integrand evaluation reads
 // the cached dlnC_ss_dlnk_tomo_limber table, built once, single-threaded,
 // before the parallel region.
+//
+// Cache invalidation:
+// none (stateless); it only warms the cached dlnC
+// table it reads.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -525,7 +593,12 @@ void RF_C_ss_tomo_limber_work(
     log_fatal("nkmax = %d and nl = %d must be positive", nkmax, nl);
     exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays
+  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
+  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
+  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
+  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
+  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
+  // tables are nonzero)
   const int hdi = abs(Ntable.high_def_integration);
   const size_t szint = (0 == hdi) ? 256 :
                        (1 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -537,7 +610,10 @@ void RF_C_ss_tomo_limber_work(
     gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
   }
   gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once
+  // the denominator's k nodes depend on nothing: precompute them once.
+  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
+  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
+  // kd2 = exp(-(1-t)/t) the mirror half
   double* kd1 = (double*) malloc1d(npts);
   double* kd2 = (double*) malloc1d(npts);
   for (int p = 0; p < npts; p++) {
@@ -624,6 +700,10 @@ void RF_C_ss_tomo_limber_work(
 // the cached dlnC_ks_dlnk_tomo_limber table, built once, single-threaded,
 // before the parallel region.
 //
+// Cache invalidation:
+// none (stateless); it only warms the cached dlnC
+// table it reads.
+//
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
 //   nkmax   - number of ln kmax values
@@ -648,7 +728,12 @@ void RF_C_ks_tomo_limber_work(
     log_fatal("nkmax = %d and nl = %d must be positive", nkmax, nl);
     exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays
+  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
+  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
+  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
+  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
+  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
+  // tables are nonzero)
   const int hdi = abs(Ntable.high_def_integration);
   const size_t szint = (0 == hdi) ? 256 :
                        (1 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -660,7 +745,10 @@ void RF_C_ks_tomo_limber_work(
     gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
   }
   gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once
+  // the denominator's k nodes depend on nothing: precompute them once.
+  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
+  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
+  // kd2 = exp(-(1-t)/t) the mirror half
   double* kd1 = (double*) malloc1d(npts);
   double* kd2 = (double*) malloc1d(npts);
   for (int p = 0; p < npts; p++) {
@@ -740,15 +828,22 @@ void RF_C_ks_tomo_limber_work(
 //   3. Legendre-sum against the bin-averaged Glpm kernels (hoisted
 //      restrict pointers and a SIMD reduction, as in xi_pm_tomo);
 //   4. normalize by xi_pm(theta).
-// Steps 1 and 2 together are bilinear in (ln k, ln l) on the same knots
-// as reading the 2D table once per integer multipole, so nothing is
-// cached per integer multipole.
+// Steps 1 and 2 combined equal one bilinear (ln k, ln l) read of the
+// 2D table at each integer multipole — same knots, same weights — so
+// splitting the read loses no accuracy and no per-multipole cache is
+// needed.
 //
 // Static state, rebuilt when Ntable or the tomography change:
 //   Glpm[2][Ntheta][LMAX] - bin-averaged Legendre kernels (Gl+ and Gl-)
 //   ln_ell[LMAX]          - log(l) at every integer multipole
 //   dCgrid[2][NSIZE][N_ell], cx[2][NSIZE][LMAX] - work arrays the
 //                           pipeline overwrites on every call
+//
+// Cache invalidation:
+// Ntable.random (or a tomography-size change)
+// rebuilds the static state above. No cosmology key is needed: the
+// cosmology enters only through the cached dC and xi tables read on
+// every call.
 //
 // Parameters:
 //   k - wavenumber in (Mpc/h)^-1
@@ -770,6 +865,8 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
   static double*** cx = NULL;     // dC at one k at every integer multipole
   static int NSIZE_alloc = 0;
   static uint64_t cache[MAX_SIZE_ARRAYS];
+  // the kernel formulas below divide by l (and the l < lmin rows are
+  // zeroed): the monopole is excluded, so the sums start at lmin = 1
   const int lmin = 1;
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
@@ -808,6 +905,21 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
         Glpm[1][i][l] = 0.0;
       }
     }
+    // Exact analytic bin averages of the spin-2 Legendre kernels for
+    // xi_+ (Glpm[0]) and xi_- (Glpm[1]): the point kernels of the sums
+    //
+    //   xi_+/-(theta) = sum_l Gl_+/-(theta, l) (C_EE +/- C_BB)
+    //
+    // integrated in x = cos(theta) over the angular bin and divided by
+    // the bin width - hence the trailing /(xmin - xmax), with
+    // xmin = cos(theta) at the bin's lower angular edge and xmax at
+    // the upper (cosine reverses the order, so xmin > xmax). Every
+    // term reduces, via Legendre recurrences, to P_l and dP_l at the
+    // two edges - the Pmin/Pmax/dPmin/dPmax arrays above. The two
+    // formulas differ only in the sign of their last two terms (the
+    // d^l_{2,+2} vs d^l_{2,-2} parts of the spin-2 kernel). Identical
+    // to the kernels xi_pm_tomo sums against - see the derivation
+    // block inside xi_pm_tomo (cosmo2D.c).
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
       for (int l=lmin; l<Ntable.LMAX; l++) {
@@ -867,7 +979,10 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
     // parallel loops below read it
     (void) dC_ss_dlnk_tomo_limber(k, (double) limits.LMIN_tab,
                                   Z1(0), Z2(0), 1);
-    // dC_ss/dlnk at this k on the dC table's own multipole log-grid
+    // dC_ss/dlnk at this k on the dC table's own multipole log-grid.
+    // la/ldx must reproduce the dC table's ln l grid (lim[0], lim[2])
+    // exactly: the exact-node read here, and limber_fill_interp's
+    // inverse map below, rely on the two grids being the same
     const int nell = Ntable.N_ell;
     const double la = 0.0; // ln(l = 1): the dC table's multipole grid start
     const double ldx = (log(Ntable.LMAX + 1.) - la)/((double) nell - 1.);
@@ -918,6 +1033,13 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
       for (int nz=0; nz<NSIZE; nz++) {
         for (int i=0; i<Ntable.Ntheta; i++) {
           const int q = nz * Ntable.Ntheta + i;
+          // ans rows are p = 0 -> xi+, p = 1 -> xi-, while xi_pm_tomo
+          // takes 1 = xi+, 0 = xi-: hence the 1 - p index flip (its
+          // last argument is the limber flag, 1 = Limber). Double
+          // guard, as in the dlnC fill (cosmo2D.c): a ~0 derivative
+          // stays 0 without reading xi, and a ~0 xi denominator maps
+          // to 0, so the ratio never blows up where the signal
+          // vanishes
           const double dxipmdlnk = ans[p][q];
           if (fabs(ans[p][q])>1.e-50) {
             const double xipm = xi_pm_tomo(1 - p, i, Z1(nz), Z2(nz), 1);
@@ -955,7 +1077,8 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
 // outside the grid returns 0. The fill calls the nointerp pipeline once
 // per k node (each call returns every pair and angular bin).
 //
-// Cache invalidation: recomputes when any of these change:
+// Cache invalidation:
+// recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
 //   redshift.random_shear, Ntable.random
 // (allocation and grid limits rebuild on Ntable.random alone).
@@ -1056,9 +1179,10 @@ double dlnxi_dlnk_pm_tomo(
 //      HEALPix pixel window when one is loaded), exactly as w_ks_tomo
 //      filters its C_l before summing;
 //   4. normalize by w_ks(theta).
-// Steps 1 and 2 together are bilinear in (ln k, ln l) on the same knots
-// as reading the 2D table once per integer multipole, so nothing is
-// cached per integer multipole.
+// Steps 1 and 2 combined equal one bilinear (ln k, ln l) read of the
+// 2D table at each integer multipole — same knots, same weights — so
+// splitting the read loses no accuracy and no per-multipole cache is
+// needed.
 //
 // Static state, rebuilt when Ntable or the tomography change:
 //   Pl[Ntheta][LMAX] - bin-averaged Legendre kernel (as in w_ks_tomo)
@@ -1066,6 +1190,12 @@ double dlnxi_dlnk_pm_tomo(
 //   dCgrid[NSIZE][N_ell], cx[NSIZE][LMAX] - work arrays the pipeline
 //                      overwrites on every call
 //   cmbf[LMAX]       - CMB filter, refilled when cmb or Ntable change
+//
+// Cache invalidation:
+// Ntable.random (or a tomography-size change)
+// rebuilds the static geometry; cmbf refills on cmb.random or
+// Ntable.random. No cosmology key is needed: the cosmology enters only
+// through the cached dC and w_ks tables read on every call.
 //
 // Parameters:
 //   k - wavenumber in (Mpc/h)^-1
@@ -1088,6 +1218,8 @@ double* dlnw_ks_dlnk_tomo_nointerp(
   static double** cx = NULL;     // dC at one k at every integer multipole
   static int NSIZE_alloc = 0;
   static uint64_t cache[MAX_SIZE_ARRAYS];
+  // the kernel formulas below divide by l (and the l < lmin rows are
+  // zeroed): the monopole is excluded, so the sums start at lmin = 1
   const int lmin = 1;
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
@@ -1180,7 +1312,10 @@ double* dlnw_ks_dlnk_tomo_nointerp(
     // build (or reuse) the cached dC table single-threaded before the
     // parallel loops below read it
     (void) dC_ks_dlnk_tomo_limber(k, (double) limits.LMIN_tab, 0);
-    // dC_ks/dlnk at this k on the dC table's own multipole log-grid
+    // dC_ks/dlnk at this k on the dC table's own multipole log-grid.
+    // la/ldx must reproduce the dC table's ln l grid (lim[0], lim[2])
+    // exactly: the exact-node read here, and limber_fill_interp's
+    // inverse map below, rely on the two grids being the same
     const int nell = Ntable.N_ell;
     const double la = 0.0; // ln(l = 1): the dC table's multipole grid start
     const double ldx = (log(Ntable.LMAX + 1.) - la)/((double) nell - 1.);
@@ -1218,12 +1353,18 @@ double* dlnw_ks_dlnk_tomo_nointerp(
       }
     }
     // warm w_ks_tomo's cached table single-threaded (one call builds
-    // every bin); the parallel loop below then only reads it
+    // every bin; the third argument is the limber flag, 1 = Limber);
+    // the parallel loop below then only reads it
     (void) w_ks_tomo(0, 0, 1);
     #pragma omp parallel for collapse(2) schedule(static)
     for (int nz=0; nz<NSIZE; nz++) {
       for (int i=0; i<Ntable.Ntheta; i++) {
         const int q = nz * Ntable.Ntheta + i;
+        // double guard, as in the dlnC fill (cosmo2D.c): a ~0
+        // derivative stays 0 without reading w_ks, and a ~0 w_ks
+        // denominator maps to 0, so the ratio never blows up where
+        // the signal vanishes (w_ks_tomo's last argument is the
+        // limber flag, 1 = Limber)
         const double dwksdlnk = ans[q];
         if (fabs(ans[q]) > 1.e-50) {
           const double wks = w_ks_tomo(i, nz, 1);
@@ -1260,7 +1401,8 @@ double* dlnw_ks_dlnk_tomo_nointerp(
 // linearly in ln k and a k outside the grid returns 0. The fill calls
 // the nointerp pipeline once per k node (each call returns every bin).
 //
-// Cache invalidation: recomputes when any of these change:
+// Cache invalidation:
+// recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
 //   redshift.random_shear, Ntable.random, cmb.random
 // (cmb.random is a key here, unlike the Fourier-space dC tables, because
@@ -1345,6 +1487,10 @@ double dlnw_ks_dlnk_tomo(
 // ---------------------------------------------------------------------------
 // physical mode cut-off (R = response function): REAL SPACE
 // find kk such that RF \equiv \int_{-\infty}^{ln(kk)} dlnk |dlnXdlnk| = alpha
+// (RF is normalized by its kk -> infty value, so RF runs from 0 to 1;
+// alpha = the kept response fraction. The functions below tabulate
+// RF(kmax, theta) on a kmax grid - the root-find for kk happens
+// downstream. See the file preamble.)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -1362,9 +1508,8 @@ double dlnw_ks_dlnk_tomo(
 // on a ln kmax grid, for every tomographic pair and angular bin. Both
 // integrals map onto t in (0, 1] — the numerator through
 // lnk = ln kmax - (1-t)/t, the denominator through lnk = +-(1-t)/t — and
-// use the same fixed Gauss-Legendre rule the retired scalar version used,
-// with the nodes and weights precomputed into plain arrays instead of
-// driving a GSL integrand callback per point.
+// use a fixed Gauss-Legendre rule with the nodes and weights
+// precomputed into plain arrays (no GSL integrand callback per point).
 //
 // The denominator does not depend on kmax, so one thread team first fills
 // one denominator value per (tomo pair, angular bin) and then, after the
@@ -1372,6 +1517,10 @@ double dlnw_ks_dlnk_tomo(
 // (pair, kmax, angular bin) output and divides. Every integrand
 // evaluation reads the k-cached dlnxi_dlnk_pm_tomo table, built once,
 // single-threaded, before the parallel region.
+//
+// Cache invalidation:
+// none (stateless); it only warms the k-cached
+// dlnxi table it reads.
 //
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
@@ -1397,7 +1546,12 @@ void RF_xi_tomo_limber_work(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays
+  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
+  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
+  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
+  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
+  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
+  // tables are nonzero)
   const int hdi = abs(Ntable.high_def_integration);
   const size_t szint = (0 == hdi) ? 256 :
                        (1 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -1409,7 +1563,10 @@ void RF_xi_tomo_limber_work(
     gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
   }
   gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once
+  // the denominator's k nodes depend on nothing: precompute them once.
+  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
+  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
+  // kd2 = exp(-(1-t)/t) the mirror half
   double* kd1 = (double*) malloc1d(npts);
   double* kd2 = (double*) malloc1d(npts);
   for (int p = 0; p < npts; p++) {
@@ -1454,6 +1611,10 @@ void RF_xi_tomo_limber_work(
           sXP += fabs(dlnxi_dlnk_pm_tomo(k, 1, nt, Z1NZ, Z2NZ))*wt;
           sXM += fabs(dlnxi_dlnk_pm_tomo(k, 0, nt, Z1NZ, Z2NZ))*wt;
         }
+        // no vanishing-denominator guard, unlike the Fourier workers:
+        // their zero rows come from dlnC_BB = 0 under NLA, while xi+/-
+        // mix the EE rows into every entry, so den > 0 whenever the
+        // tabulated response is not identically zero
         table[0][nz][m][nt] = sXP/den[0][nz][nt];
         table[1][nz][m][nt] = sXM/den[1][nz][nt];
       }
@@ -1491,6 +1652,10 @@ void RF_xi_tomo_limber_work(
 // reads the k-cached dlnw_ks_dlnk_tomo table, built once, single-threaded,
 // before the parallel region.
 //
+// Cache invalidation:
+// none (stateless); it only warms the k-cached
+// dlnw_ks table it reads.
+//
 // Parameters:
 //   lnkmaxx - ln kmax values (length nkmax), k in (Mpc/h)^-1
 //   nkmax   - number of ln kmax values
@@ -1514,7 +1679,12 @@ void RF_w_ks_tomo_limber_work(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays
+  // Gauss-Legendre nodes and weights on t in [1e-5, 1] as plain arrays.
+  // Both RF integrals map onto t via lnk = (const) -/+ (1-t)/t, whose
+  // Jacobian dlnk = dt/t^2 is the wt = wq/t^2 factor in the loops; the
+  // 1e-5 lower limit keeps 1/t^2 finite and drops only an exactly-zero
+  // tail (|lnk| > ~1e5, far outside the k range where the cached dln
+  // tables are nonzero)
   const int hdi = abs(Ntable.high_def_integration);
   const size_t szint = (0 == hdi) ? 256 :
                        (1 == hdi) ? 512 : 1024; // predefined GSL tables
@@ -1526,7 +1696,10 @@ void RF_w_ks_tomo_limber_work(
     gsl_integration_glfixed_point(1e-5, 1.0, p, &tq[p], &wq[p], w);
   }
   gsl_integration_glfixed_table_free(w);
-  // the denominator's k nodes depend on nothing: precompute them once
+  // the denominator's k nodes depend on nothing: precompute them once.
+  // kd1/kd2 realize the split of int_{-inf}^{+inf} dlnk at lnk = 0,
+  // i.e. k = 1 (Mpc/h)^-1: kd1 = exp(+(1-t)/t) covers [0, +inf) and
+  // kd2 = exp(-(1-t)/t) the mirror half
   double* kd1 = (double*) malloc1d(npts);
   double* kd2 = (double*) malloc1d(npts);
   for (int p = 0; p < npts; p++) {
@@ -1561,6 +1734,10 @@ void RF_w_ks_tomo_limber_work(
           const double wt = wq[p]/(tq[p]*tq[p]);
           sKS += fabs(dlnw_ks_dlnk_tomo(k, nt, nz))*wt;
         }
+        // no vanishing-denominator guard, unlike the Fourier workers:
+        // w_ks has no identically-zero component (the NLA dlnC_BB = 0
+        // rows), so den > 0 whenever the tabulated response is not
+        // identically zero
         table[nz][m][nt] = sKS/den[nz][nt];
       }
     }
