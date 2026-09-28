@@ -378,6 +378,7 @@ typedef struct
   int clusterCG;
   int clusterCC;
   int adopt_limber_gg;
+  int adopt_limber_gs;
   int use_ggl_efficiency_zoverlap;
   // ---------------------------------------------------
   // ---------------------------------------------------

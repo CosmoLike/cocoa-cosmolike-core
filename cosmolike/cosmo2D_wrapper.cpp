@@ -136,7 +136,8 @@ arma::Cube<double> w_gammat_tomo_cpp()
                             arma::fill::zeros);
   for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
     for (int i=0; i<Ntable.Ntheta; i++) {
-      result(i,ZL(nz),ZS(nz)) = w_gammat_tomo(i, ZL(nz), ZS(nz), 1);
+      result(i,ZL(nz),ZS(nz)) = w_gammat_tomo(i, ZL(nz), ZS(nz), 
+                                               like.adopt_limber_gs);
     }
   }
   return result;

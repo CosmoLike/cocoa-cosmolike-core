@@ -516,6 +516,10 @@ void init_fpt_internal_boost(
     const double internal_boost
   );
 
+void init_adopt_limber_gs(
+    const int adopt_limber_gs
+  );
+
 void init_accuracy_boost(
     const double accuracy_boost,
     const int integration_accuracy
@@ -1036,7 +1040,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           for (int i = 0; i < Nlen[N]; i++) {
             const int index = start + Nlen[N]*nz + i;
             if (survey.get_mask(index)) {
-              dv(index) = w_gammat_tomo(i, zl, zs, 1);
+              dv(index) = w_gammat_tomo(i, zl, zs, like.adopt_limber_gs);
             }
           }
         }
@@ -1045,10 +1049,18 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
         
         double** out = (double**) malloc2d(tomo.ggl_Npowerspectra, Nlen[N]);
 
-        C_gs_tomo_limber_nointerp_ells(like.ell, 
-                                       Nlen[N],
-                                       tomo.ggl_Npowerspectra, 
-                                       out);
+        if (1 == like.adopt_limber_gs) {
+          C_gs_tomo_limber_nointerp_ells(like.ell,
+                                         Nlen[N],
+                                         tomo.ggl_Npowerspectra,
+                                         out);
+        }
+        else {
+          C_gs_tomo_ells(like.ell,
+                                  Nlen[N],
+                                  tomo.ggl_Npowerspectra,
+                                  out);
+        }
 
         for (int nz = 0; nz < tomo.ggl_Npowerspectra; nz++) {
           for (int i=0; i<Nlen[N]; i++) {

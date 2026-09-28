@@ -156,6 +156,17 @@ void C_gs_tomo_limber_nointerp_ells(
     double** out         // output [NSIZE][nell]
   );
 
+// use_linear_ps = 1: the linear Limber term C_gs_tomo subtracts
+// (D(a)^2 P_lin(k,0), no one-loop bias, IA through C1 only); 0: the full
+// model.
+void C_gs_tomo_limber_linpsopt_nointerp_ells(
+    const double* ells,      // array of multipole values (length nell)
+    const int nell,          // number of multipole values
+    const int NSIZE,         // number of ggl power spectra
+    const int use_linear_ps, // 1 = P_lin + linear kernels, 0 = full model
+    double** out             // output [NSIZE][nell]
+  );
+
 // Batch computation at integer multipoles lmin..lmax-1.
 // Thin wrapper around C_gs_tomo_limber_nointerp_ells.
 void C_gs_tomo_limber_nointerp_batch(
@@ -258,6 +269,22 @@ double int_for_C_kk_limber(double a, void* params);
 void C_cl_tomo(
     double* const* const Cl,
     double tol
+  );
+
+// Non-Limber galaxy-galaxy lensing below limits.LMAX_NOLIMBER, per
+// lens-source pair; tol <= 0 disables the per-pair early exit.
+void C_gs_tomo(
+    double* const* const Cl, // output [ggl_Npowerspectra][>= LMAX_NOLIMBER]
+    double tol               // Limber-convergence tolerance (typically 0.01)
+  );
+
+// Fourier-space data vectors: Limber C_gs at arbitrary multipoles plus the
+// non-Limber correction, interpolated between integers, below LMAX_NOLIMBER.
+void C_gs_tomo_ells(
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of ggl power spectra
+    double** out         // output [NSIZE][nell]
   );
 
 #ifdef __cplusplus

@@ -334,6 +334,7 @@ void initial_setup()
   reset_cmb_struct();
 
   like.adopt_limber_gg = 0;
+  like.adopt_limber_gs = 1;
 
   std::string mode = "Halofit";
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
@@ -401,6 +402,32 @@ void init_fpt_internal_boost(const double internal_boost)
   }
   Ntable.FPT_internal_accuracy_boost = internal_boost;
   Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+void init_adopt_limber_gs(const int adopt_limber_gs)
+{ // Galaxy-galaxy lensing C_l^gs: 1 = Limber at every multipole (the
+  // default); 0 = the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in
+  // gamma_t (w_gammat_tomo) and in the Fourier-space data vectors
+  // (C_gs_tomo_ells). Likelihood yaml key: adopt_limber_gs.
+  // Example: adopt_limber_gs: 0 in combo_3x2pt.yaml -> the likelihood
+  // calls init_adopt_limber_gs(0) and the next data vector uses the
+  // non-Limber path (w_gammat_tomo keys its cache on the flag).
+  static constexpr std::string_view fname = "init_adopt_limber_gs"sv;
+  debug("{}: {}", fname, errbegins);
+  if (adopt_limber_gs != 0 && adopt_limber_gs != 1) {
+    critical("{}: invalid adopt_limber_gs = {}", fname, adopt_limber_gs);
+    exit(1);
+  }
+  like.adopt_limber_gs = adopt_limber_gs;
   debug("{}: {}", fname, errends);
   return;
 }

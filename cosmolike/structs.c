@@ -111,6 +111,7 @@ void reset_like_struct(void)
   like.ky = 0;
   like.yy = 0;
   like.adopt_limber_gg = 0;
+  like.adopt_limber_gs = 1;
 }
 
 void reset_cosmology_struct(void)
