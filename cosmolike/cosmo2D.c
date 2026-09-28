@@ -922,11 +922,24 @@ double w_gammat_tomo(
 //     2. High-ell (l = LMIN_tab..LMAX-1): C_gg_tomo_limber_fill
 //   limber = 0: non-Limber FFTLog (C_cl_tomo) for l < LMAX_NOLIMBER,
 //     then Limber fill for l >= LMAX_NOLIMBER
+// The data vector selects the path with like.adopt_limber_gg (yaml key
+// adopt_limber_gg; 0 by default in the real-space projects).
 //
 // Only auto-correlations (ni = nj) are supported.
 //
 // Cache invalidation: recomputes when cosmology, clustering photo-z,
-// clustering redshift distribution, Ntable, or galaxy bias change.
+// clustering redshift distribution, Ntable, galaxy bias, or the limber
+// flag change. The flag is part of the cache key so that one process can
+// switch between the two paths (tests/test_nonlimber_gg.py does).
+//
+// Parameters:
+//   nt     - angular bin index (0..Ntable.Ntheta-1)
+//   ni     - first lens redshift bin
+//   nj     - second lens redshift bin (must equal ni)
+//   limber - 1 for full Limber; 0 for non-Limber below LMAX_NOLIMBER
+//
+// Returns:
+//   w(theta_nt) for the auto pair (ni, ni)
 // ---------------------------------------------------------------------------
 double w_gg_tomo(
     const int nt,     // angular bin index (0..Ntheta-1)
@@ -940,6 +953,7 @@ double w_gg_tomo(
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** Cl = NULL; 
   static double* lnell = NULL;
+  static int cache_limber = -1; // limber flag the cached w_vec was built with
 
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized");
@@ -1055,7 +1069,8 @@ double w_gg_tomo(
       fdiff2(cache[1], nuisance.random_photoz_clustering) ||
       fdiff2(cache[2], redshift.random_clustering) ||
       fdiff2(cache[3], Ntable.random) ||
-      fdiff2(cache[4], nuisance.random_galaxy_bias))
+      fdiff2(cache[4], nuisance.random_galaxy_bias) ||
+      cache_limber != limber)
   {
     const int lmin = 1;
     for (int i=0; i<NSIZE; i++) {
@@ -1097,6 +1112,7 @@ double w_gg_tomo(
     cache[2] = redshift.random_clustering;
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
+    cache_limber = limber;
   }
 
   if (nt < 0 || nt > Ntable.Ntheta - 1) {
@@ -6522,6 +6538,78 @@ void C_cl_tomo(
 
   free((void*) toutfwd);
   free((void*) eta_m);
+}
+
+// ---------------------------------------------------------------------------
+// Galaxy clustering C_l^gg (auto spectra) at arbitrary multipoles, with the
+// non-Limber correction of C_cl_tomo below limits.LMAX_NOLIMBER. The
+// Fourier-space data vectors call it (generic_interface.hpp,
+// like.adopt_limber_gg = 0): their multipoles like.ell are band centers,
+// not integers. The gg counterpart of C_gs_tomo_ells.
+//
+// C_cl_tomo works at integer multipoles only. At a band center l this
+// function returns the Limber value at l plus the non-Limber correction
+// interpolated linearly between the two integers around l:
+//
+//   C(l)  = C^limber(l) + (1 - t)*dC(l0) + t*dC(l0 + 1)
+//   dC(n) = C_cl_tomo(n) - C^limber(n),   l0 = floor(l),  t = l - l0
+//
+// C^limber(n) at the integers is built exactly as C_cl_tomo continues a
+// converged bin (the batch up to LMIN_tab, the interpolation table
+// C_gg_tomo_limber above), so dC(n) is zero wherever a bin has converged
+// to Limber, and the band value there is the plain Limber value.
+//
+// Example: l = 35.4 gives l0 = 35, t = 0.4 and
+//   C(35.4) = C^limber(35.4) + 0.6*dC(35) + 0.4*dC(36).
+//
+// Band centers with l < 1 or l >= LMAX_NOLIMBER - 1 keep the Limber value.
+//
+// Parameters:
+//   ells  - multipole values, length nell (band centers; need not be integers)
+//   nell  - number of multipole values
+//   NSIZE - number of gg power spectra (= redshift.clustering_nbin)
+//   out   - output [NSIZE][nell], indexed out[nz][i] (auto pair nz-nz)
+//
+// Returns:
+//   nothing; the result is written into out
+// ---------------------------------------------------------------------------
+void C_gg_tomo_ells(
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of gg power spectra (= clustering_nbin)
+    double** out         // output [NSIZE][nell]
+  )
+{
+  const int LNL = limits.LMAX_NOLIMBER;
+  C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
+
+  double** Cnl  = (double**) malloc2d(NSIZE, LNL);
+  double** Clim = (double**) malloc2d(NSIZE, LNL);
+
+  C_cl_tomo(Cnl, 0.01);
+
+  C_gg_tomo_limber_nointerp_batch(1, limits.LMIN_tab + 1, NSIZE, Clim);
+  for (int nz=0; nz<NSIZE; nz++) {
+    Clim[nz][0] = 0.0;
+    for (int k=limits.LMIN_tab + 1; k<LNL; k++) {
+      Clim[nz][k] = C_gg_tomo_limber(k, nz, nz);
+    }
+  }
+
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+        const int l0 = (int) floor(ells[i]);
+        const double t = ells[i] - l0;
+        const double d0 = Cnl[nz][l0] - Clim[nz][l0];
+        const double d1 = Cnl[nz][l0 + 1] - Clim[nz][l0 + 1];
+        out[nz][i] += (1.0 - t)*d0 + t*d1;
+      }
+    }
+  }
+
+  free((void*) Cnl);
+  free((void*) Clim);
 }
 
 // ---------------------------------------------------------------------------

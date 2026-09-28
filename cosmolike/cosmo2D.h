@@ -271,6 +271,15 @@ void C_cl_tomo(
     double tol
   );
 
+// Fourier-space data vectors: Limber C_gg at arbitrary multipoles plus the
+// non-Limber correction of C_cl_tomo, interpolated between integers.
+void C_gg_tomo_ells(
+    const double* ells,  // array of multipole values (length nell)
+    const int nell,      // number of multipole values
+    const int NSIZE,     // number of gg power spectra (= clustering_nbin)
+    double** out         // output [NSIZE][nell]
+  );
+
 // Non-Limber galaxy-galaxy lensing below limits.LMAX_NOLIMBER, per
 // lens-source pair; tol <= 0 disables the per-pair early exit.
 void C_gs_tomo(

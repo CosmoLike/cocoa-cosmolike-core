@@ -520,6 +520,10 @@ void init_adopt_limber_gs(
     const int adopt_limber_gs
   );
 
+void init_adopt_limber_gg(
+    const int adopt_limber_gg
+  );
+
 void init_accuracy_boost(
     const double accuracy_boost,
     const int integration_accuracy
@@ -1080,10 +1084,18 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
       double** out = NULL; // Fourier space: every multipole in one batch
       if constexpr (N != 0) {
         out = (double**) malloc2d(tomo.clustering_Npowerspectra, Nlen[N]);
-        C_gg_tomo_limber_nointerp_ells(like.ell, 
-                                       Nlen[N],
-                                       tomo.clustering_Npowerspectra, 
-                                       out);
+        if (1 == like.adopt_limber_gg) {
+          C_gg_tomo_limber_nointerp_ells(like.ell, 
+                                         Nlen[N],
+                                         tomo.clustering_Npowerspectra, 
+                                         out);
+        }
+        else {
+          C_gg_tomo_ells(like.ell, 
+                         Nlen[N],
+                         tomo.clustering_Npowerspectra, 
+                         out);
+        }
       }
       for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
         for (int i=0; i<Nlen[N]; i++) {

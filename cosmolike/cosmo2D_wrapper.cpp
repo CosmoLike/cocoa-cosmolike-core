@@ -155,7 +155,7 @@ arma::Cube<double> w_gg_tomo_cpp()
                             arma::fill::zeros);
   for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
     for (int i=0; i<Ntable.Ntheta; i++) {
-      result(i, nz, nz) = w_gg_tomo(i, nz, nz, 0);
+      result(i, nz, nz) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
     }
   }
   return result;

@@ -439,6 +439,34 @@ void init_adopt_limber_gs(const int adopt_limber_gs)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+void init_adopt_limber_gg(const int adopt_limber_gg)
+{ // Galaxy clustering C_l^gg: 0 = the non-Limber C_cl_tomo below
+  // limits.LMAX_NOLIMBER (the default of the real-space projects), in
+  // w(theta) (w_gg_tomo) and in the Fourier-space data vectors
+  // (C_gg_tomo_ells); 1 = Limber at every multipole (the default of the
+  // Fourier-space projects, set in their likelihood yamls). Likelihood yaml
+  // key: adopt_limber_gg.
+  // Example: adopt_limber_gg: 1 in combo_3x2pt.yaml of lsst_y1 -> the
+  // likelihood calls init_adopt_limber_gg(1) and the next data vector uses
+  // Limber w(theta) (w_gg_tomo keys its cache on the flag).
+  static constexpr std::string_view fname = "init_adopt_limber_gg"sv;
+  debug("{}: {}", fname, errbegins);
+  if (adopt_limber_gg != 0 && adopt_limber_gg != 1) {
+    critical("{}: invalid adopt_limber_gg = {}", fname, adopt_limber_gg);
+    exit(1);
+  }
+  like.adopt_limber_gg = adopt_limber_gg;
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 void init_accuracy_boost(
     const double accuracy_boost, 
     const int integration_accuracy
