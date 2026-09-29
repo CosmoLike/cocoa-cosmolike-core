@@ -185,7 +185,8 @@ compound):
 
 - ceil(baseline x boost): `Ntable.N_a`, `N_ell`, `N_ell_internal`,
   `dCX_dlnk_nlnk`, `dCX_dlnk_nlnk_internal`, `N_M_internal`,
-  `halo_uks_nc`, `halo_uks_nz`, `NL_Nchi`, `nz_fine_sampling_factor`
+  `halo_uks_nc`, `halo_uks_nz`, `halo_nfw_n`, `NL_Nchi`,
+  `nz_fine_sampling_factor`
 - baseline x boost (double): `Ntable.FPT_internal_accuracy_boost`
 - also written: `Ntable.FPTboost` (int(boost − 1) for boost > 1;
   FAST-PT grids) and `Ntable.high_def_integration =

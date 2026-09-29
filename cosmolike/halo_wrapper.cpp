@@ -343,7 +343,9 @@ double bias_norm_cpp(
 //   r_Delta = (3 m/(4 pi Delta rho_m))^(1/3)   (Delta = 200)
 //   x       = k r_Delta/c                      (k times the scale radius)
 //
-// Calls halo.c u_nfw_c directly (no table).
+// Calls halo.c u_nfw_c: a cached table in ln t of the smooth auxiliary
+// functions f, g of Si, Ci (Ntable.halo_nfw_n nodes), built once and
+// rebuilt only when Ntable changes.
 //
 // Parameters:
 //   c - concentration r_Delta/r_s

@@ -1146,35 +1146,60 @@ double dlognudlogm(
 
 // ---------------------------------------------------------------------------
 // Normalized Fourier transform u(k|M) of the NFW profile truncated at
-// r_Delta, in closed form (astro-ph/0206508 Eq. 81).
+// r_Delta (astro-ph/0206508 Eq. 81), from a table of two smooth functions.
 //
-// The NFW profile (astro-ph/9611107), with scale radius r_s = r_Delta/c:
-//
-//   rho(r) = rho_s / [(r/r_s) (1 + r/r_s)^2]
-//
-// Its mass inside r_Delta is M = 4 pi rho_s r_s^3 m(c), with
-// m(c) = ln(1+c) - c/(1+c) (astro-ph/0206508 Eq. 76), which sets the
-// prefactor of the transform to 1/m(c). With
+// The NFW profile (astro-ph/9611107) rho(r) = rho_s/[(r/r_s)(1 + r/r_s)^2],
+// r_s = r_Delta/c, holds M = 4 pi rho_s r_s^3 m(c) inside r_Delta with
+// m(c) = ln(1+c) - c/(1+c) (astro-ph/0206508 Eq. 76): the transform
+// carries the prefactor 1/m(c). With
 //
 //   r_Delta = (3M/(4 pi Delta rho_m))^(1/3)   (comoving, c/H0)
-//   x       = k r_Delta/c = k r_s
-//   xu      = (1 + c) x
+//   x       = k r_Delta/c = k r_s,   xu = (1 + c) x
 //
 // Eq. 81 reads
 //
 //   u = { sin x [Si(xu) - Si(x)] - sin(c x)/xu
 //         + cos x [Ci(xu) - Ci(x)] } / m(c)
 //
-// with Si, Ci the sine and cosine integrals (GSL). Check at k -> 0: the
-// three terms tend to 0, -c/(1+c) and ln(1+c), so u -> 1.
+// with Si, Ci the sine and cosine integrals. Check at k -> 0: the three
+// terms tend to 0, -c/(1+c) and ln(1+c), so u -> 1. r_Delta and k are
+// comoving (rho_m = rho_crit Omega_m): the scale factor never enters.
 //
-// r_Delta is comoving (rho_m = rho_crit Omega_m is the comoving mean
-// density), and so is k: the scale factor never enters.
+// Si, Ci oscillate. Abramowitz & Stegun 5.2.6-5.2.7 split them into the
+// explicit sin t, cos t and two smooth, non-oscillating functions f, g:
+//
+//   Si(t) = pi/2 - f(t) cos t - g(t) sin t,   Ci(t) = f(t) sin t - g(t) cos t
+//
+// In Eq. 81 the sin x, cos x factors then collapse (xu - x = c x); with
+// cos(c x) = 1 - 2 sin^2(c x/2) (no cancellation at small c x), exactly
+//
+//   u m(c) = [g(x) - g(xu)] + 2 g(xu) sin^2(c x/2) + [f(xu) - 1/xu] sin(c x)
+//
+// g ~ -ln t at t -> 0, so the table stores G(t) = g(t) + ln t (finite,
+// -gamma_E at 0); since ln xu - ln x = ln(1+c), exactly,
+//
+//   g(x) - g(xu) = G(x) - G(xu) + ln(1+c),   g(xu) = G(xu) - ln xu
+//
+// Table: f and G at Ntable.halo_nfw_n nodes uniform in ln t over
+// [TMIN, TASY] = [1e-10, 50], from GSL Si, Ci; read by linear interpolation
+// in ln t (interpol1d), clamped below TMIN (f, G flat there to 3e-9);
+// asymptotic series above TASY (body). A call costs at most three table
+// reads plus log, log1p, pow and two sines: no special function.
+//
+// Measured 2026-09-29 (3000 random (c, k, m), c in [0.05, 100], vs Eq. 81
+// in 30-digit arithmetic, mpmath): max relative error 6.1e-7 (at c < 0.1,
+// where m(c) ~ c^2/2 amplifies the table's absolute error), median 1e-10.
+//
+// Cache invalidation:
+//   f, G depend on no parameter: built on the first call, rebuilt when
+//   Ntable.random changes (halo_nfw_n is boosted by accuracy_boost in
+//   init_accuracy_boost). The build is not thread-safe and the halo
+//   integrands call u_nfw_c inside OpenMP loops: the first call is the
+//   single-threaded init = 1 warm-up (halo_wrapper.hpp, "The init flag").
 //
 // Parameters:
 //   c - concentration r_Delta/r_s, c > 0 (m(0) = 0)
-//   k - wavenumber in (c/H0)^-1, k > 0 (Ci diverges at 0; the GSL
-//       domain error aborts)
+//   k - wavenumber in (c/H0)^-1, k > 0
 //   m - halo mass in M_sun/h
 //   a - scale factor (unused)
 //
@@ -1188,43 +1213,79 @@ double u_nfw_c(
     const double a  // scale factor (unused: r_Delta and k are comoving)
   )
 {
+  const double TMIN = 1e-10; // table range in t: reads clamp below TMIN,
+  const double TASY = 50.0;  //   the asymptotic series takes over above TASY
+  static uint64_t cache;
+  static int n = 0;          // ln t nodes
+  static double lim[3];      // ln t axis: first, last, spacing
+  static double** tab = NULL;// [2][n] f(t), G(t) = g(t) + ln t
+
+  // Table build, once per Ntable setting: f, G at n nodes uniform in ln t,
+  // exact from GSL Si, Ci (A&S 5.2.6-5.2.7 solved for f, g); threaded loop
+  //   f = Ci sin t + (pi/2 - Si) cos t,   g = -Ci cos t + (pi/2 - Si) sin t
+  if (NULL == tab || fdiff2(cache, Ntable.random)) {
+    if (tab != NULL) {
+      free(tab);
+    }
+    n = Ntable.halo_nfw_n;
+    tab = (double**) malloc2d(2, n);
+    lim[0] = log(TMIN);
+    lim[1] = log(TASY);
+    lim[2] = (lim[1] - lim[0])/((double) n - 1.0);
+    #pragma omp parallel for schedule(static)
+    for (int i=0; i<n; i++) {
+      const double s = lim[0] + i*lim[2];
+      const double t = exp(s);
+      const double si = gsl_sf_Si(t);
+      const double ci = gsl_sf_Ci(t);
+      tab[0][i] = ci*sin(t) + (M_PI_2 - si)*cos(t);      // f(t)
+      tab[1][i] = -ci*cos(t) + (M_PI_2 - si)*sin(t) + s; // G(t) = g(t) + ln t
+    }
+    cache = Ntable.random;
+  }
+
+  // Geometry: x = k r_s, xu = (1 + c) x, and their logs (the table axis)
   const double rho_delta = Delta * cosmology.rho_crit * cosmology.Omega_m;
   const double r_delta = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
   const double x = k * r_delta / c;
-  const double xu = (1. + c) * x;
+  const double l1c = log1p(c);          // ln(1 + c)
+  const double lx = log(x);
+  const double lxu = lx + l1c;          // ln xu, xu = (1 + c) x
+  const double xu = (1.0 + c)*x;
 
-  gsl_sf_result SI_XU;
-  int status = gsl_sf_Si_e(xu, &SI_XU);
-  if (status) {
-    log_fatal(gsl_strerror(status)); exit(1);
+  // f(xu), G(x), G(xu): table reads up to TASY (clamped at TMIN); above
+  // TASY the asymptotic series (A&S 5.2.34-35), in nested form,
+  //   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - 6!/t^6 + 8!/t^8)/t
+  //   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - 7!/t^6 + 9!/t^8)/t^2
+  // (the factors 2, 12, 30, 56 and 6, 20, 42, 72 are ratios of consecutive
+  // factorials; the first omitted terms 10!/t^10, 11!/t^10 are 4e-11 and
+  // 4e-10 at t = 50). x < xu, so x may sit in the table when xu does not.
+  double fu, Gx, Gu;
+  if (xu <= TASY) {
+    Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
+    Gu = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
+    fu = interpol1d(tab[0], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
   }
-
-  gsl_sf_result SI_X;
-  {
-    int status = gsl_sf_Si_e(x, &SI_X);
-    if (status) {
-      log_fatal(gsl_strerror(status)); exit(1);
+  else {
+    const double v = 1.0/(xu*xu);
+    fu = (1.0 - 2.0*v*(1.0 - 12.0*v*(1.0 - 30.0*v*(1.0 - 56.0*v))))/xu;
+    Gu = v*(1.0 - 6.0*v*(1.0 - 20.0*v*(1.0 - 42.0*v*(1.0 - 72.0*v)))) + lxu;
+    if (x <= TASY) {
+      Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
+    }
+    else {
+      const double w = 1.0/(x*x);
+      Gx = w*(1.0 - 6.0*w*(1.0 - 20.0*w*(1.0 - 42.0*w*(1.0 - 72.0*w)))) + lx;
     }
   }
 
-  gsl_sf_result CI_XU;
-  {
-    int status = gsl_sf_Ci_e(xu, &CI_XU);
-    if (status) {
-      log_fatal(gsl_strerror(status)); exit(1);
-    }
-  }
-
-  gsl_sf_result CI_X;
-  {
-    int status = gsl_sf_Ci_e(x, &CI_X);
-    if (status) {
-      log_fatal(gsl_strerror(status)); exit(1);
-    }
-  }
-  return (sin(x)*(SI_XU.val - SI_X.val) 
-          - sinl(c*x)/xu 
-          + cos(x)*(CI_XU.val - CI_X.val))/(log(1. + c) - c/(1. + c));
+  // Assembly of u m(c) = [g(x) - g(xu)] + 2 g(xu) sin^2(c x/2)
+  //                      + [f(xu) - 1/xu] sin(c x), divided by m(c);
+  // Gx - Gu + l1c is g(x) - g(xu)
+  const double gu = Gu - lxu;           // g(xu)
+  const double sh = sin(0.5*c*x);
+  return ((Gx - Gu + l1c) + 2.0*gu*sh*sh + (fu - 1.0/xu)*sin(c*x))/
+         (l1c - c/(1.0 + c));
 }
 
 // ---------------------------------------------------------------------------
@@ -3002,6 +3063,7 @@ double int_for_I02_XY(double lnM, void* params)
 //
 //   sigma2, dlognudlogm    their tables
 //   fnu                    the tinker_alpha table
+//   u_c                    the NFW f, G table (u_nfw_c)
 //   u_y_bnd                the u_KS table
 //
 // before p_mm, p_my and p_yy fill their tables in parallel: the

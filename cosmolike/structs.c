@@ -280,6 +280,7 @@ void reset_Ntable_struct(void)
   Ntable.N_M_internal = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
   Ntable.halo_uks_nc = 40;  // u_KS coarse ln c nodes (upsampled; halo.c)
   Ntable.halo_uks_nz = 64;  // u_KS coarse ln z nodes (upsampled; halo.c)
+  Ntable.halo_nfw_n = 131072; // u_nfw_c exact dense ln t nodes (halo.c)
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;

@@ -118,6 +118,7 @@ typedef struct
   // ---------------------------------------------------  
   int halo_uks_nc;  // u_KS coarse ln c nodes (halo.c; boosted)
   int halo_uks_nz;  // u_KS coarse ln z nodes (halo.c; boosted)
+  int halo_nfw_n;   // u_nfw_c dense ln t nodes (halo.c; boosted)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // HALO MODEL
