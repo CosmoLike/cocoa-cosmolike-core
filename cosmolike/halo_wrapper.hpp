@@ -33,7 +33,7 @@ namespace cosmolike_interface
 //                                          loops over arrays)
 //     -> p_mm(k, a)                       (halo.c: reads a cached table)
 //     -> on first use, or after a cache key changed: the table is
-//        rebuilt from p_xy_nointerp on the (a, ln k) grid
+//        rebuilt, one halo-model mass integral per (a, ln k) node
 //
 // Names: each function below is the C function's name plus _cpp, and
 // its Python name is the C name itself (as for the sigma2 and

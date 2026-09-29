@@ -1145,6 +1145,112 @@ double dlognudlogm(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// The NFW transform table (nfw_) and its kernel (nfw_um), at file scope so
+// that two callers share them:
+//
+//   u_nfw_c   u(k|M) for one (c, k, M): computes r_Delta (a pow), ln(1+c)
+//             (log1p) and ln x (log), calls nfw_um, divides by m(c)
+//   p_mm      its rows call nfw_um directly with ln(1+c), r_s and ln r_s
+//             computed once per (a, mass node) and reused over k, so the
+//             innermost loop of the P_mm table does no pow, log1p or log
+//
+// The table holds f(t) and G(t) = g(t) + ln t of the u_nfw_c header at n
+// nodes uniform in ln t over [NFW_TMIN, NFW_TASY]; reads clamp below
+// NFW_TMIN and switch to the asymptotic series above NFW_TASY (nfw_um).
+// ---------------------------------------------------------------------------
+static const double NFW_TMIN = 1e-10; // reads clamp below NFW_TMIN
+static const double NFW_TASY = 50.0;  // asymptotic series above NFW_TASY
+static struct {
+  uint64_t cache;        // Ntable.random of the table
+  int n;                 // ln t nodes
+  double lim[3];         // ln t axis: first, last, spacing
+  double** tab;          // [2][n] f(t), G(t) = g(t) + ln t
+} nfw_ = {0};
+
+static void nfw_table(void)
+{
+  // Table build, once per Ntable setting: f, G at n nodes uniform in ln t,
+  // exact from GSL Si, Ci (A&S 5.2.6-5.2.7 solved for f, g); threaded loop
+  //   f = Ci sin t + (pi/2 - Si) cos t,   g = -Ci cos t + (pi/2 - Si) sin t
+  if (NULL == nfw_.tab || fdiff2(nfw_.cache, Ntable.random)) {
+    if (nfw_.tab != NULL) {
+      free(nfw_.tab);
+    }
+    const int n = Ntable.halo_nfw_n;
+    double** tab = (double**) malloc2d(2, n);
+    double* lim = nfw_.lim;
+    lim[0] = log(NFW_TMIN);
+    lim[1] = log(NFW_TASY);
+    lim[2] = (lim[1] - lim[0])/((double) n - 1.0);
+    #pragma omp parallel for schedule(static)
+    for (int i=0; i<n; i++) {
+      const double s = lim[0] + i*lim[2];
+      const double t = exp(s);
+      const double si = gsl_sf_Si(t);
+      const double ci = gsl_sf_Ci(t);
+      tab[0][i] = ci*sin(t) + (M_PI_2 - si)*cos(t);      // f(t)
+      tab[1][i] = -ci*cos(t) + (M_PI_2 - si)*sin(t) + s; // G(t) = g(t) + ln t
+    }
+    nfw_.n = n;
+    nfw_.tab = tab;
+    nfw_.cache = Ntable.random;
+  }
+}
+
+// u m(c) of the NFW transform (u_nfw_c header) for one halo at one k.
+// Inputs: c, x = k r_s, and the two logs the table axis needs, lx = ln x
+// and l1c = ln(1 + c), supplied by the caller (an outer loop may hold
+// them). Output: u m(c), dimensionless; the caller divides by m(c).
+// nfw_table must have run (the build is not thread-safe; this read is).
+// u_nfw_c and the p_mm rows both evaluate u through this one arithmetic.
+static inline double nfw_um(
+    const double c,   // concentration r_Delta/r_s
+    const double x,   // k r_s
+    const double lx,  // ln x
+    const double l1c  // ln(1 + c)
+  )
+{
+  const int n = nfw_.n;
+  const double* lim = nfw_.lim;
+  double** tab = nfw_.tab;
+  const double lxu = lx + l1c;          // ln xu, xu = (1 + c) x
+  const double xu = (1.0 + c)*x;
+
+  // f(xu), G(x), G(xu): table reads up to NFW_TASY (clamped at NFW_TMIN);
+  // above NFW_TASY the asymptotic series (A&S 5.2.34-35), in nested form,
+  //   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - 6!/t^6 + 8!/t^8)/t
+  //   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - 7!/t^6 + 9!/t^8)/t^2
+  // (the factors 2, 12, 30, 56 and 6, 20, 42, 72 are ratios of consecutive
+  // factorials; the first omitted terms 10!/t^10, 11!/t^10 are 4e-11 and
+  // 4e-10 at t = 50). x < xu, so x may sit in the table when xu does not.
+  double fu, Gx, Gu;
+  if (xu <= NFW_TASY) {
+    Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
+    Gu = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
+    fu = interpol1d(tab[0], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
+  }
+  else {
+    const double v = 1.0/(xu*xu);
+    fu = (1.0 - 2.0*v*(1.0 - 12.0*v*(1.0 - 30.0*v*(1.0 - 56.0*v))))/xu;
+    Gu = v*(1.0 - 6.0*v*(1.0 - 20.0*v*(1.0 - 42.0*v*(1.0 - 72.0*v)))) + lxu;
+    if (x <= NFW_TASY) {
+      Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
+    }
+    else {
+      const double w = 1.0/(x*x);
+      Gx = w*(1.0 - 6.0*w*(1.0 - 20.0*w*(1.0 - 42.0*w*(1.0 - 72.0*w)))) + lx;
+    }
+  }
+
+  // Assembly of u m(c) = [g(x) - g(xu)] + 2 g(xu) sin^2(c x/2)
+  //                      + [f(xu) - 1/xu] sin(c x);
+  // Gx - Gu + l1c is g(x) - g(xu)
+  const double gu = Gu - lxu;           // g(xu)
+  const double sh = sin(0.5*c*x);
+  return (Gx - Gu + l1c) + 2.0*gu*sh*sh + (fu - 1.0/xu)*sin(c*x);
+}
+
+// ---------------------------------------------------------------------------
 // Normalized Fourier transform u(k|M) of the NFW profile truncated at
 // r_Delta (astro-ph/0206508 Eq. 81), from a table of two smooth functions.
 //
@@ -1180,21 +1286,27 @@ double dlognudlogm(
 //
 //   g(x) - g(xu) = G(x) - G(xu) + ln(1+c),   g(xu) = G(xu) - ln xu
 //
-// Table: f and G at Ntable.halo_nfw_n nodes uniform in ln t over
-// [TMIN, TASY] = [1e-10, 50], from GSL Si, Ci; read by linear interpolation
-// in ln t (interpol1d), clamped below TMIN (f, G flat there to 3e-9);
-// asymptotic series above TASY (body). A call costs at most three table
-// reads plus log, log1p, pow and two sines: no special function.
+// Table (nfw_, built by nfw_table): f and G at Ntable.halo_nfw_n nodes
+// uniform in ln t over [NFW_TMIN, NFW_TASY] = [1e-10, 50], from GSL Si,
+// Ci; read by linear interpolation in ln t (interpol1d), clamped below
+// NFW_TMIN (f, G flat there to 3e-9); asymptotic series above NFW_TASY.
+// nfw_um does the reads and assembles u m(c) from (c, x, ln x, ln(1+c));
+// this function supplies r_Delta, x and the two logs and divides by m(c).
+// A call costs at most three table reads plus log, log1p, pow and two
+// sines: no special function. The p_mm table builder reads nfw_um
+// directly, with ln(1+c), r_s and ln r_s computed once per (a, mass node)
+// and reused across its k loop (its header, item 2).
 //
 // Measured 2026-09-29 (3000 random (c, k, m), c in [0.05, 100], vs Eq. 81
 // in 30-digit arithmetic, mpmath): max relative error 6.1e-7 (at c < 0.1,
 // where m(c) ~ c^2/2 amplifies the table's absolute error), median 1e-10.
 //
 // Cache invalidation:
-//   f, G depend on no parameter: built on the first call, rebuilt when
-//   Ntable.random changes (halo_nfw_n is boosted by accuracy_boost in
-//   init_accuracy_boost). The build is not thread-safe and the halo
-//   integrands call u_nfw_c inside OpenMP loops: the first call is the
+//   f, G depend on no parameter: nfw_table builds them on the first call
+//   and rebuilds when Ntable.random changes (halo_nfw_n is boosted by
+//   accuracy_boost in init_accuracy_boost); nfw_.cache holds the tag. The
+//   build is not thread-safe and the halo integrands call u_nfw_c (and
+//   the p_mm rows nfw_um) inside OpenMP loops: the first call is the
 //   single-threaded init = 1 warm-up (halo_wrapper.hpp, "The init flag").
 //
 // Parameters:
@@ -1213,79 +1325,14 @@ double u_nfw_c(
     const double a  // scale factor (unused: r_Delta and k are comoving)
   )
 {
-  const double TMIN = 1e-10; // table range in t: reads clamp below TMIN,
-  const double TASY = 50.0;  //   the asymptotic series takes over above TASY
-  static uint64_t cache;
-  static int n = 0;          // ln t nodes
-  static double lim[3];      // ln t axis: first, last, spacing
-  static double** tab = NULL;// [2][n] f(t), G(t) = g(t) + ln t
-
-  // Table build, once per Ntable setting: f, G at n nodes uniform in ln t,
-  // exact from GSL Si, Ci (A&S 5.2.6-5.2.7 solved for f, g); threaded loop
-  //   f = Ci sin t + (pi/2 - Si) cos t,   g = -Ci cos t + (pi/2 - Si) sin t
-  if (NULL == tab || fdiff2(cache, Ntable.random)) {
-    if (tab != NULL) {
-      free(tab);
-    }
-    n = Ntable.halo_nfw_n;
-    tab = (double**) malloc2d(2, n);
-    lim[0] = log(TMIN);
-    lim[1] = log(TASY);
-    lim[2] = (lim[1] - lim[0])/((double) n - 1.0);
-    #pragma omp parallel for schedule(static)
-    for (int i=0; i<n; i++) {
-      const double s = lim[0] + i*lim[2];
-      const double t = exp(s);
-      const double si = gsl_sf_Si(t);
-      const double ci = gsl_sf_Ci(t);
-      tab[0][i] = ci*sin(t) + (M_PI_2 - si)*cos(t);      // f(t)
-      tab[1][i] = -ci*cos(t) + (M_PI_2 - si)*sin(t) + s; // G(t) = g(t) + ln t
-    }
-    cache = Ntable.random;
-  }
-
-  // Geometry: x = k r_s, xu = (1 + c) x, and their logs (the table axis)
+  nfw_table();
+  // Geometry: x = k r_s and the logs the table axis needs
   const double rho_delta = Delta * cosmology.rho_crit * cosmology.Omega_m;
   const double r_delta = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
   const double x = k * r_delta / c;
   const double l1c = log1p(c);          // ln(1 + c)
   const double lx = log(x);
-  const double lxu = lx + l1c;          // ln xu, xu = (1 + c) x
-  const double xu = (1.0 + c)*x;
-
-  // f(xu), G(x), G(xu): table reads up to TASY (clamped at TMIN); above
-  // TASY the asymptotic series (A&S 5.2.34-35), in nested form,
-  //   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - 6!/t^6 + 8!/t^8)/t
-  //   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - 7!/t^6 + 9!/t^8)/t^2
-  // (the factors 2, 12, 30, 56 and 6, 20, 42, 72 are ratios of consecutive
-  // factorials; the first omitted terms 10!/t^10, 11!/t^10 are 4e-11 and
-  // 4e-10 at t = 50). x < xu, so x may sit in the table when xu does not.
-  double fu, Gx, Gu;
-  if (xu <= TASY) {
-    Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
-    Gu = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
-    fu = interpol1d(tab[0], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
-  }
-  else {
-    const double v = 1.0/(xu*xu);
-    fu = (1.0 - 2.0*v*(1.0 - 12.0*v*(1.0 - 30.0*v*(1.0 - 56.0*v))))/xu;
-    Gu = v*(1.0 - 6.0*v*(1.0 - 20.0*v*(1.0 - 42.0*v*(1.0 - 72.0*v)))) + lxu;
-    if (x <= TASY) {
-      Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
-    }
-    else {
-      const double w = 1.0/(x*x);
-      Gx = w*(1.0 - 6.0*w*(1.0 - 20.0*w*(1.0 - 42.0*w*(1.0 - 72.0*w)))) + lx;
-    }
-  }
-
-  // Assembly of u m(c) = [g(x) - g(xu)] + 2 g(xu) sin^2(c x/2)
-  //                      + [f(xu) - 1/xu] sin(c x), divided by m(c);
-  // Gx - Gu + l1c is g(x) - g(xu)
-  const double gu = Gu - lxu;           // g(xu)
-  const double sh = sin(0.5*c*x);
-  return ((Gx - Gu + l1c) + 2.0*gu*sh*sh + (fu - 1.0/xu)*sin(c*x))/
-         (l1c - c/(1.0 + c));
+  return nfw_um(c, x, lx, l1c)/(l1c - c/(1.0 + c));
 }
 
 // ---------------------------------------------------------------------------
@@ -3794,19 +3841,119 @@ double p_xy_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// P_mm(k, a), the halo-model matter power spectrum, from a table of ln P
+// on Ntable.N_a x Ntable.N_k_nlin nodes uniform in (a, ln k), read
+// bilinearly (interpol2d) and exponentiated:
+//
+//   P_mm = I02 + I11^2 P_lin                          (2005.00009 Eqs. 1-2)
+//   I02  = int dlnM dn/dlnM (M/rho_m)^2 u(k|M)^2
+//   I11  = int dlnM dn/dlnM b(nu) (M/rho_m) u(k|M) + A(a) u(k|M_min)
+//
+// dn/dlnM = (rho_m/M) nu f(nu) dlnnu/dlnM is the mass function, (M/rho_m) u
+// the matter window (int_for_I02_XY header, items 1-2), b the Tinker bias,
+// A(a) = 1 - bias_norm(a) the HMx share of matter below M_min put back as
+// halos of mass M_min (I11_X_nointerp header, item 2). p_xy_nointerp
+// evaluates the same P_mm directly (I02_XY_nointerp and I11_X_nointerp,
+// GSL fixed rules: the route of p_my and p_yy); the rows here call it
+// only as the warm-up below.
+//
+// 1. Quadrature: the n-point Gauss-Legendre rule in ln M (exact for
+// polynomials of degree 2n - 1), n = 1024, the largest size GSL
+// tabulates; nodes M_q and weights w_q on [ln M_min, ln M_max] are mapped
+// once in the rebuild block (gsl_integration_glfixed_point).
+//
+// - Measured 2026-09-29 (a = 0.3, 0.6, 0.95; k = 0.05 to 1e6 (c/H0)^-1;
+//   vs composite GL panels 0.05 wide in ln M), worst over k: I02 relative
+//   error 6e-6 / 1e-4 / 8e-4, I11 2e-7 / 4e-6 / 2e-5 at 1024 / 512 / 256
+//   nodes. High k converges slowly: the profile's ringing is sampled in ln M.
+//
+// 2. Loop levels: each factor is computed at the outermost level it
+// depends on, so the innermost loop is the NFW kernel alone (nfw_um:
+// three table reads and two sines; no pow, exp or log):
+//
+//   per refill, per node q (mq)  M_q, w_q; nu0_q = delta_c/sigma(M_q);
+//                                w_q (rho_m/M_q) dlnnu/dlnM; M_q/rho_m;
+//                                r_Delta(M_q)
+//   per a row i, threaded        D(a); Tinker f, b parameters; A(a); c(M_min)
+//   per (i, q) (aq[i])           nu = nu0/D; c = conc(M, D); ln(1+c);
+//                                m(c) = ln(1+c) - c/(1+c); r_s = r_Delta/c,
+//                                ln r_s; W2 = dn (M/rho_m)^2/m(c)^2;
+//                                B1 = dn b(nu) (M/rho_m)/m(c), with
+//                                dn = w (rho_m/M) dlnnu/dlnM f(nu) nu
+//   per (i, k), sum over q       x = k r_s, ln x = ln k + ln r_s,
+//                                um = u m(c) = nfw_um(c, x, ln x, ln(1+c));
+//                                I02 = sum W2 um^2,
+//                                I11 = sum B1 um + A u_c(k|M_min); ln P
+//
+// The 1/m(c) of u = um/m(c) lives in W2 and B1. The rows read the NFW
+// kernel directly, so like.halo_model[3] must be HALO_PROFILE_NFW (the
+// only option of u_c); anything else aborts.
+//
+// - Measured 2026-09-29 (4 threads; N_a = 256, N_k = 512, 1024 nodes:
+//   1.3e8 kernel calls): one refill 0.5 s.
+//
+// Thread safety: the single-threaded p_xy_nointerp(k_min, a_min, 0, 1)
+// call before the threaded loop builds every lazy table the rows read
+// (sigma2, dlognudlogm, the tinker_alpha table of fnu_params_at,
+// bias_norm, the NFW table nfw_), so inside the loop they are only read:
+// the warm-up rule of the cosmo2D.c _work functions (halo_wrapper.hpp,
+// "The init flag"). growfac and p_lin read the CAMB-fed cosmology tables
+// and hold no static state.
+//
+// Cache invalidation:
+//   rebuild block (table, mq, aq, GL nodes, both grids; every allocation
+//     lives here, one block each from malloc2d/malloc3d): Ntable.random
+//   refill: cosmology.random or Ntable.random
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1
+//   a - scale factor
+//
+// Returns:
+//   P_mm(k, a) in (c/H0)^3; 0 outside [limits.a_min, 0.9999999]; ln P
+//   continued with unit slope outside [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
 double p_mm(
-    const double k, 
+    const double k,
     const double a
   )
-{ 
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
-  static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
-                           // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
+  static double lim[2][3];    // [0] a grid: min, max, step;
+                              // [1] ln k grid: min, max, step
+  static int nq = 0;          // Gauss-Legendre nodes in ln M
+  static double** mq = NULL;  // [6][nq] per mass node: M, weight, nu at
+                              // D = 1, weight x (rho_m/M) dlnnu/dlnM,
+                              // M/rho_m, r_Delta
+  static double*** aq = NULL; // [N_a][6][nq] per (a, mass node): c,
+                              // ln(1+c), r_s, ln r_s, W2, B1
 
+  // Ntable rebuild block: the table, the per-node and per-(a, node) arrays
+  // (one block each from malloc2d/malloc3d, so one free each), the GL
+  // nodes mapped onto [ln M_min, ln M_max], both grids (header, item 1)
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    if (table != NULL) free(table);
-    table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);   
+    if (table != NULL) {
+      free(table);
+      free(mq);
+      free(aq);
+    }
+    table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
+    nq = 1024; // largest predefined GSL table
+    mq = (double**) malloc2d(6, nq);
+    aq = (double***) malloc3d(Ntable.N_a, 6, nq);
+    const double lnMmin = log(limits.halo_m_min);
+    const double lnMmax = log(limits.halo_m_max);
+    // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
+    // rule t mapped onto [lo, hi], and its weight
+    gsl_integration_glfixed_table* t = malloc_gslint_glfixed(nq);
+    for (int q=0; q<nq; q++) {
+      double lnM;
+      gsl_integration_glfixed_point(lnMmin, lnMmax, q, &lnM, &mq[1][q], t);
+      mq[0][q] = exp(lnM);
+    }
+    gsl_integration_glfixed_table_free(t);
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
@@ -3814,18 +3961,78 @@ double p_mm(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
+  // Refill: the cosmology or Ntable tag differs from the table's
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1); 
-    #pragma omp parallel for collapse(2) schedule(static,1)
+    // the rows read the NFW kernel directly (header, item 2)
+    if (like.halo_model[3] != HALO_PROFILE_NFW) {
+      log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+    // Warm-up: builds every lazy table the threaded loop reads (header,
+    // Thread safety); the value is thrown away
+    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1);
+    // Per mass node (header, item 2, first row)
+    const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+    const double rho_delta = Delta * rhom;
+    for (int q=0; q<nq; q++) {
+      const double m = mq[0][q];
+      mq[2][q] = delta_c/sqrt(sigma2(m));
+      mq[3][q] = mq[1][q]*(rhom/m)*dlognudlogm(m);
+      mq[4][q] = m/rhom;
+      mq[5][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+    }
+    // Per a row, threaded: D(a), the Tinker f and b parameters (the
+    // nu-independent halves, *_params_at), A(a), c(M_min)
+    const double mmin = limits.halo_m_min;
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<Ntable.N_a; i++) {
-      for (int j=0; j<Ntable.N_k_nlin; j++) { 
-        table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
-                                        lim[0][0] + i*lim[0][2], 0, 0));
+      const double ai = lim[0][0] + i*lim[0][2];
+      const double D = growfac(ai);
+      const fnu_params pf = fnu_params_at(ai);
+      const hb1nu_params pb = hb1nu_params_at(ai);
+      const double A = 1.0 - bias_norm(ai);
+      const double cmin = conc(mmin, D);
+      double* restrict cq = aq[i][0];
+      double* restrict l1 = aq[i][1];
+      double* restrict rs = aq[i][2];
+      double* restrict lrs = aq[i][3];
+      double* restrict w2 = aq[i][4];
+      double* restrict b1 = aq[i][5];
+      // Per (a, node): concentration, r_s, their logs, and the weights
+      // W2, B1 with 1/m(c) folded in (header, item 2, third row)
+      for (int q=0; q<nq; q++) {
+        const double nu = mq[2][q]/D;
+        const double c = conc(mq[0][q], D);
+        const double l1c = log1p(c);
+        const double mc = l1c - c/(1.0 + c);
+        const double dn = mq[3][q]*fnu_core(nu, &pf)*nu;
+        cq[q] = c;
+        l1[q] = l1c;
+        rs[q] = mq[5][q]/c;
+        lrs[q] = log(rs[q]);
+        w2[q] = dn*(mq[4][q]/mc)*(mq[4][q]/mc);
+        b1[q] = dn*hb1nu_core(nu, &pb)*(mq[4][q]/mc);
+      }
+      // Per k: I02 and I11 as sums of the NFW kernel over the nodes, the
+      // HMx term A u_c(k|M_min), then ln P (header, item 2, last row)
+      for (int j=0; j<Ntable.N_k_nlin; j++) {
+        const double lk = lim[1][0] + j*lim[1][2];
+        const double kj = exp(lk);
+        double s02 = 0.0;
+        double s11 = 0.0;
+        for (int q=0; q<nq; q++) {
+          const double um = nfw_um(cq[q], kj*rs[q], lk + lrs[q], l1[q]);
+          s02 += w2[q]*um*um;
+          s11 += b1[q]*um;
+        }
+        const double I11 = s11 + A*u_c(cmin, kj, mmin, ai);
+        table[i][j] = log(s02 + I11*I11*p_lin(kj, ai));
       }
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
+  // bilinear read of ln P; 0 outside the a range
   return ((a < lim[0][0]) || (a > lim[0][1])) ? 0.0 :
     exp(interpol2d(table,
                    Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a,
