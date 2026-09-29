@@ -2721,47 +2721,242 @@ double ngal_nointerp(
 }
 
 // ---------------------------------------------------------------------------
+// Table owner of ngal and bgal: static state, zeroed at program start so
+// the first hod_tables call builds everything. Two blocks of hod_tables
+// write it (its header, Cache invalidation):
+//   rebuild block   nbin, nq, lim, gl and every allocation
+//   refill block    nd, D, pb, pf, tab, then the tags cache[]
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+static struct {
+  uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable, [2] HOD,
+                                   //   [3] clustering n(z) tags
+  int nbin;               // lens bins of the allocation
+  int nq;                 // Gauss-Legendre nodes per lens bin
+  double lim[3];          // a grid: min, max, step
+  double*** tab;          // [2][nbin][N_a] ngal (0), bgal (1)
+  double*** nd;           // [2][nbin][nq] per node: nu at D = 1 (0),
+                          //   hw w_q (rho_m/M) dlnnu/dlnM (f_c N_c + N_s) (1)
+  double** gl;            // [2][nq] Gauss-Legendre nodes (0), weights (1)
+                          //   on [-1, 1]
+  double* D;              // [N_a] growth factor D(a)
+  hb1nu_params* pb;       // [N_a] Tinker bias parameters (hb1nu_params_at)
+  fnu_params* pf;         // [N_a] Tinker multiplicity parameters
+                          //   (fnu_params_at)
+} hod_ = {0};
 
-double ngal(const int ni, const double a)
+// ---------------------------------------------------------------------------
+// Fills hod_: number density and mean halo bias of the galaxies of every
+// lens bin on one grid in a, read by ngal and bgal:
+//
+//   ngal(a) = int dlnM dn/dlnM [f_c N_c(M) + N_s(M)]              (c/H0)^-3
+//   bgal(a) = int dlnM dn/dlnM [f_c N_c(M) + N_s(M)] b(nu) / ngal(a)
+//
+// dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M, nu = delta_c/(sigma(M) D(a)),
+// is the mass function of int_for_I02_XY (its header, item 1); f_c, N_c,
+// N_s the occupation of the GALAXY PROFILES banner (HOD_fc, HOD_nc,
+// HOD_ns); b(nu) the Tinker bias (hb1nu). ln M runs from two decades
+// below the bin's M_min (N_c is an erf tail there) to ln M_max.
+// ngal_nointerp and bgal_nointerp are the same integrals done directly
+// at 1024 nodes (Python-facing diagnostics); the tables do not call them.
+//
+// 1. Quadrature: the n-point Gauss-Legendre rule in ln M (exact for
+// polynomials of degree 2n - 1); nodes x_q and weights w_q on [-1, 1]
+// (gl) are mapped per bin as ln M_q = mid + hw x_q, weight hw w_q.
+// n = 128 / 256 / 512 / 1024 for hdi = abs(Ntable.high_def_integration)
+// = 0 / 1 / 2 / >= 3, sizes GSL tabulates.
+//
+// - Measured 2026-09-29 (5 lens bins x a = 0.5, 0.75, 0.95, vs 32-node
+//   panels 0.05 wide in ln M): 5e-7 / 1.3e-7 / 3e-8 / 5e-9 relative at
+//   128 / 256 / 512 / 1024 nodes. Splitting the range at M_min and M_0
+//   does not help: the floor is the linear read of the sigma2 and
+//   dlognudlogm tables (a kink per cell; file header), not the HOD shape;
+//   the linear read in a (item 3), up to 1.4e-5, dominates at 128 nodes.
+//
+// 2. Loop levels: a enters only through nu = nu0(M)/D(a) and the Tinker
+// parameters of f and b; the occupation does not depend on a (HOD_nc and
+// HOD_ns only range-check it: the placeholder hod_.lim[0]). Each factor
+// is computed at the outermost level it depends on:
+//
+//   per refill, per (bin, node q)  nu0_q = delta_c/sigma(M_q)          nd[0]
+//                                  P_q = hw w_q (rho_m/M_q) dlnnu/dlnM
+//                                        (f_c N_c + N_s)               nd[1]
+//   per a node j                   D_j, Tinker f and b parameters   D, pf, pb
+//   per (bin, j), threaded         nu = nu0_q/D_j, t_q = P_q f(nu) nu:
+//                                  ngal = sum t_q                      tab[0]
+//                                  bgal = sum t_q b(nu) / ngal         tab[1]
+//
+// 3. The a grid: Ntable.N_a nodes uniform in a over [1/(1 + z_max),
+// 1/(1 + z_min)] of the clustering n(z), all bins; the readers return 0
+// outside and read linearly inside (interpol1d: uniform grid, direct
+// index).
+//
+// - Measured 2026-09-29 (4 threads, 10 lens bins x N_a = 256): one
+//   refill 3.9 ms.
+//
+// Thread safety: the refill calls sigma2, dlognudlogm, growfac and
+// fnu_params_at (the tinker_alpha table) serially before the threaded
+// loop, so their lazy tables are built outside the parallel region (the
+// warm-up rule of the cosmo2D.c _work functions). The first call is the
+// single-threaded init = 1 pass of p_gm_nointerp and p_gg_nointerp.
+//
+// Cache invalidation:
+//   rebuild block (sizes, GL nodes, a grid; every allocation lives here):
+//     Ntable.random (cache[1]) or redshift.random_clustering (cache[3])
+//   refill: those two, cosmology.random (cache[0]) or the HOD tag
+//     nuisance.random_galaxy_bias (cache[2])
+// ---------------------------------------------------------------------------
+static void hod_tables(void)
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double** table = NULL;
-  static double lim[3]; // [0] = amin; [1] = amax; [2] = da
-
-  if (table == NULL || 
-      fdiff2(cache[1], Ntable.random) ||
-      fdiff2(cache[3], redshift.random_clustering)) 
-  { 
-    if (table != NULL) free(table);
-    table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_a);
-
-    lim[0] = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
-    lim[1] = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_a - 1.0);
-  }
-  
-  if (fdiff2(cache[0], cosmology.random) || 
-      fdiff2(cache[1], Ntable.random)    ||
-      fdiff2(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[3], redshift.random_clustering))
+  // Rebuild block: the first call (tab is NULL from the = {0}), or the
+  // Ntable or clustering-n(z) tag differs from the allocation's. Every
+  // malloc lives here; malloc1d/2d/3d return one block each, pointer rows
+  // included, so one free releases a table.
+  if (NULL == hod_.tab ||
+      fdiff2(hod_.cache[1], Ntable.random) ||
+      fdiff2(hod_.cache[3], redshift.random_clustering))
   {
-    (void) ngal_nointerp(0, lim[0], 1);    
-    #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=0; i<redshift.clustering_nbin; i++) {
-      for (int j=0; j<Ntable.N_a; j++) {
-        table[i][j] = ngal_nointerp(i, lim[0] + j*lim[2], 0);
+    if (hod_.tab != NULL) {
+      free(hod_.tab);
+      free(hod_.nd);
+      free(hod_.gl);
+      free(hod_.D);
+      free(hod_.pb);
+      free(hod_.pf);
+    }
+    // Node count n (header, item 1) and the sizes of the allocation.
+    const int hdi = abs(Ntable.high_def_integration);
+    hod_.nbin = redshift.clustering_nbin;
+    hod_.nq = (0 == hdi) ? 128 :
+              (1 == hdi) ? 256 :
+              (2 == hdi) ? 512 : 1024; // predefined GSL tables
+    hod_.tab = (double***) malloc3d(2, hod_.nbin, Ntable.N_a);
+    hod_.nd = (double***) malloc3d(2, hod_.nbin, hod_.nq);
+    hod_.gl = (double**) malloc2d(2, hod_.nq);
+    hod_.D = (double*) malloc1d(Ntable.N_a);
+    hod_.pb = (hb1nu_params*) malloc(sizeof(hb1nu_params)*Ntable.N_a);
+    hod_.pf = (fnu_params*) malloc(sizeof(fnu_params)*Ntable.N_a);
+    // Gauss-Legendre nodes and weights on [-1, 1] (header, item 1):
+    // malloc_gslint_glfixed(n) wraps the GSL table of n nodes and
+    // gsl_integration_glfixed_point copies node q and its weight out. The
+    // stretch onto each bin's ln M range happens in the refill.
+    gsl_integration_glfixed_table* t = malloc_gslint_glfixed(hod_.nq);
+    for (int q=0; q<hod_.nq; q++) {
+      gsl_integration_glfixed_point(-1.0, 1.0, q, &hod_.gl[0][q],
+                                    &hod_.gl[1][q], t);
+    }
+    gsl_integration_glfixed_table_free(t);
+    // The a grid (header, item 3): min, max, step; node j sits at
+    // lim[0] + j lim[2], both ends included.
+    hod_.lim[0] = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
+    hod_.lim[1] = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
+    hod_.lim[2] = (hod_.lim[1] - hod_.lim[0])/((double) Ntable.N_a - 1.0);
+  }
+  // Refill block: any of the four tags differs from the one the tables
+  // hold.
+  if (fdiff2(hod_.cache[0], cosmology.random) ||
+      fdiff2(hod_.cache[1], Ntable.random) ||
+      fdiff2(hod_.cache[2], nuisance.random_galaxy_bias) ||
+      fdiff2(hod_.cache[3], redshift.random_clustering))
+  {
+    const int nbin = hod_.nbin;
+    const int na = Ntable.N_a;
+    const int nq = hod_.nq;
+    const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+
+    // Per (bin, node), serially: the a-independent factors of header
+    // item 2. ln M_q = mid + hw x_q covers [ln 10^(lg M_min - 2),
+    // ln limits.halo_m_max]; hod_.lim[0] is an a in (0, 1) for the range
+    // check of HOD_nc, which aborts on a bin whose HOD is not set
+    // (lg M_min outside [10, 16]): the tables cover all bins at once. The
+    // sigma2 and dlognudlogm reads happen here, before the threads
+    // (header, Thread safety).
+    for (int b=0; b<nbin; b++) {
+      const double lnMmin = log(10.0)*(nuisance.hod[b][0] - 2.);
+      const double lnMmax = log(limits.halo_m_max);
+      const double hw = 0.5*(lnMmax - lnMmin);
+      const double mid = 0.5*(lnMmax + lnMmin);
+      const double fc = HOD_fc(b);
+      for (int q=0; q<nq; q++) {
+        const double lnM = mid + hw*hod_.gl[0][q];
+        const double m = exp(lnM);
+        const double occ = fc*HOD_nc(m, hod_.lim[0], b) +
+                           HOD_ns(m, hod_.lim[0], b);
+        hod_.nd[0][b][q] = delta_c/sqrt(sigma2(m));
+        hod_.nd[1][b][q] = hw*hod_.gl[1][q]*(rhom/m)*dlognudlogm(m)*occ;
       }
     }
-    cache[0] = cosmology.random;
-    cache[1] = Ntable.random;
-    cache[2] = nuisance.random_galaxy_bias;
-    cache[3] = redshift.random_clustering;
+
+    // Per a node, serially: D(a) and the nu-independent halves of the
+    // two Tinker kernels (the params/core split of the section banner);
+    // growfac and fnu_params_at run here, before the threads.
+    for (int j=0; j<na; j++) {
+      const double a = hod_.lim[0] + j*hod_.lim[2];
+      hod_.D[j] = growfac(a);
+      hod_.pb[j] = hb1nu_params_at(a);
+      hod_.pf[j] = fnu_params_at(a);
+    }
+
+    // Per (bin, a), threaded: the node sum of header item 2. collapse(2)
+    // makes the (b, j) pairs one iteration space, cut into contiguous
+    // static chunks; each entry is its own serial sum, so the result does
+    // not depend on the thread count. restrict: the node arrays are
+    // reached only through v0 and p, so no node is reloaded after each
+    // libm call inside the two kernels.
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int b=0; b<nbin; b++) {
+      for (int j=0; j<na; j++) {
+        const double* restrict v0 = hod_.nd[0][b];
+        const double* restrict p = hod_.nd[1][b];
+        const double D = hod_.D[j];
+        const hb1nu_params* pb = &hod_.pb[j];
+        const fnu_params* pf = &hod_.pf[j];
+        double sn = 0.0;
+        double sb = 0.0;
+        for (int q=0; q<nq; q++) {
+          const double nu = v0[q]/D;
+          const double tq = p[q]*fnu_core(nu, pf)*nu; // hw w_q dn/dlnM <N|M>
+          sn += tq;
+          sb += tq*hb1nu_core(nu, pb);
+        }
+        hod_.tab[0][b][j] = sn;     // ngal
+        hod_.tab[1][b][j] = sb/sn;  // bgal
+      }
+    }
+    // Tags of the inputs the tables hold.
+    hod_.cache[0] = cosmology.random;
+    hod_.cache[1] = Ntable.random;
+    hod_.cache[2] = nuisance.random_galaxy_bias;
+    hod_.cache[3] = redshift.random_clustering;
   }
-  return ((a < lim[0]) || (a > lim[1]))? 0.0 :
-    interpol1d(table[ni], Ntable.N_a, lim[0], lim[1], lim[2], a);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Comoving number density of the galaxies of lens bin ni at scale factor
+// a: the ngal(a) integral of the hod_tables header, read linearly from
+// hod_.tab[0][ni] on its a grid (interpol1d); 0 outside [1/(1 + z_max),
+// 1/(1 + z_min)] of the clustering n(z).
+//
+// Parameters:
+//   ni - lens bin, 0 <= ni < redshift.clustering_nbin (aborts otherwise)
+//   a  - scale factor
+//
+// Returns:
+//   ngal in (c/H0)^-3; 0 outside the a grid
+// ---------------------------------------------------------------------------
+double ngal(const int ni, const double a)
+{
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
+  }
+  hod_tables();
+  return ((a < hod_.lim[0]) || (a > hod_.lim[1])) ? 0.0 :
+    interpol1d(hod_.tab[0][ni], Ntable.N_a, hod_.lim[0], hod_.lim[1],
+               hod_.lim[2], a);
 }
 
 // ---------------------------------------------------------------------------
@@ -2859,41 +3054,29 @@ double bgal_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Mean halo bias of the galaxies of lens bin ni at scale factor a: the
+// number-weighted bgal(a) of the hod_tables header, read linearly from
+// hod_.tab[1][ni] on its a grid (interpol1d); 0 outside [1/(1 + z_max),
+// 1/(1 + z_min)] of the clustering n(z). The large-scale galaxy bias of
+// p_gm and p_gg.
+//
+// Parameters:
+//   ni - lens bin, 0 <= ni < redshift.clustering_nbin (aborts otherwise)
+//   a  - scale factor
+//
+// Returns:
+//   bgal, dimensionless; 0 outside the a grid
+// ---------------------------------------------------------------------------
 double bgal(const int ni, const double a)
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double** table = NULL;
-  static double lim[3]; // [0] = amin; [1] = amax; [2] = da
-
-  if (NULL == table || 
-      fdiff2(cache[1], Ntable.random) ||
-      fdiff2(cache[3], redshift.random_clustering)) 
-  {  
-    if (table != NULL) free(table); 
-    table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_a);
-    lim[0] = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
-    lim[1] = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_a - 1.0);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
+    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  if (fdiff2(cache[0], cosmology.random) || 
-      fdiff2(cache[1], Ntable.random)    ||
-      fdiff2(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[3], redshift.random_clustering)) 
-  {
-    (void) bgal_nointerp(0, lim[0], 1); // init static vars  
-    #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=0; i<redshift.clustering_nbin; i++) {
-      for (int j=0; j<Ntable.N_a; j++) {
-        table[i][j] = bgal_nointerp(i, lim[0] + j*lim[2], 0);
-      }
-    }
-    cache[0] = cosmology.random;
-    cache[1] = Ntable.random;
-    cache[2] = nuisance.random_galaxy_bias;
-    cache[3] = redshift.random_clustering;
-  }  
-  return (a < lim[0]) || (a > lim[1]) ? 0.0 : 
-    interpol1d(table[ni], Ntable.N_a, lim[0], lim[1], lim[2], a);
+  hod_tables();
+  return ((a < hod_.lim[0]) || (a > hod_.lim[1])) ? 0.0 :
+    interpol1d(hod_.tab[1][ni], Ntable.N_a, hod_.lim[0], hod_.lim[1],
+               hod_.lim[2], a);
 }
 
 // ---------------------------------------------------------------------------
