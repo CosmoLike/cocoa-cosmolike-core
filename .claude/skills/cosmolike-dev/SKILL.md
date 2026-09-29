@@ -242,10 +242,13 @@ Rules:
   interpolation into a gather with weights 0/1 (e.g. a halo-model mass
   integral quadratured on the sigma2 ln M nodes reads sigma2 exactly).
 - Code duplication across consumers is acceptable when it buys speed.
-- Gauss-Legendre sizes only from GSL's precomputed set (2–20, 32, 64,
-  96, 100, 128, 256, 512, 1024); the cosmo2D.c hdi ladders use
-  64/96/128/256/512/1024 ("predefined GSL tables"). GSL computes any
-  other size on the fly, with weights good to only ~5e-7. halo.c's
+- Gauss-Legendre sizes: always a size GSL has precomputed (tabulated).
+  The hdi ladders use 64, 96, 128, 256, 512, 1024, written inline at
+  each site, e.g. redshift_spline.c:
+  `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.
+  `malloc_gslint_glfixed` (basics.c) accepts any n and silently computes
+  a non-tabulated rule on the fly, with weights good to only ~5e-7: it
+  does not enforce the rule, the caller does. halo.c's
   `DEFAULT_INT_PREC` = 1000 (+500 per hdi step) and sigma2's head
   segment at odd hdi (48, 80 nodes) break this rule — known remaining
   work.
