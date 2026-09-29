@@ -63,15 +63,6 @@ double PkRatio_baryons(double k_NL, double a);
 
 double sigma2(const double M);
 
-double sigma2_nointerp(const double M, const double a);
-
-void sigma2_work(
-    const double* lnM, // ln halo masses in M_sun/h
-    const int nM,      // number of masses
-    const double a,    // scale factor for P_lin
-    double* out        // output sigma^2 per mass
-  );
-
 #ifdef __cplusplus
 }
 #endif

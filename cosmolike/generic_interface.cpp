@@ -562,20 +562,16 @@ void init_ntable_nm_internal(const int nm_internal) {
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostic reads of the halo-model mass variance sigma^2(M).
-//
-// compute_sigma2 reads the cached table (lobe-summed, and coarse-M
-// upsampled when Ntable.N_M_internal is active);
-// compute_sigma2_nointerp runs the lobe sum directly at one mass,
-// table-free. Their difference at a = 1 is the table's upsampling +
-// interpolation error. M in M_sun/h.
+// Diagnostic read of the halo-model mass variance sigma^2(M) at a = 1:
+// the cached table (lobe-summed, and coarse-M upsampled when
+// Ntable.N_M_internal is active). M in M_sun/h.
 //
 // Cache invalidation:
 // none here; the cached table rebuilds on cosmology.random /
 // Ntable.random as usual.
 //
 // Parameters:
-//   M - halo mass in M_sun/h (and a - scale factor, nointerp only)
+//   M - halo mass in M_sun/h
 //
 // Returns:
 //   sigma^2(M)
@@ -583,11 +579,6 @@ void init_ntable_nm_internal(const int nm_internal) {
 double compute_sigma2(const double M)
 {
   return sigma2(M);
-}
-
-double compute_sigma2_nointerp(const double M, const double a)
-{
-  return sigma2_nointerp(M, a);
 }
 
 
