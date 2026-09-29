@@ -425,6 +425,19 @@ Trapezoid rules, uniform in a log variable:
   set before the first call; `hod_.lim[0]` is a placeholder a for
   `HOD_nc`'s range check (the HOD does not depend on a).
 
+### The b_mag = 0 a-range trap (cosmo2D/redshift_spline)
+
+The lens bins' Limber a-range is gated on whether magnification is
+active: `redshift_spline.c` tests `gbmag(0, ni) != 0` and extends the
+range when it is. Crossing b_mag = 0 is therefore a DISCRETE quadrature
+change, not a smooth limit: any accuracy or consistency sweep in the
+magnification amplitude (e.g. the quadratic-structure and
+second-difference oracle tests of test_hod_cell.py) must keep every
+b_mag value nonzero, and a "magnification off" comparison arm uses a
+tiny amplitude (1e-3) instead of 0. Symptom of getting this wrong: a
+constant offset in the b_mag = 0 arm that mimics non-quadratic
+structure (identical third-difference residual at every spacing).
+
 ### Accuracy protocols
 
 Independent mpmath references; the record is the last run. Re-run when
