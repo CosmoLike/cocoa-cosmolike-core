@@ -88,7 +88,8 @@ typedef simde__m256d v4d;
 //
 //   u_nfw_c      = u(k|M) of the NFW profile, given its concentration c
 //   u_c          = u(k|M) of the halo matter profile (selects u_nfw_c)
-//   u_g          = u_g(k|M), the satellite-galaxy profile
+//   u_g          = u_g(k|M), the satellite-galaxy profile: u_nfw at
+//                  c_g = gc[ni] c(M) (computed inline by p_gm, p_gg)
 //   u_KS         = F/F0, the bound-gas pressure shape factor: F0 the
 //                  mass integral of the Komatsu-Seljak ("KS") bound-gas
 //                  density profile ("0": the k = 0 integral), F the
@@ -104,8 +105,6 @@ typedef simde__m256d v4d;
 //                  u_KS (GAS PROFILES banner; "y": the Compton-y,
 //                  thermal-SZ, field it sources)
 //   u_y_ejc      = the ejected-gas electron-pressure window
-//   n_s_cmv      = comoving number density of source galaxies (aborts
-//                  if run, see its header)
 //
 // Halo occupation distribution, HOD (Zehavi et al. 2011, 1005.2413):
 //
@@ -1145,50 +1144,6 @@ double u_c(
 
 
 // ---------------------------------------------------------------------------
-// Normalized Fourier transform of the satellite-galaxy profile of lens
-// bin ni: the NFW transform u_nfw_c with the halo's truncation radius
-// r_Delta and the concentration scaled by f_g = nuisance.gc[ni],
-//
-//   u_g(k|M) = u_nfw(k|M; c_g),   c_g(M) = f_g c(M),   r_s,g = r_Delta/c_g
-//
-// f_g = 1 puts the satellites on the dark matter profile (the
-// assumption of 1005.2413 sec. 2.3); f_g < 1 spreads them out, f_g > 1
-// concentrates them. f_g must be positive: c_g = 0 makes the NFW
-// normalization m(0) vanish, so the function aborts unless gc[ni] > 0.
-//
-// Parameters:
-//   c  - halo concentration c(M)
-//   k  - wavenumber in (c/H0)^-1
-//   m  - halo mass in M_sun/h
-//   a  - scale factor (unused by the NFW form)
-//   ni - lens bin (indexes nuisance.gc)
-//
-// Returns:
-//   u_g(k|M), dimensionless; 1 at k -> 0. Aborts unless nuisance.gc[ni]
-//   is positive.
-// ---------------------------------------------------------------------------
-double u_g(
-    const double c, // halo concentration c(M)
-    const double k, // wavenumber in (c/H0)^-1
-    const double m, // halo mass in M_sun/h
-    const double a, // scale factor (unused by the NFW form)
-    const int ni    // lens bin: selects the factor nuisance.gc[ni]
-  )
-{
-  if (!(nuisance.gc[ni] > 0)) {
-    log_fatal("galaxy concentration factor gc[%d] = %g must be > 0",
-              ni, nuisance.gc[ni]);
-    exit(1);
-  }
-  return u_nfw_c(c*nuisance.gc[ni], k, m, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Mean number of central galaxies of lens bin ni in a halo of mass M
 // (1005.2413 Eq. 7, central factor):
 //
@@ -2093,43 +2048,6 @@ double u_y_ejc(
   const double mu_e = 2./(1.+nuisance.gas[10]); // 2/(1 + f_H)
   
   return (num_p * m * frac_ejc(m) / mu_e) * E_w; // N_e k_B T_w
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Comoving number density of source galaxies at scale factor a: the
-// angular density per unit redshift divided by the comoving volume per
-// unit redshift and solid angle,
-//
-//   n(a) = n_gal n_src(z) / [dV/(dz dOmega)],   z = 1/a - 1
-//
-//   n_gal          = survey.n_gal times survey.n_gal_conversion_factor
-//                    (arcmin^-2 -> sr^-1)
-//   n_src(z)       = nz_source_photoz(z, -1), intended as the all-bin
-//                    source redshift distribution with unit integral
-//   dV/(dz dOmega) = f_K(chi)^2 dchi/dz = f_K(chi)^2/(H/H0),
-//                    in (c/H0)^3
-//
-// Aborts: nz_source_photoz(z, -1) exits on nj < 0 (redshift_spline.c),
-// so the call never returns.
-//
-// Parameters:
-//   a - scale factor
-//
-// Returns:
-//   n in (c/H0)^-3
-// ---------------------------------------------------------------------------
-double n_s_cmv(
-    double a  // scale factor
-  )
-{ 
-  double dV_dz = pow(f_K(chi(a)), 2.0) / hoverh0(a);
-  return nz_source_photoz(1.0/a - 1., -1) * survey.n_gal * 
-    survey.n_gal_conversion_factor / dV_dz;
 }
 
 // ---------------------------------------------------------------------------
