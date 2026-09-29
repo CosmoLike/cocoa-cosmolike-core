@@ -240,6 +240,9 @@ typedef struct {
   double GAMMA; // C
 } hb1nu_params;
 
+#if Delta != 200
+#error "hb1nu_params_at: the Tinker bias literals assume Delta = 200"
+#endif
 static inline hb1nu_params hb1nu_params_at(
     const double a __attribute__((unused)) // scale factor (unused: the
                                            // Delta = 200 fit is z-free)
@@ -250,12 +253,26 @@ static inline hb1nu_params hb1nu_params_at(
   {
     case HALO_BIAS_TINKER_2010:
     {
-      const double y = log10(200.0);
-      p.ALPHA = 1.0 + 0.24 * y * exp(-pow(4.0 / y, 4.0));
-      p.pa    = 0.44 * y - 0.88;
-      p.dca   = pow(delta_c, 0.44 * y - 0.88);
+      // Table 2 of 1001.3162 at y = log10(Delta) = log10(200)
+      // = 2.30102999566398119521. Every coefficient is a function of
+      // that constant, so each is a constant too, written to 21
+      // significant digits (mpmath at 40 digits):
+      //
+      //   ALPHA = A = 1 + 0.24 y exp[-(4/y)^4]
+      //   pa    = a = 0.44 y - 0.88
+      //   dca   = delta_c^a, delta_c = 1.686
+      //   GAMMA = C = 0.019 + 0.107 y + 0.19 exp[-(4/y)^4]
+      //
+      // Literals, not expressions: the default build compiles with
+      // -frounding-math, which forbids the compiler from folding an
+      // inexact constant expression (its value would depend on the
+      // run-time rounding mode), so log10/exp/pow of constants would
+      // run on every call.
+      p.ALPHA = 1.00005974393421592059;
+      p.pa    = 0.132453198092151725894;
+      p.dca   = 1.07163776686581864305;
       p.BETA  = 0.183;
-      p.GAMMA = 0.019 + 0.107 * y + 0.19 * exp(-pow(4.0 / y, 4.0));
+      p.GAMMA = 0.265230764366423426079;
       break;
     }
     default:
