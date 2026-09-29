@@ -745,6 +745,37 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 }
 
 // ---------------------------------------------------------------------------
+// Switch the galaxy probes to the halo-model (HOD) galaxy power,
+// writing cosmo2D.c's include_HOD_GX through set_include_HOD_GX: 0 =
+// the perturbative galaxy bias model (the default), 1 = C_l^gg from
+// p_gg/p_gm of halo.c (HOD occupations set per lens bin with
+// set_nuisance_hod). HOD C_l^gg is Limber-only, so 1 requires
+// adopt_limber_gg = 1; the batched engine aborts otherwise. Likelihood
+// yaml key: include_HOD_GX. The C_l^gg table keys its cache on the
+// flag, so flipping it takes effect on the next data vector.
+//
+// Validation: the value must be 0 or 1, else critical() + exit(1).
+//
+// Parameters:
+//   include_HOD_GX - 0 = perturbative galaxy bias, 1 = HOD galaxy power
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_include_HOD_GX(const int include_HOD_GX)
+{
+  static constexpr std::string_view fname = "init_include_HOD_GX"sv;
+  debug("{}: {}", fname, errbegins);
+  if (include_HOD_GX != 0 && include_HOD_GX != 1) {
+    critical("{}: invalid include_HOD_GX = {}", fname, include_HOD_GX);
+    exit(1);
+  }
+  set_include_HOD_GX(include_HOD_GX);
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

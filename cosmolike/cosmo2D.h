@@ -71,6 +71,11 @@ double C_gs_tomo_limber(const double l, const int ni, const int nj);
 
 double C_gg_tomo_limber(const double l, const int ni, const int nj);
 
+// runtime switch and reader of the HOD gate (cosmo2D.c include_HOD_GX)
+void set_include_HOD_GX(const int flag);
+
+int get_include_HOD_GX(void);
+
 double C_ks_tomo_limber(const double l, const int ni);
 
 double C_gk_tomo_limber(const double l, const int ni);

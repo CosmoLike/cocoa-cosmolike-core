@@ -621,6 +621,10 @@ void init_adopt_limber_gg(
     const int adopt_limber_gg
   );
 
+void init_include_HOD_GX(
+    const int include_HOD_GX
+  );
+
 void init_accuracy_boost(
     const double accuracy_boost,
     const int integration_accuracy

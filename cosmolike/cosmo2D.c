@@ -33,10 +33,14 @@
 #include "simde/x86/fma.h"
 #endif
 
-// Compile-time physics gates for the Limber integrands (0 or 1).
+// Physics gates for the Limber integrands (0 or 1). include_HOD_GX is
+// runtime-switchable (set_include_HOD_GX); the RSD gates are
+// compile-time.
 //
-//   include_HOD_GX    = HOD galaxy power in the gg/gk probes; the
-//                       batched paths abort (log_fatal) when it is set
+//   include_HOD_GX    = halo-model (HOD) galaxy power in the galaxy
+//                       probes: gg reads p_gg/p_gm from halo.c
+//                       (Limber-only; no RSD, no one-loop bias); the
+//                       gs/gk batched paths still abort. 0 by default.
 //   include_RSD_GS/GK = add the W_RSD (redshift-space distortion)
 //                       kernel to that probe's Limber integrand
 //   include_RSD_GG    = same gate for gg; defaults to 1 so the Limber
@@ -48,6 +52,26 @@ static int include_RSD_GS = 0; // 0 or 1
 static int include_RSD_GG = 1; // 0 or 1 
 static int include_RSD_GK = 0; // 0 or 1
 static int include_RSD_GY = 0; // 0 or 1
+
+// ---------------------------------------------------------------------------
+// Runtime switch of include_HOD_GX (generic_interface.cpp
+// init_include_HOD_GX; the likelihoods read the yaml key of the same
+// name). The C_l^gg interpolation table keys its cache on the flag, so
+// flipping it rebuilds the table on the next read.
+// ---------------------------------------------------------------------------
+void set_include_HOD_GX(const int flag)
+{
+  if (flag != 0 && flag != 1) {
+    log_fatal("invalid include_HOD_GX = %d (0 or 1)", flag);
+    exit(1);
+  }
+  include_HOD_GX = flag;
+}
+
+int get_include_HOD_GX(void)
+{
+  return include_HOD_GX;
+}
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -4470,12 +4494,40 @@ static void C_gg_tomo_limber_work(
     double** table                // output [clustering_nbin][nell]
   )
 {
-  if (1 == include_HOD_GX) {
-    log_fatal("HOD not implemented in the batched gg path"); exit(1);
+  // -------------------------------------------------------------------------
+  // HOD mode (include_HOD_GX = 1): the galaxies are the halo-model
+  // occupation field, so the density weight is W_gal alone (the legacy
+  // W_HOD weight n_i(z) H/H0; no bias factor - the bias lives inside
+  // the HOD spectra) and the power comes from halo.c:
+  //
+  //   density-density         W_gal^2                  p_gg(k, a, zl, zl)
+  //   density-magnification   2 W_gal W_mag ep b_mag   p_gm(k, a, zl)
+  //   magnification-magnif.   (W_mag ep b_mag)^2       P_delta(k, a)
+  //
+  // The one-loop bias expansion and the RSD term have no HOD
+  // counterpart (the legacy C_cl_HOD carried neither); both are off in
+  // this mode. HOD C_l^gg is Limber-only, so the linear term of the
+  // non-Limber split aborts: run with adopt_limber_gg = 1.
+  // -------------------------------------------------------------------------
+  const int hod = include_HOD_GX;
+  if (1 == hod && 1 == use_linear_ps) {
+    log_fatal("HOD C_l^gg is Limber-only: set adopt_limber_gg = 1");
+    exit(1);
   }
+
   const int nbin = redshift.clustering_nbin;
   const int npts = cn_all[0].npts;
-  const int nonlinear_bias = (0 == use_linear_ps) ? has_b2_galaxies() : 0;
+
+  int nonlinear_bias = 0;
+  if (0 == use_linear_ps && 0 == hod) {
+    nonlinear_bias = has_b2_galaxies();
+  }
+
+  // RSD is not part of the HOD model (see the note above)
+  int rsd = 0;
+  if (1 == include_RSD_GG && 0 == hod) {
+    rsd = 1;
+  }
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -4494,7 +4546,14 @@ static void C_gg_tomo_limber_work(
     }
     (void) gb1(0.1, 0);
     (void) gbmag(0.1, 0);
-    if (1 == include_RSD_GG) {
+    if (1 == hod) {
+      // halo.c builds its (a, ln k) tables inside its own OpenMP
+      // regions; trigger the builds here, before this function's
+      // parallel regions (one call fills every lens bin)
+      (void) p_gg(ell/fK, a, 0, 0);
+      (void) p_gm(ell/fK, a, 0);
+    }
+    if (1 == rsd) {
       (void) chi(limits.a_min);
       (void) a_chi(0.9);
       (void) W_RSD(100, 0.9, 0.95, 0);
@@ -4509,7 +4568,7 @@ static void C_gg_tomo_limber_work(
       }
     }
   }
-  const double chi_a_min = (1 == include_RSD_GG) ? chi(limits.a_min) : 0.0;
+  const double chi_a_min = (1 == rsd) ? chi(limits.a_min) : 0.0;
   double limbias[3] = {0.0, 0.0, 0.0};
   double s4 = 0.0;
   if (1 == nonlinear_bias) {
@@ -4524,6 +4583,12 @@ static void C_gg_tomo_limber_work(
   // -----------------------------------------------------------------------
   double*** WB  = (double***) malloc3d(4, nbin, npts);
   double**** KG = (double****) malloc4d(3, nbin, nell, npts);
+  // HOD spectra at the nodes: KH[0] = p_gg(k, a, zl, zl),
+  // KH[1] = p_gm(k, a, zl)
+  double**** KH = NULL;
+  if (1 == hod) {
+    KH = (double****) malloc4d(2, nbin, nell, npts);
+  }
   double*** WO  = NULL;
   double**** KB = NULL;
   if (1 == nonlinear_bias) {
@@ -4597,7 +4662,11 @@ static void C_gg_tomo_limber_work(
                                        p_lin(k, apivw[zl]);
           KG[1][zl][i][p] = 0.0;
           KG[2][zl][i][p] = 1.0;
-          if (1 == include_RSD_GG) {
+          if (1 == hod) {
+            KH[0][zl][i][p] = p_gg(k, a, zl, zl);
+            KH[1][zl][i][p] = p_gm(k, a, zl);
+          }
+          if (1 == rsd) {
             // two-radius sampling: see the W_RSD note in
             // C_gs_tomo_limber_work. The mask: the distance tables
             // cover a >= limits.a_min, i.e. chi <= chi(a_min); a node
@@ -4671,7 +4740,24 @@ static void C_gg_tomo_limber_work(
       const double* restrict mask   = KG[2][zl][i];
 
       double sum = 0.0;
-      if (1 == nonlinear_bias) {
+      if (1 == hod) {
+        /* PHYSICAL DERIVATION & LOGIC FLOW
+           1. galaxy density weight  W_d = W_gal    (no bias factor)
+           2. magnification weight   W_m = W_mag ell_prefactor b_mag
+           3. Limber sum over the nodes p:
+              C_l^gg += [W_d^2 p_gg + 2 W_d W_m p_gm + W_m^2 P_delta]
+                        (dchi/da) w_p / f_K^2                          */
+        const double* restrict PGG = KH[0][zl][i];
+        const double* restrict PGM = KH[1][zl][i];
+        #pragma omp simd reduction(+:sum)
+        for (int p=0; p<npts; p++) {
+          const double Wd = WGAL[p];
+          const double Wm = WMAG[p]*ep*bmag[p];
+          const double P2 = Wd*Wd*PGG[p] + 2.0*Wd*Wm*PGM[p] + Wm*Wm*PK[p];
+          sum += (P2*dchida[p]/(fK[p]*fK[p]))*wt[p];
+        }
+      }
+      else if (1 == nonlinear_bias) {
         const double* restrict growfac = cn->data[CN_GROWFAC];
         const double* restrict b2   = WO[0][zl];
         const double* restrict bs2  = WO[1][zl];
@@ -4713,6 +4799,9 @@ static void C_gg_tomo_limber_work(
   free(WB); free(KG);
   if (WO != NULL) free(WO);
   if (KB != NULL) free(KB);
+  if (KH != NULL) {
+    free(KH);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4971,7 +5060,8 @@ double C_gg_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_clustering) ||
       fdiff2(cache[2], redshift.random_clustering) ||
       fdiff2(cache[3], Ntable.random) ||
-      fdiff2(cache[4], nuisance.random_galaxy_bias))
+      fdiff2(cache[4], nuisance.random_galaxy_bias) ||
+      fdiff2(cache[5], (uint64_t) include_HOD_GX))
   {
     double* lx = (double*) malloc1d(nell);
     for (int i=0; i<nell; i++) {
@@ -4984,6 +5074,7 @@ double C_gg_tomo_limber(
     cache[2] = redshift.random_clustering;
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
+    cache[5] = (uint64_t) include_HOD_GX;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
