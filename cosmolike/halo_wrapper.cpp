@@ -198,9 +198,13 @@ double hb1nu_cpp(
 // Multiplicity function f(nu) of the Tinker et al. 2010 mass function,
 // Eqs. 8-12 with the Table 4 parameters at Delta = 200; the redshift
 // evolution of the parameters is frozen beyond z = 3 (the fit's range).
+// The amplitude alpha of f(nu) is set at every a by Eq. 7 of the paper,
+// int b f dnu = 1 over all nu (matter is unbiased with respect to
+// itself).
 //
-// Calls halo.c fnu (fit selected by like.halo_model[0]). A closed form,
-// no table.
+// Calls halo.c fnu (fit selected by like.halo_model[0]): a closed form
+// in nu whose alpha is read from a table in a (halo.c tinker_alpha,
+// built once per process).
 //
 // Parameters:
 //   nu - peak height delta_c/sigma(M, a)
@@ -287,10 +291,14 @@ double dlognudlogm_cpp(
 //
 //   bias_norm(a) = int_{nu(M_min)}^{nu(M_max)} b(nu) f(nu) dnu
 //
-// with M_min, M_max = limits.halo_m_min, limits.halo_m_max. Over ALL
-// masses the Tinker fits give int b f dnu = 1 (matter is unbiased with
-// respect to itself); the 2-halo term divides by bias_norm so that this
-// stays true for the finite mass range the code integrates.
+// with M_min, M_max = limits.halo_m_min, limits.halo_m_max. Over all
+// nu the integral is 1 by construction: the amplitude alpha of f(nu) is
+// set at every a by Tinker et al. 2010 Eq. 7, int b f dnu = 1 (matter
+// is unbiased with respect to itself; halo.c tinker_alpha). Over the
+// tabulated mass range it is below 1, because the light halos under
+// M_min hold a sizable share of the matter; the 2-halo term divides by
+// bias_norm so that the relation holds for the finite mass range the
+// code integrates.
 //
 // Calls halo.c bias_norm: a cached table on Ntable.N_a nodes in a over
 // [limits.a_min, 0.9999999], filled by one bias_norm_work call and read
