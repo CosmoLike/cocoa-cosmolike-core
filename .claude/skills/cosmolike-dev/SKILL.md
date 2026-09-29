@@ -248,10 +248,7 @@ Rules:
   `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.
   `malloc_gslint_glfixed` (basics.c) accepts any n and silently computes
   a non-tabulated rule on the fly, with weights good to only ~5e-7: it
-  does not enforce the rule, the caller does. halo.c's
-  `DEFAULT_INT_PREC` = 1000 (+500 per hdi step) and sigma2's head
-  segment at odd hdi (48, 80 nodes) break this rule — known remaining
-  work.
+  does not enforce the rule, the caller does.
 
 Worked example: `sigma2` (cosmo3D.c) — the lobe-node cache is built in
 its Ntable rebuild block, and one threaded lobe-sum loop refills the
