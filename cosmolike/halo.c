@@ -448,15 +448,19 @@ static double tinker_alpha(
   // The table and the pair of fits it holds; NULL and {-1, -1} make
   // the first call build.
   static int key[2] = {-1, -1};  // like.halo_model[0..1] of the table
+  static uint64_t ntable_key = 0; // Ntable.random of the table (sizes)
   static double* table = NULL;   // [ND] alpha on the dense aa grid
   static double lim[3];          // aa_min, aa_max, dense spacing
-  const int ND = 4096;           // dense lookup nodes on [0.25, 1]
+  static int ND = 0;             // dense lookup nodes on [0.25, 1]
 
   // Build block: the first call, or a change of the fits in use.
   if (NULL == table ||
       key[0] != like.halo_model[0] ||
-      key[1] != like.halo_model[1])
+      key[1] != like.halo_model[1] ||
+      fdiff2(ntable_key, Ntable.random))
   {
+    ND = Ntable.halo_hmf_nd[like.halo_model[0]];
+
     /* PHYSICAL DERIVATION & LOGIC FLOW
        1. trapezoid in s = ln nu: bias_weight[q] = w_q nu_q b(nu_q)
        2. alpha_coarse[i] = 1/sum_q bias_weight[q] ftilde(nu_q; aa_i)
@@ -466,8 +470,8 @@ static double tinker_alpha(
     // --- 1. COARSE PADDED aa NODES ---
     // aa_i = aa0 + i hc: NC exact nodes on [0.25, 1] plus PAD beyond
     // each end; 0.75 below is the width of the [0.25, 1] range.
-    const int NC  = 128;  // exact nodes on [0.25, 1]
-    const int PAD = 6;    // exact padding nodes beyond each end
+    const int NC  = Ntable.halo_hmf_nc[like.halo_model[0]]; // exact nodes
+    const int PAD = Ntable.halo_spline_pad; // exact nodes beyond each end
     const int NE  = NC + 2*PAD;
     const double hc  = 0.75/((double) NC - 1.0);
     const double aa0 = 0.25 - PAD*hc;
@@ -563,6 +567,7 @@ static double tinker_alpha(
     // --- 6. RECORD THE FITS THE TABLE HOLDS ---
     key[0] = like.halo_model[0];
     key[1] = like.halo_model[1];
+    ntable_key = Ntable.random;
   }
 
   return interpol1d(table, ND, lim[0], lim[1], lim[2], aa);
@@ -1442,22 +1447,39 @@ double HOD_fc(
 //
 //   theta(x) = ln(1 + x)/x,   g(x) = x theta(x)^p,   p = Gamma/(Gamma - 1).
 //
-// theta^p is the KS pressure profile. u_KS integrates g(x) e^{iyx}
-// along the rays x = i tau and x = c + i tau (tau >= 0), where
-// Re x >= 0: the branch cut of ln(1 + x), the real axis left of
-// x = -1, is never approached.
+// theta is the gas temperature in units of the central one, T_g/T_v:
+// for a polytrope (P proportional to rho^Gamma) in hydrostatic
+// equilibrium, T_g is a linear function of the potential, and the NFW
+// potential is proportional to ln(1 + x)/x (2005.00009 sec. 3.2, the
+// rho_bnd equation, after Komatsu & Seljak 2001). rho_bnd = theta^q and
+// P_e = theta^p (in central units) follow from P ~ rho^Gamma and
+// P ~ rho T. On the real axis x >= 0, theta falls from 1 at the
+// centre to ln(1 + c)/c at the edge.
+//
+// Why complex x: u_KS traces the Fourier integral of theta^p off the
+// real axis onto the rays x = i tau and x = c + i tau (tau >= 0), where
+// e^{iyx} stops oscillating. Both rays lie in Re x >= 0, so the branch
+// cut of ln(1 + x), the real axis left of x = -1, is never approached,
+// and theta is analytic on and between the rays (needed by the Cauchy
+// argument of the u_KS header).
 // ---------------------------------------------------------------------------
 static inline double complex ks_ctheta(
     const double complex x  // complex radius r/r_s, Re x > -1
   )
 {
   /* PHYSICAL DERIVATION & LOGIC FLOW
-     1. theta(x) = ln(1 + x)/x, a 0/0 at x = 0
-     2. |x| < X_TAYLOR: the Taylor series of theta takes over (the
-        dropped term, |x|^5/6, is ~1e-21 there)
+     1. theta(x) = ln(1 + x)/x, a 0/0 at x = 0 (theta(0) = 1); the
+        u_KS rays start at x = 0 and x = c, and the ln tau grid of P
+        reaches far below |x| = 1, so tiny |x| is a normal input
+     2. |x| < X_TAYLOR: the Taylor series ln(1 + x)/x = 1 - x/2 +
+        x^2/3 - x^3/4 + x^4/5 - ... takes over (the dropped term,
+        |x|^5/6, is ~1e-21 there)
      3. else ln1p = ln(1 + x), built from its two parts:
         Re ln(1 + x) = ln|1 + x| = (1/2) log1p(2 Re x + |x|^2)
-        Im ln(1 + x) = arg(1 + x) = atan2(Im x, 1 + Re x)  in (-pi, pi] */
+        Im ln(1 + x) = arg(1 + x) = atan2(Im x, 1 + Re x)  in (-pi, pi]
+        log1p of the small quantity |1 + x|^2 - 1 = 2 Re x + |x|^2 keeps
+        the real part accurate for |x| << 1 (on the ray x = i tau it is
+        log1p(tau^2)/2, where ln(1 + tau^2) would lose digits) */
 
   // below this |x| the series replaces the 0/0 form ln(1 + x)/x
   const double X_TAYLOR = 1e-4;
@@ -1481,9 +1503,18 @@ static inline double complex ks_cg(
   )
 {
   /* PHYSICAL DERIVATION & LOGIC FLOW
-     1. g(x) = x theta(x)^p, the power taken with the principal log:
-        |arg theta| < pi/2 on the contour rays, so g is one continuous
-        analytic function there */
+     1. g(x) = x theta(x)^p is the integrand of the pressure transform
+        F (u_KS header): x^2 theta^p sin(yx)/(yx) = g(x) sin(yx)/y
+     2. p is not an integer, so theta^p means exp(p ln theta) and needs
+        one branch of ln theta on the whole closed region the u_KS
+        contour encloses (Re x >= 0, Im x >= 0). The principal branch
+        serves, because Re theta > 0 there:
+          Re theta = [ln|1 + x| Re x + arg(1 + x) Im x]/|x|^2,
+        and both terms are >= 0 in that quadrant (|1 + x| >= 1 and
+        0 <= arg(1 + x) < pi/2), vanishing together only at x = 0,
+        where theta = 1. So |arg theta| < pi/2, theta never crosses the
+        cut of clog (the negative real axis), and g is one analytic
+        function on and between the rays x = i tau and x = c + i tau */
   return x*cexp(p*clog(ks_ctheta(x)));
 }
 
@@ -1500,7 +1531,10 @@ static inline double complex ks_cg(
 //
 // with c = 0 at both ends (natural). In the code c_coef[j] = c_j and
 // y_dense[j m + r] = S(x_j + r h_coarse/m); r = 0 returns y_j exactly.
-// u_KS upsamples its three 1D tables (ln P, ln F0, ln g) with it.
+// u_KS upsamples its three 1D tables (ln P, ln F0, ln g) with it: the
+// coarse values are exact but costly, the dense grid is what the
+// lookup reads linearly, and the natural end condition is harmless
+// because the used range stops PAD coarse nodes short of both ends.
 // ---------------------------------------------------------------------------
 static void ks_upsample1d(
     const double* y_coarse, // coarse values
@@ -1549,45 +1583,109 @@ static void ks_upsample1d(
 // is the Komatsu-Seljak ("KS") density profile of gas in hydrostatic
 // equilibrium inside an NFW halo, theta^p its pressure profile and
 // Gamma = nuisance.gas[0] its polytropic index (2005.00009 sec. 3.2,
-// the rho_bnd equation). The full window W_p is
+// the rho_bnd equation; Komatsu & Seljak 2001).
 //
-//   W_p(M, k) = [k_B T_v f_bnd M/(m_p mu_e)] u_KS.
+// 0. From the pressure window to u_KS. The window is the Fourier-
+// weighted volume integral of the electron pressure (GAS PROFILES
+// banner),
 //
-// Unlike the matter u(k|M), u_KS does not tend to 1 at k -> 0:
-// u_KS(c, 0) = <T_g>/T_v < 1, the mass-weighted gas temperature in units
-// of the central one (theta(0) = 1), and |u_KS(c, k)| <= u_KS(c, 0).
+//   W_p(M, k) = int_0^{r_v} 4 pi r^2 [sin(kr)/(kr)] P_e(r) dr,
+//
+// with P_e = n_e k_B T_g, n_e = rho_bnd/(m_p mu_e), rho_bnd = rho_0
+// theta^q and T_g = T_v theta (the KS solution: the temperature tracks
+// theta, the density its power 1/(Gamma - 1), ks_ctheta). Together
+// P_e = [rho_0 k_B T_v/(m_p mu_e)] theta^{q+1}, and q + 1 = p. rho_0
+// is fixed by the bound-gas mass,
+//
+//   f_bnd M = int_0^{r_v} 4 pi r^2 rho_bnd dr = 4 pi rho_0 r_s^3 F0(c),
+//
+// after r = r_s x, r_v = r_s c. The same substitution in W_p, with
+// kr = y x and x^2 sin(yx)/(yx) = x sin(yx)/y, gives 4 pi rho_0 r_s^3
+// F(c, y) times the pressure prefactor, so
+//
+//   W_p(M, k) = [k_B T_v f_bnd M/(m_p mu_e)] F/F0
+//             = [k_B T_v f_bnd M/(m_p mu_e)] u_KS:
+//
+// the gas mass, times k_B T_v per unit electron mass, times the shape
+// factor; rho_0 and r_s^3 cancel between F and F0. Unlike the matter
+// u(k|M), u_KS does not tend to 1 at k -> 0: u_KS(c, 0) = <T_g>/T_v
+// < 1, the mass-weighted gas temperature in units of the central one
+// (theta(0) = 1), and |u_KS(c, k)| <= u_KS(c, 0).
 //
 // Two phases appear below: y = k r_s, the argument of the integral, and
-// z = y c = k r_v, the phase at the outer edge x = c. The sin(y x) makes
-// u ring like cos z under a slowly falling envelope out to z ~ 1e4, far
-// too many zero crossings for a table of u itself. So u is tabulated
-// directly only at small z (item 3); above, the oscillation is taken out
-// of the integral analytically and put back exactly at lookup (items 1
-// and 2).
+// z = y c = k r_v, the phase at the outer edge x = c. The profile is
+// cut off sharply at r_v, and a sharp edge in real space rings in
+// Fourier space: the sin(y x) makes u oscillate like cos z under a
+// slowly falling envelope out to very large z, far too many zero
+// crossings for a table of u itself. So u is tabulated directly only
+// below the switch phase ZSW (item 3); above, the oscillation is taken
+// out of the integral analytically and put back exactly at lookup
+// (items 1 and 2).
 //
-// 1. The contour formula (z >= ZSW). With g(x) = x theta(x)^p,
+// 1. The contour formula (z >= ZSW). Write the sine as the imaginary
+// part of a complex exponential: with g(x) = x theta(x)^p (ks_cg),
 //
 //   F = Im J/y,    J(c, y) = int_0^c g(x) e^{i y x} dx.
 //
-// g is analytic in the upper half plane (the branch cut of ln(1 + x)
-// runs along x < -1), so by Cauchy's theorem the path 0 -> c can be
-// traded for the two vertical rays x = i tau and x = c + i tau, tau in
-// [0, inf) (the edge closing them at Im x -> inf drops out, e^{iyx} -> 0
-// there). On the rays e^{iyx} is the real, decaying e^{-y tau}: nothing
-// oscillates, and the whole phase sits in the one factor e^{iz} of the
-// second ray. With tau = c t on that ray and g(c) pulled out,
+// g is analytic on the closed quadrant Re x >= 0, Im x >= 0 (the branch
+// cut of ln(1 + x) runs along x < -1, and theta^p keeps its principal
+// branch there, ks_cg). Cauchy's theorem on the rectangle
+//
+//       i T -------------- c + i T    top edge: |e^{iyx}| = e^{-yT} -> 0
+//        ^                   ^        as T -> inf, so it drops out
+//        |                   |
+//        0 ---------------> c        the wanted path
+//
+// says the path 0 -> c equals the ray 0 -> i inf minus the ray
+// c -> c + i inf. On both rays e^{iyx} is the real, decaying
+// e^{-y tau}: nothing oscillates, and the whole phase sits in the
+// single factor e^{iyc} = e^{iz} of the second ray:
+//
+//   ray 0:  x = i tau,     dx = i dtau:
+//           i int_0^inf g(i tau) e^{-y tau} dtau           = i I0(y)
+//   ray c:  x = c + i tau, dx = i dtau:
+//           i e^{iz} int_0^inf g(c + i tau) e^{-y tau} dtau.
+//
+// On the second ray tau = c t (t is the height in units of c, so the
+// same t window serves every c), c = z/y and g(c) is pulled out:
 //
 //   J = i I0(y) - e^{iz} (i g(c)/y) Q(c, z),
 //
-//   P(y)    = Re I0(y) = Re int_0^inf g(i tau) e^{-y tau} dtau,
-//   Q(c, z) = z int_0^inf [g(c + i c t)/g(c)] e^{-z t} dt,
+//   I0(y)   = int_0^inf g(i tau) e^{-y tau} dtau,     P(y) = Re I0(y),
+//   Q(c, z) = z int_0^inf [g(c + i c t)/g(c)] e^{-z t} dt.
+//
+// Taking the imaginary part, Im[i I0] = Re I0 = P and Im[i e^{iz} Q] =
+// Re[e^{iz} Q] = cos z Re Q - sin z Im Q, and dividing by y F0,
 //
 //   u = [P(y) - (g(c)/y) (cos z Re Q - sin z Im Q)]/(y F0(c)).
 //
-// P, Q, g and F0 are smooth and tabulated; cos z and sin z are exact at
-// lookup. The weight z e^{-zt} of Q has unit integral and averages the
-// ratio over t up to ~1/z, where the ratio is near 1, so Q -> 1 as
-// z -> inf; above ZHI = 2.5e5, Q is held at its ZHI value.
+// What each piece means:
+//
+// - P comes from the ray anchored at the centre x = 0. P/y is the
+//   transform of the untruncated profile (send c -> inf: the second
+//   ray drops out, g(c) -> 0) - the smooth part of u.
+//
+// - Q comes from the ray anchored at the edge x = c: the correction
+//   for cutting the profile at r_v, which carries the ringing.
+//
+// - Q -> 1 at large z. Its weight z e^{-zt} has unit integral and
+//   averages the ratio g(c + i c t)/g(c) over t up to ~1/z, where the
+//   ratio is near 1. The ringing then tends to -g(c) cos z/(y^2 F0):
+//   the pressure at the edge times the phase at the edge.
+//
+// - At large y, g(i tau) = i tau + p tau^2/2 + ... (theta = 1 - x/2 +
+//   ... at small x, ks_ctheta), so P -> p/y^3: the P term of u falls
+//   like 1/y^4, against the 1/y^2 of the Q term.
+//
+// - P, Q, g and F0 are smooth and tabulated; cos z and sin z are exact
+//   at lookup. Above ZHI, the top of the ln z axis, Q is held at its
+//   top value, which is 1 to O(1/ZHI).
+//
+// Why not use the contour formula down to z = 0: as z -> 0 the weight
+// z e^{-zt} spreads out to t ~ 1/z, the two ray integrals grow and
+// nearly cancel in u, and neither fits a fixed window in ln t. The
+// direct table of item 3 covers that end; ZSW is the phase where the
+// two meet.
 //
 // 2. Q and P by the trapezoid rule in s = ln t (t = e^s, dt = t ds, and
 // tau = t/y in P):
@@ -1595,27 +1693,37 @@ static void ks_upsample1d(
 //   Q(c, z) = z int [g(c + i c t)/g(c)] t e^{-z t} ds,
 //   P(y)    = (1/y) int Re g(i t/y) t e^{-t} ds.
 //
-// Each integrand is one smooth bump (like e^s toward s -> -inf, like
-// exp(-e^s) toward +inf), on which the trapezoid rule converges
-// exponentially in the step h. The bump of P sits at the same s for
-// every y; with the ln y spacing hy = h/rP, rP an integer, every
-// t_k/y_j is a node of one grid in ln tau, so g(i tau) is evaluated
-// once per node rather than once per (k, j) pair.
+// Each integrand is one smooth bump (a power of e^s toward s -> -inf,
+// like exp(-e^s) toward +inf), on which the trapezoid rule converges
+// exponentially in the step h (the classic result for integrands
+// analytic in a strip around the real s axis); the end weights need
+// no halving because the integrand vanishes at both ends of the
+// window. In P the cut-off e^{-t} is the same for every y, so one s
+// window serves all y; with the ln y spacing hy = h/rP, rP an integer,
+// every t_k/y_j is a node of one grid in ln tau, so g(i tau) is
+// evaluated once per node rather than once per (k, j) pair. In Q the
+// cut-off e^{-zt} moves with z, but z >= ZSW keeps it inside the same
+// window.
 //
-// 3. Small z (z < ZSW = 3): u tabulated directly on (ln c, w = z^2).
+// 3. Small z (z < ZSW): u tabulated directly on (ln c, w = z^2).
 // With x = c s (the c^3 of both integrals cancels),
 //
 //   u(c, z) = int_0^1 s sin(z s)/z theta(c s)^p ds
 //             / int_0^1 s^2 theta(c s)^q ds,
 //
-// two Gauss-Legendre integrals on [0, 1]. u is even in z, so it is a
-// straight line in w near z = 0 (u0 - a w + ...). At the padding nodes
-// w < 0, z = i kappa with kappa = sqrt(-w), and sin(z s)/z =
-// sinh(kappa s)/kappa.
+// two Gauss-Legendre integrals on [0, 1]. sin(z s)/z = s - z^2 s^3/6 +
+// ... is even in z, so u is an analytic function of w = z^2 and a
+// straight line in w near z = 0 (u0 - a w + ...); tabulating in w
+// rather than z gives the spline a smooth function through z = 0. At
+// the padding nodes w < 0, z = i kappa with kappa = sqrt(-w), and
+// sin(z s)/z = sinh(kappa s)/kappa: the same analytic function,
+// continued to negative w.
 //
 // 4. Tables. Each smooth ingredient is computed exactly on a coarse
 // uniform grid, upsampled by a natural cubic spline onto a dense grid
-// sharing its ends, and read from the dense grid by linear interpolation:
+// sharing its ends, and read from the dense grid by linear
+// interpolation (exact values are expensive, the spline makes them
+// dense, the linear read is a direct index):
 //
 //   quantity        axes          coarse               dense
 //   u (item 3)      ln c, w       u_coarse[i][j]       u_dense
@@ -1623,15 +1731,23 @@ static void ks_upsample1d(
 //   ln P            ln y          lnP_coarse[j]        lnP_dense
 //   ln F0, ln g     ln c (1D)     lnF0g_coarse[0|1]    lnF0g_dense[0|1]
 //
+// Why these axes: u depends on (c, z) only (item 3); Q on (c, z) by
+// its definition; P on y alone, which is what makes it a 1D table; g
+// and F0 on c alone. Logs of c, z and y because each spans decades;
+// ln P, ln F0 and ln g because the logs of these positive, power-law-
+// like quantities (P -> p/y^3) are gentler curves for the spline than
+// the quantities themselves.
+//
 // Used ranges: ln c in [ln limits.halo_uks_cmin, ln limits.halo_uks_cmax]
 // (a query outside is clamped to the edge), w in [0, ZSW^2], ln z in
-// [ln ZSW, ln ZHI], ln y in [ln(ZSW/cmax), ln(ZHI/cmin)]. The coarse
-// node counts of ln c and ln z are Ntable.halo_uks_nc and
-// Ntable.halo_uks_nz (scaled by init_accuracy_boost); the others follow.
-// Each used end gets PAD extra coarse nodes (a natural spline sets
-// S'' = 0 at its ends; the lookups clamp to the used range, so the
-// padding is never read), except the top of ln z, where Q is flat to
-// O(1/ZHI). Dense counts are (coarse - 1) m + 1, m the refinement factor.
+// [ln ZSW, ln ZHI], ln y in [ln(ZSW/cmax), ln(ZHI/cmin)] (y = z/c at
+// the corners of the (c, z) range). The coarse node counts of ln c and
+// ln z are Ntable.halo_uks_nc and Ntable.halo_uks_nz (scaled by
+// init_accuracy_boost); the others follow. Each used end gets PAD
+// extra coarse nodes (a natural spline sets S'' = 0 at its ends; the
+// lookups clamp to the used range, so the padding is never read),
+// except the top of ln z, where Q is flat to O(1/ZHI). Dense counts are
+// (coarse - 1) m + 1, m the refinement factor of that axis.
 //
 // Accuracy: u to 5e-6 of its local envelope, and to 2e-5 relative where
 // |u| > 1e-2, at init_accuracy_boost = 1.
@@ -1655,18 +1771,21 @@ double u_KS(
   )
 {
   // --- 1. CONFIGURATION ---
-  // ZSW, ZHI and PAD of the header; MC..M1 are the refinement factors m
-  // of header item 4 for the five axes ln c, w, ln z, ln y, ln c (1D).
+  // ZSW is the switch phase z = k r_v: below it the direct table of
+  // u(ln c, w = z^2) (header item 3), at and above it the contour
+  // formula (item 1). ZHI is the top of the ln z axis of Q, above
+  // which Q is held at its top value. PAD is the number of coarse
+  // padding nodes beyond each used end; MC..M1 are the refinement
+  // factors m of header item 4 for the five axes ln c, w, ln z, ln y,
+  // ln c (1D).
   const double ZSW = 3.0;    // z = k r_v below: table of u(ln c, z^2)
   const double ZHI = 2.5e5;  // top of the ln z axis of Q
-  enum {
-    PAD = 6,   // coarse padding nodes beyond used ends
-    MC  = 12,  // dense refinement factors
-    MW  = 32,
-    MZ  = 16,
-    MY  = 115,
-    M1  = 70
-  };
+  const int PAD = Ntable.halo_spline_pad; // coarse padding beyond ends
+  const int MC  = Ntable.halo_uks_mc;     // dense refinement factors
+  const int MW  = Ntable.halo_uks_mw;
+  const int MZ  = Ntable.halo_uks_mz;
+  const int MY  = Ntable.halo_uks_my;
+  const int M1  = Ntable.halo_uks_m1;
 
   // --- 2. STATIC STATE ---
   // Built on the first call (u_dense == NULL). Suffix "p" = padded
@@ -1730,8 +1849,10 @@ double u_KS(
     // Coarse spacings hc (ln c) and hz (ln z) from the two knobs. hs is
     // the trapezoid step h of header item 2, halved for high-def
     // integration, and hy = hs/rP with rP an integer puts every t_k/y_j
-    // on one ln tau grid. NW, NY and N1 are the coarse counts of w,
-    // ln y and the 1D ln c axis.
+    // on one ln tau grid (rP is the smallest integer that makes the
+    // ln y axis at least as fine as the ln z axis). NW, NY and N1 are
+    // the coarse counts of w, ln y and the 1D ln c axis; NY is whatever
+    // the spacing hy needs to cover the used ln y range.
     const int NC = Ntable.halo_uks_nc;
     const int NZ = Ntable.halo_uks_nz;
     const double hc = (lnc1 - lnc0)/((double) NC - 1.0);
@@ -1767,7 +1888,11 @@ double u_KS(
     // Quadrature sizes from hdi: ngl Gauss-Legendre nodes for the [0, 1]
     // integrals of u and F0 (header, item 3); nt trapezoid nodes at the
     // step hs on the window [smin, smax] in s = ln t for Q and P (item
-    // 2); ntau nodes of the shared ln tau grid of P.
+    // 2); ntau nodes of the shared ln tau grid of P. The window holds
+    // the whole bump of both integrands: below smin the integrand is a
+    // vanishing power of e^s, above smax the cut-off exp(-e^s) has
+    // killed it (for Q the cut-off exp(-z e^s) is even earlier, z >=
+    // ZSW); the trapezoid sums then need no end corrections.
     switch (hdi) {  // predefined GSL table sizes
       case 0:
         ngl = 96;
@@ -1849,7 +1974,9 @@ double u_KS(
     // z-dependent factor of the numerator integrand of header item 3 at
     // GL node q and w node w_j = (j - PAD) hw. At w < 0 it is
     // s sinh(kappa s)/kappa, kappa = sqrt(-w), and s^2 at w = 0: one
-    // analytic function of w.
+    // analytic function of w (s sin(zs)/z = s^2 - w s^4/6 + ..., the
+    // same series on either side of w = 0). Gamma enters only through
+    // theta, so this kernel is built once and reused by every refill.
     for (int j=0; j<nwp; j++) {
       const double w = -PAD*hw + j*hw;
       for (int q=0; q<ngl; q++) {
@@ -1878,7 +2005,8 @@ double u_KS(
 
     // Qwgt[k][j] = z_j h t_k e^{-z_j t_k}, the weight of the Q sum
     // (header, item 2; leading z included) at node j of the padded ln z
-    // axis.
+    // axis: h t_k from dt = t ds, z_j e^{-z_j t_k} the unit-integral
+    // weight that averages the g ratio over t up to ~1/z_j.
     for (int j=0; j<nzp; j++) {
       const double z = exp(lim[2][0] + j*hz);
       for (int k=0; k<nt; k++) {
@@ -1914,13 +2042,23 @@ double u_KS(
     const double h1 = lim[4][2]*M1;
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (one c node per iteration)
-       1. GL pass at x = c s_q, theta = log1p(x)/x:
-          f0      = sum_q w_q s_q^2 theta^q      (denominator, item 3)
+       c = c_i = exp(lim[0][0] + i hc), a node of the padded ln c axis;
+       the two (ln c, .) tables u and Q share this loop because both
+       need the profile at this c and nothing else couples their axes
+       1. GL pass at x = c s_q (nodes s_q = gl[0][q], weights w_q =
+          gl[1][q]), theta = log1p(x)/x:
+          f0      = sum_q w_q s_q^2 theta^q      (denominator of item 3,
+                    i.e. F0(c)/c^3; the c^3 cancels in u)
           wthp[q] = w_q theta^p                  (numerator, z-free part)
-       2. u(c_i, w_j) = sum_q wthp[q] sin_kern[q][j]/f0, all w at once
+       2. u(c_i, w_j) = sum_q wthp[q] sin_kern[q][j]/f0, all w at once:
+          sin_kern[q][j] = s_q sin(z_j s_q)/z_j completes the numerator
+          integrand s theta(cs)^p sin(zs)/z of item 3 at w_j = z_j^2
        3. g_re[k] + i g_im[k] = g(c + i c t_k)/g(c) at the trapezoid
-          nodes, with g_at_c = g(c) = c theta(c)^p
-       4. Q(c_i, z_j) = sum_k (g_re[k] + i g_im[k]) Qwgt[k][j] (item 2) */
+          nodes t_k = trap[0][k], with g_at_c = g(c) = c theta(c)^p:
+          ks_cg on the ray x = c + i c t of item 1, normalised by its
+          value at the foot of the ray (so the ratio -> 1 as t -> 0)
+       4. Q(c_i, z_j) = sum_k (g_re[k] + i g_im[k]) Qwgt[k][j], the
+          trapezoid sum of item 2, Qwgt[k][j] = z_j h t_k e^{-z_j t_k} */
     #pragma omp parallel for schedule(static)
     for (int i=0; i<ncp; i++) {
       const double c = exp(lim[0][0] + i*hc);
@@ -2015,9 +2153,14 @@ double u_KS(
     }
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (header, item 2)
-       1. tau_g[1][m] = Re g(i tau_m), once per shared ln tau node
+       1. tau_g[1][m] = Re g(i tau_m), once per shared ln tau node: the
+          integrand of I0 on the ray x = i tau of item 1. Only the real
+          part is needed, since P = Re I0 and e^{-y tau} is real
        2. P(y_j) = (1/y_j) sum_k trap[1][k] tau_g[1][k rP - j + nyp - 1]
-          (g_row = tau_g[1] + nyp - 1 - j, read at g_row[k rP])
+          (g_row = tau_g[1] + nyp - 1 - j, read at g_row[k rP]): the
+          trapezoid sum of item 2 with trap[1][k] = h t_k e^{-t_k}, the
+          node tau = t_k/y_j found at its index on the shared grid, and
+          the 1/y_j from dtau = dt/y
        3. stored as ln P: P -> p/y^3 at large y, so ln P is close to a
           straight line in ln y */
     #pragma omp parallel for schedule(static)
@@ -2037,8 +2180,13 @@ double u_KS(
     }
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (1D ln c axis)
-       1. F0 = c^3 sum_q w_q s_q^2 theta(c s_q)^q  (the c^3 from x = c s)
-       2. ln g = ln c + p ln theta(c) */
+       The contour formula divides by y F0(c) and multiplies by g(c),
+       the two c-only ingredients of item 1; they get their own, finer
+       ln c axis (lim[4]) because the lookup reads them as exponentials
+       of their logs and their relative error goes straight into u
+       1. F0 = c^3 sum_q w_q s_q^2 theta(c s_q)^q  (the c^3 from x = c s;
+          unlike f0 of the (ln c, w) loop, the full mass integral)
+       2. ln g = ln c + p ln theta(c), the integrand of F at the edge */
     for (int j=0; j<n1p; j++) {
       const double c = exp(lim[4][0] + j*h1);
       double f0 = 0.0;
@@ -2090,7 +2238,9 @@ double u_KS(
   // --- 5. LOOKUP ---
   // c is clamped to the tabulated range; z = k r_v is formed from the
   // arguments as given, so a clamped query returns u at the edge
-  // concentration and the true phase.
+  // concentration and the true phase. (interpol2d returns 0 outside
+  // its first axis, so the clamp on ln c is what keeps every read
+  // inside the padded table.)
   const double c_clamped = fmin(fmax(c, limits.halo_uks_cmin),
                                 limits.halo_uks_cmax);
   const double lnc = log(c_clamped);
@@ -2102,11 +2252,12 @@ double u_KS(
                       nwd, lim[1][0], lim[1][1], lim[1][2], z*z);
   }
 
-  // z >= ZSW: the contour formula of header item 1 at y = z/c. lnz
-  // clamps z to ZHI (Q held at its ZHI value); lny clamps ln y to its
-  // axis, which acts only above ZHI, where the P term (order 1/y^4) is
-  // negligible against the Q term (order 1/y^2). P, g and F0 come back
-  // from their logs.
+  // z >= ZSW: the contour formula of header item 1 at y = z/c (the
+  // phase at the edge, z, over the concentration gives k r_s). lnz
+  // clamps z to ZHI (Q held at its ZHI value, 1 to O(1/ZHI)); lny
+  // clamps ln y to its axis, which acts only above ZHI, where the P
+  // term (order 1/y^4) is negligible against the Q term (order 1/y^2).
+  // P, g and F0 come back from their logs.
   const double y   = z/c_clamped;
   const double lnz = log(fmin(z, ZHI));
   const double lny = fmin(fmax(log(y), log(ZSW/limits.halo_uks_cmax)),
@@ -2125,8 +2276,11 @@ double u_KS(
   const double F0 = exp(interpol1d(lnF0g_dense[0], n1d, lim[4][0],
                                    lim[4][1], lim[4][2], lnc));
 
-  // u = [P - (g/y)(cos z Re Q - sin z Im Q)]/(y F0), header item 1: the
-  // oscillation enters only through the exact cos z and sin z
+  // u = [P - (g/y)(cos z Re Q - sin z Im Q)]/(y F0), header item 1:
+  // Im J/y over F0, with Im J = P - (g/y) Re[e^{iz} Q]. P is the
+  // untruncated (centre-ray) transform, the Q term the edge-ray
+  // correction, and the oscillation enters only through the exact
+  // cos z and sin z: the tables hold nothing that rings.
   return (P - g/y*(cos(z)*Q_re - sin(z)*Q_im))/(y*F0);
 }
 
@@ -2796,13 +2950,13 @@ double p_mm(
     // halo.c numerics); high_def_integration steps toward the largest
     // GSL rule
     if (0 == abs(Ntable.high_def_integration)) {
-      n_nodes = 64;
+      n_nodes = Ntable.halo_nm;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      n_nodes = 128;
+      n_nodes = 2*Ntable.halo_nm;
     }
     else if (2 == abs(Ntable.high_def_integration)) {
-      n_nodes = 256;
+      n_nodes = 4*Ntable.halo_nm;
     }
     else {
       n_nodes = 1024;
@@ -3058,13 +3212,13 @@ double p_my(
     // halo.c numerics); high_def_integration steps toward the largest
     // GSL rule
     if (0 == abs(Ntable.high_def_integration)) {
-      n_nodes = 64;
+      n_nodes = Ntable.halo_nm;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      n_nodes = 128;
+      n_nodes = 2*Ntable.halo_nm;
     }
     else if (2 == abs(Ntable.high_def_integration)) {
-      n_nodes = 256;
+      n_nodes = 4*Ntable.halo_nm;
     }
     else {
       n_nodes = 1024;
@@ -3364,13 +3518,13 @@ double p_yy(
     // halo.c numerics); high_def_integration steps toward the largest
     // GSL rule
     if (0 == abs(Ntable.high_def_integration)) {
-      n_nodes = 64;
+      n_nodes = Ntable.halo_nm;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      n_nodes = 128;
+      n_nodes = 2*Ntable.halo_nm;
     }
     else if (2 == abs(Ntable.high_def_integration)) {
-      n_nodes = 256;
+      n_nodes = 4*Ntable.halo_nm;
     }
     else {
       n_nodes = 1024;
@@ -3655,7 +3809,8 @@ static void ln_k_spline_upsample(
 // ---------------------------------------------------------------------------
 // P_gm(k, a, ni), the halo-model galaxy-matter power spectrum of lens bin
 // ni, from a table of ln P per bin on na x Ntable.N_k_nlin nodes, na =
-// Ntable.N_a/5, uniform in a over the bin's range [amin_lens, amax_lens]
+// Ntable.halo_na_lens, uniform in a over the bin's range [amin_lens,
+// amax_lens]
 // and in ln k, read bilinearly (interpol2d) and exponentiated:
 //
 //   P_gm = P_delta b_gal + GM02/n_gal
@@ -3750,7 +3905,7 @@ double p_gm(
   static int       k_step  = 0;    // dense ln k nodes per coarse one
   static double*   k_mult  = NULL; // [n_coarse] Thomas multipliers
   static int       n_coarse = 0;   // coarse ln k nodes, pads included
-  const int        K_PAD   = 6;    // coarse pad nodes beyond each end
+  const int        K_PAD   = Ntable.halo_spline_pad; // pads per end
 
   // --- 1. REBUILD: SIZES, ALLOCATIONS, GL RULE, TABLE AXES ---
 
@@ -3772,20 +3927,19 @@ double p_gm(
     }
 
     nbin  = redshift.clustering_nbin;
-    na    = (int) Ntable.N_a/5.0; // a fifth of p_mm's a grid: each bin's
-                                  // a range is a slice of the full range
+    na    = Ntable.halo_na_lens; // a nodes per lens bin
     // mass-node ladder: the default already lands far inside the
     // code's chi2 error budget (measured ladder: the skill file's
     // halo.c numerics); high_def_integration steps toward the largest
     // GSL rule
     if (0 == abs(Ntable.high_def_integration)) {
-      nnode = 64;
+      nnode = Ntable.halo_nm;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      nnode = 128;
+      nnode = 2*Ntable.halo_nm;
     }
     else if (2 == abs(Ntable.high_def_integration)) {
-      nnode = 256;
+      nnode = 4*Ntable.halo_nm;
     }
     else {
       nnode = 1024;
@@ -3795,12 +3949,15 @@ double p_gm(
     // ladder, like the mass nodes', lands inside the chi2 error budget
     // at the default and becomes exact with high_def_integration
     if (0 == abs(Ntable.high_def_integration)) {
-      k_step = 4;
+      k_step = Ntable.halo_nk_step;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      k_step = 2;
+      k_step = Ntable.halo_nk_step/2;
     }
     else {
+      k_step = 1;
+    }
+    if (k_step < 1) {
       k_step = 1;
     }
     n_coarse = (Ntable.N_k_nlin - 1)/k_step + 2 + 2*K_PAD;
@@ -4147,7 +4304,7 @@ double p_gg(
   static int       k_step   = 0;    // dense ln k nodes per coarse one
   static double*   k_mult   = NULL; // [n_coarse] Thomas multipliers
   static int       n_coarse = 0;    // coarse ln k nodes, pads included
-  const int        K_PAD    = 6;    // coarse pad nodes beyond each end
+  const int        K_PAD    = Ntable.halo_spline_pad; // pads per end
 
   // --- 1. REBUILD: SIZES, ALLOCATIONS, MAPPED GL RULE, TABLE AXES ---
 
@@ -4169,20 +4326,19 @@ double p_gg(
     }
 
     nbin  = redshift.clustering_nbin;
-    na    = (int) Ntable.N_a/5.0; // a fifth of p_mm's a grid: each bin's
-                                  // a range is a slice of the full range
+    na    = Ntable.halo_na_lens; // a nodes per lens bin
     // mass-node ladder: the default already lands far inside the
     // code's chi2 error budget (measured ladder: the skill file's
     // halo.c numerics); high_def_integration steps toward the largest
     // GSL rule
     if (0 == abs(Ntable.high_def_integration)) {
-      nnode = 64;
+      nnode = Ntable.halo_nm;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      nnode = 128;
+      nnode = 2*Ntable.halo_nm;
     }
     else if (2 == abs(Ntable.high_def_integration)) {
-      nnode = 256;
+      nnode = 4*Ntable.halo_nm;
     }
     else {
       nnode = 1024;
@@ -4192,12 +4348,15 @@ double p_gg(
     // ladder, like the mass nodes', lands inside the chi2 error budget
     // at the default and becomes exact with high_def_integration
     if (0 == abs(Ntable.high_def_integration)) {
-      k_step = 4;
+      k_step = Ntable.halo_nk_step;
     }
     else if (1 == abs(Ntable.high_def_integration)) {
-      k_step = 2;
+      k_step = Ntable.halo_nk_step/2;
     }
     else {
+      k_step = 1;
+    }
+    if (k_step < 1) {
       k_step = 1;
     }
     n_coarse = (Ntable.N_k_nlin - 1)/k_step + 2 + 2*K_PAD;

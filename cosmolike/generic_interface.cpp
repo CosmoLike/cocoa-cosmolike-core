@@ -799,6 +799,7 @@ void init_include_HOD_GX(const int include_HOD_GX)
 //   Ntable.halo_uks_nc             -> ceil(baseline * boost)
 //   Ntable.halo_uks_nz             -> ceil(baseline * boost)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
+//   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.NL_Nchi                 -> ceil(baseline * boost)
 //   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
 //   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
@@ -869,6 +870,9 @@ void init_accuracy_boost(
 
   if (0 == cache[10]) cache[10] = Ntable.halo_nfw_n;
   Ntable.halo_nfw_n = static_cast<int>(ceil(cache[10]*accuracy_boost));
+
+  if (0 == cache[11]) cache[11] = Ntable.halo_na_lens;
+  Ntable.halo_na_lens = static_cast<int>(ceil(cache[11]*accuracy_boost));
 
   if (0 == fptcache) fptcache = Ntable.FPT_internal_accuracy_boost;
   Ntable.FPT_internal_accuracy_boost = fptcache*accuracy_boost;

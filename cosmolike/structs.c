@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "basics.h"
 #include "structs.h"
+#include "halo.h"
 
 #include "log.c/src/log.h"
 
@@ -281,6 +282,18 @@ void reset_Ntable_struct(void)
   Ntable.halo_uks_nc = 40;  // u_KS coarse ln c nodes (upsampled; halo.c)
   Ntable.halo_uks_nz = 64;  // u_KS coarse ln z nodes (upsampled; halo.c)
   Ntable.halo_nfw_n = 131072; // u_nfw_c exact dense ln t nodes (halo.c)
+  Ntable.halo_spline_pad = 6; // halo.c coarse spline padding nodes
+  Ntable.halo_uks_mc = 12;    // u_KS dense refinement: ln c (2D)
+  Ntable.halo_uks_mw = 32;    // u_KS dense refinement: w
+  Ntable.halo_uks_mz = 16;    // u_KS dense refinement: ln z
+  Ntable.halo_uks_my = 115;   // u_KS dense refinement: ln y
+  Ntable.halo_uks_m1 = 70;    // u_KS dense refinement: ln c (1D)
+  Ntable.halo_hmf_nc[HMF_TINKER_2010] = 128;  // tinker_alpha exact aa
+  Ntable.halo_hmf_nd[HMF_TINKER_2010] = 4096; // tinker_alpha dense aa
+  Ntable.halo_nm = 64;       // spectra mass nodes at hdi 0: chi2 ladder in
+                             // the skill file (floor: 64)
+  Ntable.halo_nk_step = 4;   // p_gm/p_gg coarse ln k step at hdi 0
+  Ntable.halo_na_lens = 51;  // p_gm/p_gg a nodes per lens bin
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;

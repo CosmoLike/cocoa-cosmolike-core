@@ -119,6 +119,23 @@ typedef struct
   int halo_uks_nc;  // u_KS coarse ln c nodes (halo.c; boosted)
   int halo_uks_nz;  // u_KS coarse ln z nodes (halo.c; boosted)
   int halo_nfw_n;   // u_nfw_c dense ln t nodes (halo.c; boosted)
+  int halo_spline_pad; // exact coarse nodes beyond each end of every
+                       // halo.c coarse -> dense spline (u_KS axes,
+                       // tinker_alpha, coarse ln k of p_gm/p_gg)
+  int halo_uks_mc;  // u_KS dense refinement factor, ln c axis (2D)
+  int halo_uks_mw;  // u_KS dense refinement factor, w axis
+  int halo_uks_mz;  // u_KS dense refinement factor, ln z axis
+  int halo_uks_my;  // u_KS dense refinement factor, ln y axis
+  int halo_uks_m1;  // u_KS dense refinement factor, ln c axis (1D)
+  // mass-function table sizes, one entry per like.halo_model[0] option
+  // (HMF_TINKER_2010: the tinker_alpha normalization table)
+  int halo_hmf_nc[MAX_SIZE_ARRAYS]; // exact aa nodes on [0.25, 1]
+  int halo_hmf_nd[MAX_SIZE_ARRAYS]; // dense aa lookup nodes
+  int halo_nm;      // spectra GL mass nodes at high_def_integration 0
+                    // (doubled per rung; not boosted)
+  int halo_nk_step; // p_gm/p_gg coarse ln k step at high_def_integration
+                    // 0 (halved per rung, down to exact; not boosted)
+  int halo_na_lens; // p_gm/p_gg a nodes per lens bin (boosted)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // HALO MODEL
