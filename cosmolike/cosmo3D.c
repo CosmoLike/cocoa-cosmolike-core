@@ -1356,89 +1356,249 @@ double MG_Sigma(double a __attribute__((unused))) {
 
 
 // ---------------------------------------------------------------------------
-// Cached sigma^2(M) at a = 1, the variance of the linear density field in a
-// top hat holding mass M: a table of ln sigma^2 on Ntable.N_M nodes uniform
-// in ln M over [ln limits.halo_m_min, ln limits.halo_m_max], read back with
-// linear interpol1d in ln M (exp of the stored log). The halo model rescales
-// by the growth factor where it needs sigma at a < 1 (e.g.
-// nu = delta_c/(sqrt(sigma2(m))*growfac(a)) in halo.c).
+// Cached sigma^2(M) at a = 1: the variance of the linear density field
+// after smoothing with a top-hat sphere that holds the mass M.
 //
-// The integral. With x = kR,
+// What the caller gets. A table of ln sigma^2 on Ntable.N_M nodes
+// uniform in ln M over [ln limits.halo_m_min, ln limits.halo_m_max]
+// (by default 1024 nodes over M = 1e6..1e17 M_sun/h), read back by
+// linear interpolation in ln M and exponentiated. The table is built
+// at a = 1 once per cosmology; halo.c rescales with the growth factor
+// D(a) where it needs sigma at a < 1: nu = delta_c/(sqrt(sigma2(M)) D(a)).
 //
-//   sigma^2(M) = 1/(2 pi^2 R^3) int_0^inf P_lin(x/R) 9 j1(x)^2 dx,
-//   R(M)       = (3M/(4 pi rho_crit Omega_m))^(1/3),
+// 1. The integral
 //
-// a smooth spectrum modulated by the oscillating top-hat window 3 j1(x)/x.
-// The window's zeros - the roots z_n of tan x = x (4.4934, 7.7253, 10.9041,
-// 14.0662, ..., approaching (n + 1/2) pi) - split the x axis into a head
-// segment [0, z_1] (the main bump, W(0) = 1) and lobes [z_n, z_{n+1}], each
-// ONE smooth bump. A low-order Gauss-Legendre rule per lobe is therefore
-// exponentially accurate: the oscillation lives in the lobe structure,
-// never inside a lobe.
+// Smoothing the density field over a sphere of radius R multiplies each
+// Fourier mode by the sphere's transform, the top-hat window W(kR); the
+// variance of the smoothed field is the power spectrum weighted by W^2
+// (Cooray & Sheth 2002, astro-ph/0206508, Sec. 3.2):
 //
-// The head segment holds nearly all of sigma^2, and for halo-scale R it
-// spans k = x/R from ~0 to z_1/R (~300 h/Mpc at M = 1e6 M_sun/h): the
-// turnover and the BAO of P_lin sit at x << 1, where a rule uniform in x
-// places no nodes. The head is therefore integrated in s = ln x over
-// [XMIN, z_1], XMIN = 1e-5; below XMIN the integrand falls as x^(3 + n_s)
-// and the truncation is below 1e-10.
+//   sigma^2(R) = 1/(2 pi^2) int_0^inf k^2 P_lin(k) W(kR)^2 dk,
+//   W(x)       = 3 (sin x - x cos x)/x^3 = 3 j1(x)/x.
 //
-// Node cache (built in the Ntable rebuild block, mass-independent - the
-// cosmo_nodes idea of cosmo2D.c):
+// j1 is the spherical Bessel function of order one,
 //
-//   xs[q]   = the quadrature nodes of every segment, flattened
-//   wf[q]   = GL weight x 9 j1(x_q)^2 (the Bessel function never appears
-//             in the per-mass loop)
-//   off[j]  = first node of segment j; off[nseg] = total node count
+//   j1(x) = sin x/x^2 - cos x/x,    j1(x) -> x/3 as x -> 0,
 //
-// Segment sizes ladder with hdi = abs(Ntable.high_def_integration), in
-// sizes GSL tabulates: the head takes 256/512/1024 nodes at hdi =
-// 0/1/>=2 (measured against a dense reference at hdi = 0: 3.8e-6 max
-// error and 2.2e-6 scatter between neighboring masses, the scatter being
-// what the finite difference of halo.c's dlognudlogm sees); each lobe
-// takes 8 + 4 hdi nodes, capped at 20 (with 8, all lobes together are
-// off by < 1e-9 of sigma^2). NLOBE = 512 lobes reach x ~ 1600, where the
-// integrand envelope (P ~ k^-3 times 9 cos^2(x)/x^4 in
-// the substituted variable) leaves a tail far below the stopping tolerance
-// for any halo-scale R. The zeros of j1 solve tan x = x: McMahon's start
-// z ~ q - 1/q with q = (n + 1/2) pi lands inside the right branch, and a
-// few Newton steps on j1 itself - with j1'(x) = j0(x) - 2 j1(x)/x - polish
-// it to machine precision.
+// so W(0) = 1 (W(0.01) = 0.99999): modes much longer than R pass
+// through untouched, modes much shorter than R average away. Mass and
+// radius are tied by the mean matter density rho_crit Omega_m,
 //
-// The lobe sum, per mass (threaded over masses in the refill block):
-// segment sums s_j decay along a power-law envelope, so with
-// r = s_j/s_{j-1} < 1 the remainder is bounded by the near-geometric
-// estimate s_j r/(1 - r), and the loop exits when that bound falls below
-// EPS = 1e-7 of the running total - an explicit, documented stopping
-// condition. Per (mass, node) only one p_lin read and one multiply-add
-// remain; each mass reads just the node prefix its own convergence needs.
-// Deterministic by construction: fixed nodes, independent per-mass sums,
-// no cross-thread reductions.
+//   M = (4 pi/3) R^3 rho_crit Omega_m,
+//   R = (3 M/(4 pi rho_crit Omega_m))^(1/3).
 //
-// Coarse grid: when Ntable.N_M_internal is active, the exact lobe sums run
-// only on the coarse ln M nodes and the house natural cubic spline
-// upsamples ln sigma^2 onto the unchanged N_M table (see the refill
-// block).
+// Substituting x = kR (so k = x/R and dk = dx/R) inside the integral,
+//
+//   k^2 W(kR)^2 dk = (x^2/R^2) (9 j1(x)^2/x^2) (dx/R) = 9 j1(x)^2 dx/R^3,
+//
+//   sigma^2(M) = 1/(2 pi^2 R^3) int_0^inf P_lin(x/R) 9 j1(x)^2 dx.
+//
+// The x^2 of k^2 dk cancels the 1/x^2 of W^2 exactly; that is why the
+// cached weights below carry 9 j1(x)^2 and no other power of x.
+//
+// 2. Why the integrand is awkward, and the cure
+//
+// P_lin is smooth: one broad peak near k ~ 0.02 h/Mpc, a k^-3 (ln k)^2
+// fall beyond it, baryon wiggles in between. The factor 9 j1(x)^2 is
+// not: it oscillates forever, vanishing wherever j1 does. Between two
+// consecutive zeros, however, it is a single smooth bump with no
+// structure inside. The zeros of j1 are the roots of tan x = x,
+//
+//   z_1 = 4.4934,  z_2 = 7.7253,  z_3 = 10.9041,  z_4 = 14.0662, ...
+//   z_n -> (n + 1/2) pi    (one root just below each pole of tan x),
+//
+// and they cut the x axis into segments:
+//
+//   head    [0, z_1]        the main bump (W falls from 1 to 0);
+//                           holds most of sigma^2
+//   lobe n  [z_n, z_{n+1}]  one bump each, shrinking as x grows
+//
+// Integrating every segment on its own with a small quadrature rule
+// turns one hard oscillatory integral into a sum of easy ones.
+//
+// 3. Integrating one smooth bump with a few nodes
+//
+// A quadrature rule approximates an integral by a weighted sum of the
+// integrand at prescribed nodes x_i with prescribed weights w_i:
+//
+//   int_a^b f(x) dx  ~  sum_i w_i f(x_i).
+//
+// The rule used here picks the n nodes (the roots of the Legendre
+// polynomial P_n, mapped from [-1, 1] onto [a, b]) and the n weights
+// so that the sum is exact for every polynomial of degree <= 2n - 1:
+// 2n free numbers buy 2n conditions. The 2-node rule on [-1, 1] has
+// nodes +-1/sqrt(3) and weights 1; it returns int x^2 dx = 2/3 and
+// int x^3 dx = 0 exactly and first fails at x^4 (0.222 for 0.4). The
+// error of the n-node rule is proportional to the 2n-th derivative of
+// f, so on a function that is one smooth bump it falls exponentially
+// with n: 8 nodes per lobe reproduce the sum of all lobes to better
+// than 1e-9 of sigma^2 for every tabulated mass. This is Gauss-Legendre
+// quadrature, "GL" in the comments below.
+//
+// GSL supplies the rule as a table. malloc_gslint_glfixed(n) wraps
+// gsl_integration_glfixed_table_alloc(n): the n nodes and weights on
+// [-1, 1], stored to full precision for n = 2..20, 32, 64, 96, 100,
+// 128, 256, 512, 1024 and computed on the fly (less precisely) for any
+// other n, which is why the ladders of item 5 use only those sizes.
+// The call
+//
+//   gsl_integration_glfixed_point(a, b, i, &x, &w, t)
+//
+// writes node i of table t mapped onto [a, b] into x and its weight,
+// scaled by (b - a)/2, into w.
+//
+// 4. The head in ln x
+//
+// For halo-scale R the head spans an enormous range of k. At M = 1e6
+// M_sun/h with Omega_m = 0.3, R = 0.0142 Mpc/h, so x in [0, 4.49] is
+// k in [0, 316] h/Mpc: the peak of P_lin (k ~ 0.02) sits at x ~ 3e-4
+// and the baryon wiggles (k ~ 0.05-0.3) at x ~ 1e-3 to 4e-3. A rule
+// whose 256 nodes spread over [0, 4.49] would put none of them there.
+// The head is therefore integrated in s = ln x, which spreads the
+// nodes evenly over decades of x:
+//
+//   x = e^s,  dx = x ds   ->   int f(x) dx = int f(e^s) e^s ds,
+//
+// so every head weight is multiplied by its node's x. A logarithmic
+// variable needs a finite lower edge: XMIN = 1e-5. Below it the
+// integrand behaves as P(x/R) 9 j1^2 ~ x^(n_s + 2) (P ~ k^n_s at low
+// k, 9 j1^2 ~ x^2), so the dropped piece scales as XMIN^(n_s + 3):
+// about 1e-10 of the head at M = 1e6 and far less for heavier halos,
+// whose k = XMIN/R is smaller still.
+//
+// 5. Node counts: the hdi ladder
+//
+// hdi = abs(Ntable.high_def_integration) is the accuracy knob the
+// Limber quadratures of cosmo2D.c also read (0 by default). A "ladder"
+// is a chain of ?: choices mapping hdi to a size:
+//
+//   hdi                 0      1      2      >= 3
+//   head nodes (nph)    256    512    1024   1024
+//   lobe nodes (npl)    8      12     16     20
+//   cached nodes        4352   6656   9216   11264   (nph + 512 npl)
+//
+// The head carries the error budget, so it gets the large rule; a
+// lobe is one bump and 8 nodes already saturate it. Measured at
+// hdi = 0 against an independent numpy integration of the same P_lin:
+// 6.2e-6 maximum relative error in sigma^2 and 1.9e-6 scatter between
+// neighboring masses. The scatter is what the finite difference in
+// halo.c's dlognudlogm sees; that slope stays within 1.3e-4 of the
+// reference.
+//
+// 6. Lobe count: NLOBE = 512
+//
+// Far out, j1(x) -> -cos x/x (at x = 50: -0.01940 against -0.01930),
+// and far above the peak P_lin ~ k^-3 (ln k)^2, so the envelope of the
+// integrand falls as
+//
+//   P(x/R) 9 j1(x)^2  ~  (R/x)^3 (ln)^2 9 cos^2(x)/x^2  ~  x^-5,
+//
+// and the lobe sums decay like z_n^-5. Lobe 512 ends at z_513 ~ 1613,
+// where the envelope is (10/1613)^5 ~ 1e-11 of its value at x = 10.
+// The stopping rule of item 8 exits long before that for every
+// tabulated mass (89 segments at most), so the cache is a ceiling,
+// not a cost.
+//
+// 7. Locating the zeros of j1
+//
+// j1(x) = 0 <=> sin x = x cos x <=> tan x = x. tan x has a pole at
+// every (n + 1/2) pi, and one root of tan x = x sits just below each
+// pole. Two steps pin it down.
+//
+// A starting guess from a series. Write x = q - e with q = (n + 1/2) pi
+// and expand tan x = x in powers of 1/q; solving for e term by term
+// gives
+//
+//   z_n = q - 1/q - 2/(3 q^3) - ...,    q = (n + 1/2) pi
+//
+// (McMahon's expansion for large Bessel zeros). The code keeps q - 1/q.
+// For n = 1: q = 3 pi/2 = 4.7124 gives 4.5002 against the exact
+// 4.4934, an error of 0.007.
+//
+// Polishing by tangent lines. From a guess z, follow the tangent line
+// of f at z down to where it crosses zero and take that as the next
+// guess:
+//
+//   z <- z - f(z)/f'(z),   f = j1,   f'(x) = j1'(x) = j0(x) - 2 j1(x)/x,
+//
+// with j0(x) = sin x/x; the derivative is the recurrence
+// j_n'(x) = j_{n-1}(x) - (n + 1) j_n(x)/x at n = 1. This is Newton's
+// method, and each step roughly squares the error: from 4.5002 the
+// first step lands at 4.49340 (1e-5 off), the second at 4.4934094579
+// (2e-11), the third at machine precision. The loop allows 8 steps
+// and stops once |step| < 1e-14 z. The start is within 0.007 of the
+// wanted root and j1 is smooth there, so the iteration cannot wander
+// to a neighboring zero.
+//
+// 8. The per-mass sum and its stopping rule
+//
+// With nodes x_q and folded weights wf_q = w_q 9 j1(x_q)^2 cached (no
+// Bessel function is evaluated per mass), one mass costs
+//
+//   s_j   = sum over q in segment j of wf_q P_lin(x_q/R),
+//   total = s_0 + s_1 + s_2 + ...    (s_0 = head, s_j = lobe j).
+//
+// Stopping. Once two consecutive lobes decrease, r = s_j/s_{j-1} < 1,
+// pretend the decay stays geometric from here on; the remaining sum
+// would then be
+//
+//   s_j r + s_j r^2 + s_j r^3 + ... = s_j r/(1 - r)
+//
+// (with s_{j-1} = 4e-9 and s_j = 2e-9: r = 1/2, estimated tail 2e-9).
+// The loop exits when this estimate falls below EPS = 1e-7 of the
+// running total. For a power-law decay the ratios creep toward 1, so
+// the true tail is somewhat larger than the estimate (1.3x for
+// s_j ~ j^-5 at j = 20): the dropped tail is of order EPS, two orders
+// below the head rule's own error. Segments used at hdi = 0: 20 at
+// M = 1e6 (the head holds about 99.9% of sigma^2 there), about 25
+// mid-range, 89 at M = 1e17 (R = 66 Mpc/h, so the head ends at
+// k = 0.068 h/Mpc and the first lobes carry the peak and wiggles of
+// P_lin, about 7% of the total).
+//
+// 9. Coarse grid and cubic upsampling
+//
+// When Ntable.N_M_internal is active (192 by default) the exact sums
+// run only on that many coarse ln M nodes, and a natural cubic spline
+// of ln sigma^2 fills the 1024-node table (the spline is explained at
+// the upsampling loop). ln sigma^2 is smooth and monotone in ln M, so
+// a cubic carries far more accuracy per node than the linear reads
+// the consumers make, and those reads stay untouched. Cost per
+// refill: ~9.7e4 p_lin reads, 0.71 ms with 4 threads.
 //
 // Cache invalidation:
-//   allocation, ln M limits and the lobe-node cache: rebuilt when
-//   Ntable.random changes (the hdi ladder enters the node counts)
+//   allocation, ln M limits, coarse-grid map and node cache: rebuilt
+//     when Ntable.random changes (hdi enters the node counts)
 //   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1])
 //
 // Parameters:
 //   M - halo mass in M_sun/h
 //
 // Returns:
-//   sigma^2(M) at a = 1, interpolated in ln M
+//   sigma^2(M) at a = 1, linearly interpolated in ln M from the table;
+//   constant outside [limits.halo_m_min, limits.halo_m_max]
 // ---------------------------------------------------------------------------
 double sigma2(
     const double M  // halo mass in M_sun/h
   )
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double* table;
-  static double* lnMv;
-  static double lim[3];
+  // Static state. A static local keeps its value between calls (it
+  // lives as long as the program, not as long as one call) and starts
+  // zeroed: every pointer below is NULL and cache[] is all zeros on
+  // the first call, which is what makes that call build everything.
+  // Two blocks write the statics:
+  //
+  //   Ntable rebuild block (geometry; runs when Ntable.random changes)
+  //     table/lnMv/lim, the coarse-grid workspace (ncoarse, dlnc,
+  //     lnMc, qidx, qdel, tabc, cspl) and the node cache (nseg, off,
+  //     xs, wf). Every malloc of this function lives there.
+  //   Refill block (physics; runs when cosmology.random or
+  //     Ntable.random changes)
+  //     the values in table (and in tabc, cspl on the coarse path),
+  //     then the tags cache[0] and cache[1].
+  static uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable tag
+  static double* table;    // [N_M] ln sigma^2 on the dense ln M grid
+  static double* lnMv;     // [N_M] the dense ln M nodes
+  static double lim[3];    // ln M_min, ln M_max, dense spacing in ln M
   static int ncoarse = 0;  // active internal coarse mass nodes (0 = off)
   static double dlnc = 0.; // coarse grid spacing in ln M
   static double* lnMc = NULL;  // coarse ln M nodes
@@ -1451,7 +1611,15 @@ double sigma2(
   static double* xs = NULL;    // [off[nseg]] quadrature nodes
   static double* wf = NULL;    // [off[nseg]] GL weight x 9 j1(x)^2
 
+  // Ntable rebuild block. fdiff2(a, b) is plain uint64 inequality (1
+  // when the two tags differ). Ntable.random is a tag that changes
+  // whenever any Ntable setting changes; cache[1] holds the tag of the
+  // build this table comes from. On the first call table is NULL, so
+  // the block runs whatever the tags say.
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
+    // Dense grid: N_M nodes uniform in ln M from ln M_min to ln M_max,
+    // both endpoints included, hence N_M - 1 intervals. With the
+    // defaults lim[2] = ln(1e17/1e6)/1023 = 25.328/1023 = 0.02476.
     if (table != NULL) free(table);
     table = (double*) malloc(sizeof(double)*Ntable.N_M);
     lim[0] = log(limits.halo_m_min);
@@ -1463,26 +1631,52 @@ double sigma2(
       lnMv[i] = lim[0] + i*lim[2];
     }
 
-    // Coarse-grid workspace (the strategy note sits in the refill
-    // below): every allocation lives HERE, in the Ntable rebuild
-    // block; the per-cosmology refill only fills. qidx/qdel map each
-    // fine ln M node onto its coarse interval - both grids are
-    // uniform in ln M with shared endpoints, so the map is one
-    // multiply plus a cast, no search, with the top endpoint clamped
-    // onto the last interval against a 1-ulp overshoot.
+    // Coarse-grid workspace (why a coarse grid exists: item 9 of the
+    // header and the refill block below). Every allocation lives in
+    // this Ntable rebuild block; the per-cosmology refill only fills.
+    // The buffers of the last build are released first, so a changed
+    // N_M_internal can neither leak them nor reuse them at the wrong
+    // size.
     if (lnMc != NULL) { free(lnMc); lnMc = NULL; }
     if (qidx != NULL) { free(qidx); qidx = NULL; }
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
+    // The coarse grid is active only when it is a real grid (more than
+    // 3 nodes, so the cubic spline has interior nodes to solve for)
+    // and really coarser than the dense one; otherwise ncoarse = 0 and
+    // the refill computes every dense node exactly.
     const int nc = Ntable.N_M_internal;
     ncoarse = (nc > 3 && nc < Ntable.N_M) ? nc : 0;
     if (ncoarse > 0) {
+      // ncoarse nodes uniform in ln M over the same [lim[0], lim[1]]
+      // as the dense grid; default 192 nodes, dlnc = 25.328/191 =
+      // 0.13261 in ln M (about 5.4 dense spacings).
       dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
       lnMc = (double*) malloc(sizeof(double)*ncoarse);
       for (int i=0; i<ncoarse; i++) {
         lnMc[i] = lim[0] + i*dlnc;
       }
+      // Fine-to-coarse map. Where does dense node i sit on the coarse
+      // grid? Both grids are uniform in ln M and share both endpoints,
+      // so the answer is arithmetic, no search:
+      //
+      //   dense node i  ->  ln M = lim[0] + i lim[2]
+      //                 ->  r = i lim[2]/dlnc     (in coarse spacings)
+      //                 ->  j = (int) r           (left node; the cast
+      //                                           truncates toward 0)
+      //                 ->  qdel = (r - j) dlnc   (offset from it, ln M)
+      //
+      // Example with the defaults, i = 100: r = 100 x 191/1023 =
+      // 18.67, j = 18, qdel = 0.67 x 0.13261 = 0.0889 in ln M.
+      //
+      // Why the clamp: the spline evaluates on interval [j, j+1], so
+      // the largest legal j is ncoarse - 2. At the top node
+      // i = N_M - 1 the ratio r is ncoarse - 1 (exactly, or one ulp
+      // off, since i lim[2] and (ncoarse - 1) dlnc are two roundings
+      // of the same length), and (int) r names an interval that does
+      // not exist. The clamp moves that node onto the last interval,
+      // at qdel = dlnc, its right endpoint.
       qidx = (int*) malloc(sizeof(int)*Ntable.N_M);
       qdel = (double*) malloc(sizeof(double)*Ntable.N_M);
       for (int i=0; i<Ntable.N_M; i++) {
@@ -1498,16 +1692,36 @@ double sigma2(
       cspl = (double*) malloc(sizeof(double)*ncoarse);
     }
 
-    // Lobe-node cache (see the header): head segment + NLOBE lobes,
-    // each with its own Gauss-Legendre rule, Bessel factor folded into
-    // the weights.
+    // Node cache: the head segment plus NLOBE lobes, each with its own
+    // Gauss-Legendre rule, all nodes flattened into xs[] with the
+    // Bessel factor folded into wf[] (header, items 2-7). It depends
+    // on hdi only, never on the cosmology or the mass: the per-mass
+    // loop of the refill block reads it and computes nothing beyond
+    // P_lin(x_q/R) times wf_q.
+    //
+    // The two ladders read "if hdi is 0 take the first size, if 1 the
+    // second, ...", the last size covering every larger hdi:
+    //
+    //   hdi            0     1     2     >= 3
+    //   npl (lobe)     8     12    16    20
+    //   nph (head)     256   512   1024  1024
+    //
+    // All are sizes GSL stores as precomputed tables (header, item 3).
     const int NLOBE = 512;
     const int hdi = abs(Ntable.high_def_integration);
-    const int npl = 8 + 4*((hdi < 3) ? hdi : 3);  // per lobe: 8/12/16/20
+    const int npl = (0 == hdi) ? 8 :
+                    (1 == hdi) ? 12 :
+                    (2 == hdi) ? 16 : 20;         // per lobe
     const int nph = (0 == hdi) ? 256 :
                     (1 == hdi) ? 512 : 1024;      // head, GL in ln x
                                                   // (predefined GSL tables)
     const double XMIN = 1e-5;                     // head lower edge in x
+    // Layout. Segment j owns the nodes q = off[j] .. off[j+1] - 1 of
+    // xs/wf, and off[nseg] is the total node count. Segment 0 is the
+    // head with nph nodes, segments 1..NLOBE the lobes with npl each:
+    //
+    //   off[0] = 0,  off[1] = nph,  off[j] = nph + (j - 1) npl,
+    //   off[nseg] = nph + NLOBE npl = 256 + 512 x 8 = 4352 at hdi = 0.
     if (xs != NULL) {
       free(xs);
       free(wf);
@@ -1519,13 +1733,26 @@ double sigma2(
     xs = (double*) malloc(sizeof(double)*ntot);
     wf = (double*) malloc(sizeof(double)*ntot);
 
+    // Two GL tables (nodes and weights on [-1, 1]): one of size nph for
+    // the head, one of size npl shared by every lobe.
     gsl_integration_glfixed_table* th = malloc_gslint_glfixed(nph);
     gsl_integration_glfixed_table* tl = malloc_gslint_glfixed(npl);
 
+    // One pass over the segments. Each iteration finds the segment's
+    // right edge (a zero of j1), maps the GL rule onto the segment,
+    // folds 9 j1^2 into the weights and advances the running count.
     double zlo = 0.0; // left edge of the current segment
     int q0 = 0;       // running node count
     for (int j = 0; j < nseg; j++) {
-      // right edge: the (j+1)-th zero of j1
+      // Right edge: the (j+1)-th zero of j1, found as in header item
+      // 7. Start from q - 1/q with q = (n + 1/2) pi and n = j + 1 (for
+      // j = 0: q = 4.7124, start 4.5002, exact zero 4.4934), then
+      // polish with Newton steps z <- z - j1(z)/j1'(z), where
+      // j1'(z) = j0(z) - 2 j1(z)/z. gsl_sf_bessel_j0_e and _j1_e store
+      // the function value in the .val field of a gsl_sf_result (the
+      // struct also carries an error estimate, unused here). The step
+      // shrinks quadratically (6.8e-3, 1.0e-5, 2.4e-11 for j = 0) and
+      // the loop leaves as soon as it is below 1e-14 of z.
       const double qq = ((double) j + 1.5)*M_PI; // (n + 1/2) pi, n = j+1
       double z = qq - 1.0/qq; // McMahon start
       for (int it = 0; it < 8; it++) { // Newton on j1
@@ -1538,19 +1765,30 @@ double sigma2(
           break;
         }
       }
+      // Rule and size for this segment: the head takes the large table
+      // th, every lobe the small table tl.
       const int nj = (0 == j) ? nph : npl;
       gsl_integration_glfixed_table* tt = (0 == j) ? th : tl;
       off[j] = q0;
       for (int i = 0; i < nj; i++) {
         double xi, wi;
         if (0 == j) { // head: GL in s = ln x on [ln XMIN, ln z_1], dx = x ds
+          // The rule is laid out in s = ln x over [ln XMIN, ln z_1]:
+          // glfixed_point returns node s_i and weight w_i for that
+          // interval. The node in x is e^{s_i}, and because dx = x ds
+          // the weight for an integral over x is w_i times that x
+          // (header, item 4).
           double si;
           gsl_integration_glfixed_point(log(XMIN), log(z), i, &si, &wi, tt);
           xi = exp(si);
           wi *= xi;
         } else {
+          // Lobe: the rule is laid out directly in x over [z_j, z_{j+1}]
+          // (zlo is the right edge of segment j - 1).
           gsl_integration_glfixed_point(zlo, z, i, &xi, &wi, tt);
         }
+        // Fold the window into the weight: wf = w 9 j1(x)^2, the whole
+        // cosmology-independent part of the integrand of header item 1.
         gsl_sf_result J1;
         gsl_sf_bessel_j1_e(xi, &J1);
         xs[q0] = xi;
@@ -1559,37 +1797,60 @@ double sigma2(
       }
       zlo = z;
     }
-    off[nseg] = q0;
+    off[nseg] = q0; // total node count, also the end of the last lobe
     gsl_integration_glfixed_table_free(th);
     gsl_integration_glfixed_table_free(tl);
   }
+  // Refill block: runs when the cosmology tag or the Ntable tag differs
+  // from the one the table holds. set_linear_power_spectrum changes
+  // cosmology.random whenever it installs a new P_lin, so a new P_lin
+  // always lands here.
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    // Lobe-summed fill (see the header): Bessel factors precomputed once
-    // for all masses, one threaded loop over the masses this pass needs.
-    //
-    // When Ntable.N_M_internal is active, the exact lobe sums run
-    // only on the coarse ln M nodes and the house natural cubic
-    // spline upsamples ln sigma^2 onto the unchanged N_M table:
-    // ln sigma^2(ln M) is smooth and monotone, the ideal case for
-    // the coarse-exact + cubic-upsample pattern of cosmo2D.c, and
-    // the consumer's linear interpol1d reads stay untouched.
+    // Which masses get an exact sum. On the coarse path (ncoarse > 0)
+    // the loop runs over the ncoarse coarse nodes lnMc and writes the
+    // scratch tabc; the cubic upsampling below then fills table. On the
+    // exact path it runs over all N_M dense nodes lnMv and writes table
+    // directly. The three selectors let one loop serve both paths.
     const double* lnm = (ncoarse > 0) ? lnMc : lnMv;
     const int nm = (ncoarse > 0) ? ncoarse : Ntable.N_M;
     double* out = (ncoarse > 0) ? tabc : table;
 
     const double EPS = 1e-7; // relative tail tolerance of the lobe sum
-    // local restrict copies: the loop writes out[], which the compiler
-    // could not otherwise rule out as aliasing the static node arrays
+    // restrict copies of the node cache. restrict is a promise to the
+    // compiler that, while these pointers are in scope, the memory they
+    // point to is reached only through them; the store to out[m] can
+    // then not have changed xq[q], wq[q] or oq[j], and the compiler
+    // need not reload them after every store. The promise is honored
+    // only on accesses made through the qualified pointer: the loop
+    // body must index xq/wq/oq, not the statics xs/wf/off, for it to
+    // take effect.
     const double* restrict xq = xs;
     const double* restrict wq = wf;
     const int* restrict oq = off;
+    // One thread per chunk of masses. schedule(static) splits the m
+    // range into contiguous chunks whose bounds depend on the thread
+    // count alone, and each mass's sum is a serial loop inside one
+    // thread over the same nodes in the same order every time: the
+    // floating-point result for a given mass is bit-identical from run
+    // to run and independent of the thread count. Nothing is reduced
+    // across threads.
     #pragma omp parallel for schedule(static)
     for (int m = 0; m < nm; m++) {
+      // R from M through M = (4 pi/3) R^3 rho_crit Omega_m (header,
+      // item 1); 0.75/pi is 3/(4 pi). cosmology.rho_crit = 7.4775e21 is
+      // the critical density in M_sun/h per (c/H0)^3, so R comes out in
+      // c/H0 units and k = x/R in (c/H0)^-1 units, the units p_lin
+      // expects (the unit conventions at the top of this file). At
+      // M = 1e6 with Omega_m = 0.3: R = 4.74e-6 c/H0 = 0.0142 Mpc/h.
       const double Mm = exp(lnm[m]);
       const double R =
           pow(0.75*Mm/(M_PI*cosmology.rho_crit*cosmology.Omega_m), 1./3.);
       const double invR = 1.0/R;
 
+      // Segment sums s_j in order, head first (header, item 8). Per
+      // node one P_lin read and one multiply-add: p_lin(k, 1.0) is the
+      // linear spectrum at k = x_q/R and at scale factor a = 1 (the
+      // second argument); the Bessel factor already sits in wq[q].
       double total = 0.0;
       double sprev = 0.0;
       for (int j = 0; j < nseg; j++) {
@@ -1598,8 +1859,14 @@ double sigma2(
           s += wq[q]*p_lin(xq[q]*invR, 1.0);
         }
         total += s;
-        // j = 0 is the head, j = 1 the first lobe: the ratio test
-        // needs two consecutive LOBES, so it starts at j = 2
+        // Stopping rule (header, item 8): with r = s_j/s_{j-1} the
+        // geometric estimate of everything not yet summed is
+        // s_j r/(1 - r); leave once it is below EPS of the total.
+        // j = 0 is the head and j = 1 the first lobe: the ratio test
+        // needs two consecutive lobes, so it starts at j = 2 (the head
+        // is a different kind of segment and never enters a ratio).
+        // The guards sprev > 0 and s < sprev keep the formula
+        // meaningful: r must lie in (0, 1) for the series to converge.
         if (j > 1 && sprev > 0.0 && s < sprev) {
           const double r = s/sprev;
           if (s*r/(1.0 - r) < EPS*total) {
@@ -1608,17 +1875,42 @@ double sigma2(
         }
         sprev = s;
       }
+      // Normalization 1/(2 pi^2 R^3) of header item 1. R^3 in (c/H0)^3
+      // cancels the (c/H0)^3 of P_lin, leaving sigma^2 dimensionless.
       out[m] = total/(R*R*R*2.0*M_PI*M_PI);
     }
 
     if (ncoarse > 0) {
+      // The spline runs through ln sigma^2, not sigma^2: sigma^2 spans
+      // orders of magnitude over the mass range while its log is close
+      // to a straight line in ln M, the friendliest shape for a cubic.
+      // The table stores the log on both paths.
       for (int i=0; i<ncoarse; i++) {
         tabc[i] = log(tabc[i]);
       }
-      // Upsampling: the house cubic (spline_coeffs_uniform gives c =
-      // S''/2 with natural boundaries; interpolating the right node
-      // fixes b, the linear run of S'' fixes d), evaluated in Horner
-      // form at the precomputed offsets qdel from node qidx.
+      // Upsampling with the house natural cubic spline. A cubic spline
+      // is a chain of cubic polynomials, one per interval between
+      // nodes, joined so that value, first and second derivative are
+      // continuous at every node; "natural" adds S'' = 0 at both ends.
+      // On interval [x_j, x_j + h] the piece is
+      //
+      //   S(x_j + t) = y_j + b t + c_j t^2 + d t^3,     0 <= t <= h,
+      //
+      // where c_j = S''(x_j)/2 is what spline_coeffs_uniform returns (a
+      // tridiagonal solve, see basics.c) with c_0 = c_{n-1} = 0. The
+      // other two coefficients follow from two conditions:
+      //
+      //   S'' runs linearly from 2 c_j to 2 c_{j+1} across the interval
+      //     ->  d = (c_{j+1} - c_j)/(3 h)
+      //   S hits the right node, S(x_{j+1}) = y_{j+1}
+      //     ->  b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3
+      //
+      // Tiny check with three nodes y = (0, 1, 0) and h = 1: the solve
+      // gives c = (0, -1.5, 0); on the first interval b = 1.5 and
+      // d = -0.5, so S(1) = 0 + 1.5 - 0.5 = 1 reproduces the middle
+      // node and S(0.5) = 0.6875. The polynomial is evaluated in Horner
+      // form, y + t (b + t (c + t d)), at the precomputed offset qdel[i]
+      // from node qidx[i] of every dense node.
       spline_coeffs_uniform(tabc, ncoarse, dlnc, cspl);
       const double hc = dlnc;
       const double inv_hc = 1.0/dlnc;
@@ -1632,12 +1924,25 @@ double sigma2(
       }
     }
     else {
+      // Exact path: every dense node holds its own sum; store the log.
       for (int i=0; i<Ntable.N_M; i++) {
         table[i] = log(table[i]);
       }
     }
+    // Record the tags the table now corresponds to; the next call
+    // compares against them.
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
+  // Read-out. interpol1d(f, n, a, b, dx, x) is the house linear
+  // interpolation on a uniform grid: with r = (x - a)/dx and
+  // i = floor(r) it returns f[i] + (r - i) (f[i+1] - f[i]); below a it
+  // returns f[0], and at or beyond the last node f[n-1] (constant
+  // extrapolation, so a mass outside [halo_m_min, halo_m_max] gets the
+  // edge value). Here f = table (ln sigma^2), a = lim[0], dx = lim[2],
+  // x = ln M; b = lim[1] is accepted for symmetry and unused. Example
+  // with the defaults, M = 3e10: r = ln(3e4)/0.02476 = 416.37, so the
+  // value is read 37% of the way from node 416 to node 417. exp undoes
+  // the stored log.
   return exp(interpol1d(table, Ntable.N_M, lim[0], lim[1], lim[2], log(M)));
 }
