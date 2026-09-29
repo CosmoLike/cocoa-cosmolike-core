@@ -64,8 +64,9 @@ typedef simde__m256d v4d;
 // "predefined GSL tables" of cosmo2D.c; GSL computes any other size on
 // the fly, with weights good to only ~5e-7). The gas integrals of u_KS
 // ladder 96/128/256/512/1024 with Ntable.high_def_integration and
-// bias_norm 128/256/512; both are converged at their base size. The
-// halo-model mass integrals (ngal, hm_funcs, I02_XY, I11_X, G02,
+// bias_norm 128/256/512; both are converged at their base size; the
+// ngal/bgal tables ladder 128/256/512/1024 (hod_tables header). The
+// spectra's mass integrals (p_mm, p_gm, p_gg; I02_XY, I11_X, G02,
 // GM02) run at 1024, the largest tabulated size, at every hdi: their
 // integrands read sigma2 and dlognudlogm by linear interpolation in
 // ln M, and GL converges only algebraically across those kinks (at
@@ -125,13 +126,6 @@ typedef simde__m256d v4d;
 //   HOD_fc       = f_c, completeness factor of the centrals
 //   ngal         = n_g, comoving galaxy number density
 //   bgal         = b_g, number-weighted mean galaxy bias
-//   mmean        = <M>, mean halo mass of the galaxies
-//   fsat         = f_sat, satellite fraction
-//   int_hm_funcs = the integrand ngal, mmean, fsat and bgal share
-//                  ("hm": halo model)
-//   hm_funcs     = the dispatcher behind ngal, mmean, fsat and bgal:
-//                  func = 0, 1, 2, 3 in that order, the last three
-//                  divided by n_g
 //   set_HOD      = built-in HOD values for lens bin ni: fills
 //                  nuisance.hod[ni][0..5], sets nuisance.gc[ni] = 1 and
 //                  stores b_g in nuisance.gb[0][ni]
@@ -2702,99 +2696,6 @@ double n_s_cmv(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_hm_funcs(double lnM, void* params)
-{ // 0 = ngal, 1 = m_mean, 2 = fsat, 3 = bgal 
-  double* ar = (double*) params;
-  
-  const double a = ar[0];
-  const int ni = (int) ar[1];
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
-  }
-  const int func = (int) ar[2];
-  const double growfac_a = (double) ar[3];
-  const double m = exp(lnM);
-  
-  const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
-  const double gnu  = fnu(nu, a) * nu; 
-  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-  const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m);
-  
-  const double nc = HOD_fc(ni)*HOD_nc(m, a, ni);
-  const double ns = HOD_ns(m, a, ni);
-  
-  double res;
-  switch(func)
-  {
-    case 0:
-    { // N_gal = \int dM n(M)*(nc + ns) = \int dlnM M n(M)*(nc + ns) 
-      res = dNdlnM*(nc + ns);
-      break;
-    }
-    case 1:
-    { // <M> = \int dM M*n(M)*(nc + ns) = \int dlnM M^2 n(M)*(nc + ns) 
-      res = m*(dNdlnM*(nc + ns));
-      break;
-    }
-    case 2:
-    {
-      res = dNdlnM*ns;
-      break;
-    }
-    case 3:
-    {
-      res = hb1nu(nu, a)*(dNdlnM*(nc + ns));
-      break;
-    }
-    default:
-    {
-      log_fatal("option not supported");
-      exit(1);
-    }
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double ngal_nointerp(
-    const int ni, 
-    const double a, 
-    const int init
-  )
-{
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
-  }
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = 1024; // largest predefined GSL table
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-
-  double ar[4] = {a, (double) ni, (double) 0, growfac(a)};
-  const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
-  const double lnMmax = log(limits.halo_m_max);
-
-  double res = 0.0;
-  if (1 == init) {
-    res = int_hm_funcs((lnMmin + lnMmax)/2.0, (void*) ar);
-  }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_hm_funcs;
-    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
-  }
-  return res;
-}
 
 // ---------------------------------------------------------------------------
 // Table owner of ngal and bgal: static state, zeroed at program start so
@@ -2832,8 +2733,6 @@ static struct {
 // N_s the occupation of the GALAXY PROFILES banner (HOD_fc, HOD_nc,
 // HOD_ns); b(nu) the Tinker bias (hb1nu). ln M runs from two decades
 // below the bin's M_min (N_c is an erf tail there) to ln M_max.
-// ngal_nointerp and bgal_nointerp are the same integrals done directly
-// at 1024 nodes (Python-facing diagnostics); the tables do not call them.
 //
 // 1. Quadrature: the n-point Gauss-Legendre rule in ln M (exact for
 // polynomials of degree 2n - 1); nodes x_q and weights w_q on [-1, 1]
@@ -3033,96 +2932,6 @@ double ngal(const int ni, const double a)
   return ((a < hod_.lim[0]) || (a > hod_.lim[1])) ? 0.0 :
     interpol1d(hod_.tab[0][ni], Ntable.N_a, hod_.lim[0], hod_.lim[1],
                hod_.lim[2], a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double hm_funcs_nointerp(
-    const int ni, 
-    const double a, 
-    const int func,
-    const int init
-  )
-{
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
-  }
-
-  if (w == NULL || fdiff2(cache[0], Ntable.random))
-  {
-    const size_t szint = 1024; // largest predefined GSL table
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-
-  double ar[4] = {a, (double) ni, (double) func, growfac(a)}; 
-  const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
-  const double lnMmax = log(limits.halo_m_max);
-
-  double res = 0.0;
-  if (init == 1)
-    res = int_hm_funcs((lnMmin + lnMmax)/2.0, (void*) ar);
-  else
-  {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_hm_funcs;
-    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
-  }
-  // funcs 1-3 are number-weighted means (mean mass, satellite fraction,
-  // mean bias): divide by the same bin's number density, integrated
-  // directly so one bin never forces the all-bin ngal table build
-  return (func == 1 || func == 2 || func == 3) ?
-    res/ngal_nointerp(ni, a, 0) : res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double mmean_nointerp(
-    const int ni, 
-    const double a, 
-    const int init
-  )
-{
-  return hm_funcs_nointerp(ni, a, 1, init);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double fsat_nointerp(
-    const int ni, 
-    const double a, 
-    const int init
-  )
-{
-  return hm_funcs_nointerp(ni, a, 2, init);
-} 
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double bgal_nointerp(
-    const int ni, 
-    const double a, 
-    const int init
-  )
-{
-  return hm_funcs_nointerp(ni, a, 3, init);
 }
 
 // ---------------------------------------------------------------------------
@@ -4725,6 +4534,44 @@ double p_gg(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// b_g of lens bin ni at one scale factor, integrated directly: the bgal
+// integral of the hod_tables header with the same Gauss-Legendre ladder,
+// ngal and the bias-weighted sum from one node loop. set_HOD runs bin by
+// bin, before the other bins' HOD may be set, so it cannot read the
+// all-bin hod_ tables.
+static double hod_bgal_direct(
+    const int ni,   // lens bin
+    const double a  // scale factor, 0 < a < 1
+  )
+{
+  const int hdi = abs(Ntable.high_def_integration);
+  const int nq = (0 == hdi) ? 128 :
+                 (1 == hdi) ? 256 :
+                 (2 == hdi) ? 512 : 1024; // predefined GSL tables
+  const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
+  const double lnMmax = log(limits.halo_m_max);
+  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+  const double D = growfac(a);
+  const fnu_params pf = fnu_params_at(a);
+  const hb1nu_params pb = hb1nu_params_at(a);
+  const double fc = HOD_fc(ni);
+  gsl_integration_glfixed_table* t = malloc_gslint_glfixed(nq);
+  double sn = 0.0;
+  double sb = 0.0;
+  for (int q=0; q<nq; q++) {
+    double lnM, w;
+    gsl_integration_glfixed_point(lnMmin, lnMmax, q, &lnM, &w, t);
+    const double m = exp(lnM);
+    const double nu = delta_c/(sqrt(sigma2(m))*D);
+    const double occ = fc*HOD_nc(m, a, ni) + HOD_ns(m, a, ni);
+    const double tq = w*(rhom/m)*dlognudlogm(m)*occ*fnu_core(nu, &pf)*nu;
+    sn += tq;
+    sb += tq*hb1nu_core(nu, &pb);
+  }
+  gsl_integration_glfixed_table_free(t);
+  return sb/sn;
+}
+
 void set_HOD(const int ni)
 { 
   const double z = zmean(ni);
@@ -4750,7 +4597,7 @@ void set_HOD(const int ni)
       nuisance.hod[0][3] = 11.09;
       nuisance.hod[0][4] = 1.27;
       nuisance.hod[0][5] = 1.00;
-      nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
+      nuisance.gb[0][ni] = hod_bgal_direct(ni, a);
       break;
     }
     case 1:
@@ -4761,7 +4608,7 @@ void set_HOD(const int ni)
       nuisance.hod[1][3] = 10.93;
       nuisance.hod[1][4] = 1.36;
       nuisance.hod[1][5] = 1.00;
-      nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
+      nuisance.gb[0][ni] = hod_bgal_direct(ni, a);
       break;
     }
     case 2:
@@ -4772,7 +4619,7 @@ void set_HOD(const int ni)
       nuisance.hod[2][3] = 12.47;
       nuisance.hod[2][4] = 1.28;
       nuisance.hod[2][5] = 1.00;
-      nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
+      nuisance.gb[0][ni] = hod_bgal_direct(ni, a);
       break;
     }
     case 3:
@@ -4783,7 +4630,7 @@ void set_HOD(const int ni)
       nuisance.hod[3][3] = 12.15;
       nuisance.hod[3][4] = 1.52;
       nuisance.hod[3][5] = 1.00;
-      nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
+      nuisance.gb[0][ni] = hod_bgal_direct(ni, a);
       break;
     }
     case 4:
@@ -4794,7 +4641,7 @@ void set_HOD(const int ni)
       nuisance.hod[4][3] = 8.67;
       nuisance.hod[4][4] = 1.50;
       nuisance.hod[4][5] = 1.00;
-      nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
+      nuisance.gb[0][ni] = hod_bgal_direct(ni, a);
       break;
     }
     default:
@@ -4808,12 +4655,5 @@ void set_HOD(const int ni)
   // NFW transform at c_g = gc[ni] * c(M) and aborts unless gc[ni] > 0
   nuisance.gc[ni] = 1.0;
 
-  log_debug("HOD: bin %d; <z> %.2f; <n_g> %e(h/Mpc)^3", ni, z, 
-    ngal_nointerp(ni, a, 0)*pow(cosmology.coverH0, -3.0));
-  
-  log_debug("HOD: bin %d; <z> %.2f; <M> h/Msun %.4e", ni, z, mmean_nointerp(ni,a,0));
-  
-  log_debug("HOD: bin %d; <z> %.2f; f_sat %.3f", ni, z, fsat_nointerp(ni,a,0));
-  
   log_debug("HOD: bin %d; <z> %.2f; <b_g> %.2f", ni, z, nuisance.gb[0][ni]);
 }

@@ -30,15 +30,7 @@ double u_nfw_c(const double c, const double k, const double m, const double a);
 
 double u_KS(double c, double k, const double rv);
 
-double ngal_nointerp(const int ni, const double a, const int init);
-
 double ngal(const int ni, const double a);
-
-double mmean_nointerp(const int ni, const double a, const int init);
-
-double fsat_nointerp(const int ni, const double a, const int init);
-
-double bgal_nointerp(const int ni, const double a, const int init);
 
 double bgal(const int ni, const double a);
 

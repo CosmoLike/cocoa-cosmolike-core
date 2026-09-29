@@ -422,14 +422,10 @@ double u_KS_cpp(
 //
 //   ngal  = int dlnM dn/dlnM <N|M>                 (number density)
 //   bgal  = int dlnM dn/dlnM <N|M> b(M) / ngal     (mean galaxy bias)
-//   mmean = int dlnM dn/dlnM <N|M> M / ngal        (mean halo mass)
-//   fsat  = int dlnM dn/dlnM N_s(M) / ngal         (satellite fraction)
 //
 // halo.c aborts on a bin whose lg M_min lies outside [10, 16]. The
-// nointerp diagnostics integrate one bin and need only that bin's HOD
-// set (set_nuisance_hod_cpp); the ngal/bgal TABLES build all bins at
-// once, so table reads (ngal, bgal, p_gm, p_gg) need every lens bin
-// set first.
+// ngal/bgal tables build all bins at once, so table reads (ngal, bgal,
+// p_gm, p_gg) need every lens bin set first.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -460,32 +456,6 @@ double ngal_cpp(
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// The ngal integral evaluated directly at (ni, a): the point diagnostic
-// of the ngal table.
-//
-// Calls halo.c ngal_nointerp(ni, a, init = 0), the real integral (see
-// the init flag in halo_wrapper.hpp).
-//
-// Parameters:
-//   ni - lens bin
-//   a  - scale factor, 0 < a < 1
-//
-// Returns:
-//   ngal in (c/H0)^-3
-// ---------------------------------------------------------------------------
-double ngal_nointerp_cpp(
-    const int ni,     // lens bin
-    const double a    // scale factor
-  )
-{
-  check_lens_bin("ngal_nointerp_cpp", ni);
-  return ngal_nointerp(ni, a, 0);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
@@ -510,83 +480,6 @@ double bgal_cpp(
 {
   check_lens_bin("bgal_cpp", ni);
   return bgal(ni, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// The bgal integral evaluated directly at (ni, a): the point diagnostic
-// of the bgal table.
-//
-// Calls halo.c bgal_nointerp(ni, a, init = 0), the real integral.
-//
-// Parameters:
-//   ni - lens bin
-//   a  - scale factor, 0 < a < 1
-//
-// Returns:
-//   bgal, dimensionless (order unity)
-// ---------------------------------------------------------------------------
-double bgal_nointerp_cpp(
-    const int ni,     // lens bin
-    const double a    // scale factor
-  )
-{
-  check_lens_bin("bgal_nointerp_cpp", ni);
-  return bgal_nointerp(ni, a, 0);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Mean halo mass of the galaxies of lens bin ni, integrated directly at
-// a and divided by the bin's directly integrated ngal.
-//
-// Calls halo.c mmean_nointerp(ni, a, init = 0), the real integral.
-//
-// Parameters:
-//   ni - lens bin
-//   a  - scale factor inside the lens redshift range, 0 < a < 1
-//
-// Returns:
-//   mean halo mass in M_sun/h
-// ---------------------------------------------------------------------------
-double mmean_nointerp_cpp(
-    const int ni,     // lens bin
-    const double a    // scale factor
-  )
-{
-  check_lens_bin("mmean_nointerp_cpp", ni);
-  return mmean_nointerp(ni, a, 0);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Satellite fraction of the galaxies of lens bin ni, integrated directly
-// at a and divided by the bin's directly integrated ngal.
-//
-// Calls halo.c fsat_nointerp(ni, a, init = 0), the real integral.
-//
-// Parameters:
-//   ni - lens bin
-//   a  - scale factor inside the lens redshift range, 0 < a < 1
-//
-// Returns:
-//   fsat, dimensionless fraction
-// ---------------------------------------------------------------------------
-double fsat_nointerp_cpp(
-    const int ni,     // lens bin
-    const double a    // scale factor
-  )
-{
-  check_lens_bin("fsat_nointerp_cpp", ni);
-  return fsat_nointerp(ni, a, 0);
 }
 
 // ---------------------------------------------------------------------------

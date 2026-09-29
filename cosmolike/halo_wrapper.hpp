@@ -58,7 +58,7 @@ namespace cosmolike_interface
 //   ni, nj = lens (clustering) tomographic bins, counted from 0
 //
 // Dimensionless: u_nfw_c, u_KS, conc, hb1nu, fnu, dlognudlogm,
-// bias_norm, fsat.
+// bias_norm, bgal.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -131,20 +131,11 @@ double u_KS_cpp(const double c, const double k, const double rv);
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-// galaxy number density (table / direct integral)
+// galaxy number density (table)
 double ngal_cpp(const int ni, const double a);
 
-double ngal_nointerp_cpp(const int ni, const double a);
-
-// number-weighted mean galaxy bias (table / direct integral)
+// number-weighted mean galaxy bias (table)
 double bgal_cpp(const int ni, const double a);
-
-double bgal_nointerp_cpp(const int ni, const double a);
-
-// mean halo mass and satellite fraction of the galaxies (direct integrals)
-double mmean_nointerp_cpp(const int ni, const double a);
-
-double fsat_nointerp_cpp(const int ni, const double a);
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
