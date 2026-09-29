@@ -2308,8 +2308,8 @@ static struct {
 // <N|M> the occupation of the GALAXY PROFILES banner (HOD_fc, HOD_nc,
 // HOD_ns); the POWER SPECTRA banner explains dn/dlnM.
 //
-// Quadrature: Gauss-Legendre in ln M with n_nodes = 128, 256, 512 or
-// 1024 nodes for abs(Ntable.high_def_integration) = 0, 1, 2, >= 3, over
+// Quadrature: Gauss-Legendre in ln M (the node count follows an
+// Ntable.high_def_integration ladder, set in the rebuild block) over
 // [ln 10^(lg M_min - 2), ln limits.halo_m_max] of each bin (N_c is an
 // erf tail below). Nodes x_q and weights w_q on [-1, 1] map to
 // ln M_q = mid + half_width x_q with weight half_width w_q.
@@ -2613,9 +2613,10 @@ double bgal(const int ni, const double a)
 // Eq. 17 and Table 2); the galaxy spectra take Pdelta b_gal as their
 // 2-halo term instead of I11 (p_gm, p_gg headers).
 //
-// Each builder tabulates ln P on a uniform (a, ln k) grid with the
-// 1024-node Gauss-Legendre rule in ln M and reads it bilinearly; the
-// first call of a refill is halo_warmup.
+// Each builder tabulates ln P on a uniform (a, ln k) grid with a
+// Gauss-Legendre rule in ln M (the node count follows an
+// Ntable.high_def_integration ladder, set in each rebuild block) and
+// reads it bilinearly; the first call of a refill is halo_warmup.
 
 
 // ---------------------------------------------------------------------------
@@ -2715,10 +2716,11 @@ static void halo_warmup(
 // banner).
 //
 // 1. Quadrature: the n-point Gauss-Legendre rule in ln M (exact for
-// polynomials of degree 2n - 1), n = 1024, the largest size GSL
-// tabulates; nodes M_q and weights w_q on [ln M_min, ln M_max] are mapped
-// once in the rebuild block (gsl_integration_glfixed_point). High k
-// converges slowest: the profile's ringing is sampled in ln M.
+// polynomials of degree 2n - 1; n follows an
+// Ntable.high_def_integration ladder); nodes M_q and weights w_q on
+// [ln M_min, ln M_max] are mapped once in the rebuild block
+// (gsl_integration_glfixed_point). High k converges slowest: the
+// profile's ringing is sampled in ln M.
 //
 // 2. Loop levels: each factor is computed at the outermost level it
 // depends on, so the innermost loop is the NFW kernel alone (nfw_um:
@@ -2789,7 +2791,22 @@ double p_mm(
     }
 
     table     = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
-    n_nodes   = 1024;  // the largest rule GSL tabulates (header, item 1)
+    // mass-node ladder: the default already lands far inside the
+    // code's chi2 error budget (measured ladder: the skill file's
+    // halo.c numerics); high_def_integration steps toward the largest
+    // GSL rule
+    if (0 == abs(Ntable.high_def_integration)) {
+      n_nodes = 64;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      n_nodes = 128;
+    }
+    else if (2 == abs(Ntable.high_def_integration)) {
+      n_nodes = 256;
+    }
+    else {
+      n_nodes = 1024;
+    }
     mass_node = (double**) malloc2d(6, n_nodes);
     a_node    = (double***) malloc3d(Ntable.N_a, 6, n_nodes);
 
@@ -2955,7 +2972,7 @@ double p_mm(
 // h/Mpc (2009.01858 Table 2) with sigma8 = sigma(M8) read from the sigma2
 // table, M8 = (4 pi/3) rho_m (8 Mpc/h)^3.
 //
-// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// 1. Quadrature: the Gauss-Legendre rule of p_mm (its header,
 // item 1) over [ln M_min, ln M_max], mapped once in the rebuild block.
 //
 // 2. Loop levels as in p_mm (its header, item 2), two kernels per node:
@@ -3036,7 +3053,22 @@ double p_my(
     }
 
     table     = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
-    n_nodes   = 1024;  // the largest rule GSL tabulates (header, item 1)
+    // mass-node ladder: the default already lands far inside the
+    // code's chi2 error budget (measured ladder: the skill file's
+    // halo.c numerics); high_def_integration steps toward the largest
+    // GSL rule
+    if (0 == abs(Ntable.high_def_integration)) {
+      n_nodes = 64;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      n_nodes = 128;
+    }
+    else if (2 == abs(Ntable.high_def_integration)) {
+      n_nodes = 256;
+    }
+    else {
+      n_nodes = 1024;
+    }
     mass_node = (double**) malloc2d(8, n_nodes);
     a_node    = (double***) malloc3d(Ntable.N_a, 7, n_nodes);
 
@@ -3259,7 +3291,7 @@ double p_my(
 // header). No matter leg: the only kernel is u_KS, and no M/rho_m enters
 // (the pressure window is the full volume integral, GAS PROFILES banner).
 //
-// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// 1. Quadrature: the Gauss-Legendre rule of p_mm (its header,
 // item 1) over [ln M_min, ln M_max], mapped once in the rebuild block.
 //
 // 2. Loop levels as in p_my (its header, item 2) without the matter leg:
@@ -3327,7 +3359,22 @@ double p_yy(
     }
 
     table     = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
-    n_nodes   = 1024;  // the largest rule GSL tabulates (header, item 1)
+    // mass-node ladder: the default already lands far inside the
+    // code's chi2 error budget (measured ladder: the skill file's
+    // halo.c numerics); high_def_integration steps toward the largest
+    // GSL rule
+    if (0 == abs(Ntable.high_def_integration)) {
+      n_nodes = 64;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      n_nodes = 128;
+    }
+    else if (2 == abs(Ntable.high_def_integration)) {
+      n_nodes = 256;
+    }
+    else {
+      n_nodes = 1024;
+    }
     mass_node = (double**) malloc2d(7, n_nodes);
     a_node    = (double***) malloc3d(Ntable.N_a, 3, n_nodes);
 
@@ -3511,6 +3558,79 @@ double p_yy(
 
 
 // ---------------------------------------------------------------------------
+// Dense ln k values of a smooth function known exactly on a coarse ln k
+// grid: the 1-halo sums of p_gm and p_gg are evaluated at every
+// k_step-th ln k node only (plus pad nodes beyond each end, which keep
+// the natural spline's end conditions away from the table's range) and
+// filled in between by a natural cubic spline of their logarithm.
+//
+//   coarse node c sits at ln k = lnk_first + (c - pad) k_step dlnk,
+//   dense node j at ln k = lnk_first + j dlnk
+//
+// The spline follows spline_coeffs_uniform (basics.h): curvatures from
+// the tridiagonal system [1 4 1] c = (3/h^2) (second differences),
+// c = 0 at both ends, solved by the Thomas algorithm; each interval is
+// then y_q + b t + c_q t^2 + d t^3 in Horner form. All storage is the
+// caller's (thread-private scratch), so the function allocates nothing.
+//
+// Parameters:
+//   ln_coarse - [n_coarse] the log of the exact coarse values
+//   n_coarse  - coarse nodes, pads included
+//   k_step    - dense nodes per coarse interval
+//   pad       - pad nodes before the first dense node
+//   dlnk      - dense ln k spacing
+//   n_dense   - dense nodes
+//   curv      - [n_coarse] scratch: the spline curvatures c_q
+//   mult      - [n_coarse] scratch: the Thomas multipliers
+//   ln_dense  - [n_dense] output: the spline at the dense nodes
+// ---------------------------------------------------------------------------
+static void ln_k_spline_upsample(
+    const double* restrict ln_coarse,
+    const int n_coarse,
+    const int k_step,
+    const int pad,
+    const double dlnk,
+    const int n_dense,
+    double* restrict curv,
+    double* restrict mult,
+    double* restrict ln_dense
+  )
+{
+  const double h       = k_step*dlnk; // coarse spacing in ln k
+  const double inv_h2x3 = 3.0/(h*h);
+
+  // --- 1. CURVATURES: THOMAS SOLVE OF THE NATURAL-SPLINE SYSTEM ---
+
+  curv[0] = 0.0;
+  mult[0] = 0.0;
+  for (int q=1; q<n_coarse-1; q++) {
+    const double rhs =
+        inv_h2x3*(ln_coarse[q-1] - 2.0*ln_coarse[q] + ln_coarse[q+1]);
+    mult[q] = 1.0/(4.0 - mult[q-1]);
+    curv[q] = (rhs - curv[q-1])*mult[q];
+  }
+  curv[n_coarse-1] = 0.0;
+  for (int q=n_coarse-2; q>0; q--) {
+    curv[q] -= mult[q]*curv[q+1];
+  }
+
+  // --- 2. HORNER EVALUATION AT THE DENSE NODES ---
+
+  for (int j=0; j<n_dense; j++) {
+    const int    q = j/k_step + pad;          // coarse interval of node j
+    const double t = (j % k_step)*dlnk;       // offset into it
+
+    const double b = (ln_coarse[q+1] - ln_coarse[q])/h
+                     - h*(curv[q+1] + 2.0*curv[q])/3.0;
+    const double d = (curv[q+1] - curv[q])/(3.0*h);
+
+    ln_dense[j] = ln_coarse[q] + t*(b + t*(curv[q] + t*d));
+  }
+}
+
+
+
+// ---------------------------------------------------------------------------
 // P_gm(k, a, ni), the halo-model galaxy-matter power spectrum of lens bin
 // ni, from a table of ln P per bin on na x Ntable.N_k_nlin nodes, na =
 // Ntable.N_a/5, uniform in a over the bin's range [amin_lens, amax_lens]
@@ -3526,7 +3646,7 @@ double p_yy(
 // center (window 1). dn/dlnM, (M/rho_m) u_m as in p_mm (its header);
 // N_c, N_s, f_c the occupation of the GALAXY PROFILES banner.
 //
-// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// 1. Quadrature: the Gauss-Legendre rule of p_mm (its header,
 // item 1) over ln M from ln 10^(lg M_min - 1) of the bin to
 // ln limits.halo_m_max: nodes x_q, weights w_q on [-1, 1] (gl) are
 // mapped per bin in the refill, ln M_q = mid + half_width x_q, weight
@@ -3596,10 +3716,16 @@ double p_gm(
                                    // dlnnu/dlnM, nu at D = 1, r_Delta,
                                    // N_s, f_c N_c
   static double*** a_tab   = NULL; // [n_threads][10][nnode]: one (bin,
-                                   //   a-row) iteration's scratch
-                                   // of one bin: c, ln(1+c), r_s, ln r_s
-                                   // and the same for c_g = gc c, then
-                                   // the weights W1, W0
+                                   // a-row) iteration's scratch: c,
+                                   // ln(1+c), r_s, ln r_s and the same
+                                   // for c_g = gc c, then W1, W0
+  static double*** k_tab   = NULL; // [n_threads][4][n_dense + pads]:
+                                   // the coarse ln k scratch (coarse
+                                   // ln GM02, curvatures, multipliers,
+                                   // dense ln GM02)
+  static int       k_step  = 0;    // dense ln k nodes per coarse one
+  static int       n_coarse = 0;   // coarse ln k nodes, pads included
+  const int        K_PAD   = 6;    // coarse pad nodes beyond each end
 
   // --- 1. REBUILD: SIZES, ALLOCATIONS, GL RULE, TABLE AXES ---
 
@@ -3616,12 +3742,42 @@ double p_gm(
       free(gl);
       free(bin_tab);
       free(a_tab);
+      free(k_tab);
     }
 
     nbin  = redshift.clustering_nbin;
     na    = (int) Ntable.N_a/5.0; // a fifth of p_mm's a grid: each bin's
                                   // a range is a slice of the full range
-    nnode = 1024;                 // largest predefined GSL rule
+    // mass-node ladder: the default already lands far inside the
+    // code's chi2 error budget (measured ladder: the skill file's
+    // halo.c numerics); high_def_integration steps toward the largest
+    // GSL rule
+    if (0 == abs(Ntable.high_def_integration)) {
+      nnode = 64;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      nnode = 128;
+    }
+    else if (2 == abs(Ntable.high_def_integration)) {
+      nnode = 256;
+    }
+    else {
+      nnode = 1024;
+    }
+
+    // coarse ln k step of the 1-halo sums (ln_k_spline_upsample): its
+    // ladder, like the mass nodes', lands inside the chi2 error budget
+    // at the default and becomes exact with high_def_integration
+    if (0 == abs(Ntable.high_def_integration)) {
+      k_step = 4;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      k_step = 2;
+    }
+    else {
+      k_step = 1;
+    }
+    n_coarse = (Ntable.N_k_nlin - 1)/k_step + 2 + 2*K_PAD;
 
     table   = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     lim     = (double**) malloc2d(nbin+1, 3);
@@ -3630,6 +3786,8 @@ double p_gm(
     // one scratch block per thread (the thread count of this rebuild;
     // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
     a_tab   = (double***) malloc3d(omp_get_max_threads(), 10, nnode);
+    k_tab   = (double***) malloc3d(omp_get_max_threads(), 4,
+                                   Ntable.N_k_nlin + n_coarse);
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight; kept on [-1, 1] here
@@ -3742,7 +3900,8 @@ double p_gm(
         // thread-private scratch: this (bin, a-row) iteration fills
         // it and consumes it in its own k loop; restrict: each row is
         // reached only through its pointer, no reload after libm calls
-        double** const wsp = a_tab[omp_get_thread_num()];
+        double** const wsp   = a_tab[omp_get_thread_num()];
+        double** const k_wsp = k_tab[omp_get_thread_num()];
         double* restrict conc_halo = wsp[0];
         double* restrict ln1c_halo = wsp[1];
         double* restrict r_s       = wsp[2];
@@ -3785,10 +3944,20 @@ double p_gm(
           w0[q]        = w_matter*bin_tab[l][5][q];
         }
 
-        // per k: GM02 as a sum of the NFW kernel over the nodes, one
-        // call per leg or one for both (same_conc), then ln P
-        for (int j=0; j<Ntable.N_k_nlin; j++) {
-          const double lnk = lim[nbin][0] + j*lim[nbin][2];
+        // per k: the 1-halo sum on the coarse ln k grid only (the
+        // expensive part: nnode NFW kernels per k), its log splined to
+        // the dense grid, then ln P with the 2-halo term read exactly
+        // at every dense node
+        double* restrict ln_coarse = k_wsp[0];
+        double* restrict curv      = k_wsp[1];
+        double* restrict mult      = k_wsp[2];
+        double* restrict ln_dense  = k_wsp[3];
+
+        const double dlnk      = lim[nbin][2];
+        const double lnk_first = lim[nbin][0] - K_PAD*k_step*dlnk;
+
+        for (int c=0; c<n_coarse; c++) {
+          const double lnk = lnk_first + c*k_step*dlnk;
           const double kj  = exp(lnk);
 
           double gm02 = 0.0;
@@ -3808,6 +3977,21 @@ double p_gm(
               gm02 += um*(w1[q]*ug + w0[q]);
             }
           }
+
+          // a 1-halo sum is a sum of positive terms; its log is splined
+          if (!(gm02 > 0)) {
+            log_fatal("non-positive 1-halo sum at ln k = %g", lnk);
+            exit(1);
+          }
+          ln_coarse[c] = log(gm02);
+        }
+
+        ln_k_spline_upsample(ln_coarse, n_coarse, k_step, K_PAD, dlnk,
+                             Ntable.N_k_nlin, curv, mult, ln_dense);
+
+        for (int j=0; j<Ntable.N_k_nlin; j++) {
+          const double kj = exp(lim[nbin][0] + j*dlnk);
+          const double gm02 = exp(ln_dense[j]);
 
           table[l][i][j] = log(Pdelta(kj, ai)*b_gal + gm02/n_gal);
         }
@@ -3858,7 +4042,7 @@ double p_gm(
 // header); N_c(M), N_s(M), f_c the occupation of the GALAXY PROFILES
 // banner.
 //
-// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// 1. Quadrature: the Gauss-Legendre rule of p_mm (its header,
 // item 1) over [ln limits.halo_m_min, ln limits.halo_m_max], the same for
 // every bin: nodes and weights are mapped once, in the rebuild block.
 //
@@ -3922,9 +4106,16 @@ double p_gg(
   static double*** occ_tab  = NULL; // [nbin][2][nnode] per (bin, mass
                                     // node): N_s, f_c N_c
   static double*** a_tab    = NULL; // [n_threads][6][nnode]: one
-                                    //   (bin, a-row) scratch
-                                    // of one bin: c_g, ln(1+c_g), r_s,g,
-                                    // ln r_s,g, W2, W1
+                                    // (bin, a-row) iteration's scratch:
+                                    // c_g, ln(1+c_g), r_s,g, ln r_s,g,
+                                    // W2, W1
+  static double*** k_tab    = NULL; // [n_threads][4][n_dense + pads]:
+                                    // the coarse ln k scratch (coarse
+                                    // ln G02, curvatures, multipliers,
+                                    // dense ln G02)
+  static int       k_step   = 0;    // dense ln k nodes per coarse one
+  static int       n_coarse = 0;    // coarse ln k nodes, pads included
+  const int        K_PAD    = 6;    // coarse pad nodes beyond each end
 
   // --- 1. REBUILD: SIZES, ALLOCATIONS, MAPPED GL RULE, TABLE AXES ---
 
@@ -3941,12 +4132,42 @@ double p_gg(
       free(mass_tab);
       free(occ_tab);
       free(a_tab);
+      free(k_tab);
     }
 
     nbin  = redshift.clustering_nbin;
     na    = (int) Ntable.N_a/5.0; // a fifth of p_mm's a grid: each bin's
                                   // a range is a slice of the full range
-    nnode = 1024;                 // largest predefined GSL rule
+    // mass-node ladder: the default already lands far inside the
+    // code's chi2 error budget (measured ladder: the skill file's
+    // halo.c numerics); high_def_integration steps toward the largest
+    // GSL rule
+    if (0 == abs(Ntable.high_def_integration)) {
+      nnode = 64;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      nnode = 128;
+    }
+    else if (2 == abs(Ntable.high_def_integration)) {
+      nnode = 256;
+    }
+    else {
+      nnode = 1024;
+    }
+
+    // coarse ln k step of the 1-halo sums (ln_k_spline_upsample): its
+    // ladder, like the mass nodes', lands inside the chi2 error budget
+    // at the default and becomes exact with high_def_integration
+    if (0 == abs(Ntable.high_def_integration)) {
+      k_step = 4;
+    }
+    else if (1 == abs(Ntable.high_def_integration)) {
+      k_step = 2;
+    }
+    else {
+      k_step = 1;
+    }
+    n_coarse = (Ntable.N_k_nlin - 1)/k_step + 2 + 2*K_PAD;
 
     table    = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     lim      = (double**) malloc2d(nbin+1, 3);
@@ -3955,6 +4176,8 @@ double p_gg(
     // one scratch block per thread (the thread count of this rebuild;
     // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
     a_tab    = (double***) malloc3d(omp_get_max_threads(), 6, nnode);
+    k_tab    = (double***) malloc3d(omp_get_max_threads(), 4,
+                                    Ntable.N_k_nlin + n_coarse);
 
     // GL rule mapped once onto [ln M_min, ln M_max], shared by all bins
     const double lnMmin = log(limits.halo_m_min);
@@ -4070,7 +4293,8 @@ double p_gg(
         // thread-private scratch: this (bin, a-row) iteration fills
         // it and consumes it in its own k loop; restrict: each row is
         // reached only through its pointer, no reload after libm calls
-        double** const wsp = a_tab[omp_get_thread_num()];
+        double** const wsp   = a_tab[omp_get_thread_num()];
+        double** const k_wsp = k_tab[omp_get_thread_num()];
         double* restrict conc_gal = wsp[0];
         double* restrict ln1c_gal = wsp[1];
         double* restrict r_sg     = wsp[2];
@@ -4101,10 +4325,20 @@ double p_gg(
           w1[q]       = 2.0*dn_halo*(n_sat/mcg)*occ_tab[l][1][q];
         }
 
-        // per k: G02 as a sum of the NFW kernel over the nodes, then
-        // ln P
-        for (int j=0; j<Ntable.N_k_nlin; j++) {
-          const double lnk = lim[nbin][0] + j*lim[nbin][2];
+        // per k: the 1-halo sum on the coarse ln k grid only (the
+        // expensive part: nnode NFW kernels per k), its log splined to
+        // the dense grid, then ln P with the 2-halo term read exactly
+        // at every dense node
+        double* restrict ln_coarse = k_wsp[0];
+        double* restrict curv      = k_wsp[1];
+        double* restrict mult      = k_wsp[2];
+        double* restrict ln_dense  = k_wsp[3];
+
+        const double dlnk      = lim[nbin][2];
+        const double lnk_first = lim[nbin][0] - K_PAD*k_step*dlnk;
+
+        for (int c=0; c<n_coarse; c++) {
+          const double lnk = lnk_first + c*k_step*dlnk;
           const double kj  = exp(lnk);
 
           double g02 = 0.0;
@@ -4113,6 +4347,21 @@ double p_gg(
                                      lnk + lnrsg[q], ln1c_gal[q]);
             g02 += ug*(w2[q]*ug + w1[q]);
           }
+
+          // a 1-halo sum is a sum of positive terms; its log is splined
+          if (!(g02 > 0)) {
+            log_fatal("non-positive 1-halo sum at ln k = %g", lnk);
+            exit(1);
+          }
+          ln_coarse[c] = log(g02);
+        }
+
+        ln_k_spline_upsample(ln_coarse, n_coarse, k_step, K_PAD, dlnk,
+                             Ntable.N_k_nlin, curv, mult, ln_dense);
+
+        for (int j=0; j<Ntable.N_k_nlin; j++) {
+          const double kj = exp(lim[nbin][0] + j*dlnk);
+          const double g02 = exp(ln_dense[j]);
 
           table[l][i][j] = log(Pdelta(kj, ai)*b_gal*b_gal
                                + g02/(n_gal*n_gal));

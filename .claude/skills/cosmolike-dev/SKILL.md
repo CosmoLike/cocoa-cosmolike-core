@@ -98,6 +98,21 @@ Run all of these before declaring a change correct:
 
 ## Benchmarking standard
 
+**Time cosmolike, never CAMB (a repeated mistake).** Every speed
+judgment is made against cosmolike's OWN per-step time, with the
+Boltzmann/theory time taken out: production will replace CAMB by the
+emul2 output emulator, so CAMB seconds are not the denominator. A
+whole-`evaluate_chi2` or `logposterior` wall time mixes both and
+understates every cosmolike cost (2026-09-29: the halo spectra were
+judged "0.1 s of 1.6 s, negligible" - but the 1.6 s was mostly CAMB;
+against cosmolike's own 150 ms/step the halo builds were a third of
+it). Recipe: cobaya `info["timing"] = True`, one warm-up evaluation,
+then N evaluations at jittered cosmologies (e.g. As x (1 + 1e-3 i))
+so every table refills, and read the likelihood component's timer
+separately from the theory components'. Reference numbers (M2, 4
+threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
+(CAMB 241 ms), lsst_y1 89 ms (CAMB 233 ms).
+
 - Benchmark = 1000 likelihood evaluations of `roman_real.combo_3x2pt` via
   `cobaya-run` under the MPI wrapper.
 - Always `perf stat -r 3` (3 repeats, mean ± stddev) with hardware counters:
@@ -380,13 +395,39 @@ integral family:
   M_min / M_0 does not help. The linear read in a (<= 1.4e-5) dominates
   at 128 nodes: raising hdi buys nothing for `ngal` / `bgal` until
   `N_a` is raised.
-- Mass integrals of the spectra (`p_mm`, `p_gm`, `p_gg`; `I02_XY`,
-  `I11_X`): 1024 at every hdi, the largest tabulated size. Their
-  integrands read `sigma2` and `dlognudlogm` by linear interpolation in
-  ln M, and GL converges only algebraically across those kinks (at 256
-  nodes `p_gg` moves by up to 2.4e-3 from its 1024-node value). Do not
-  ladder them below 1024 while those reads stay interpolated; the
-  gather bullet above is the way to make a smaller rule exact.
+- Mass integrals of the spectra (`p_mm`, `p_my`, `p_yy`, `p_gm`,
+  `p_gg`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
+  0 / 1 / 2 / >= 3. Chi2 ladder at 64 nodes vs 1024 (2026-09-29, HOD
+  gg+gs 3x2pt, per-point fiducial): roman_real 8.6e-6, lsst_y1 8.2e-11;
+  spectrum builds at 64 nodes: p_mm 0.04 s, p_gm 0.06 s, p_gg 0.05 s
+  (4 threads, M2) - no longer the MCMC bottleneck. Halo a/k grid cuts
+  measured the same day and REJECTED (budget-to-speed ratio): a-grid /2
+  0.047 (roman), k-grid /2 0.070 roman / 0.131 lsst_y1, /4 either
+  > 1; all three together 0.09 / 0.13 for ~0.1 s - most of the whole
+  code's 0.2 budget for nothing. Re-open only if a profile shows the
+  halo builds hot again (then with coarse-exact + spline upsample, not
+  plain linear reads). Vivian (2026-09-29): the acceptance rule is the
+  BUDGET - "all we need is the sum of all errors in the code to be at
+  <~ 0.2 in chi2" - so 128 nodes (2.1e-8) is not even close to
+  mattering; no purist margins while the builds cost MCMC time. Her
+  floor: never below 64 nodes ("the lowest I go is 64"). Her comment
+  rule: source comments never quote a knob's current value (the code
+  and this file carry the numbers; comments carry the physics and the
+  algorithm).
+  P(k)-level convergence is slow at HIGH k only (the NFW ringing is
+  sampled in ln M; worst over k up to 330 h/Mpc: I02 1e-4 / 8e-4 at
+  512 / 256 nodes, and at 256 nodes `p_gg` moves by up to 2.4e-3), but
+  the observables never reach those k. Measured 2026-09-29 (roman_real
+  3x2pt data vector with HOD gg live, delta^T C^-1 delta vs the
+  1024-node build, per-point generated fiducial): 512 -> 4.4e-11,
+  256 -> 5.4e-10, 128 -> 2.1e-8; largest single datavector entry moves
+  by 1.2e-8 (256) / 8.6e-8 (128) relative. 256 is therefore also
+  viable if the builds must halve again; keep any y-probe (p_my/p_yy)
+  likelihood in mind before dropping further - their chi2-level
+  tolerance is untested. The integrands read `sigma2` and
+  `dlognudlogm` by linear interpolation in ln M (a kink per cell,
+  algebraic GL convergence); the gather bullet above is the way to
+  make a small rule exact at every k.
 
 Trapezoid rules, uniform in a log variable:
 
@@ -424,6 +465,35 @@ Trapezoid rules, uniform in a log variable:
 - `hod_tables` builds all lens bins at once, so every bin's HOD must be
   set before the first call; `hod_.lim[0]` is a placeholder a for
   `HOD_nc`'s range check (the HOD does not depend on a).
+
+### Accuracy tests must see the small scales (masks hide them)
+
+Vivian (2026-09-29): "HoD is important on small scales - if your test
+is being done on a conservative masking that masks small scales - you
+will improperly conclude that you can lower accuracy settings more
+than you really should." Worse than hiding them: the data vector is
+evaluated MASKED - the model is not even computed at cut points
+(delta = 0 there exactly) - so a test under a production mask is
+structurally blind to them.
+
+Protocol for any halo/HOD/small-scale knob:
+1. Evaluate the model with no cuts: a scratch dataset with ones.mask
+   (and a diagonal covariance so the interface accepts it - the full
+   unmasked covariance can be non-positive-definite and the interface
+   aborts on it).
+2. Score with chi2 (reference arm injected as truth) on the most
+   aggressive POSITIVE-DEFINITE mask: re-admit cut points while the
+   correlation matrix's smallest eigenvalue stays >= 1e-4 (raw
+   condition numbers mix units; Schur-complement tests per point do
+   not bound the smallest eigenvalue). 2026-09-29: roman_real's
+   unmasked correlation matrix has an eigenvalue of -0.5; the
+   aggressive set re-admits 85 of 165 cut points (small-scale gammat
+   theta bins 0-3 and w); lsst_y1 is usable fully unmasked
+   (correlation min eig 5e-4).
+3. Report the production-mask number next to it, never alone.
+
+Measured the same day (coarse-k spline step 8 on the HOD spectra):
+lsst_y1 chi2 9e-9 under its production mask, 1.87 with no cuts.
 
 ### The b_mag = 0 a-range trap (cosmo2D/redshift_spline)
 
