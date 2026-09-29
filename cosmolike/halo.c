@@ -126,47 +126,69 @@ double conc(const double m, const double growfac_a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_for_bias_norm(double nu, void* params) 
-{ // correction for halo mass cuts so large-scale 2h matches PT at all redshifts 
-  double* ar = (double*) params;
-  const double a = ar[0];
-  return hb1nu(nu, a) * fnu(nu, a);
-}
+// ---------------------------------------------------------------------------
+// Node cache for the bias_norm quadrature.
+//
+// bias_norm(a) integrates the Tinker bias times the Tinker multiplicity
+// function over the peak heights of the tabulated mass range:
+//
+//   bias_norm(a) = int_{nu_min(a)}^{nu_max(a)} b(nu) f(nu, a) dnu,
+//   nu(M, a)     = delta_c / (sigma(M) D(a)),
+//
+// with sigma(M) the a = 1 value (sigma2 in cosmo3D.c) and D the growth
+// factor. Both limits carry the same factor 1/D(a), so the change of
+// variable t = nu D(a) - the peak height the same halo would have at
+// a = 1 - removes every a-dependence from the domain:
+//
+//   bias_norm(a) = (1/D) int_{t_min}^{t_max} b(t/D) f(t/D, a) dt,
+//
+//   t_min = delta_c/sigma(M_min)   (light halos: sigma large, t small)
+//   t_max = delta_c/sigma(M_max)   (heavy halos: sigma small, t large)
+//
+// The map nu = t/D is linear, so a Gauss-Legendre rule on [t_min, t_max]
+// is the same rule as one on [nu_min(a), nu_max(a)], node by node:
+// nu_q(a) = t_q/D. One node set therefore serves every a, and the
+// Jacobian is the exact constant 1/D - no numerical derivative enters.
+//
+// What is cached here, once per Ntable rebuild:
+//
+//   x[q] = Gauss-Legendre nodes on [-1, 1]
+//   w[q] = their weights
+//
+// The node count ladders with Ntable.high_def_integration. The
+// per-cosmology map onto [t_min, t_max] happens in bias_norm_work,
+// because sigma(M) changes with the cosmology.
+//
+// Cache invalidation:
+// rebuilds when Ntable.random changes. Callers run it OUTSIDE OpenMP
+// regions.
+// ---------------------------------------------------------------------------
+static struct {
+  uint64_t key; // Ntable.random stamp of the current node set
+  int n;        // number of nodes
+  double* x;    // [n] Gauss-Legendre nodes on [-1, 1]
+  double* w;    // [n] Gauss-Legendre weights on [-1, 1]
+} bnnodes_ = {0};
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double bias_norm_nointerp(const double a, const int init)
+static void bias_norm_build_nodes(void)
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
+  if (bnnodes_.x != NULL && !fdiff2(bnnodes_.key, Ntable.random)) {
+    return;
   }
-
-  const double growfac_a = growfac(a);
-  const double nu_min = delta_c/(sqrt(sigma2(limits.halo_m_min))*growfac_a);
-  const double nu_max = delta_c/(sqrt(sigma2(limits.halo_m_max))*growfac_a);
-
-  double ar[2] = {a, growfac_a};
-
-  double res;
-  if (init == 1) {
-    res = int_for_bias_norm(0.5*(nu_min+nu_max), (void*) ar);
+  if (bnnodes_.x != NULL) {
+    free(bnnodes_.x);
+    free(bnnodes_.w);
   }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_bias_norm;
-    res = gsl_integration_glfixed(&F, nu_min, nu_max, w);
+  bnnodes_.n = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+  bnnodes_.x = (double*) malloc(sizeof(double)*bnnodes_.n);
+  bnnodes_.w = (double*) malloc(sizeof(double)*bnnodes_.n);
+  gsl_integration_glfixed_table* t = malloc_gslint_glfixed(bnnodes_.n);
+  for (int q=0; q<bnnodes_.n; q++) {
+    gsl_integration_glfixed_point(-1.0, 1.0, q, &bnnodes_.x[q],
+                                  &bnnodes_.w[q], t);
   }
-  return res;
+  gsl_integration_glfixed_table_free(t);
+  bnnodes_.key = Ntable.random;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,29 +196,159 @@ double bias_norm_nointerp(const double a, const int init)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double bias_norm(const double a) 
+// ---------------------------------------------------------------------------
+// Batched bias_norm over many scale factors (the _work form of
+// cosmo2D.c).
+//
+// Why a finite mass range needs a normalization at all. Over ALL halo
+// masses (0 < nu < infinity) the Tinker fits satisfy
+//
+//   int f(nu) dnu        = 1   (all matter sits in halos)
+//   int b(nu) f(nu) dnu  = 1   (matter is unbiased with respect to itself)
+//
+// but the code integrates halos only over [limits.halo_m_min,
+// limits.halo_m_max], so the second integral falls short of 1 - most
+// of the missing part is the unresolved low-mass tail. The 2-halo term
+// (int_for_I11_X) divides by bias_norm(a), which restores the
+// large-scale limit P_2h -> P_lin at every redshift.
+//
+// Each output is the Gauss-Legendre sum of the node cache mapped onto
+// [t_min, t_max] (the node-cache header derives the substitution):
+//
+//   bias_norm(a) = (h/D) sum_q w_q b(nu_q) f(nu_q, a),
+//
+//   nu_q = (m + h x_q)/D    (the node mapped to [t_min, t_max], then / D)
+//   m    = (t_max + t_min)/2
+//   h    = (t_max - t_min)/2
+//
+// Data flow:
+//
+//   node cache (x, w) + sigma2 -> t_min, t_max -> m, h   [serial, once]
+//     -> per scale factor: D = growfac(a)                [threaded over a]
+//     -> per node: nu_q -> w_q b(nu_q) f(nu_q, a)        [plain sum]
+//
+// Thread safety: the node cache, the sigma2 table and the growth table
+// are all built lazily on first use, so the serial block touches each
+// one before the parallel loop; inside the loop every call only reads.
+// Each output is its own sum: no cross-thread reduction, so the result
+// does not depend on the thread count.
+//
+// Cache invalidation:
+// none here (stateless given the node cache); bias_norm keys its table
+// on cosmology.random and Ntable.random.
+//
+// Parameters:
+//   a   - scale factors, each 0 < a < 1 (f(nu) aborts otherwise)
+//   na  - number of scale factors
+//   out - bias_norm at each scale factor (length na)
+//
+// Returns:
+//   void (out filled)
+// ---------------------------------------------------------------------------
+void bias_norm_work(
+    const double* a,  // scale factors
+    const int na,     // number of scale factors
+    double* out       // output bias_norm per scale factor
+  )
+{
+  if (na < 1) {
+    return;
+  }
+  bias_norm_build_nodes(); // serial: no lazy init inside the loop
+  (void) growfac(a[0]);    // builds the growth table serially too
+
+  const double tmin = delta_c/sqrt(sigma2(limits.halo_m_min));
+  const double tmax = delta_c/sqrt(sigma2(limits.halo_m_max));
+  const double m = 0.5*(tmax + tmin);
+  const double h = 0.5*(tmax - tmin);
+
+  const double* restrict x = bnnodes_.x;
+  const double* restrict w = bnnodes_.w;
+  const int n = bnnodes_.n;
+
+  #pragma omp parallel for schedule(static)
+  for (int i=0; i<na; i++) {
+    const double D = growfac(a[i]);
+    double sum = 0.0;
+    for (int q=0; q<n; q++) {
+      const double nu = (m + h*x[q])/D;
+      sum += w[q]*hb1nu(nu, a[i])*fnu(nu, a[i]);
+    }
+    out[i] = sum*h/D;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Direct (table-free) bias_norm at one scale factor: the point
+// diagnostic of the bias_norm table.
+//
+// A one-a call into bias_norm_work, which holds the formula and the
+// node cache. Its difference from bias_norm(a) at the same a is the
+// table's interpolation error.
+//
+// Parameters:
+//   a - scale factor, 0 < a < 1
+//
+// Returns:
+//   bias_norm(a) from the quadrature
+// ---------------------------------------------------------------------------
+double bias_norm_nointerp(const double a)
+{
+  double out = 0.0;
+  bias_norm_work(&a, 1, &out);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Cached bias_norm(a): a table on Ntable.N_a nodes uniform in a over
+// [limits.a_min, 0.9999999], filled by one bias_norm_work call and read
+// back with linear interpol1d.
+//
+// Every node holds the real integral: the grid stops at 0.9999999 < 1,
+// where f(nu) is still defined, so no sentinel value is needed, and
+// queries past the last node constant-extrapolate the true endpoint.
+//
+// Cache invalidation:
+//   allocation and the a-grid: rebuilt when Ntable.random changes
+//   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1])
+//
+// Parameters:
+//   a - scale factor
+//
+// Returns:
+//   bias_norm(a), interpolated in a
+// ---------------------------------------------------------------------------
+double bias_norm(const double a)
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
+  static double* agrid = NULL;
   static double lim[3];
-  
-  if (NULL == table  || fdiff2(cache[1], Ntable.random)) {
+
+  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     if (table != NULL) free(table);
+    if (agrid != NULL) free(agrid);
     table = (double*) malloc(sizeof(double)*Ntable.N_a);
-    lim[0] = limits.a_min; 
+    agrid = (double*) malloc(sizeof(double)*Ntable.N_a);
+    lim[0] = limits.a_min;
     lim[1] = 0.9999999;
     lim[2] = (lim[1] - lim[0]) / ((double) Ntable.N_a - 1.0);
+    for (int i=0; i<Ntable.N_a; i++) {
+      agrid[i] = lim[0] + i*lim[2];
+    }
   }
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    (void) bias_norm_nointerp(lim[0], 1); // init static vars
-    // every node holds the real integral: the grid ends at
-    // 0.9999999 < 1, where the integrand is still defined, so no
-    // sentinel value is needed and queries past the last node
-    // constant-extrapolate the true endpoint
-    #pragma omp parallel for schedule(static,1)
-    for (int i=0; i<Ntable.N_a; i++) {
-      table[i] = bias_norm_nointerp(lim[0] + i*lim[2], 0);
-    }
+    bias_norm_work(agrid, Ntable.N_a, table); // threaded over a inside
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }

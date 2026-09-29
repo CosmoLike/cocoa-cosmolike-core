@@ -293,8 +293,8 @@ double dlognudlogm_cpp(
 // stays true for the finite mass range the code integrates.
 //
 // Calls halo.c bias_norm: a cached table on Ntable.N_a nodes in a over
-// [limits.a_min, 0.9999999], filled from bias_norm_nointerp and read by
-// linear interpolation (constant extrapolation past the last node).
+// [limits.a_min, 0.9999999], filled by one bias_norm_work call and read
+// by linear interpolation (constant extrapolation past the last node).
 //
 // Parameters:
 //   a - scale factor
@@ -319,9 +319,8 @@ double bias_norm_cpp(
 // no table): the point diagnostic of the table above. Their difference
 // at the same a is the table's interpolation error.
 //
-// Calls halo.c bias_norm_nointerp(a, init = 0): the real integral (see
-// the init flag in halo_wrapper.hpp; init = 1 would return the
-// integrand at the midpoint instead).
+// Calls halo.c bias_norm_nointerp, a one-a call into bias_norm_work
+// (the same quadrature that fills the table).
 //
 // Parameters:
 //   a - scale factor, 0 < a < 1 (f(nu) aborts otherwise)
@@ -333,7 +332,7 @@ double bias_norm_nointerp_cpp(
     const double a   // scale factor
   )
 {
-  return bias_norm_nointerp(a, 0);
+  return bias_norm_nointerp(a);
 }
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,9 @@ double fnu(const double nu, const double a);
 
 double conc(const double m, const double growfac_a);
 
-double bias_norm_nointerp(const double a, const int init);
+void bias_norm_work(const double* a, const int na, double* out);
+
+double bias_norm_nointerp(const double a);
 
 double bias_norm(const double a);
 
