@@ -152,8 +152,56 @@ syntax.
 
 Also (same review): variable names say the physics (`n_gal`, `b_gal`,
 not `ng`, `bg`, `tq`, `occ`); logs are `ln<quantity>` (`lnk`, `lnx`,
-`ln1c`); one statement per line. Speed is never the excuse: names,
-blank lines and comments cost nothing at run time.
+`ln1c` — a bare `l` prefix like `l1c` or `lc` is banned); one statement
+per line. Speed is never the excuse: names, blank lines and comments
+cost nothing at run time.
+
+### Visual Code Geography (Vivian, 2026-09-29, second guide)
+
+- **Section banners.** Major logical sections are wrapped in distinct
+  banners:
+
+```c
+// ============================================================================
+// [SECTION] COSMOLOGICAL INTEGRATION & HALO BIAS
+// ============================================================================
+```
+
+- **Vertical whitespace.** 3 blank lines between major algorithmic
+  modules / distinct physical steps; 2 blank lines between helper
+  functions or mathematical definitions; 1 blank line inside a function
+  between phases (pre-computation vs the integration loop).
+
+### Equation-to-Code Blueprinting
+
+Before any complex mathematical loop or physics derivation, insert a
+comment block titled `/* PHYSICAL DERIVATION & LOGIC FLOW */` mapping
+the code's math back to the textbook formulas:
+
+```c
+/* PHYSICAL DERIVATION & LOGIC FLOW
+   1. Calculate halo mass m from log-mass space: m = exp(lnM)
+   2. Compute peak height: nu = delta_c / (sigma(m) D(a))
+   3. Compute the HOD expected number: <N> = fc Nc + Ns
+   4. Integrate the weighted bias contribution over the mass function. */
+```
+
+### Cognitive Complexity Limits (the "physics student" standard)
+
+Assume the reader is a physics student who knows the math and needs
+absolute clarity on how variables map to formulas.
+
+- No nested ternary operators; explicit `if / else` blocks.
+- No single-line blocks: always braces `{}` on loops and conditionals.
+- No unexplained magic numbers: every physical constant, integration
+  bound, or unit conversion gets a `const` with a descriptive name.
+- Banned: cryptic ultra-short names (`nq`, `sn`, `sb`, `tq`) that hide
+  the physics. Required: names mapping to physical concepts or clear
+  code spellings of the LaTeX symbols.
+- Dated measurements ("Measured 2026-09-29 ... one refill 0.5 s") never
+  appear in source comments — they live here, in the skill file, or in
+  session notes. Source comments serve one purpose: the connection to
+  the physics, which optimization obscured and the comments restore.
 
 ## Code style
 
