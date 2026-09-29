@@ -2,6 +2,7 @@
 #include <gsl/gsl_sf.h>
 #include <complex.h>
 #include <math.h>
+#include <omp.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -3594,7 +3595,8 @@ double p_gm(
                                    // node): M, half_width w (rho_m/M)
                                    // dlnnu/dlnM, nu at D = 1, r_Delta,
                                    // N_s, f_c N_c
-  static double*** a_tab   = NULL; // [na][10][nnode] per (a, mass node)
+  static double*** a_tab   = NULL; // [n_threads][10][nnode]: one (bin,
+                                   //   a-row) iteration's scratch
                                    // of one bin: c, ln(1+c), r_s, ln r_s
                                    // and the same for c_g = gc c, then
                                    // the weights W1, W0
@@ -3625,7 +3627,9 @@ double p_gm(
     lim     = (double**) malloc2d(nbin+1, 3);
     gl      = (double**) malloc2d(2, nnode);
     bin_tab = (double***) malloc3d(nbin, 6, nnode);
-    a_tab   = (double***) malloc3d(na, 10, nnode);
+    // one scratch block per thread (the thread count of this rebuild;
+    // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
+    a_tab   = (double***) malloc3d(omp_get_max_threads(), 10, nnode);
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight; kept on [-1, 1] here
@@ -3674,8 +3678,8 @@ double p_gm(
        1. bin_tab, per (bin, mass node): M, weighted dn/dlnM factors,
           nu at D = 1, r_Delta, occupation N_s and f_c N_c
        2. per a row, threaded: D(a), Tinker f(nu) half, n_gal, b_gal
-       3. a_tab, per (a, mass node): c, c_g = gc c, scale radii and
-          logs, leg weights W1 (satellite), W0 (central)
+       3. thread scratch a_tab, per node of one a row: c, c_g = gc c,
+          scale radii, logs, leg weights W1 (satellite), W0 (central)
        4. per k: GM02 = sum_q um (W1 ug + W0); table = ln P_gm */
 
     // --- 2b. PER (BIN, MASS NODE), SERIAL ---
@@ -3717,15 +3721,15 @@ double p_gm(
       }
     }
 
-    // --- 2c. PER BIN, ITS a ROWS THREADED ---
+    // --- 2c. (BIN, a ROW) PAIRS COLLAPSED AND THREADED ---
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int l=0; l<nbin; l++) {
-      const double gc = nuisance.gc[l];
-
-      // gc = 1 makes c_g = c bitwise: one kernel call serves both legs
-      const int same_conc = (1.0 == gc);
-
-      #pragma omp parallel for schedule(static)
       for (int i=0; i<na; i++) {
+        const double gc = nuisance.gc[l];
+
+        // gc = 1 makes c_g = c bitwise: one kernel call serves both
+        const int same_conc = (1.0 == gc);
+
         const double ai = lim[l][0] + i*lim[l][2];
 
         // growth, the nu-independent Tinker f(nu) half, and the mean
@@ -3735,18 +3739,20 @@ double p_gm(
         const double     n_gal    = ngal(l, ai);
         const double     b_gal    = bgal(l, ai);
 
-        // row aliases into a_tab; restrict: each row is reached only
-        // through its pointer, so no reload after the libm calls
-        double* restrict conc_halo = a_tab[i][0];
-        double* restrict ln1c_halo = a_tab[i][1];
-        double* restrict r_s       = a_tab[i][2];
-        double* restrict lnrs      = a_tab[i][3];
-        double* restrict conc_gal  = a_tab[i][4];
-        double* restrict ln1c_gal  = a_tab[i][5];
-        double* restrict r_sg      = a_tab[i][6];
-        double* restrict lnrsg     = a_tab[i][7];
-        double* restrict w1        = a_tab[i][8];
-        double* restrict w0        = a_tab[i][9];
+        // thread-private scratch: this (bin, a-row) iteration fills
+        // it and consumes it in its own k loop; restrict: each row is
+        // reached only through its pointer, no reload after libm calls
+        double** const wsp = a_tab[omp_get_thread_num()];
+        double* restrict conc_halo = wsp[0];
+        double* restrict ln1c_halo = wsp[1];
+        double* restrict r_s       = wsp[2];
+        double* restrict lnrs      = wsp[3];
+        double* restrict conc_gal  = wsp[4];
+        double* restrict ln1c_gal  = wsp[5];
+        double* restrict r_sg      = wsp[6];
+        double* restrict lnrsg     = wsp[7];
+        double* restrict w1        = wsp[8];
+        double* restrict w0        = wsp[9];
 
         // per (a, node): both concentrations, scale radii, the logs of
         // each, and the weights W1, W0 with 1/m(c), 1/m(c_g) folded in
@@ -3915,7 +3921,8 @@ double p_gg(
                                     // weight x (rho_m/M) dlnnu/dlnM
   static double*** occ_tab  = NULL; // [nbin][2][nnode] per (bin, mass
                                     // node): N_s, f_c N_c
-  static double*** a_tab    = NULL; // [na][6][nnode] per (a, mass node)
+  static double*** a_tab    = NULL; // [n_threads][6][nnode]: one
+                                    //   (bin, a-row) scratch
                                     // of one bin: c_g, ln(1+c_g), r_s,g,
                                     // ln r_s,g, W2, W1
 
@@ -3945,7 +3952,9 @@ double p_gg(
     lim      = (double**) malloc2d(nbin+1, 3);
     mass_tab = (double**) malloc2d(5, nnode);
     occ_tab  = (double***) malloc3d(nbin, 2, nnode);
-    a_tab    = (double***) malloc3d(na, 6, nnode);
+    // one scratch block per thread (the thread count of this rebuild;
+    // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
+    a_tab    = (double***) malloc3d(omp_get_max_threads(), 6, nnode);
 
     // GL rule mapped once onto [ln M_min, ln M_max], shared by all bins
     const double lnMmin = log(limits.halo_m_min);
@@ -4002,7 +4011,8 @@ double p_gg(
           weighted dn/dlnM factor
        2. occ_tab, per (bin, mass node): occupation N_s and f_c N_c
        3. per a row, threaded: D(a), Tinker f(nu) half, n_gal, b_gal
-       4. a_tab, per (a, mass node): c_g, r_s,g, logs, weights W2, W1
+       4. thread scratch a_tab, per node of one a row: c_g, r_s,g,
+          logs, weights W2, W1
        5. per k: G02 = sum_q ug (W2 ug + W1); table = ln P_gg */
 
     // --- 2b. PER MASS NODE, SERIAL ---
@@ -4042,12 +4052,12 @@ double p_gg(
       }
     }
 
-    // --- 2d. PER BIN, ITS a ROWS THREADED ---
+    // --- 2d. (BIN, a ROW) PAIRS COLLAPSED AND THREADED ---
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int l=0; l<nbin; l++) {
-      const double gc = nuisance.gc[l];
-
-      #pragma omp parallel for schedule(static)
       for (int i=0; i<na; i++) {
+        const double gc = nuisance.gc[l];
+
         const double ai = lim[l][0] + i*lim[l][2];
 
         // growth, the nu-independent Tinker f(nu) half, and the mean
@@ -4057,14 +4067,16 @@ double p_gg(
         const double     n_gal    = ngal(l, ai);
         const double     b_gal    = bgal(l, ai);
 
-        // row aliases into a_tab; restrict: each row is reached only
-        // through its pointer, so no reload after the libm calls
-        double* restrict conc_gal = a_tab[i][0];
-        double* restrict ln1c_gal = a_tab[i][1];
-        double* restrict r_sg     = a_tab[i][2];
-        double* restrict lnrsg    = a_tab[i][3];
-        double* restrict w2       = a_tab[i][4];
-        double* restrict w1       = a_tab[i][5];
+        // thread-private scratch: this (bin, a-row) iteration fills
+        // it and consumes it in its own k loop; restrict: each row is
+        // reached only through its pointer, no reload after libm calls
+        double** const wsp = a_tab[omp_get_thread_num()];
+        double* restrict conc_gal = wsp[0];
+        double* restrict ln1c_gal = wsp[1];
+        double* restrict r_sg     = wsp[2];
+        double* restrict lnrsg    = wsp[3];
+        double* restrict w2       = wsp[4];
+        double* restrict w1       = wsp[5];
 
         // per (a, node): c_g, r_s,g, their logs, and the weights W2, W1
         // with 1/m(c_g) folded in
