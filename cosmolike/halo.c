@@ -17,10 +17,19 @@
 
 #include "log.c/src/log.h"
 
+// HALO_NOT_USE_SIMD selects the scalar mass-node loops of the halo
+// spectra, the reference path. COSMO2D_NOT_USE_SIMD removes SIMDe from
+// basics.h, so it selects them too.
+#if defined(COSMO2D_NOT_USE_SIMD) && !defined(HALO_NOT_USE_SIMD)
+#define HALO_NOT_USE_SIMD
+#endif
+
 #ifndef COSMO2D_NOT_USE_SIMD
-// SIMDe vector of four doubles (simde/x86/avx2.h, included by basics.h):
-// one AVX2 register on x86-64, two NEON registers on arm64.
+// SIMDe vectors (simde/x86/avx2.h and fma.h, included by basics.h):
+// v4d = four doubles, one AVX2 register on x86-64, two NEON registers on
+// arm64; v2d = two doubles, one half of a v4d
 typedef simde__m256d v4d;
+typedef simde__m128d v2d;
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1076,6 +1085,267 @@ static inline double nfw_um(
   const double sin_half = sin(0.5*c*x); // sin(c x/2)
   return (Gx - Gu + ln1c) + 2.0*gu*sin_half*sin_half + (fu - 1.0/xu)*sin(c*x);
 }
+
+
+#ifndef HALO_NOT_USE_SIMD
+// ---------------------------------------------------------------------------
+// nfw_um on four mass nodes at once (SIMDe v4d). Lane l of the result is
+// nfw_um(c, x, lnx, ln1c) at lane l of the four arguments, bitwise: the
+// same operations in the same order, a fused multiply-add exactly where
+// the compiler fuses the scalar a*b + c, and libm sin on every lane.
+//
+// What keeps it bitwise and vector under the strict IEEE flags
+// (-frounding-math -ftrapping-math):
+//   - a*b + c goes through nfw_fmadd4 / nfw_fnmadd4, never
+//     simde_mm256_fmadd_pd alone: without native x86 FMA that one is a
+//     multiply and an add (two roundings), while the scalar a*b + c is
+//     one fused operation.
+//   - the branch masks are the sign bit of NFW_TASY - t (movemask,
+//     blendv), not FP compares, which the strict flags split into one
+//     scalar compare per lane.
+//   - the table index is truncated and clamped in double (round, min)
+//     and converted lane by lane (SIMDe's vector double -> int
+//     conversion is lane by lane on arm64 anyway).
+//   - every function here is always inlined: on arm64 a v4d is a union
+//     of two NEON registers and a real call passes it through memory.
+// ---------------------------------------------------------------------------
+
+
+// a*b + c with one rounding on four lanes: one AVX2 FMA on x86-64, two
+// fused NEON halves (simde_mm_fmadd_pd) elsewhere
+static inline __attribute__((always_inline)) v4d nfw_fmadd4(
+    const v4d va,
+    const v4d vb,
+    const v4d vc
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  return simde_mm256_fmadd_pd(va, vb, vc);
+#else
+  const v2d vlow  = simde_mm_fmadd_pd(simde_mm256_castpd256_pd128(va),
+                                      simde_mm256_castpd256_pd128(vb),
+                                      simde_mm256_castpd256_pd128(vc));
+  const v2d vhigh = simde_mm_fmadd_pd(simde_mm256_extractf128_pd(va, 1),
+                                      simde_mm256_extractf128_pd(vb, 1),
+                                      simde_mm256_extractf128_pd(vc, 1));
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+
+// c - a*b with one rounding on four lanes (as nfw_fmadd4)
+static inline __attribute__((always_inline)) v4d nfw_fnmadd4(
+    const v4d va,
+    const v4d vb,
+    const v4d vc
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  return simde_mm256_fnmadd_pd(va, vb, vc);
+#else
+  const v2d vlow  = simde_mm_fnmadd_pd(simde_mm256_castpd256_pd128(va),
+                                       simde_mm256_castpd256_pd128(vb),
+                                       simde_mm256_castpd256_pd128(vc));
+  const v2d vhigh = simde_mm_fnmadd_pd(simde_mm256_extractf128_pd(va, 1),
+                                       simde_mm256_extractf128_pd(vb, 1),
+                                       simde_mm256_extractf128_pd(vc, 1));
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+
+// nfw_pos on four lanes: the node index of each lane (index[lane]) and the
+// fraction of the interval [i, i + 1] (returned). trunc and min in double
+// are exact for the non-negative positions of the grid, so the fraction
+// is bitwise the scalar pos - i.
+static inline __attribute__((always_inline)) v4d nfw_pos4(
+    const v4d vlnt,   // ln t
+    int index[4]      // output: node index i of each lane
+  )
+{
+  const v4d vlnt_min     = simde_mm256_set1_pd(nfw_.lim[0]);
+  const v4d vinv_spacing = simde_mm256_set1_pd(nfw_.inv_spacing);
+  const v4d vlast_cell   = simde_mm256_set1_pd((double) (nfw_.n_nodes - 2));
+
+  // pos = (max(ln t, ln t_min) - ln t_min)/spacing; i = min(trunc(pos), n - 2)
+  const v4d vpos = simde_mm256_mul_pd(
+      simde_mm256_sub_pd(simde_mm256_max_pd(vlnt, vlnt_min), vlnt_min),
+      vinv_spacing);
+  const v4d vnode = simde_mm256_min_pd(
+      simde_mm256_round_pd(vpos, SIMDE_MM_FROUND_TO_ZERO), vlast_cell);
+
+  double node[4];
+  simde_mm256_storeu_pd(node, vnode);
+  for (int lane=0; lane<4; lane++) {
+    index[lane] = (int) node[lane];
+  }
+
+  return simde_mm256_sub_pd(vpos, vnode);
+}
+
+
+// tab[i] + frac*(tab[i + 1] - tab[i]) on four lanes. Each lane loads its
+// pair (tab[i], tab[i + 1]) with one 16-byte load (no gather: slow on
+// several x86 cores, lane loads on NEON anyway).
+static inline __attribute__((always_inline)) v4d nfw_read4(
+    const double* restrict tab,
+    const int index[4],
+    const v4d vfrac
+  )
+{
+  const v2d vpair0 = simde_mm_loadu_pd(tab + index[0]);
+  const v2d vpair1 = simde_mm_loadu_pd(tab + index[1]);
+  const v2d vpair2 = simde_mm_loadu_pd(tab + index[2]);
+  const v2d vpair3 = simde_mm_loadu_pd(tab + index[3]);
+
+  // left nodes tab[i] and right nodes tab[i + 1] of the four lanes
+  const v2d vleft_low   = simde_mm_unpacklo_pd(vpair0, vpair1);
+  const v2d vleft_high  = simde_mm_unpacklo_pd(vpair2, vpair3);
+  const v2d vright_low  = simde_mm_unpackhi_pd(vpair0, vpair1);
+  const v2d vright_high = simde_mm_unpackhi_pd(vpair2, vpair3);
+  const v4d vleft  = simde_mm256_set_m128d(vleft_high, vleft_low);
+  const v4d vright = simde_mm256_set_m128d(vright_high, vright_low);
+
+  return nfw_fmadd4(vfrac, simde_mm256_sub_pd(vright, vleft), vleft);
+}
+
+
+// sin on each lane with the libm sin of the scalar path
+static inline __attribute__((always_inline)) v4d nfw_sin4(
+    const v4d vangle
+  )
+{
+  double angle[4];
+  double sine[4];
+  simde_mm256_storeu_pd(angle, vangle);
+  for (int lane=0; lane<4; lane++) {
+    sine[lane] = sin(angle[lane]);
+  }
+  return simde_mm256_loadu_pd(sine);
+}
+
+
+// One step 1 - (k v) poly of the nested asymptotic series, fused as the
+// scalar 1.0 - k*v*(...) of nfw_um
+static inline __attribute__((always_inline)) v4d nfw_series_step4(
+    const double k,   // series coefficient ratio
+    const v4d vv,     // series variable v = 1/t^2
+    const v4d vpoly   // the nested series inside this step
+  )
+{
+  const v4d vkv = simde_mm256_mul_pd(simde_mm256_set1_pd(k), vv);
+  return nfw_fnmadd4(vkv, vpoly, simde_mm256_set1_pd(1.0));
+}
+
+
+// G(t) = v(1 - 6v(1 - 20v(1 - 42v(1 - 72v)))) + ln t, v = 1/t^2: the
+// series of nfw_um with its nesting and its fused operations
+static inline __attribute__((always_inline)) v4d nfw_G_asym4(
+    const v4d vv,    // series variable v = 1/t^2
+    const v4d vlnt   // ln t
+  )
+{
+  const v4d vone = simde_mm256_set1_pd(1.0);
+
+  v4d vpoly = nfw_fnmadd4(simde_mm256_set1_pd(72.0), vv, vone);  // 1 - 72v
+  vpoly = nfw_series_step4(42.0, vv, vpoly);
+  vpoly = nfw_series_step4(20.0, vv, vpoly);
+  vpoly = nfw_series_step4(6.0, vv, vpoly);
+
+  return nfw_fmadd4(vv, vpoly, vlnt);
+}
+
+
+// u m(c) of nfw_um (its header) for four (c, x) pairs
+static inline __attribute__((always_inline)) v4d nfw_um4(
+    const v4d vc,     // concentration r_Delta/r_s
+    const v4d vx,     // k r_s
+    const v4d vlnx,   // ln x
+    const v4d vln1c   // ln(1 + c)
+  )
+{
+  const double* restrict tab_f = nfw_.tab[0];  // f(t) on the ln t grid
+  const double* restrict tab_G = nfw_.tab[1];  // G(t) = g(t) + ln t
+
+  const v4d vone  = simde_mm256_set1_pd(1.0);
+  const v4d vtasy = simde_mm256_set1_pd(NFW_TASY);
+
+  const v4d vlnxu = simde_mm256_add_pd(vlnx, vln1c);  // ln xu, xu = (1 + c) x
+  const v4d vxu   = simde_mm256_mul_pd(simde_mm256_add_pd(vone, vc), vx);
+
+  // --- 1. BRANCH MASKS ---
+  // NFW_TASY - t has its sign bit set exactly where t > NFW_TASY (the
+  // asymptotic series) and clear where the table is read (+0 at
+  // t = NFW_TASY); bit l of the movemask is lane l. The masks must see
+  // the rounded xu of the scalar compare: xu = (1 + c) x stays unfused
+  // because it has other uses (1/xu, the blend), which GCC's
+  // -ffp-contract=fast needs to leave the product alone
+  const v4d vasym_u = simde_mm256_sub_pd(vtasy, vxu);
+  const v4d vasym_x = simde_mm256_sub_pd(vtasy, vx);
+  const int asym_u  = simde_mm256_movemask_pd(vasym_u);
+  const int asym_x  = simde_mm256_movemask_pd(vasym_x);
+
+  // --- 2. TABLE READS: f(xu), G(xu), G(x) ---
+  // lanes past NFW_TASY read the clamped last interval; the blend below
+  // replaces them
+  v4d vfu = simde_mm256_setzero_pd();
+  v4d vGu = simde_mm256_setzero_pd();
+  v4d vGx = simde_mm256_setzero_pd();
+
+  if (asym_u != 0xF) {
+    int index_u[4];
+    const v4d vfrac_u = nfw_pos4(vlnxu, index_u);  // f and G share the grid
+    vGu = nfw_read4(tab_G, index_u, vfrac_u);
+    vfu = nfw_read4(tab_f, index_u, vfrac_u);
+  }
+  if (asym_x != 0xF) {
+    int index_x[4];
+    const v4d vfrac_x = nfw_pos4(vlnx, index_x);
+    vGx = nfw_read4(tab_G, index_x, vfrac_x);
+  }
+
+  // --- 3. ASYMPTOTIC SERIES (A&S 5.2.34-35, nfw_um) ---
+  // lanes that read the table evaluate the series at t = NFW_TASY, a
+  // finite stand-in (no 1/t^2 overflow at tiny t) that the blend discards
+  if (asym_u != 0) {
+    const v4d vt = simde_mm256_blendv_pd(vtasy, vxu, vasym_u);
+    const v4d vv = simde_mm256_div_pd(vone, simde_mm256_mul_pd(vt, vt));
+
+    // f(t) = (1 - 2v(1 - 12v(1 - 30v(1 - 56v))))/t
+    v4d vpoly = nfw_fnmadd4(simde_mm256_set1_pd(56.0), vv, vone);  // 1 - 56v
+    vpoly = nfw_series_step4(30.0, vv, vpoly);
+    vpoly = nfw_series_step4(12.0, vv, vpoly);
+    vpoly = nfw_series_step4(2.0, vv, vpoly);
+    const v4d vfu_asym = simde_mm256_div_pd(vpoly, vt);
+
+    vfu = simde_mm256_blendv_pd(vfu, vfu_asym, vasym_u);
+    vGu = simde_mm256_blendv_pd(vGu, nfw_G_asym4(vv, vlnxu), vasym_u);
+  }
+  if (asym_x != 0) {
+    const v4d vt = simde_mm256_blendv_pd(vtasy, vx, vasym_x);
+    const v4d vw = simde_mm256_div_pd(vone, simde_mm256_mul_pd(vt, vt));
+
+    vGx = simde_mm256_blendv_pd(vGx, nfw_G_asym4(vw, vlnx), vasym_x);
+  }
+
+  // --- 4. u m(c) ---
+  // u m(c) = [Gx - Gu + ln(1+c)] + 2 g(xu) sin^2(c x/2)
+  //          + [f(xu) - 1/xu] sin(c x),
+  // g(xu) = Gu - ln xu; the scalar sum fuses both products
+  const v4d vtwo_gu  = simde_mm256_mul_pd(simde_mm256_set1_pd(2.0),
+                                          simde_mm256_sub_pd(vGu, vlnxu));
+  const v4d vsin_half = nfw_sin4(simde_mm256_mul_pd(
+      simde_mm256_mul_pd(simde_mm256_set1_pd(0.5), vc), vx));  // sin(c x/2)
+  const v4d vsin_full = nfw_sin4(simde_mm256_mul_pd(vc, vx));  // sin(c x)
+
+  const v4d vg_diff = simde_mm256_add_pd(simde_mm256_sub_pd(vGx, vGu), vln1c);
+  const v4d vf_term = simde_mm256_sub_pd(vfu, simde_mm256_div_pd(vone, vxu));
+
+  const v4d vsum = nfw_fmadd4(simde_mm256_mul_pd(vtwo_gu, vsin_half), vsin_half,
+                              vg_diff);
+  return nfw_fmadd4(vf_term, vsin_full, vsum);
+}
+#endif
 
 
 // ---------------------------------------------------------------------------
@@ -3076,12 +3346,50 @@ double p_mm(
         double sum_I02 = 0.0;  // 1-halo: sum_q w1h_q um^2
         double sum_I11 = 0.0;  // 2-halo: sum_q w2h_q um
 
+#ifdef HALO_NOT_USE_SIMD
         for (int q=0; q<n_nodes; q++) {
           const double um = nfw_um(conc_q[q], kj*rs_q[q],
                                    lnk + lnrs_q[q], ln1c_q[q]);
           sum_I02 += w1h_q[q]*um*um;
           sum_I11 += w2h_q[q]*um;
         }
+#else
+        // four nodes per step (nfw_um4 = nfw_um on each lane, bitwise)
+        // into four-lane partial sums, added in a fixed lane order
+        // (simd_horizontal_sum), then a scalar tail. The summation order
+        // differs from the scalar loop's (last digits of the sums) but
+        // never depends on the thread count.
+        const v4d vk   = simde_mm256_set1_pd(kj);
+        const v4d vlnk = simde_mm256_set1_pd(lnk);
+
+        v4d vsum_I02 = simde_mm256_setzero_pd();
+        v4d vsum_I11 = simde_mm256_setzero_pd();
+
+        int q = 0;
+        for (; q<=n_nodes-4; q+=4) {
+          const v4d vum = nfw_um4(
+              simde_mm256_loadu_pd(conc_q + q),
+              simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(rs_q + q)),
+              simde_mm256_add_pd(vlnk, simde_mm256_loadu_pd(lnrs_q + q)),
+              simde_mm256_loadu_pd(ln1c_q + q));
+
+          const v4d vw1h = simde_mm256_loadu_pd(w1h_q + q);
+          const v4d vw2h = simde_mm256_loadu_pd(w2h_q + q);
+
+          vsum_I02 = nfw_fmadd4(simde_mm256_mul_pd(vw1h, vum), vum, vsum_I02);
+          vsum_I11 = nfw_fmadd4(vw2h, vum, vsum_I11);
+        }
+        sum_I02 = simd_horizontal_sum(vsum_I02);
+        sum_I11 = simd_horizontal_sum(vsum_I11);
+
+        // scalar tail: n_nodes not a multiple of four
+        for (; q<n_nodes; q++) {
+          const double um = nfw_um(conc_q[q], kj*rs_q[q],
+                                   lnk + lnrs_q[q], ln1c_q[q]);
+          sum_I02 += w1h_q[q]*um*um;
+          sum_I11 += w2h_q[q]*um;
+        }
+#endif
 
         const double I11 = sum_I11 + A_hmx*u_c(conc_min, kj, m_min, ai);
         table[i][j] = log(sum_I02 + I11*I11*p_lin(kj, ai));
@@ -3387,6 +3695,7 @@ double p_my(
         double sum_I11m = 0.0;  // 2-halo matter leg: sum_q w2hm_q um
         double sum_I11y = 0.0;  // 2-halo pressure leg: sum_q w2hy_q uy
 
+#ifdef HALO_NOT_USE_SIMD
         for (int q=0; q<n_nodes; q++) {
           const double um = nfw_um(conc_q[q], kj*rs_q[q],
                                    lnk + lnrs_q[q], ln1c_q[q]);
@@ -3395,6 +3704,55 @@ double p_my(
           sum_I11m += w2hm_q[q]*um;
           sum_I11y += w2hy_q[q]*uy;
         }
+#else
+        // four nodes per step: the NFW leg through nfw_um4 (nfw_um on
+        // each lane, bitwise), the pressure leg u_KS lane by lane;
+        // four-lane partial sums added in a fixed lane order
+        // (simd_horizontal_sum), then a scalar tail (summation order as
+        // in p_mm)
+        const v4d vk   = simde_mm256_set1_pd(kj);
+        const v4d vlnk = simde_mm256_set1_pd(lnk);
+
+        v4d vsum_I02  = simde_mm256_setzero_pd();
+        v4d vsum_I11m = simde_mm256_setzero_pd();
+        v4d vsum_I11y = simde_mm256_setzero_pd();
+
+        int q = 0;
+        for (; q<=n_nodes-4; q+=4) {
+          const v4d vum = nfw_um4(
+              simde_mm256_loadu_pd(conc_q + q),
+              simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(rs_q + q)),
+              simde_mm256_add_pd(vlnk, simde_mm256_loadu_pd(lnrs_q + q)),
+              simde_mm256_loadu_pd(ln1c_q + q));
+
+          double uy[4];
+          for (int lane=0; lane<4; lane++) {
+            uy[lane] = u_KS(conc_q[q + lane], kj, rdelta_q[q + lane]);
+          }
+          const v4d vuy = simde_mm256_loadu_pd(uy);
+
+          const v4d vw1h  = simde_mm256_loadu_pd(w1h_q + q);
+          const v4d vw2hm = simde_mm256_loadu_pd(w2hm_q + q);
+          const v4d vw2hy = simde_mm256_loadu_pd(w2hy_q + q);
+
+          vsum_I02  = nfw_fmadd4(simde_mm256_mul_pd(vw1h, vuy), vum, vsum_I02);
+          vsum_I11m = nfw_fmadd4(vw2hm, vum, vsum_I11m);
+          vsum_I11y = nfw_fmadd4(vw2hy, vuy, vsum_I11y);
+        }
+        sum_I02  = simd_horizontal_sum(vsum_I02);
+        sum_I11m = simd_horizontal_sum(vsum_I11m);
+        sum_I11y = simd_horizontal_sum(vsum_I11y);
+
+        // scalar tail: n_nodes not a multiple of four
+        for (; q<n_nodes; q++) {
+          const double um = nfw_um(conc_q[q], kj*rs_q[q],
+                                   lnk + lnrs_q[q], ln1c_q[q]);
+          const double uy = u_KS(conc_q[q], kj, rdelta_q[q]);
+          sum_I02  += w1h_q[q]*uy*um;
+          sum_I11m += w2hm_q[q]*um;
+          sum_I11y += w2hy_q[q]*uy;
+        }
+#endif
 
         // the damping S = x/(1 + x), x = (k/k_s)^4 (header)
         const double x4  = (kj/k_s)*(kj/k_s)*(kj/k_s)*(kj/k_s);
@@ -4148,6 +4506,7 @@ double p_gm(
           const double kj  = exp(lnk);
 
           double gm02 = 0.0;
+#ifdef HALO_NOT_USE_SIMD
           if (same_conc) {
             for (int q=0; q<nnode; q++) {
               const double um = nfw_um(conc_halo[q], kj*r_s[q],
@@ -4164,6 +4523,68 @@ double p_gm(
               gm02 += um*(w1[q]*ug + w0[q]);
             }
           }
+#else
+          // four nodes per step (nfw_um4 = nfw_um on each lane, bitwise)
+          // into four-lane partial sums, added in a fixed lane order
+          // (simd_horizontal_sum), then a scalar tail. The summation
+          // order differs from the scalar loop's (last digits of GM02)
+          // but never depends on the thread count.
+          const v4d vk   = simde_mm256_set1_pd(kj);
+          const v4d vlnk = simde_mm256_set1_pd(lnk);
+
+          v4d vgm02 = simde_mm256_setzero_pd();
+
+          int q = 0;
+          if (same_conc) {
+            for (; q<=nnode-4; q+=4) {
+              const v4d vum = nfw_um4(
+                  simde_mm256_loadu_pd(conc_halo + q),
+                  simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_s + q)),
+                  simde_mm256_add_pd(vlnk, simde_mm256_loadu_pd(lnrs + q)),
+                  simde_mm256_loadu_pd(ln1c_halo + q));
+
+              // um (W1 um + W0): satellites at u_g = u, the central at 1
+              const v4d vgal_weight = nfw_fmadd4(simde_mm256_loadu_pd(w1 + q),
+                                                 vum,
+                                                 simde_mm256_loadu_pd(w0 + q));
+              vgm02 = nfw_fmadd4(vum, vgal_weight, vgm02);
+            }
+          }
+          else {
+            for (; q<=nnode-4; q+=4) {
+              const v4d vum = nfw_um4(
+                  simde_mm256_loadu_pd(conc_halo + q),
+                  simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_s + q)),
+                  simde_mm256_add_pd(vlnk, simde_mm256_loadu_pd(lnrs + q)),
+                  simde_mm256_loadu_pd(ln1c_halo + q));
+              const v4d vug = nfw_um4(
+                  simde_mm256_loadu_pd(conc_gal + q),
+                  simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)),
+                  simde_mm256_add_pd(vlnk, simde_mm256_loadu_pd(lnrsg + q)),
+                  simde_mm256_loadu_pd(ln1c_gal + q));
+
+              // um (W1 ug + W0): satellites at u_g, the central at 1
+              const v4d vgal_weight = nfw_fmadd4(simde_mm256_loadu_pd(w1 + q),
+                                                 vug,
+                                                 simde_mm256_loadu_pd(w0 + q));
+              vgm02 = nfw_fmadd4(vum, vgal_weight, vgm02);
+            }
+          }
+          gm02 = simd_horizontal_sum(vgm02);
+
+          // scalar tail: nnode not a multiple of four (ug = um when
+          // same_conc, as in the scalar path)
+          for (; q<nnode; q++) {
+            const double um = nfw_um(conc_halo[q], kj*r_s[q],
+                                     lnk + lnrs[q], ln1c_halo[q]);
+            double ug = um;
+            if (!same_conc) {
+              ug = nfw_um(conc_gal[q], kj*r_sg[q],
+                          lnk + lnrsg[q], ln1c_gal[q]);
+            }
+            gm02 += um*(w1[q]*ug + w0[q]);
+          }
+#endif
 
           // a 1-halo sum is a sum of positive terms; its log is splined
           if (!(gm02 > 0)) {
@@ -4538,11 +4959,45 @@ double p_gg(
           const double kj  = exp(lnk);
 
           double g02 = 0.0;
+#ifdef HALO_NOT_USE_SIMD
           for (int q=0; q<nnode; q++) {
             const double ug = nfw_um(conc_gal[q], kj*r_sg[q],
                                      lnk + lnrsg[q], ln1c_gal[q]);
             g02 += ug*(w2[q]*ug + w1[q]);
           }
+#else
+          // four nodes per step (nfw_um4 = nfw_um on each lane, bitwise)
+          // into four-lane partial sums, added in a fixed lane order
+          // (simd_horizontal_sum), then a scalar tail (summation order
+          // as in p_gm)
+          const v4d vk   = simde_mm256_set1_pd(kj);
+          const v4d vlnk = simde_mm256_set1_pd(lnk);
+
+          v4d vg02 = simde_mm256_setzero_pd();
+
+          int q = 0;
+          for (; q<=nnode-4; q+=4) {
+            const v4d vug = nfw_um4(
+                simde_mm256_loadu_pd(conc_gal + q),
+                simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)),
+                simde_mm256_add_pd(vlnk, simde_mm256_loadu_pd(lnrsg + q)),
+                simde_mm256_loadu_pd(ln1c_gal + q));
+
+            // ug (W2 ug + W1): satellite pairs and central-satellite pairs
+            const v4d vpair_weight = nfw_fmadd4(simde_mm256_loadu_pd(w2 + q),
+                                                vug,
+                                                simde_mm256_loadu_pd(w1 + q));
+            vg02 = nfw_fmadd4(vug, vpair_weight, vg02);
+          }
+          g02 = simd_horizontal_sum(vg02);
+
+          // scalar tail: nnode not a multiple of four
+          for (; q<nnode; q++) {
+            const double ug = nfw_um(conc_gal[q], kj*r_sg[q],
+                                     lnk + lnrsg[q], ln1c_gal[q]);
+            g02 += ug*(w2[q]*ug + w1[q]);
+          }
+#endif
 
           // a 1-halo sum is a sum of positive terms; its log is splined
           if (!(g02 > 0)) {
