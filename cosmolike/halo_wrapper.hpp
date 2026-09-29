@@ -62,24 +62,14 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// The init flag. Several halo.c integrators take an int init argument:
-//
-//   init = 1 -> evaluate the integrand once, at the midpoint, and return
-//               that throwaway number; the only purpose of the call is
-//               to build the function's static state (its Gauss-Legendre
-//               table and every cached table the integrand reads)
-//   init = 0 -> the actual integral
-//
-// halo.c's table builders make one init = 1 call right before their
-// OpenMP fill loops: a static table built lazily from inside a threaded
-// loop would be built by several threads at once (a data race). The
-// wrappers here always pass init = 0. Python calls arrive one at a time,
-// so any lazy build a wrapper triggers is serial already, and the
-// throwaway init = 1 value must never reach Python.
+// Warm-up: halo.c's spectrum builders call halo_warmup before their
+// OpenMP loops, so every lazily built table is built on one thread.
+// Python calls arrive one at a time, so any lazy build a wrapper
+// triggers is serial already.
 //
 // Threading: the array overloads loop serially over their inputs. The
 // parallelism lives inside halo.c, in the table builders a first call
-// triggers (each with its own serial priming call, as above).
+// triggers.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -105,7 +95,8 @@ double dlognudlogm_cpp(const double M);
 // -----------------------------------------------------------------------------
 
 // integral of b(nu) f(nu) over the tabulated mass range; 1 - bias_norm is
-// the HMx additive 2-halo correction of halo.c I11_X_nointerp (table in a)
+// the HMx additive 2-halo correction of the I11 sums of halo.c p_mm,
+// p_my, p_yy (table in a)
 double bias_norm_cpp(const double a);
 
 // ---------------------------------------------------------------------------

@@ -100,8 +100,9 @@ typedef simde__m256d v4d;
 //   ks_upsample1d = the 1D cubic upsampling of the u_KS tables
 //   frac_bnd     = f_bnd(M), fraction of the halo mass in bound gas
 //   frac_ejc     = f_ejc(M), fraction of the halo mass in ejected gas
-//   u_y_bnd      = W_p(M, k), the bound-gas electron-pressure window
-//                  ("y": the Compton-y, thermal-SZ, field it sources)
+//   W_p          = the bound-gas electron-pressure window, Y(a) B(M)
+//                  u_KS (GAS PROFILES banner; "y": the Compton-y,
+//                  thermal-SZ, field it sources)
 //   u_y_ejc      = the ejected-gas electron-pressure window
 //   n_s_cmv      = comoving number density of source galaxies (aborts
 //                  if run, see its header)
@@ -131,23 +132,19 @@ typedef simde__m256d v4d;
 // so that P(k) = I^0_2(k, k) + [I^1_1(k)]^2 P_lin(k) (astro-ph/0012087
 // Eqs. 14-15):
 //
-//   I02_XY       = I^0_2: no bias, two profiles  -> the 1-halo term of
+//   I02          = I^0_2: no bias, two profiles  -> the 1-halo term of
 //                  P_XY
-//   I11_X        = I^1_1: linear bias, one profile -> the 2-halo
+//   I11          = I^1_1: linear bias, one profile -> the 2-halo
 //                  amplitude, P_2h = I11_X I11_Y P_lin, plus the HMx
-//                  term for the halos below M_min (I11_X_nointerp)
-//   G02          = the galaxy-galaxy 1-halo integral (central-satellite
-//                  and satellite-satellite pairs); p_gg divides it by
-//                  n_g^2
-//   GM02         = the galaxy-matter 1-halo integral; p_gm divides it
-//                  by n_g
+//                  term for the halos below M_min (POWER SPECTRA banner)
+//   (the 1-halo sums of p_gm and p_gg: the galaxy-matter and the
+//   galaxy-galaxy pairs of one halo, divided by n_g and n_g^2)
 //
 // Spectra: p_XY(k, a) with X, Y in {m = matter, y = electron pressure,
 // g = galaxies}: p_mm, p_my, p_yy, p_gm, p_gg.
 //
 // Suffixes:
 //
-//   *_nointerp   = direct computation at one point (no table)
 //   *_work       = batched computation over many inputs
 //   int_for_*,
 //   int_*        = integrand of a mass or radius integral
@@ -178,7 +175,7 @@ typedef simde__m256d v4d;
 //
 // bias_norm measures how much of the consistency relation int b f dnu = 1
 // the finite mass range of the halo-model integrals covers; the 2-halo
-// integral I11_X_nointerp adds the rest, 1 - bias_norm, back as halos of
+// sums of p_mm, p_my and p_yy add the rest, 1 - bias_norm, back as halos of
 // mass M_min. conc gives the NFW concentration as a function of nu.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -653,8 +650,9 @@ double conc(
 // stop at M_min, and f grows toward light halos: the halos below
 // M_min = 1e6 M_sun/h hold about 0.2 of the integral at z = 0 for a
 // Planck-like cosmology, so I11_m(k -> 0) would be ~0.8 and
-// P_2h -> 0.64 P_lin. I11_X_nointerp adds the missing 1 - bias_norm(a)
-// back as halos of mass M_min; this function measures the shortfall.
+// P_2h -> 0.64 P_lin. The I11 sums of p_mm, p_my and p_yy add the
+// missing 1 - bias_norm(a) back as halos of mass M_min; this function
+// measures the shortfall.
 //
 // One quadrature for every a: both limits scale as 1/D(a), so in
 // t = nu D(a), the peak height the same halo has at a = 1,
@@ -1039,8 +1037,7 @@ static inline double nfw_um(
 // Cache invalidation:
 //   f, G depend on no parameter: built on the first call, rebuilt when
 //   Ntable.random changes (halo_nfw_n). The build is not thread-safe:
-//   the first call must be the single-threaded init warm-up
-//   (halo_wrapper.hpp, "The init flag").
+//   the first call is halo_warmup's nfw_table(), single-threaded.
 //
 // Parameters:
 //   c - concentration r_Delta/r_s, c > 0 (m(0) = 0)
@@ -1326,7 +1323,7 @@ double HOD_fc(
 //              Omega_b/Omega_m - f_bnd - f_*               -> frac_ejc
 //
 // The bound gas enters both halo terms through its pressure window
-// (u_y_bnd); the ejected gas is a smooth, warm component that enters
+// W_p; the ejected gas is a smooth, warm component that enters
 // the 2-halo term only (u_y_ejc).
 //
 // Both windows are volume integrals of the electron pressure, i.e.
@@ -1347,6 +1344,38 @@ double HOD_fc(
 //   [8]  = sigma_*     width of the stellar peak in log10 M
 //   [9]  = log10 T_w   temperature of the ejected gas in K
 //   [10] = f_H         hydrogen mass fraction
+//
+// Electron-pressure window of the bound gas: the Fourier-weighted volume
+// integral of the pressure (2005.00009 Eq. 4 with the pressure profile),
+//
+//   W_p(M, k) = int_0^{r_Delta} 4 pi r^2 [sin(kr)/(kr)] P_e(r) dr
+//
+// Derivation, chaining 2005.00009 Eqs. 40, 38, 39 and 13:
+//
+//   P_e = n_e k_B T_g,  n_e = rho_bnd/(m_p mu_e),  T_g = T_v theta
+//     ->  W_p = [k_B T_v/(m_p mu_e)] f_bnd M u_KS
+//   (3/2) k_B T_v = alpha G M m_p mu_p/(a r_v)
+//     ->  W_p = (2 alpha/(3a)) (mu_p/mu_e) f_bnd (G M^2/r_v) u_KS
+//
+// The value comes back with G left out, i.e. in units of
+// U = G (M_sun/h)^2/(c/H0): an energy (pressure times volume). The a
+// turns the comoving r_v into the physical radius. At k -> 0,
+// W_p ~ f_bnd M^(5/3) (2005.00009 Eq. 41): gas mass times a virial
+// temperature ~ M/r_v ~ M^(2/3).
+//
+// Mean particle masses of a fully ionized hydrogen-helium gas with
+// hydrogen mass fraction f_H (2005.00009, footnote to Eq. 40): per
+// proton mass there are 2 f_H + 3(1 - f_H)/4 particles and
+// f_H + (1 - f_H)/2 electrons, hence
+//
+//   mu_p = 4/(3 + 5 f_H),   mu_e = 2/(1 + f_H)
+//
+// r_v is r_Delta of this file (Delta = 200 times the mean density);
+// 2005.00009 uses the virial radius (its Eq. 22), and the free alpha
+// absorbs the difference, so its fitted alpha does not carry over.
+//
+// p_my and p_yy evaluate W_p as Y(a) B(M) u_KS(c, k, r_Delta), with
+// Y = (2 alpha/(3a)) mu_p/mu_e and B = f_bnd M^2/r_Delta.
 //
 // Masses in M_sun/h.
 // ---------------------------------------------------------------------------
@@ -1443,7 +1472,7 @@ static void ks_upsample1d(
 // is the Komatsu-Seljak ("KS") density profile of gas in hydrostatic
 // equilibrium inside an NFW halo, theta^p its pressure profile and
 // Gamma = nuisance.gas[0] its polytropic index (2005.00009 sec. 3.2,
-// the rho_bnd equation). The full window (u_y_bnd) is
+// the rho_bnd equation). The full window W_p is
 //
 //   W_p(M, k) = [k_B T_v f_bnd M/(m_p mu_e)] u_KS.
 //
@@ -2026,74 +2055,6 @@ double frac_ejc(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Electron-pressure window of the bound gas: the Fourier-weighted volume
-// integral of the pressure (2005.00009 Eq. 4 with the pressure profile),
-//
-//   W_p(M, k) = int_0^{r_Delta} 4 pi r^2 [sin(kr)/(kr)] P_e(r) dr
-//
-// Derivation, chaining 2005.00009 Eqs. 40, 38, 39 and 13:
-//
-//   P_e = n_e k_B T_g,  n_e = rho_bnd/(m_p mu_e),  T_g = T_v theta
-//     ->  W_p = [k_B T_v/(m_p mu_e)] f_bnd M u_KS
-//   (3/2) k_B T_v = alpha G M m_p mu_p/(a r_v)
-//     ->  W_p = (2 alpha/(3a)) (mu_p/mu_e) f_bnd (G M^2/r_v) u_KS
-//
-// The value comes back with G left out, i.e. in units of
-// U = G (M_sun/h)^2/(c/H0): an energy (pressure times volume). The a
-// turns the comoving r_v into the physical radius. At k -> 0,
-// W_p ~ f_bnd M^(5/3) (2005.00009 Eq. 41): gas mass times a virial
-// temperature ~ M/r_v ~ M^(2/3).
-//
-// Mean particle masses of a fully ionized hydrogen-helium gas with
-// hydrogen mass fraction f_H (2005.00009, footnote to Eq. 40): per
-// proton mass there are 2 f_H + 3(1 - f_H)/4 particles and
-// f_H + (1 - f_H)/2 electrons, hence
-//
-//   mu_p = 4/(3 + 5 f_H),   mu_e = 2/(1 + f_H)
-//
-// r_v is r_Delta of this file (Delta = 200 times the mean density);
-// 2005.00009 uses the virial radius (its Eq. 22), and the free alpha
-// absorbs the difference, so its fitted alpha does not carry over.
-//
-// Parameters:
-//   c - concentration r_Delta/r_s
-//   k - wavenumber in (c/H0)^-1
-//   m - halo mass in M_sun/h
-//   a - scale factor
-//   (alpha = nuisance.gas[5], f_H = nuisance.gas[10])
-//
-// Returns:
-//   W_p(M, k) in U = G (M_sun/h)^2/(c/H0): the full window, not a
-//   profile normalized to 1. In 2005.00009 Eqs. 1-2 it stands where the
-//   matter field has W_m = (M/rho_m) u(k|M).
-// ---------------------------------------------------------------------------
-double u_y_bnd(
-    double c, // concentration r_Delta/r_s
-    double k, // wavenumber in (c/H0)^-1
-    double m, // halo mass in M_sun/h
-    double a  // scale factor (comoving r_v -> physical, in T_v)
-  )
-{
-  
-  // r_v = r_Delta: the radius enclosing Delta times the mean density
-  const double rho_delta = Delta * cosmology.rho_crit * cosmology.Omega_m;
-  const double r_delta = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
-  const double rv = r_delta;
-
-  // mu_p = 4/(3 + 5 f_H), mu_e = 2/(1 + f_H)
-  const double mu_p = 4.0/(3.0 + 5*nuisance.gas[10]);
-  const double mu_e = 2.0/(1.0 + nuisance.gas[10]);
-  
-  // W_p = (2 alpha/(3a)) (mu_p/mu_e) f_bnd M (M/r_v) u_KS, G left out
-  return (2.0*nuisance.gas[5]/(3.0*a))*(mu_p/mu_e)*frac_bnd(m)*m*(m/rv)*u_KS(c, k, rv);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Electron-pressure window of the ejected gas: its electron count times
 // k_B T_w, at the warm temperature T_w,
 //
@@ -2103,7 +2064,7 @@ double u_y_bnd(
 // has no 1-halo term and a k-independent (point-like) window in the
 // 2-halo term (2005.00009 sec. 3.3 and Eq. 36).
 //
-// Unit chain, landing on the units of u_y_bnd so the two windows add:
+// Unit chain, landing on the units of W_p so the two windows add:
 //
 //   num_p = M_sun/m_p = 1.1892e57           (M_sun = 1.989e30 kg)
 //   num_p m[M_sun/h]  = h N_p
@@ -2217,7 +2178,7 @@ static struct {
 //
 // f is the Tinker multiplicity function (fnu), b the Tinker bias (hb1nu),
 // <N|M> the occupation of the GALAXY PROFILES banner (HOD_fc, HOD_nc,
-// HOD_ns); the int_for_I02_XY header explains dn/dlnM.
+// HOD_ns); the POWER SPECTRA banner explains dn/dlnM.
 //
 // Quadrature: Gauss-Legendre in ln M with nq = 128, 256, 512 or 1024
 // nodes for abs(Ntable.high_def_integration) = 0, 1, 2, >= 3, over
@@ -2435,476 +2396,47 @@ double bgal(const int ni, const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Integrand of I02_XY_nointerp, the 1-halo integral I^0_2 of the file
-// glossary, in the variable ln M:
-//
-//   int_for_I02_XY(ln M) = dn/dlnM  W_X(M, k1)  W_Y(M, k2),
-//
-// so that its integral over ln M is int dM n(M) W_X(M, k1) W_Y(M, k2),
-// the 1-halo term of P_XY (2005.00009 Eq. 2; astro-ph/0012087 Eq. 14
-// with delta_halo = W): a halo of mass M contributes the product of its
-// two windows, weighted by how many such halos there are per volume.
-//
-// 1. The mass function
-//
-// dn/dlnM is the comoving number of halos per unit ln M per (c/H0)^3,
-// built from the multiplicity function of the section banner:
-//
-//   dn/dlnM = (rho_m/M) nu f(nu) (dln nu/dln M),
-//   nu      = delta_c/(sigma(M) D(a)).
-//
-// Right to left:
-//
-//   f(nu) dnu       fraction of all matter in halos of peak height
-//                   [nu, nu + dnu] (fnu)
-//   nu              dnu = nu dln nu: "per unit nu" -> "per unit ln nu";
-//                   gnu = nu f(nu) in the code
-//   dln nu/dln M    "per unit ln nu" -> "per unit ln M" (dlognudlogm,
-//                   an a = 1 table: its header)
-//   rho_m/M         a mass fraction over the mass of one halo is a
-//                   number density
-//
-// growfac_a arrives in params so that D(a) is not recomputed at each of
-// the 1024 nodes.
-//
-// 2. The windows: one M/rho_m per matter leg
-//
-// W_X(M, k) is the Fourier transform of the profile of field X in a
-// halo of mass M (2005.00009 Eq. 4), in the units of the field times a
-// volume:
-//
-//   matter    W_m(M, k) = (M/rho_m) u_c(k|M)    a volume, (c/H0)^3
-//   pressure  W_y(M, k) = u_y_bnd(M, k)         an energy, in U
-//
-// Matter: the profile is the overdensity rho(r)/rho_m, whose volume
-// integral is M/rho_m, and u_c is that profile normalized to 1 at
-// k = 0, so W_m -> M/rho_m as k -> 0.
-//
-// Pressure: the profile is the pressure itself and u_y_bnd is its full
-// volume integral (u_y_bnd header), gas mass f_bnd M times a virial
-// temperature ~ M^(2/3):
-//
-//   W_y ~ M^(5/3)   as k -> 0   (2005.00009 Eq. 41).
-//
-// No M/rho_m belongs in front of it; with one, a halo's pressure would
-// scale as M^(8/3) and P_my, P_yy would be weighted toward even heavier
-// halos than they are. The factor vol below encodes this:
-//
-//   XY = 0  mm   u = u_c(k1) u_c(k2)           vol = (M/rho_m)^2
-//   XY = 1  my   u = u_y_bnd(k1) u_c(k2)       vol = M/rho_m
-//   XY = 2  yy   u = u_y_bnd(k1) u_y_bnd(k2)   vol = 1
-//
-// The ejected gas has no 1-halo term (u_y_ejc header; 2005.00009
-// sec. 3.3), so only the bound gas appears here.
-//
-// Parameters:
-//   lnM    - ln of the halo mass in M_sun/h (the GSL node)
-//   params - double[5] {a, k1, k2, XY, D(a)}, packed by I02_XY_nointerp
-//            and handed over by GSL as an untyped void*
-//
-// Returns:
-//   dn/dlnM W_X(M, k1) W_Y(M, k2): (c/H0)^3 for mm, U for my,
-//   U^2 (c/H0)^-3 for yy, with U = G (M_sun/h)^2/(c/H0)
-// ---------------------------------------------------------------------------
-double int_for_I02_XY(double lnM, void* params)
-{
-  double* ar = (double*) params;
-  const double a = ar[0];
-  const double k1 = ar[1];
-  const double k2 = ar[2];
-  const int XY = (int) ar[3];
-  const double growfac_a = ar[4];
-  const double m = exp(lnM);
-  
-  const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
-  const double gnu  = fnu(nu, a) * nu; 
-  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-  const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m); // mass function
-
-  const double c = conc(m, growfac_a);
-
-  double u;   // product of the two profiles
-  double vol; // one m/rho_m per matter leg (header, item 2)
-  switch(XY)
-  {
-    case 1:
-    { // matter-y
-      u = u_y_bnd(c, k1, m, a) * u_c(c, k2, m, a);
-      vol = m/rhom;
-      break;
-    }
-    case 2:
-    { // y-y 
-      u = u_y_bnd(c, k1, m, a) * u_y_bnd(c, k2, m, a);
-      vol = 1.0;
-      break;
-    }
-    default:
-    {
-      log_fatal("option not supported"); exit(1);
-    }
-  }
-  return dNdlnM * u * vol;
-}  
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// I02_XY(k1, k2, a) = I^0_2, the 1-halo integral of the file glossary,
-//
-//   I02_XY = int_{ln M_min}^{ln M_max} dlnM  dn/dlnM W_X(M, k1) W_Y(M, k2)
-//
-// over M in [limits.halo_m_min, limits.halo_m_max] (1e6 to 1e17 M_sun/h
-// by default) with the integrand of int_for_I02_XY: the 1-halo term of
-// P_XY (2005.00009 Eq. 2). p_xy_nointerp reads it at k1 = k2 = k.
-//
-// Quadrature: Gauss-Legendre with 1024 nodes in ln M, the largest size
-// GSL tabulates, at every hdi (file header), because the integrand
-// reads sigma2 and dlognudlogm by linear interpolation in ln M and GL
-// converges only algebraically across those kinks.
-//
-// gsl_integration_glfixed(&F, lo, hi, w) evaluates F.function at the
-// 1024 nodes of table w mapped onto [lo, hi] and returns the weighted
-// sum; w holds nodes and weights on [-1, 1] and is built once per
-// Ntable.random.
-//
-// Why the finite mass range is harmless here and not in I11_X: the two
-// halo terms weight a halo differently,
-//
-//   1-halo   W_X W_Y   ~ M^2 for matter   (this integral)
-//   2-halo   W_X       ~ M   for matter   (I11_X_nointerp)
-//
-// The halos below M_min hold about 20% of the bias-weighted matter at
-// z = 0 (bias_norm header, item 1). Weighted by M^2 they add a
-// negligible share of the 1-halo term, which is carried by the mass a
-// typical unit of matter sits in, ~1e13.5 M_sun at z = 0 (2005.00009
-// sec. 2.3 and App. A), well inside the range. Weighted by M they do
-// matter: I11_X_nointerp header, item 1.
-//
-// init = 1: one evaluation of the integrand at the midpoint of ln M,
-// single-threaded, value thrown away. It triggers the lazy builds the
-// integrand reaches,
-//
-//   sigma2, dlognudlogm    their tables
-//   fnu                    the tinker_alpha table
-//   u_c                    the NFW f, G table (u_nfw_c)
-//   u_y_bnd                the u_KS table
-//
-// before p_mm, p_my and p_yy fill their tables in parallel: the
-// warm-up rule of the cosmo2D.c _work functions (halo_wrapper.hpp,
-// "The init flag").
-//
-// Cache invalidation:
-//   Gauss-Legendre table: rebuilt when Ntable.random changes. No value
-//   is cached here; every init = 0 call integrates.
-//
-// Parameters:
-//   k1, k2 - wavenumbers in (c/H0)^-1 of the X and Y legs
-//   a      - scale factor, 0 < a < 1 (fnu aborts otherwise)
-//   func   - 0 = mm, 1 = my (X = y at k1, Y = m at k2), 2 = yy;
-//            other values abort inside the integrand
-//   init   - 1 = warm-up evaluation (above), 0 = the integral
-//
-// Returns:
-//   I02_XY: (c/H0)^3 for mm, U for my, U^2 (c/H0)^-3 for yy
-// ---------------------------------------------------------------------------
-double I02_XY_nointerp(
-    const double k1,
-    const double k2,
-    const double a,
-    const int func, // 0 = MM, 1 = MY, 2 = YY
-    const int init
-  )
-{
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = 1024; // largest predefined GSL table
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-
-  double ar[5] = {a, k1, k2, func, growfac(a)};
-  const double lnMmin = log(limits.halo_m_min);
-  const double lnMmax = log(limits.halo_m_max);
-
-  double res;
-  if (1 == init) {
-    res = int_for_I02_XY((lnMmin + lnMmax)/2.0, (void*) ar);
-  }
-  else
-  {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_I02_XY;
-    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Integrand of I11_X_nointerp, the 2-halo integral I^1_1 of the file
-// glossary, in the variable ln M:
-//
-//   int_for_I11_X(ln M) = dn/dlnM  b(nu)  W_X(M, k),
-//
-// so that its integral over ln M is int dM n(M) b(M) W_X(M, k): the
-// window of field X in a halo of mass M, weighted by how many such
-// halos there are and by how strongly they cluster (b, the linear halo
-// bias of hb1nu).
-//
-// Two of these and P_lin make the 2-halo term (2005.00009 Eq. 1;
-// astro-ph/0012087 Eq. 15),
-//
-//   P_2h = I11_X I11_Y P_lin:
-//
-// the two points sit in two different halos, each halo stands in for
-// its field, and the pair is correlated through the linear density
-// field both halos trace.
-//
-// dn/dlnM is the mass function of int_for_I02_XY (its header, item 1)
-// and the windows follow the same convention (its item 2): one M/rho_m
-// on the matter leg, none on the pressure leg.
-//
-//   func = 0  matter    W_m = (M/rho_m) u_c(k|M)
-//   func = 1  pressure  W_y = u_y_bnd(M, k) + u_y_ejc(M)
-//
-// The ejected gas appears here and not in the 1-halo term: it follows
-// the linear field outside halos, so it is a point-like, k-independent
-// window that clusters with the halo it came from (u_y_ejc header;
-// 2005.00009 sec. 3.3 and Eq. 36).
-//
-// The integrand carries no normalization: the finite mass range misses
-// the halos below M_min, and I11_X_nointerp adds their share after the
-// sum (its header, item 2).
-//
-// Parameters:
-//   lnM    - ln of the halo mass in M_sun/h (the GSL node)
-//   params - double[4] {a, k, func, D(a)}, packed by I11_X_nointerp
-//
-// Returns:
-//   dn/dlnM b(nu) W_X(M, k): dimensionless for matter, U (c/H0)^-3 for
-//   the pressure
-// ---------------------------------------------------------------------------
-double int_for_I11_X(double lnM, void* params)
-{
-  const double* ar = (double*) params;  
-  const double a = ar[0];
-  const double k = ar[1];
-  const int func = (int) ar[2];
-  const double growfac_a = ar[3];
-  const double m = exp(lnM);
-  
-  const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
-  const double gnu = fnu(nu, a) * nu; 
-  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-  const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m);
-
-  const double c = conc(m, growfac_a);
-
-  double w; // the window W_X(m, k)
-  switch(func)
-  {
-    case 0:
-    { // matter: W_m = (m/rho_m) u_c
-      w = u_c(c, k, m, a) * (m/rhom);
-      break;
-    }
-    case 1:
-    { // electron pressure: W_y = u_y_bnd + u_y_ejc, no m/rho_m
-      w = u_y_bnd(c, k, m, a) + u_y_ejc(m);
-      break;
-    }
-    default:
-    {
-      log_fatal("option not supported"); exit(1);
-    }
-  }
-  return dNdlnM * w * hb1nu(nu, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// I11_X(k, a) = I^1_1, the 2-halo amplitude of field X (file glossary):
-//
-//   I11_X(k) = int_{M_min}^{M_max} dM n(M) b(M) W_X(M, k)
-//            + A(a) W_X(M_min, k)/(M_min/rho_m),    A(a) = 1 - bias_norm(a)
-//
-// The first line runs over [limits.halo_m_min, limits.halo_m_max] with
-// the integrand of int_for_I11_X (Gauss-Legendre in ln M, as in
-// I02_XY_nointerp); the second is the correction of Mead et al. 2020
-// (HMx, 2005.00009 App. A) for the halos the integral does not reach.
-// p_xy_nointerp multiplies two of these with P_lin (2005.00009 Eq. 1).
-//
-// 1. Why the matter integral must tend to 1 as k -> 0
-//
-// On scales larger than any halo u_c(k|M) -> 1 and W_m -> M/rho_m
-// (int_for_I02_XY header, item 2), so I11_m(k -> 0) = int b f dnu,
-// which is 1 over all nu because matter is unbiased with respect to
-// itself (fnu header, item 2): P_2h -> P_lin as k -> 0.
-//
-// 2005.00009 Eq. 1 integrates over all M; this file starts at
-// M_min = 1e6 M_sun/h and the Tinker f grows toward light halos, so the
-// covered share is (bias_norm header, item 1)
-//
-//   z            0      0.5    1      2      3
-//   bias_norm    0.80   0.80   0.79   0.75   0.70
-//
-// and the integral alone would give P_2h -> 0.64 P_lin at z = 0; App. A
-// finds 0.67 for a standard mass function integrated from 1e10 M_sun.
-//
-// 2. The correction: the missing matter as halos of mass M_min
-//
-// What not to do (2005.00009 App. A): multiply n(M) above M_min by
-// 1/bias_norm = 1.25. Massive halos have resolved profiles (u < 1) at k
-// where light halos are still points, so moving the light halos' matter
-// into them changes the k-dependence of both halo terms. Dividing the
-// 2-halo integrand by bias_norm does the same to the 2-halo term alone.
-//
-// HMx's second option keeps n(M) and adds the missing share A as halos
-// of mass exactly M_min (its Eq. A7),
-//
-//   n(M) -> n(M) + A delta_D(M - M_min)/[b(M_min) M_min/rho_m],
-//
-// the denominator making the bias-weighted mass of the added term
-// exactly A. In the I11 integral b(M_min) cancels (Eq. A8), leaving
-// the second line of the formula at the top.
-//
-// For matter W_m(M_min, k)/(M_min/rho_m) = u_c(k|M_min): at k -> 0 the
-// correction is A and I11_m = 1 at every a; at high k it fades like
-// u_c(k|M_min), slowly, because the lightest halos are also the
-// smallest:
-//
-//   r_Delta = 2.4 kpc/h   at 1e6 M_sun/h, Omega_m = 0.3,
-//   k r_Delta = 0.24      at k = 100 h/Mpc,
-//
-// so the added halos stay point-like over the k range of the spectra,
-// as the halos below M_min are (App. A: delta-function profiles).
-//
-// For the pressure, W_y = u_y_bnd + u_y_ejc at M_min. The bound part is
-// negligible, f_bnd(1e6 M_sun/h) = 2.5e-6 with the HMx defaults (App. A
-// judges it ignorable); the ejected part, u_y_ejc(M)/(M/rho_m) = num_p
-// rho_m f_ejc(M) E_w/mu_e, does not depend on M, so the light halos put
-// their ejected gas back as the resolved halos do (u_y_ejc header).
-//
-// Size of the effect on p_mm, additive form against the multiplicative
-// alternative (integrand divided by bias_norm):
-//
-//   k [h/Mpc]    1e-3    0.3      100
-//   a = 0.3      0       +0.1%    +1.3%
-//   a = 0.99     0       +0.2%    +0.4%
-//
-// At k = 1e-3 both give I11_m = 1 (p_mm/p_lin agrees to 1e-6); the
-// additive form keeps the missing matter unresolved (u ~ 1) to high k,
-// where the multiplicative form has spread it over resolved profiles.
-//
-// 3. The pieces in the code
-//
-//   wmin            W_X at M_min with conc(M_min, D(a)), the same
-//                   expression int_for_I11_X evaluates at a node
-//   mmin/rhom       M_min/rho_m, so wmin/(mmin/rhom) is u_c(k|M_min)
-//                   for matter
-//
-// The correction is added on the init = 1 path as well, so the
-// single-threaded warm-up call of the table builders (halo_wrapper.hpp,
-// "The init flag") builds bias_norm's table before the parallel fills.
-//
-// Cache invalidation:
-//   Gauss-Legendre table: rebuilt when Ntable.random changes. No value
-//   is cached here; bias_norm keeps its own table.
-//
-// Parameters:
-//   k    - wavenumber in (c/H0)^-1
-//   a    - scale factor, 0 < a < 1 (fnu aborts otherwise)
-//   func - 0 = matter, 1 = electron pressure; other values abort
-//   init - 1 = warm-up evaluation (integrand at the midpoint of ln M
-//          plus the correction), 0 = the integral plus the correction
-//
-// Returns:
-//   I11_X(k, a): dimensionless for matter, 1 as k -> 0; in U for the
-//   pressure
-// ---------------------------------------------------------------------------
-double I11_X_nointerp(
-    const double k,
-    const double a,
-    const int func,
-    const int init
-  )
-{
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = 1024; // largest predefined GSL table
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-
-  double ar[4] = {a, k, func, growfac(a)};
-  const double lnMmin = log(limits.halo_m_min);
-  const double lnMmax = log(limits.halo_m_max);
-  
-  double res;
-  if (1 == init) {
-    res = int_for_I11_X((lnMmin + lnMmax)/2.0, (void*) ar);
-  }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_I11_X;
-    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
-  }
-
-  // The HMx correction (header, item 2): A W_X(M_min, k)/(M_min/rho_m)
-  // with A = 1 - bias_norm(a); wmin is W_X(M_min, k) with the window
-  // convention of int_for_I11_X. Added on the init = 1 path too, so the
-  // single-threaded warm-up builds bias_norm's table first (item 3).
-  const double mmin = limits.halo_m_min;
-  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-  const double cmin = conc(mmin, ar[3]);
-  double wmin;
-  switch(func)
-  {
-    case 0:
-    { // matter: W_m = (M_min/rho_m) u_c
-      wmin = u_c(cmin, k, mmin, a) * (mmin/rhom);
-      break;
-    }
-    case 1:
-    { // electron pressure: W_y = u_y_bnd + u_y_ejc
-      wmin = u_y_bnd(cmin, k, mmin, a) + u_y_ejc(mmin);
-      break;
-    }
-    default:
-    {
-      log_fatal("option not supported"); exit(1);
-    }
-  }
-  return res + (1.0 - bias_norm(a)) * wmin/(mmin/rhom);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // HALO MODEL POWER SPECTRA
+//
+//   P_XY(k, a) = I02_XY(k, a) + I11_X(k, a) I11_Y(k, a) P_lin(k, a)
+//                                                  (2005.00009 Eqs. 1-2)
+//   I02_XY = int dlnM dn/dlnM W_X(M, k) W_Y(M, k)              1-halo
+//   I11_X  = int dlnM dn/dlnM b(nu) W_X(M, k)
+//            + A(a) W_X(M_min, k)/(M_min/rho_m)                2-halo
+//
+// (the I^0_2 and I^1_1 of the file glossary), with
+//
+//   dn/dlnM = (rho_m/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/(sigma(M) D(a))
+//
+// the mass function (fnu, dlognudlogm; sigma2 in cosmo3D.c), b the Tinker
+// bias (hb1nu) and the windows W_X the Fourier transforms of the profiles,
+// in the units of the field times a volume:
+//
+//   matter    W_m = (M/rho_m) u(k|M),  u -> 1 at k -> 0   (c/H0)^3
+//   pressure  W_y = W_p (1-halo); + u_y_ejc in I11_y       U (energy)
+//
+// One M/rho_m per matter leg, none on the pressure: W_p is already the
+// volume integral of the pressure (~ M^(5/3) at k -> 0, 2005.00009
+// Eq. 41); with an extra M/rho_m a halo's pressure would scale as M^(8/3).
+// The ejected gas follows the linear field outside halos, so it enters
+// the 2-halo term only, as a k-independent window (2005.00009 sec. 3.3).
+//
+// A(a) = 1 - bias_norm(a) is the HMx correction (2005.00009 App. A) for
+// the halos below M_min, which hold about 20% of the bias-weighted matter
+// at z = 0 (bias_norm header, item 1): their share is put back as halos
+// of mass exactly M_min, n(M) -> n(M) + A delta_D(M - M_min)/[b(M_min)
+// M_min/rho_m] (Eq. A7), so that I11_m -> 1 and P_2h -> P_lin at k -> 0
+// at every a, while at high k the added halos stay point-like as the
+// real light halos are (r_Delta = 2.4 kpc/h at 1e6 M_sun/h).
+//
+// The y spectra damp their 1-halo term at low k, I02 -> I02 x/(1 + x),
+// x = (k/k_s)^4, k_s = 0.05618 (sigma8 a)^-1.013 h/Mpc (2009.01858
+// Eq. 17 and Table 2); the galaxy spectra take Pdelta b_gal as their
+// 2-halo term instead of I11 (p_gm, p_gg headers).
+//
+// Each builder tabulates ln P on a uniform (a, ln k) grid with the
+// 1024-node Gauss-Legendre rule in ln M and reads it bilinearly; the
+// first call of a refill is halo_warmup.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -2980,85 +2512,11 @@ static void halo_warmup(
   }
   if (1 == gas) {
     // one read at the lightest halo: c(M_min) is a sigma2 read (built
-    // above), r_v = r_Delta(M_min) as in u_y_bnd
+    // above), r_v = r_Delta(M_min) as in W_p (GAS PROFILES banner)
     const double rho_delta = Delta*cosmology.rho_crit*cosmology.Omega_m;
     const double rv = pow(3./(4.0*M_PI)*(mmin/rho_delta), 1./3.);
     (void) u_KS(conc(mmin, growfac(a)), k, rv);
   }
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double p_xy_nointerp(
-    const double k, 
-    const double a,
-    const int func,
-    const int init
-  ) 
-{
-  const double I02 = I02_XY_nointerp(k, k, a, func, init);
-
-  double P1H, I11X, I11Y;
-
-  switch(func)
-  {
-    case 1:
-    { // PMY
-      if (!(cosmology.Omega_b > 0)) {
-        log_fatal("Compton-y spectra need cosmology.Omega_b > 0 "
-                  "(set_cosmological_parameters)");
-        exit(1);
-      }
-      // sigma8 from the same sigma2(M) table the halo model uses:
-      // sigma8 = sigma(R = 8 Mpc/h), the rms fluctuation in a top-hat
-      // holding the mass M8 = (4 pi/3) rho_m R8^3 (lengths in c/H0
-      // units, so R8 = 8/coverH0); sigma2's own cosmology cache key
-      // keeps the value current
-      const double R8 = 8.0/cosmology.coverH0;
-      const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-      const double s8 = sqrt(sigma2(4.0*M_PI/3.0*rhom*R8*R8*R8));
-      // convert to code unit, Table 2, 2009.01858
-      const double ks = 0.05618/pow(s8*a,1.013)*cosmology.coverH0;
-      // suppress low k (Eq17;2009.01858): P1H -> P1H (k/ks)^4/(1+(k/ks)^4),
-      // which -> 0 for k << ks and -> 1 for k >> ks
-      const double x = (k/ks)*(k/ks)*(k/ks)*(k/ks);
-      P1H  = I02*(x/(x + 1.0));
-      I11X = I11_X_nointerp(k, a, 0, init);
-      I11Y = I11_X_nointerp(k, a, 1, init);
-      break;
-    }
-    case 2:
-    { // PYY
-      if (!(cosmology.Omega_b > 0)) {
-        log_fatal("Compton-y spectra need cosmology.Omega_b > 0 "
-                  "(set_cosmological_parameters)");
-        exit(1);
-      }
-      // sigma8 recomputed as in PMY above (one sigma2 table lookup)
-      const double R8 = 8.0/cosmology.coverH0;
-      const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-      const double s8 = sqrt(sigma2(4.0*M_PI/3.0*rhom*R8*R8*R8));
-      // convert to code unit, Table 2, 2009.01858
-      const double ks = 0.05618/pow(s8*a,1.013)*cosmology.coverH0;
-      // suppress low k (Eq17;2009.01858): P1H -> P1H (k/ks)^4/(1+(k/ks)^4),
-      // which -> 0 for k << ks and -> 1 for k >> ks
-      const double x = (k/ks)*(k/ks)*(k/ks)*(k/ks);
-      P1H  = I02*(x/(x + 1.0));
-      I11X = I11_X_nointerp(k, a, 1, init);
-      I11Y = I11X;
-      break;
-    }
-    default:
-    {
-      log_fatal("option not supported");
-      exit(1);
-    }
-  }
-
-  return P1H + (I11X * I11Y * p_lin(k, a));;
 }
 
 // ---------------------------------------------------------------------------
@@ -3076,12 +2534,9 @@ double p_xy_nointerp(
 //   I11  = int dlnM dn/dlnM b(nu) (M/rho_m) u(k|M) + A(a) u(k|M_min)
 //
 // dn/dlnM = (rho_m/M) nu f(nu) dlnnu/dlnM is the mass function, (M/rho_m) u
-// the matter window (int_for_I02_XY header, items 1-2), b the Tinker bias,
-// A(a) = 1 - bias_norm(a) the HMx share of matter below M_min put back as
-// halos of mass M_min (I11_X_nointerp header, item 2). p_xy_nointerp
-// evaluates the same P_mm directly (I02_XY_nointerp and I11_X_nointerp,
-// GSL fixed rules: the route of p_my and p_yy); the rows here call it
-// only as the warm-up below.
+// the matter window, b the Tinker bias, A(a) = 1 - bias_norm(a) the HMx
+// share of matter below M_min put back as halos of mass M_min (section
+// banner).
 //
 // 1. Quadrature: the n-point Gauss-Legendre rule in ln M (exact for
 // polynomials of degree 2n - 1), n = 1024, the largest size GSL
@@ -3264,19 +2719,114 @@ double p_mm(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// P_my(k, a), the halo-model matter-pressure cross spectrum, from a table
+// of ln P on Ntable.N_a x Ntable.N_k_nlin nodes uniform in (a, ln k), read
+// bilinearly (interpol2d) and exponentiated (section banner):
+//
+//   P_my   = I02_my S(k, a) + I11_m I11_y P_lin        (2005.00009 Eqs. 1-2)
+//   I02_my = int dlnM dn/dlnM (M/rho_m) u(k|M) W_y(M, k)
+//   I11_m  = int dlnM dn/dlnM b(nu) (M/rho_m) u(k|M) + A(a) u(k|M_min)
+//   I11_y  = int dlnM dn/dlnM b(nu) [W_y(M, k) + W_ejc(M)]
+//            + A(a) [W_y(M_min, k) + W_ejc(M_min)]/(M_min/rho_m)
+//   S      = x/(1 + x),  x = (k/k_s)^4                   (2009.01858 Eq. 17)
+//
+// dn/dlnM, (M/rho_m) u, b and A(a) = 1 - bias_norm(a) as in p_mm (its
+// header). W_y = Y(a) B(M) u_KS(c, k, r_Delta) is the bound-gas pressure
+// window (GAS PROFILES banner), Y(a) = (2 alpha/(3a)) mu_p/mu_e and
+// B(M) = f_bnd(M) M^2/r_Delta; W_ejc = u_y_ejc(M) the ejected gas, in the
+// 2-halo term only and k-independent. k_s(a) = 0.05618 (sigma8 a)^-1.013
+// h/Mpc (2009.01858 Table 2) with sigma8 = sigma(M8) read from the sigma2
+// table, M8 = (4 pi/3) rho_m (8 Mpc/h)^3.
+//
+// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// item 1) over [ln M_min, ln M_max], mapped once in the rebuild block.
+//
+// 2. Loop levels as in p_mm (its header, item 2), two kernels per node:
+// nfw_um for the matter leg, u_KS for the pressure leg:
+//
+//   per refill, per node q (mq)  M, w; nu0 = delta_c/sigma(M);
+//                                w (rho_m/M) dlnnu/dlnM; M/rho_m; r_Delta;
+//                                B(M); W_ejc(M)
+//   per refill                   mu_p/mu_e; sigma8; the M_min pieces of the
+//                                HMx terms
+//   per a row i, threaded        D(a); Tinker f, b parameters; A(a); c(M_min);
+//                                Y(a); k_s(a)
+//   per (i, q) (aq[i])           nu = nu0/D; c = conc(M, D); ln(1+c);
+//                                m(c); r_s = r_Delta/c, ln r_s;
+//                                W1 = dn (M/rho_m)/m(c) Y B,
+//                                B1m = dn b (M/rho_m)/m(c), B1y = dn b Y B,
+//                                dn = w (rho_m/M) dlnnu/dlnM f(nu) nu;
+//                                E = sum dn b W_ejc
+//   per (i, k), sum over q       um = nfw_um(c, k r_s, ln k + ln r_s, ln(1+c))
+//                                uy = u_KS(c, k, r_Delta);
+//                                I02 = sum W1 uy um; I11_m = sum B1m um + HMx;
+//                                I11_y = sum B1y uy + E + HMx; ln P
+//
+// The 1/m(c) of u = um/m(c) lives in W1 and B1m. The rows read the NFW
+// kernel directly, so like.halo_model[3] must be HALO_PROFILE_NFW; the gas
+// needs cosmology.Omega_b > 0 (f_bnd) and a polytropic index
+// nuisance.gas[0] > 1 (u_KS); anything else aborts.
+//
+// Thread safety: the single-threaded halo_warmup(a_min, k_min, 1, 0) call
+// before the threaded loop builds every lazy table the rows read (its
+// header), so inside the loop they are only read.
+//
+// Cache invalidation:
+//   rebuild block (table, mq, aq, GL nodes, both grids; every allocation
+//     lives here, one block each from malloc2d/malloc3d): Ntable.random
+//   refill: cosmology.random, Ntable.random or nuisance.random_gas
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1
+//   a - scale factor
+//
+// Returns:
+//   P_my(k, a) in U = G (M_sun/h)^2/(c/H0) (GAS PROFILES banner); 0 outside
+//   [limits.a_min, 0.9999999]; ln P continued with unit slope outside
+//   [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
 double p_my(
-    const double k, 
+    const double k,
     const double a
   )
-{ 
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double** table = 0;
-  static double lim[2][3]; // lim[0][0] = amin, lim[0][1] = amax, lim[0][2] = da 
-                           // lim[1][0] = lnkmin, lim[1][1] = lnkmax, lim[1][2] = dlnk
+  static double** table = NULL;
+  static double lim[2][3];    // [0] a grid: min, max, step;
+                              // [1] ln k grid: min, max, step
+  static int nq = 0;          // Gauss-Legendre nodes in ln M
+  static double** mq = NULL;  // [8][nq] per mass node: M, weight, nu at
+                              // D = 1, weight x (rho_m/M) dlnnu/dlnM,
+                              // M/rho_m, r_Delta, B = f_bnd M^2/r_Delta,
+                              // W_ejc
+  static double*** aq = NULL; // [N_a][7][nq] per (a, mass node): c,
+                              // ln(1+c), r_s, ln r_s, W1, B1m, B1y
 
+  // Ntable rebuild block: the table, the per-node and per-(a, node) arrays
+  // (one block each from malloc2d/malloc3d, so one free each), the GL
+  // nodes mapped onto [ln M_min, ln M_max], both grids (header, item 1)
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    if (table != NULL) free(table);
-    table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin); 
+    if (table != NULL) {
+      free(table);
+      free(mq);
+      free(aq);
+    }
+    table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
+    nq = 1024; // largest predefined GSL table
+    mq = (double**) malloc2d(8, nq);
+    aq = (double***) malloc3d(Ntable.N_a, 7, nq);
+    const double lnMmin = log(limits.halo_m_min);
+    const double lnMmax = log(limits.halo_m_max);
+    // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
+    // rule t mapped onto [lo, hi], and its weight
+    gsl_integration_glfixed_table* t = malloc_gslint_glfixed(nq);
+    for (int q=0; q<nq; q++) {
+      double lnM;
+      gsl_integration_glfixed_point(lnMmin, lnMmax, q, &lnM, &mq[1][q], t);
+      mq[0][q] = exp(lnM);
+    }
+    gsl_integration_glfixed_table_free(t);
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
@@ -3284,22 +2834,127 @@ double p_my(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-  if (fdiff2(cache[0], cosmology.random) || 
+  // Refill: the cosmology, Ntable or gas tag differs from the table's
+  if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random) ||
       fdiff2(cache[2], nuisance.random_gas))
   {
-    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 1, 1); // init static vars
-    #pragma omp parallel for collapse(2) schedule(static,1)
+    // the rows read the NFW kernel directly (header, item 2)
+    if (like.halo_model[3] != HALO_PROFILE_NFW) {
+      log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+    // the gas: f_bnd carries Omega_b/Omega_m, u_KS the exponents
+    // Gamma/(Gamma - 1) and 1/(Gamma - 1)
+    if (!(cosmology.Omega_b > 0)) {
+      log_fatal("Compton-y spectra need cosmology.Omega_b > 0 "
+                "(set_cosmological_parameters)");
+      exit(1);
+    }
+    if (!(nuisance.gas[0] > 1)) {
+      log_fatal("Compton-y spectra need a polytropic index gas[0] = %g > 1",
+                nuisance.gas[0]);
+      exit(1);
+    }
+    // Warm-up (header, Thread safety): every lazy table the threaded
+    // loop reads is built here, on one thread
+    halo_warmup(lim[0][0], exp(lim[1][0]), 1, 0);
+    // Per mass node (header, item 2, first row)
+    const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+    const double rho_delta = Delta * rhom;
+    for (int q=0; q<nq; q++) {
+      const double m = mq[0][q];
+      mq[2][q] = delta_c/sqrt(sigma2(m));
+      mq[3][q] = mq[1][q]*(rhom/m)*dlognudlogm(m);
+      mq[4][q] = m/rhom;
+      mq[5][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+      mq[6][q] = frac_bnd(m)*m*(m/mq[5][q]);
+      mq[7][q] = u_y_ejc(m);
+    }
+    // Per refill (header, item 2, second row): mu_p, mu_e of the ionized
+    // gas (GAS PROFILES banner), sigma8 from the sigma2 table at M8, and
+    // the M_min pieces of the HMx terms: M_min/rho_m, r_Delta, B, W_ejc
+    const double mu_p = 4.0/(3.0 + 5*nuisance.gas[10]);
+    const double mu_e = 2.0/(1.0 + nuisance.gas[10]);
+    const double R8 = 8.0/cosmology.coverH0;
+    const double s8 = sqrt(sigma2(4.0*M_PI/3.0*rhom*R8*R8*R8));
+    const double mmin = limits.halo_m_min;
+    const double vmin = mmin/rhom;
+    const double rvmin = pow(3./(4.0*M_PI)*(mmin/rho_delta), 1./3.);
+    const double wbmin = frac_bnd(mmin)*mmin*(mmin/rvmin);
+    const double wemin = u_y_ejc(mmin);
+    // Per a row, threaded (header, item 2, third row): D(a), the Tinker f
+    // and b parameters (the nu-independent halves, *_params_at), A(a),
+    // c(M_min), Y(a) of the bound-gas window, k_s(a) of the damping
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<Ntable.N_a; i++) {
+      const double ai = lim[0][0] + i*lim[0][2];
+      const double D = growfac(ai);
+      const fnu_params pf = fnu_params_at(ai);
+      const hb1nu_params pb = hb1nu_params_at(ai);
+      const double A = 1.0 - bias_norm(ai);
+      const double cmin = conc(mmin, D);
+      const double Y = (2.0*nuisance.gas[5]/(3.0*ai))*(mu_p/mu_e);
+      const double ks = 0.05618/pow(s8*ai, 1.013)*cosmology.coverH0;
+      const double* restrict rv = mq[5];
+      double* restrict cq = aq[i][0];
+      double* restrict ln1c = aq[i][1];
+      double* restrict rs = aq[i][2];
+      double* restrict lnrs = aq[i][3];
+      double* restrict w1 = aq[i][4];
+      double* restrict b1m = aq[i][5];
+      double* restrict b1y = aq[i][6];
+      // Per (a, node): concentration, r_s, their logs, and the weights
+      // W1, B1m, B1y with 1/m(c) folded into the matter legs (header,
+      // item 2, fourth row); E is the k-independent ejected-gas share of
+      // I11_y
+      double E = 0.0;
+      for (int q=0; q<nq; q++) {
+        const double nu = mq[2][q]/D;
+        const double c = conc(mq[0][q], D);
+        const double dn = mq[3][q]*fnu_core(nu, &pf)*nu;
+        const double b = hb1nu_core(nu, &pb);
+        const double yb = Y*mq[6][q]; // W_y without its shape factor u_KS
+        cq[q] = c;
+        ln1c[q] = log1p(c);
+        rs[q] = rv[q]/c;
+        lnrs[q] = log(rs[q]);
+        const double mc = ln1c[q] - c/(1.0 + c);
+        w1[q] = dn*(mq[4][q]/mc)*yb;
+        b1m[q] = dn*b*(mq[4][q]/mc);
+        b1y[q] = dn*b*yb;
+        E += dn*b*mq[7][q];
+      }
+      // Per k: I02 and the two I11 as sums of the two kernels over the
+      // nodes, the HMx terms at M_min, the damping S, then ln P (header,
+      // item 2, last row)
       for (int j=0; j<Ntable.N_k_nlin; j++) {
-        table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
-                                            lim[0][0] + i*lim[0][2], 1, 0));
+        const double lnk = lim[1][0] + j*lim[1][2];
+        const double kj = exp(lnk);
+        double s02 = 0.0;
+        double s11m = 0.0;
+        double s11y = 0.0;
+        for (int q=0; q<nq; q++) {
+          const double um = nfw_um(cq[q], kj*rs[q], lnk + lnrs[q], ln1c[q]);
+          const double uy = u_KS(cq[q], kj, rv[q]);
+          s02 += w1[q]*uy*um;
+          s11m += b1m[q]*um;
+          s11y += b1y[q]*uy;
+        }
+        const double x4 = (kj/ks)*(kj/ks)*(kj/ks)*(kj/ks);
+        const double P1H = s02*(x4/(x4 + 1.0));
+        const double I11m = s11m + A*u_c(cmin, kj, mmin, ai);
+        // W_y + W_ejc at M_min, the window of the HMx term
+        const double Wmin = Y*wbmin*u_KS(cmin, kj, rvmin) + wemin;
+        const double I11y = s11y + E + A*Wmin/vmin;
+        table[i][j] = log(P1H + I11m*I11y*p_lin(kj, ai));
       }
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_gas;
   }
+  // bilinear read of ln P; 0 outside the a range
   return ((a < lim[0][0]) || (a > lim[0][1])) ? 0.0 :
     exp(interpol2d(table,
                    Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a,
@@ -3311,19 +2966,98 @@ double p_my(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// P_yy(k, a), the halo-model pressure auto spectrum, from a table of ln P
+// on Ntable.N_a x Ntable.N_k_nlin nodes uniform in (a, ln k), read
+// bilinearly (interpol2d) and exponentiated (section banner):
+//
+//   P_yy   = I02_yy S(k, a) + I11_y^2 P_lin              (2005.00009 Eqs. 1-2)
+//   I02_yy = int dlnM dn/dlnM W_y(M, k)^2
+//   I11_y  = int dlnM dn/dlnM b(nu) [W_y(M, k) + W_ejc(M)]
+//            + A(a) [W_y(M_min, k) + W_ejc(M_min)]/(M_min/rho_m)
+//   S      = x/(1 + x),  x = (k/k_s)^4                   (2009.01858 Eq. 17)
+//
+// W_y = Y(a) B(M) u_KS, W_ejc, k_s(a), dn/dlnM, b and A(a) as in p_my (its
+// header). No matter leg: the only kernel is u_KS, and no M/rho_m enters
+// (the pressure window is the full volume integral, GAS PROFILES banner).
+//
+// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// item 1) over [ln M_min, ln M_max], mapped once in the rebuild block.
+//
+// 2. Loop levels as in p_my (its header, item 2) without the matter leg:
+//
+//   per refill, per node q (mq)  M, w; nu0; w (rho_m/M) dlnnu/dlnM; r_Delta;
+//                                B(M); W_ejc(M)
+//   per refill                   mu_p/mu_e; sigma8; the M_min pieces
+//   per a row i, threaded        D(a); Tinker f, b parameters; A(a); c(M_min);
+//                                Y(a); k_s(a)
+//   per (i, q) (aq[i])           nu = nu0/D; c = conc(M, D);
+//                                W2 = dn (Y B)^2, B1y = dn b Y B;
+//                                E = sum dn b W_ejc
+//   per (i, k), sum over q       uy = u_KS(c, k, r_Delta);
+//                                I02 = sum W2 uy^2; I11_y = sum B1y uy + E
+//                                + HMx; ln P
+//
+// The gas needs cosmology.Omega_b > 0 (f_bnd) and a polytropic index
+// nuisance.gas[0] > 1 (u_KS); anything else aborts.
+//
+// Thread safety: the single-threaded halo_warmup(a_min, k_min, 1, 0) call
+// before the threaded loop builds every lazy table the rows read (its
+// header), so inside the loop they are only read.
+//
+// Cache invalidation:
+//   rebuild block (table, mq, aq, GL nodes, both grids; every allocation
+//     lives here, one block each from malloc2d/malloc3d): Ntable.random
+//   refill: cosmology.random, Ntable.random or nuisance.random_gas
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1
+//   a - scale factor
+//
+// Returns:
+//   P_yy(k, a) in U^2 (c/H0)^-3, U = G (M_sun/h)^2/(c/H0) (GAS PROFILES
+//   banner); 0 outside [limits.a_min, 0.9999999]; ln P continued with unit
+//   slope outside [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
 double p_yy(
-    const double k, 
+    const double k,
     const double a
   )
-{ 
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double** table = 0;
-  static double lim[2][3]; // lim[0][0]=amin, lim[0][1]=amax, lim[0][2]=da 
-                           // lim[1][0]=lnkmin, lim[1][1]=lnkmax, lim[1][2]=dlnk
+  static double** table = NULL;
+  static double lim[2][3];    // [0] a grid: min, max, step;
+                              // [1] ln k grid: min, max, step
+  static int nq = 0;          // Gauss-Legendre nodes in ln M
+  static double** mq = NULL;  // [7][nq] per mass node: M, weight, nu at
+                              // D = 1, weight x (rho_m/M) dlnnu/dlnM,
+                              // r_Delta, B = f_bnd M^2/r_Delta, W_ejc
+  static double*** aq = NULL; // [N_a][3][nq] per (a, mass node): c, W2, B1y
 
+  // Ntable rebuild block: the table, the per-node and per-(a, node) arrays
+  // (one block each from malloc2d/malloc3d, so one free each), the GL
+  // nodes mapped onto [ln M_min, ln M_max], both grids (header, item 1)
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    if (table != NULL) free(table);
+    if (table != NULL) {
+      free(table);
+      free(mq);
+      free(aq);
+    }
     table = (double**) malloc2d(Ntable.N_a, Ntable.N_k_nlin);
+    nq = 1024; // largest predefined GSL table
+    mq = (double**) malloc2d(7, nq);
+    aq = (double***) malloc3d(Ntable.N_a, 3, nq);
+    const double lnMmin = log(limits.halo_m_min);
+    const double lnMmax = log(limits.halo_m_max);
+    // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
+    // rule t mapped onto [lo, hi], and its weight
+    gsl_integration_glfixed_table* t = malloc_gslint_glfixed(nq);
+    for (int q=0; q<nq; q++) {
+      double lnM;
+      gsl_integration_glfixed_point(lnMmin, lnMmax, q, &lnM, &mq[1][q], t);
+      mq[0][q] = exp(lnM);
+    }
+    gsl_integration_glfixed_table_free(t);
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
@@ -3331,22 +3065,105 @@ double p_yy(
     lim[1][1] = log(limits.k_max_cH0);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
-  if (fdiff2(cache[0], cosmology.random) || 
+  // Refill: the cosmology, Ntable or gas tag differs from the table's
+  if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random) ||
       fdiff2(cache[2], nuisance.random_gas))
-  { 
-    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 2, 1); // init static vars
-    #pragma omp parallel for collapse(2) schedule(static,1)
+  {
+    // the gas: f_bnd carries Omega_b/Omega_m, u_KS the exponents
+    // Gamma/(Gamma - 1) and 1/(Gamma - 1)
+    if (!(cosmology.Omega_b > 0)) {
+      log_fatal("Compton-y spectra need cosmology.Omega_b > 0 "
+                "(set_cosmological_parameters)");
+      exit(1);
+    }
+    if (!(nuisance.gas[0] > 1)) {
+      log_fatal("Compton-y spectra need a polytropic index gas[0] = %g > 1",
+                nuisance.gas[0]);
+      exit(1);
+    }
+    // Warm-up (header, Thread safety): every lazy table the threaded
+    // loop reads is built here, on one thread
+    halo_warmup(lim[0][0], exp(lim[1][0]), 1, 0);
+    // Per mass node (header, item 2, first row)
+    const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+    const double rho_delta = Delta * rhom;
+    for (int q=0; q<nq; q++) {
+      const double m = mq[0][q];
+      mq[2][q] = delta_c/sqrt(sigma2(m));
+      mq[3][q] = mq[1][q]*(rhom/m)*dlognudlogm(m);
+      mq[4][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+      mq[5][q] = frac_bnd(m)*m*(m/mq[4][q]);
+      mq[6][q] = u_y_ejc(m);
+    }
+    // Per refill (header, item 2, second row): mu_p, mu_e of the ionized
+    // gas (GAS PROFILES banner), sigma8 from the sigma2 table at M8, and
+    // the M_min pieces of the HMx term: M_min/rho_m, r_Delta, B, W_ejc
+    const double mu_p = 4.0/(3.0 + 5*nuisance.gas[10]);
+    const double mu_e = 2.0/(1.0 + nuisance.gas[10]);
+    const double R8 = 8.0/cosmology.coverH0;
+    const double s8 = sqrt(sigma2(4.0*M_PI/3.0*rhom*R8*R8*R8));
+    const double mmin = limits.halo_m_min;
+    const double vmin = mmin/rhom;
+    const double rvmin = pow(3./(4.0*M_PI)*(mmin/rho_delta), 1./3.);
+    const double wbmin = frac_bnd(mmin)*mmin*(mmin/rvmin);
+    const double wemin = u_y_ejc(mmin);
+    // Per a row, threaded (header, item 2, third row): D(a), the Tinker f
+    // and b parameters (the nu-independent halves, *_params_at), A(a),
+    // c(M_min), Y(a) of the bound-gas window, k_s(a) of the damping
+    #pragma omp parallel for schedule(static)
     for (int i=0; i<Ntable.N_a; i++) {
+      const double ai = lim[0][0] + i*lim[0][2];
+      const double D = growfac(ai);
+      const fnu_params pf = fnu_params_at(ai);
+      const hb1nu_params pb = hb1nu_params_at(ai);
+      const double A = 1.0 - bias_norm(ai);
+      const double cmin = conc(mmin, D);
+      const double Y = (2.0*nuisance.gas[5]/(3.0*ai))*(mu_p/mu_e);
+      const double ks = 0.05618/pow(s8*ai, 1.013)*cosmology.coverH0;
+      const double* restrict rv = mq[4];
+      double* restrict cq = aq[i][0];
+      double* restrict w2 = aq[i][1];
+      double* restrict b1y = aq[i][2];
+      // Per (a, node): concentration and the weights W2, B1y (header,
+      // item 2, fourth row); E is the k-independent ejected-gas share of
+      // I11_y
+      double E = 0.0;
+      for (int q=0; q<nq; q++) {
+        const double nu = mq[2][q]/D;
+        const double dn = mq[3][q]*fnu_core(nu, &pf)*nu;
+        const double b = hb1nu_core(nu, &pb);
+        const double yb = Y*mq[5][q]; // W_y without its shape factor u_KS
+        cq[q] = conc(mq[0][q], D);
+        w2[q] = dn*yb*yb;
+        b1y[q] = dn*b*yb;
+        E += dn*b*mq[6][q];
+      }
+      // Per k: I02 and I11_y as sums of the kernel over the nodes, the HMx
+      // term at M_min, the damping S, then ln P (header, item 2, last row)
       for (int j=0; j<Ntable.N_k_nlin; j++) {
-        table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
-                                            lim[0][0] + i*lim[0][2], 2, 0));
+        const double lnk = lim[1][0] + j*lim[1][2];
+        const double kj = exp(lnk);
+        double s02 = 0.0;
+        double s11y = 0.0;
+        for (int q=0; q<nq; q++) {
+          const double uy = u_KS(cq[q], kj, rv[q]);
+          s02 += w2[q]*uy*uy;
+          s11y += b1y[q]*uy;
+        }
+        const double x4 = (kj/ks)*(kj/ks)*(kj/ks)*(kj/ks);
+        const double P1H = s02*(x4/(x4 + 1.0));
+        // W_y + W_ejc at M_min, the window of the HMx term
+        const double Wmin = Y*wbmin*u_KS(cmin, kj, rvmin) + wemin;
+        const double I11y = s11y + E + A*Wmin/vmin;
+        table[i][j] = log(P1H + I11y*I11y*p_lin(kj, ai));
       }
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_gas;
   }
+  // bilinear read of ln P; 0 outside the a range
   return ((a < lim[0][0]) || (a > lim[0][1])) ? 0.0 :
     exp(interpol2d(table,
                    Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a,

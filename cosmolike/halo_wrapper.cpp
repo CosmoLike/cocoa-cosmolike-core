@@ -40,8 +40,8 @@ namespace py = pybind11;
 
 // ---------------------------------------------------------------------------
 // Pybind wrappers of the halo model (halo.c). The header
-// (halo_wrapper.hpp) documents the call chain, the units and the init
-// flag once; each function below says which C function it calls and
+// (halo_wrapper.hpp) documents the call chain, the units and the
+// warm-up once; each function below says which C function it calls and
 // what comes back.
 //
 // Conventions shared by every wrapper here:
@@ -298,7 +298,7 @@ double dlognudlogm_cpp(
 // is unbiased with respect to itself; halo.c tinker_alpha). Over the
 // tabulated mass range it is below 1, 0.80 at z = 0 and 0.79 at z = 1
 // with the defaults, because the light halos under M_min hold a sizable
-// share of the matter. The 2-halo integrals of halo.c (I11_X_nointerp)
+// share of the matter. The 2-halo sums of halo.c p_mm, p_my and p_yy
 // run over the tabulated range and add the missing 1 - bias_norm(a)
 // back as halos of mass exactly M_min, the additive correction of Mead
 // et al. 2020 (2005.00009 App. A), so that P_2h -> P_lin as k -> 0
@@ -498,7 +498,7 @@ double bgal_cpp(
 //         galaxies through the HOD)
 //   I_X = int dn b u_X, the bias-weighted mean profile, plus the HMx
 //         term that stands in for the halos below limits.halo_m_min
-//         (halo.c I11_X_nointerp, header item 2)
+//         (halo.c POWER SPECTRA banner)
 //
 // halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
 // Ntable.N_k_nlin nodes over [limits.a_min, 0.9999999] x
@@ -578,7 +578,7 @@ arma::Col<double> p_mm_cpp(
 //   a - scale factor inside [limits.a_min, 0.9999999]
 //
 // Returns:
-//   P_my(k, a): (c/H0)^3 times the y-profile units of halo.c u_y_bnd
+//   P_my(k, a) in U = G (M_sun/h)^2/(c/H0) (halo.c GAS PROFILES banner)
 // ---------------------------------------------------------------------------
 double p_my_cpp(
     const double k,   // wavenumber in (c/H0)^-1
@@ -632,7 +632,8 @@ arma::Col<double> p_my_cpp(
 //   a - scale factor inside [limits.a_min, 0.9999999]
 //
 // Returns:
-//   P_yy(k, a): (c/H0)^3 times the square of the y-profile units
+//   P_yy(k, a) in U^2 (c/H0)^-3, U = G (M_sun/h)^2/(c/H0) (halo.c GAS
+//   PROFILES banner)
 // ---------------------------------------------------------------------------
 double p_yy_cpp(
     const double k,   // wavenumber in (c/H0)^-1
