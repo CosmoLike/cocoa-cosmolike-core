@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <gsl/gsl_deriv.h>
 #include <gsl/gsl_sf.h>
 #include <math.h>
 #include <stdio.h>
@@ -33,7 +32,7 @@
 double hb1nu(const double nu, const double a)
 { // Halo bias based on peak-background split
 
-  int ans;
+  double ans;
   switch(like.halo_model[1])
   {
     case HALO_BIAS_TINKER_2010:
@@ -190,25 +189,18 @@ double bias_norm(const double a)
   }
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
     (void) bias_norm_nointerp(lim[0], 1); // init static vars
+    // every node holds the real integral: the grid ends at
+    // 0.9999999 < 1, where the integrand is still defined, so no
+    // sentinel value is needed and queries past the last node
+    // constant-extrapolate the true endpoint
     #pragma omp parallel for schedule(static,1)
     for (int i=0; i<Ntable.N_a; i++) {
       table[i] = bias_norm_nointerp(lim[0] + i*lim[2], 0);
     }
-    table[Ntable.N_a-1] = 1.0;
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
   return interpol1d(table, Ntable.N_a, lim[0], lim[1], lim[2], a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double lognu0_gsl(double lnM, void* params __attribute__((unused))) 
-{ 
-  return log(delta_c/sqrt(sigma2(exp(lnM)))); 
 }
 
 // ---------------------------------------------------------------------------
@@ -233,34 +225,20 @@ double dlognudlogm(const double M)
 
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random))
   {
-    {
-      const int i = 0;
-      double result, abserr;
-      double ar[1] = {1.0};
-
-      gsl_function F;
-      F.function = &lognu0_gsl;
-      F.params = (void*) ar;
-
-      int status = gsl_deriv_central(&F, lim[0]+i*lim[2], 
-                                    0.1*(lim[0]+i*lim[2]), &result, &abserr);
-      if (status) { log_fatal(gsl_strerror(status)); exit(1); }
-      table[i] = result;
-    }
+    (void) sigma2(exp(lim[0])); // build the sigma2 table before the threads
+    // d ln nu/d ln M = -(1/2) d ln sigma2/d ln M: nu = delta_c/sigma,
+    // and delta_c (with the growth factor) drops out of the log
+    // derivative. Symmetric difference over h = 0.05 in ln M; at the
+    // mass range's edges the stencil is pulled inside
+    // [ln m_min, ln m_max], where the sigma2 table would otherwise
+    // clamp to a constant and flatten the slope.
     #pragma omp parallel for schedule(static,1)
-    for (int i=1; i <Ntable.N_M; i++) 
+    for (int i=0; i <Ntable.N_M; i++)
     {
-      double result, abserr;
-      double ar[1] = {1.0};
-
-      gsl_function F;
-      F.function = &lognu0_gsl;
-      F.params = (void*) ar;
-
-      int status = gsl_deriv_central(&F, lim[0]+i*lim[2], 
-                                    0.1*(lim[0]+i*lim[2]), &result, &abserr);
-      if (status) { log_fatal(gsl_strerror(status)); exit(1); }
-      table[i] = result;
+      const double h = 0.05;
+      const double lo = fmax(lim[0] + i*lim[2] - h, lim[0]);
+      const double hi = fmin(lim[0] + i*lim[2] + h, lim[1]);
+      table[i] = -0.5*(log(sigma2(exp(hi))) - log(sigma2(exp(lo))))/(hi - lo);
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
@@ -336,7 +314,7 @@ double u_c(
     const double a
   ) 
 {
-  int ans;
+  double ans;
   switch(like.halo_model[3])
   {
     case HALO_PROFILE_NFW:
@@ -597,10 +575,15 @@ double frac_ejc(double M)
   const double delta = (logM - nuisance.gas[7])/nuisance.gas[8];
   
   const double tmp = nuisance.gas[6] * exp(-0.5*delta*delta);  
-  const double frac_star = ((logM > nuisance.gas[2]) && 
+  // above the peak mass M_star the stellar fraction is floored at
+  // A_star/3 (2005.00009 sec. 3.2: high-mass saturation of the
+  // stellar-to-halo mass relation)
+  const double frac_star = ((logM > nuisance.gas[7]) && 
                            (tmp < nuisance.gas[6]/3.0)) ? nuisance.gas[6]/3.0 : tmp; 
   
-  return frac_bnd(M) - frac_star;
+  // ejected gas = the halo's share of baryons that is neither bound gas
+  // nor stars: f_ejc = Omega_b/Omega_m - f_bnd - f_star (2005.00009)
+  return cosmology.Omega_b/cosmology.Omega_m - frac_bnd(M) - frac_star;
 }
 
 // ---------------------------------------------------------------------------
@@ -678,7 +661,7 @@ double int_hm_funcs(double lnM, void* params)
   const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m);
   
   const double nc = HOD_fc(ni)*HOD_nc(m, a, ni);
-  const double ns = HOD_ns(ni, a, ni);
+  const double ns = HOD_ns(m, a, ni);
   
   double res;
   switch(func)
@@ -785,7 +768,7 @@ double ngal(const int ni, const double a)
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<redshift.clustering_nbin; i++) {
       for (int j=0; j<Ntable.N_a; j++) {
-        table[j][i] = ngal_nointerp(i, lim[0] + j*lim[2], 0);
+        table[i][j] = ngal_nointerp(i, lim[0] + j*lim[2], 0);
       }
     }
     cache[0] = cosmology.random;
@@ -838,7 +821,11 @@ double hm_funcs_nointerp(
     F.function = int_hm_funcs;
     res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
   }
-  return (func == 1 || func == 2) ? res/ngal(ni, a) : res;
+  // funcs 1-3 are number-weighted means (mean mass, satellite fraction,
+  // mean bias): divide by the same bin's number density, integrated
+  // directly so one bin never forces the all-bin ngal table build
+  return (func == 1 || func == 2 || func == 3) ?
+    res/ngal_nointerp(ni, a, 0) : res;
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +900,7 @@ double bgal(const int ni, const double a)
     #pragma omp parallel for collapse(2) schedule(static,1)
     for (int i=0; i<redshift.clustering_nbin; i++) {
       for (int j=0; j<Ntable.N_a; j++) {
-        table[j][i] = bgal_nointerp(i, lim[0] + j*lim[2], 0);
+        table[i][j] = bgal_nointerp(i, lim[0] + j*lim[2], 0);
       }
     }
     cache[0] = cosmology.random;
@@ -982,7 +969,7 @@ double I02_XY_nointerp(
     const double k1, 
     const double k2, 
     const double a,
-    const int func, // 1 = MM, 2 = MY, 3 = YY
+    const int func, // 0 = MM, 1 = MY, 2 = YY
     const int init
   ) 
 {
@@ -1276,21 +1263,47 @@ double p_xy_nointerp(
     }
     case 1:
     { // PMY
+      if (!(cosmology.Omega_b > 0)) {
+        log_fatal("Compton-y spectra need cosmology.Omega_b > 0 "
+                  "(set_cosmological_parameters)");
+        exit(1);
+      }
+      // sigma8 from the same sigma2(M) table the halo model uses:
+      // sigma8 = sigma(R = 8 Mpc/h), the rms fluctuation in a top-hat
+      // holding the mass M8 = (4 pi/3) rho_m R8^3 (lengths in c/H0
+      // units, so R8 = 8/coverH0); sigma2's own cosmology cache key
+      // keeps the value current
+      const double R8 = 8.0/cosmology.coverH0;
+      const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+      const double s8 = sqrt(sigma2(4.0*M_PI/3.0*rhom*R8*R8*R8));
       // convert to code unit, Table 2, 2009.01858
-      const double ks = 0.05618/pow(cosmology.sigma_8*a,1.013)*cosmology.coverH0; 
-      const double x = ks*ks*ks*ks;
-      P1H  = I02*(1.0/(x + 1.0)); // suppress lowk (Eq17;2009.01858)
+      const double ks = 0.05618/pow(s8*a,1.013)*cosmology.coverH0;
+      // suppress low k (Eq17;2009.01858): P1H -> P1H (k/ks)^4/(1+(k/ks)^4),
+      // which -> 0 for k << ks and -> 1 for k >> ks
+      const double x = (k/ks)*(k/ks)*(k/ks)*(k/ks);
+      P1H  = I02*(x/(x + 1.0));
       I11X = I11_X_nointerp(k, a, 0, init);
-      I11Y = I11_X_nointerp(k, a, 2, init);
+      I11Y = I11_X_nointerp(k, a, 1, init);
       break;
     }
     case 2:
     { // PYY
+      if (!(cosmology.Omega_b > 0)) {
+        log_fatal("Compton-y spectra need cosmology.Omega_b > 0 "
+                  "(set_cosmological_parameters)");
+        exit(1);
+      }
+      // sigma8 recomputed as in PMY above (one sigma2 table lookup)
+      const double R8 = 8.0/cosmology.coverH0;
+      const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+      const double s8 = sqrt(sigma2(4.0*M_PI/3.0*rhom*R8*R8*R8));
       // convert to code unit, Table 2, 2009.01858
-      const double ks = 0.05618/pow(cosmology.sigma_8*a,1.013)*cosmology.coverH0; 
-      const double x = ks*ks*ks*ks;
-      P1H  = I02*(1.0/(x + 1.0)); // suppress lowk (Eq17;2009.01858)
-      I11X = I11_X_nointerp(k, a, func, init);
+      const double ks = 0.05618/pow(s8*a,1.013)*cosmology.coverH0;
+      // suppress low k (Eq17;2009.01858): P1H -> P1H (k/ks)^4/(1+(k/ks)^4),
+      // which -> 0 for k << ks and -> 1 for k >> ks
+      const double x = (k/ks)*(k/ks)*(k/ks)*(k/ks);
+      P1H  = I02*(x/(x + 1.0));
+      I11X = I11_X_nointerp(k, a, 1, init);
       I11Y = I11X;
       break;
     }
@@ -1332,7 +1345,7 @@ double p_mm(
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
     (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1); 
     #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=1; i<Ntable.N_a; i++) {
+    for (int i=0; i<Ntable.N_a; i++) {
       for (int j=0; j<Ntable.N_k_nlin; j++) { 
         table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
                                         lim[0][0] + i*lim[0][2], 0, 0));
@@ -1341,9 +1354,10 @@ double p_mm(
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
-  return exp(interpol2d(table, 
-                        Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
-                        Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
+  return ((a < lim[0][0]) || (a > lim[0][1])) ? 0.0 :
+    exp(interpol2d(table,
+                   Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a,
+                   Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1377,7 +1391,7 @@ double p_my(
   {
     (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 1, 1); // init static vars
     #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=1; i<Ntable.N_a; i++) {
+    for (int i=0; i<Ntable.N_a; i++) {
       for (int j=0; j<Ntable.N_k_nlin; j++) {
         table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
                                             lim[0][0] + i*lim[0][2], 1, 0));
@@ -1387,9 +1401,10 @@ double p_my(
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_gas;
   }
-  return exp(interpol2d(table, 
-                        Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
-                        Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
+  return ((a < lim[0][0]) || (a > lim[0][1])) ? 0.0 :
+    exp(interpol2d(table,
+                   Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a,
+                   Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,7 +1438,7 @@ double p_yy(
   { 
     (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 2, 1); // init static vars
     #pragma omp parallel for collapse(2) schedule(static,1)
-    for (int i=1; i<Ntable.N_a; i++) {
+    for (int i=0; i<Ntable.N_a; i++) {
       for (int j=0; j<Ntable.N_k_nlin; j++) {
         table[i][j] = log(p_xy_nointerp(exp(lim[1][0] + j*lim[1][2]), 
                                             lim[0][0] + i*lim[0][2], 2, 0));
@@ -1433,9 +1448,10 @@ double p_yy(
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_gas;
   }
-  return exp(interpol2d(table, 
-                        Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a, 
-                        Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
+  return ((a < lim[0][0]) || (a > lim[0][1])) ? 0.0 :
+    exp(interpol2d(table,
+                   Ntable.N_a, lim[0][0], lim[0][1], lim[0][2], a,
+                   Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2], log(k)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1637,7 +1653,7 @@ void set_HOD(const int ni)
       nuisance.hod[0][3] = 11.09;
       nuisance.hod[0][4] = 1.27;
       nuisance.hod[0][5] = 1.00;
-      nuisance.gb[0][ni] = bgal(ni, a);      
+      nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
       break;
     }
     case 1:
@@ -1690,6 +1706,11 @@ void set_HOD(const int ni)
       exit(1);
     }
   }
+
+  // galaxies trace the halo concentration by default: u_g evaluates the
+  // NFW transform at c_g = gc[ni] * c(M), and gc = 0 would collapse the
+  // galaxy profile
+  nuisance.gc[ni] = 1.0;
 
   log_debug("HOD: bin %d; <z> %.2f; <n_g> %e(h/Mpc)^3", ni, z, 
     ngal_nointerp(ni, a, 0)*pow(cosmology.coverH0, -3.0));

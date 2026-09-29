@@ -1762,14 +1762,18 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 // Update the background parameters Cosmolike keeps (Cobaya supplies P(k,z),
 // distances and growth through the other set_ functions).
 //
-// When either input changed (fdiff): writes cosmology.Omega_m,
-// Omega_v = 1 - Omega_m, h0 = hubble/100 (input H0 in km/s/Mpc), a fixed
-// nonzero Omega_nu placeholder and MGSigma = MGmu = 0, and bumps
-// cosmology.random so every table keyed on the cosmology rebuilds.
-// Unchanged inputs leave the cache key alone.
+// When any input changed (fdiff): writes cosmology.Omega_m,
+// Omega_v = 1 - Omega_m, Omega_b (the Compton-y halo-model sector reads
+// it; the y spectra abort while it is 0), h0 = hubble/100 (input H0 in
+// km/s/Mpc), a fixed nonzero Omega_nu placeholder and
+// MGSigma = MGmu = 0, and bumps cosmology.random so every table keyed
+// on the cosmology rebuilds. Unchanged inputs leave the cache key
+// alone.
 //
 // Parameters:
 //   omega_matter - Omega_m today
+//   omega_baryon - Omega_b today (0 = not provided; only the
+//                  Compton-y sector demands it)
 //   hubble       - H0 (km/s/Mpc)
 //
 // Returns:
@@ -1777,6 +1781,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 // ---------------------------------------------------------------------------
 void set_cosmological_parameters(
     const double omega_matter,
+    const double omega_baryon,
     const double hubble
   )
 {
@@ -1787,12 +1792,14 @@ void set_cosmological_parameters(
   // It may require H0 to set scales and \Omega_M to set the halo model
   int cache_update = 0;
   if (fdiff(cosmology.Omega_m, omega_matter) ||
+      fdiff(cosmology.Omega_b, omega_baryon) ||
       fdiff(cosmology.h0, hubble/100.0)) { // assuming H0 in km/s/Mpc 
     cache_update = 1;
   }
   if (1 == cache_update || 1 == force_cache_update_test) {
     cosmology.Omega_m = omega_matter;
     cosmology.Omega_v = 1.0-omega_matter;
+    cosmology.Omega_b = omega_baryon;
     // Cosmolike only needs to know that there are massive neutrinos (>0)
     cosmology.Omega_nu = 0.1;
     cosmology.h0 = hubble/100.0; 

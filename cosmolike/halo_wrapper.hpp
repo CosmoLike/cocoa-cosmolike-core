@@ -139,7 +139,7 @@ double ngal_cpp(const int ni, const double a);
 
 double ngal_nointerp_cpp(const int ni, const double a);
 
-// bias-weighted HOD integral (table / direct integral)
+// number-weighted mean galaxy bias (table / direct integral)
 double bgal_cpp(const int ni, const double a);
 
 double bgal_nointerp_cpp(const int ni, const double a);

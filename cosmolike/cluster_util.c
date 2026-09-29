@@ -2680,7 +2680,8 @@ double int_for_binned_p_cm(double lnM, void* params)
   }
 
   const double PCM_1H = (include_1h_term == 1) ? 
-    M/(cosmology.rho_crit*cosmology.Omega_m)*u_nfw_c(conc(M, a), k, M, a) : 0.0; 
+    M/(cosmology.rho_crit*cosmology.Omega_m)*
+    u_nfw_c(conc(M, growfac(a)), k, M, a) : 0.0; // conc takes D(a), not a
    
   const double B1BS = B1_x_BSF(M, a);
   const double PCM_2H = use_linear_ps == 1 ? B1BS*p_lin(k, a) : B1BS*Pdelta(k, a);

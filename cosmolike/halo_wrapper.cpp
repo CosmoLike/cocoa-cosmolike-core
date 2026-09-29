@@ -294,7 +294,7 @@ double dlognudlogm_cpp(
 //
 // Calls halo.c bias_norm: a cached table on Ntable.N_a nodes in a over
 // [limits.a_min, 0.9999999], filled from bias_norm_nointerp and read by
-// linear interpolation; halo.c sets the last node to exactly 1.
+// linear interpolation (constant extrapolation past the last node).
 //
 // Parameters:
 //   a - scale factor
@@ -430,15 +430,16 @@ double u_KS_cpp(
 // times <N|M> over the mass function dn/dlnM, from
 // 10^(nuisance.hod[ni][0] - 2) to limits.halo_m_max in M_sun/h:
 //
-//   ngal  = int dlnM dn/dlnM <N|M>          (number density)
-//   bgal  = int dlnM dn/dlnM <N|M> b(M)     (bias-weighted integral)
-//   mmean = int dlnM dn/dlnM <N|M> M / ngal (mean halo mass)
-//   fsat  = int dlnM dn/dlnM N_s(M) / ngal  (satellite fraction)
+//   ngal  = int dlnM dn/dlnM <N|M>                 (number density)
+//   bgal  = int dlnM dn/dlnM <N|M> b(M) / ngal     (mean galaxy bias)
+//   mmean = int dlnM dn/dlnM <N|M> M / ngal        (mean halo mass)
+//   fsat  = int dlnM dn/dlnM N_s(M) / ngal         (satellite fraction)
 //
-// The HOD must be set for EVERY lens bin before any of these run
-// (set_nuisance_hod_cpp): halo.c aborts on a bin whose lg M_min lies
-// outside [10, 16], and the ngal/bgal tables are built for all bins at
-// once.
+// halo.c aborts on a bin whose lg M_min lies outside [10, 16]. The
+// nointerp diagnostics integrate one bin and need only that bin's HOD
+// set (set_nuisance_hod_cpp); the ngal/bgal TABLES build all bins at
+// once, so table reads (ngal, bgal, p_gm, p_gg) need every lens bin
+// set first.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -499,8 +500,8 @@ double ngal_nointerp_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Bias-weighted HOD integral of lens bin ni (the bgal line of the
-// banner above).
+// Number-weighted mean galaxy bias of lens bin ni (the bgal line of
+// the banner above).
 //
 // Calls halo.c bgal: a cached (bin, a) table like ngal's, rebuilt on the
 // same keys; 0 outside the lens redshift range.
@@ -510,7 +511,7 @@ double ngal_nointerp_cpp(
 //   a  - scale factor
 //
 // Returns:
-//   bgal as halo.c defines it (the integral of the banner above)
+//   bgal, dimensionless (order unity)
 // ---------------------------------------------------------------------------
 double bgal_cpp(
     const int ni,     // lens bin
@@ -535,7 +536,7 @@ double bgal_cpp(
 //   a  - scale factor, 0 < a < 1
 //
 // Returns:
-//   bgal as halo.c defines it
+//   bgal, dimensionless (order unity)
 // ---------------------------------------------------------------------------
 double bgal_nointerp_cpp(
     const int ni,     // lens bin
@@ -553,7 +554,7 @@ double bgal_nointerp_cpp(
 
 // ---------------------------------------------------------------------------
 // Mean halo mass of the galaxies of lens bin ni, integrated directly at
-// a and divided by the ngal table value at the same (ni, a).
+// a and divided by the bin's directly integrated ngal.
 //
 // Calls halo.c mmean_nointerp(ni, a, init = 0), the real integral.
 //
@@ -578,7 +579,7 @@ double mmean_nointerp_cpp(
 
 // ---------------------------------------------------------------------------
 // Satellite fraction of the galaxies of lens bin ni, integrated directly
-// at a and divided by the ngal table value at the same (ni, a).
+// at a and divided by the bin's directly integrated ngal.
 //
 // Calls halo.c fsat_nointerp(ni, a, init = 0), the real integral.
 //
@@ -1020,16 +1021,16 @@ double Pdelta_cpp(
 // ---------------------------------------------------------------------------
 // Load halo.c's built-in HOD for lens bin ni: the Coupon et al. 2012
 // fits for red galaxies (Table B.2) that halo.c set_HOD hard-codes for
-// bins 0-3 (bin 4 repeats bin 3). set_HOD also stores the resulting
-// galaxy bias in nuisance.gb[0][ni].
+// bins 0-3 (bin 4 repeats bin 3). set_HOD also sets the galaxy
+// concentration factor nuisance.gc[ni] = 1 and stores the resulting
+// mean galaxy bias in nuisance.gb[0][ni].
 //
 // Cache invalidation:
-// draws a new nuisance.random_galaxy_bias BEFORE calling set_HOD. set_HOD
-// reads the HOD tables (bgal, ngal) right after writing the new
-// parameters, so the fresh key makes those reads rebuild with the new
-// values; the same key then marks every table built inside set_HOD as
-// current, and the galaxy-bias caches of cosmo2D.c see a changed key
-// too (nuisance.gb changed).
+// draws a new nuisance.random_galaxy_bias BEFORE calling set_HOD.
+// set_HOD integrates the HOD directly (no table reads), but it writes
+// nuisance.hod, gc and gb, so the fresh key makes every HOD-keyed
+// table rebuild on its next read and the galaxy-bias caches of
+// cosmo2D.c see a changed key too.
 //
 // Parameters:
 //   ni - lens bin; outside [0, clustering_nbin) aborts (halo.c itself

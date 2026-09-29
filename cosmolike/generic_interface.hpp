@@ -708,6 +708,7 @@ void init_ggl_exclude(
 
 void set_cosmological_parameters(
     const double omega_matter,
+    const double omega_baryon,
     const double hubble
   );
 

@@ -112,6 +112,13 @@ void reset_like_struct(void)
   like.yy = 0;
   like.adopt_limber_gg = 0;
   like.adopt_limber_gs = 1;
+  // halo.c model choices (halo.h macros, all 0): HMF_TINKER_2010,
+  // HALO_BIAS_TINKER_2010, CONCENTRATION_BHATTACHARYA_2013,
+  // HALO_PROFILE_NFW - set explicitly so the defaults are deliberate
+  like.halo_model[0] = 0;
+  like.halo_model[1] = 0;
+  like.halo_model[2] = 0;
+  like.halo_model[3] = 0;
 }
 
 void reset_cosmology_struct(void)
@@ -273,6 +280,9 @@ void reset_Ntable_struct(void)
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
   Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
   Ntable.N_M_internal = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
+  Ntable.halo_uks_nc = 48;  // u_KS table, concentration axis (smooth)
+  Ntable.halo_uks_nx = 256; // u_KS table, ln(k rv/c) axis: ~30 e-folds
+                            // of the Komatsu-Seljak transform
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
