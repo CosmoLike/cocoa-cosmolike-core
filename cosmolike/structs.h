@@ -48,8 +48,6 @@ typedef struct
   // --------------------------------------------------- 
   double halo_m_min;
   double halo_m_max;
-  double halo_uks_xmin;
-  double halo_uks_xmax;
   double halo_uks_cmin;
   double halo_uks_cmax;
 } lim;
@@ -118,8 +116,8 @@ typedef struct
   // HALO MODEL
   // ---------------------------------------------------
   // ---------------------------------------------------  
-  int halo_uks_nc;
-  int halo_uks_nx;
+  int halo_uks_nc;  // u_KS coarse ln c nodes (halo.c; boosted)
+  int halo_uks_nz;  // u_KS coarse ln z nodes (halo.c; boosted)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // HALO MODEL

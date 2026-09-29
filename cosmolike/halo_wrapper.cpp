@@ -380,8 +380,10 @@ double u_nfw_c_cpp(
 //
 //   theta(x) = ln(1 + x)/x,  x = r/r_s,  y = k r_s = k rv/c
 //
-// Calls halo.c u_KS: a cached 2D table in (c, ln y) of Ntable.halo_uks_nc
-// x Ntable.halo_uks_nx nodes, rebuilt when nuisance.random_gas changes
+// Calls halo.c u_KS: cached tables in ln c, the phase z = k rv and ln y
+// (Ntable.halo_uks_nc and halo_uks_nz coarse nodes, cubic-upsampled;
+// the oscillation in z is carried by an exact cos z, sin z at lookup,
+// see the u_KS header), refilled when nuisance.random_gas changes
 // (set_nuisance_gas_cpp bumps it).
 //
 // Parameters:

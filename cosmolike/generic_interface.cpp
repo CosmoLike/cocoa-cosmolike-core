@@ -765,6 +765,8 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 //   Ntable.dCX_dlnk_nlnk           -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk_internal  -> ceil(baseline * boost)
 //   Ntable.N_M_internal            -> ceil(baseline * boost)
+//   Ntable.halo_uks_nc             -> ceil(baseline * boost)
+//   Ntable.halo_uks_nz             -> ceil(baseline * boost)
 //   Ntable.NL_Nchi                 -> ceil(baseline * boost)
 //   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
 //   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
@@ -826,6 +828,12 @@ void init_accuracy_boost(
 
   if (0 == cache[7]) cache[7] = Ntable.N_M_internal;
   Ntable.N_M_internal = static_cast<int>(ceil(cache[7]*accuracy_boost));
+
+  if (0 == cache[8]) cache[8] = Ntable.halo_uks_nc;
+  Ntable.halo_uks_nc = static_cast<int>(ceil(cache[8]*accuracy_boost));
+
+  if (0 == cache[9]) cache[9] = Ntable.halo_uks_nz;
+  Ntable.halo_uks_nz = static_cast<int>(ceil(cache[9]*accuracy_boost));
 
   if (0 == fptcache) fptcache = Ntable.FPT_internal_accuracy_boost;
   Ntable.FPT_internal_accuracy_boost = fptcache*accuracy_boost;

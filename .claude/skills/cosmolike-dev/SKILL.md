@@ -185,7 +185,7 @@ compound):
 
 - ceil(baseline x boost): `Ntable.N_a`, `N_ell`, `N_ell_internal`,
   `dCX_dlnk_nlnk`, `dCX_dlnk_nlnk_internal`, `N_M_internal`,
-  `NL_Nchi`, `nz_fine_sampling_factor`
+  `halo_uks_nc`, `halo_uks_nz`, `NL_Nchi`, `nz_fine_sampling_factor`
 - baseline x boost (double): `Ntable.FPT_internal_accuracy_boost`
 - also written: `Ntable.FPTboost` (int(boost − 1) for boost > 1;
   FAST-PT grids) and `Ntable.high_def_integration =
@@ -216,10 +216,10 @@ table[i][j] = X_nointerp(x_i, y_j)     per table point
 ```
 
 It hides the loop nest from the compiler and from the reader.
-Invariants get recomputed at the innermost level (halo.c u_KS: its
-integrand `int_F_KS` recomputes the profile power theta^p =
-pow(log(1+x)/x, p) for every (c, y, node) although it depends only on
-(c, node): 256x redundant at the default `Ntable.halo_uks_nx`).
+Invariants get recomputed at the innermost level (e.g. a profile power
+theta(x)^p evaluated inside a per-(c, y) integrand callback for every
+(c, y, node), although it depends only on (c, node): redundant by the
+size of the y axis).
 Callbacks through function pointers cannot vectorize. And only the
 outermost loop can be threaded.
 

@@ -61,10 +61,8 @@ lim limits =
   .sigma2_m_max = 1.0e+17,
   .halo_m_min = 1.0e+6,     // halo.c M_min
   .halo_m_max = 1.0e+17,     // halo.c M_max
-  .halo_uks_cmin = 0.1,     // halo.c u_KS(double c, double k, double rv)
-  .halo_uks_cmax = 50.0,    // halo.c u_KS(double c, double k, double rv)
-  .halo_uks_xmin = 1e-10,   // halo.c u_KS(double c, double k, double rv)
-  .halo_uks_xmax = 5e3      // halo.c u_KS(double c, double k, double rv)
+  .halo_uks_cmin = 0.05,    // halo.c u_KS concentration range (queries
+  .halo_uks_cmax = 100.0    //   outside are clamped to it)
 };
 
 Ntab Ntable;
@@ -280,9 +278,8 @@ void reset_Ntable_struct(void)
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
   Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
   Ntable.N_M_internal = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
-  Ntable.halo_uks_nc = 48;  // u_KS table, concentration axis (smooth)
-  Ntable.halo_uks_nx = 256; // u_KS table, ln(k rv/c) axis: ~30 e-folds
-                            // of the Komatsu-Seljak transform
+  Ntable.halo_uks_nc = 40;  // u_KS coarse ln c nodes (upsampled; halo.c)
+  Ntable.halo_uks_nz = 64;  // u_KS coarse ln z nodes (upsampled; halo.c)
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
