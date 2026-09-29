@@ -1008,13 +1008,14 @@ double Pdelta_cpp(
 
 // ---------------------------------------------------------------------------
 // Load halo.c's built-in HOD for lens bin ni: the Coupon et al. 2012
-// fits for red galaxies (Table B.2) that halo.c set_HOD hard-codes for
-// bins 0-3 (bin 4 repeats bin 3). set_HOD also sets the galaxy
+// fits for all galaxies with M_g - 5 log h < -21.8 (1107.0616 Table
+// B.1) that halo.c set_HOD hard-codes for bins 0-4, one redshift slice
+// of width 0.2 each from z = 0.2 to 1.2. set_HOD also sets the galaxy
 // concentration factor nuisance.gc[ni] = 1 and stores the resulting
 // mean galaxy bias in nuisance.gb[0][ni].
 //
 // Cache invalidation:
-// draws a new nuisance.random_galaxy_bias BEFORE calling set_HOD.
+// draws a new nuisance.random_galaxy_bias before calling set_HOD.
 // set_HOD integrates the HOD directly (no table reads), but it writes
 // nuisance.hod, gc and gb, so the fresh key makes every HOD-keyed
 // table rebuild on its next read and the galaxy-bias caches of

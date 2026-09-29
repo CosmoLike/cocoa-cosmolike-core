@@ -1304,7 +1304,7 @@ double u_c(
 // f_g = 1 puts the satellites on the dark matter profile (the
 // assumption of 1005.2413 sec. 2.3); f_g < 1 spreads them out, f_g > 1
 // concentrates them. f_g must be positive: c_g = 0 makes the NFW
-// normalization m(0) vanish.
+// normalization m(0) vanish, so the function aborts unless gc[ni] > 0.
 //
 // Parameters:
 //   c  - halo concentration c(M)
@@ -1314,7 +1314,8 @@ double u_c(
 //   ni - lens bin (indexes nuisance.gc)
 //
 // Returns:
-//   u_g(k|M), dimensionless; 1 at k -> 0
+//   u_g(k|M), dimensionless; 1 at k -> 0. Aborts unless nuisance.gc[ni]
+//   is positive.
 // ---------------------------------------------------------------------------
 double u_g(
     const double c, // halo concentration c(M)
@@ -1324,8 +1325,12 @@ double u_g(
     const int ni    // lens bin: selects the factor nuisance.gc[ni]
   )
 {
+  if (!(nuisance.gc[ni] > 0)) {
+    log_fatal("galaxy concentration factor gc[%d] = %g must be > 0",
+              ni, nuisance.gc[ni]);
+    exit(1);
+  }
   return u_nfw_c(c*nuisance.gc[ni], k, m, a);
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,11 +1396,11 @@ double HOD_nc(
 // as a power law of slope alpha, and M_1 sets its amplitude (N_s ~ 1 at
 // M = M_1 when M_0 and M_min are well below M_1).
 //
-// Floor: for M <= M_0 the base (M - M_0)/M_1 is not positive: at
-// M = M_0 the power is 0, below it pow returns NaN for a non-integer
-// alpha. Either way the test ns > 0 fails and the function returns
-// 1e-15, which keeps N_s strictly positive; the floor's contribution to
-// every integral is negligible.
+// Floor: the power law needs M > M_0 (a negative base has no real
+// power for non-integer alpha), so M <= M_0 is tested explicitly and
+// returns 1e-15; an ns that underflows to 0 gets the same floor. It
+// keeps N_s strictly positive, and its contribution to every integral
+// is negligible.
 //
 // Parameters:
 //   m  - halo mass in M_sun/h
@@ -1414,7 +1419,11 @@ double HOD_ns(
   if (ni < 0 || ni > redshift.clustering_nbin - 1) { 
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  const double x = (m - pow(10.,nuisance.hod[ni][3]))/pow(10., nuisance.hod[ni][2]);
+  const double m0 = pow(10., nuisance.hod[ni][3]);
+  if (!(m > m0)) {
+    return 1.e-15; // no satellites at or below M_0
+  }
+  const double x = (m - m0)/pow(10., nuisance.hod[ni][2]);
   const double ns = HOD_nc(m, a, ni)*pow(x, nuisance.hod[ni][4]);
   return (ns > 0) ? ns : 1.e-15;
 }
@@ -1838,16 +1847,19 @@ double frac_bnd(
 //
 //   f_*(M > M_*) = max(f_*(M), A_*/3)
 //
-// Sign: no clipping. Where f_bnd + f_* exceeds Omega_b/Omega_m, f_ejc
-// is negative: with M_0 = 1e14, beta = 0.6, A_* = 0.03 and
-// Omega_b/Omega_m = 0.156 this happens above about 10^15.9 M_sun/h.
+// Clip: where f_bnd + f_* would exceed Omega_b/Omega_m (above about
+// 10^15.9 M_sun/h for M_0 = 1e14, beta = 0.6, A_* = 0.03 and
+// Omega_b/Omega_m = 0.156) f_ejc is set to 0. The footnote to the f_ejc
+// equation of 2005.00009 (sec. 3.2) takes the excess out of the stars,
+// which leaves no gas to eject. f_* is a local here, so nothing else
+// sees the reduced stellar fraction.
 //
 // Parameters:
 //   M - halo mass in M_sun/h (A_* = nuisance.gas[6],
 //       log10 M_* = nuisance.gas[7], sigma_* = nuisance.gas[8])
 //
 // Returns:
-//   f_ejc, dimensionless, at most Omega_b/Omega_m
+//   f_ejc in [0, Omega_b/Omega_m]
 // ---------------------------------------------------------------------------
 double frac_ejc(
     double M  // halo mass in M_sun/h
@@ -1860,7 +1872,10 @@ double frac_ejc(
   const double frac_star = ((logM > nuisance.gas[7]) && 
                            (tmp < nuisance.gas[6]/3.0)) ? nuisance.gas[6]/3.0 : tmp; 
   
-  return cosmology.Omega_b/cosmology.Omega_m - frac_bnd(M) - frac_star;
+  // clip at 0: the 2005.00009 sec. 3.2 footnote takes the excess from
+  // the stars, not from the ejected gas
+  return fmax(0.0,
+              cosmology.Omega_b/cosmology.Omega_m - frac_bnd(M) - frac_star);
 }
 
 // ---------------------------------------------------------------------------
@@ -1953,7 +1968,7 @@ double u_y_bnd(
 //     ->  E_w = 8.6173e-5 T_w 5.616e-44 = (k_B T_w in U)/h
 //     ->  num_p m f_ejc E_w/mu_e = N_e k_B T_w in U   (h cancels)
 //
-// The sign follows f_ejc (frac_ejc).
+// W_ejc >= 0, since frac_ejc clips f_ejc at 0.
 //
 // Parameters:
 //   m - halo mass in M_sun/h (T_w = 10^nuisance.gas[9] K,
@@ -3322,11 +3337,16 @@ void set_HOD(const int ni)
   const double z = zmean(ni);
   const double a = 1.0/(z + 1.0);
   
-  // Parameterization of Zehavi et al. 
-  // hod[zi][] = {lg(M_min), sigma_{lg M}, lg M_1, lg M_0, alpha, f_c}
-  // gbias.gc[] = {f_g} (shift of concentration parameter: c_g(M) = f_g c(M))
-  
-  // Values from Coupon etal. (2012) for red gals with M_r < -21.8 (Table B.2)
+  // Five-parameter HOD of Zehavi et al. 2011 (1005.2413 Eq. 7) plus f_c:
+  // hod[ni][] = {lg M_min, sigma_lgM, lg M_1, lg M_0, alpha, f_c}
+  // nuisance.gc[ni] = f_g, the galaxy concentration factor of u_g:
+  // c_g(M) = f_g c(M)
+
+  // Values from Coupon et al. 2012 (1107.0616), Table B.1: all galaxies
+  // with M_g - 5 log h < -21.8, one row per redshift slice (0.2-0.4,
+  // 0.4-0.6, 0.6-0.8, 0.8-1.0, 1.0-1.2 for bins 0-4). The table's
+  // columns run lg M_min, lg M_1, lg M_0, sigma_lgM, alpha; masses in
+  // M_sun/h.
   switch (ni)
   {
     case 0:
@@ -3365,7 +3385,7 @@ void set_HOD(const int ni)
     case 3:
     {
       nuisance.hod[3][0] = 12.80;
-      nuisance.hod[3][1] = 0.35;
+      nuisance.hod[3][1] = 0.33;
       nuisance.hod[3][2] = 13.94;
       nuisance.hod[3][3] = 12.15;
       nuisance.hod[3][4] = 1.52;
@@ -3374,12 +3394,12 @@ void set_HOD(const int ni)
       break;
     }
     case 4:
-    { // no information for higher redshift populations - copy 1<z<1.2 values
-      nuisance.hod[4][0] = 12.80;
-      nuisance.hod[4][1] = 0.35;
-      nuisance.hod[4][2] = 13.94;
-      nuisance.hod[4][3] = 12.15;
-      nuisance.hod[4][4] = 1.52;
+    { // the 1.0 < z < 1.2 row
+      nuisance.hod[4][0] = 12.62;
+      nuisance.hod[4][1] = 0.30;
+      nuisance.hod[4][2] = 13.79;
+      nuisance.hod[4][3] = 8.67;
+      nuisance.hod[4][4] = 1.50;
       nuisance.hod[4][5] = 1.00;
       nuisance.gb[0][ni] = hm_funcs_nointerp(ni, a, 3, 0);
       break;
@@ -3392,8 +3412,7 @@ void set_HOD(const int ni)
   }
 
   // galaxies trace the halo concentration by default: u_g evaluates the
-  // NFW transform at c_g = gc[ni] * c(M), and gc = 0 would collapse the
-  // galaxy profile
+  // NFW transform at c_g = gc[ni] * c(M) and aborts unless gc[ni] > 0
   nuisance.gc[ni] = 1.0;
 
   log_debug("HOD: bin %d; <z> %.2f; <n_g> %e(h/Mpc)^3", ni, z, 
