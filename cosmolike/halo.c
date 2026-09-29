@@ -4153,50 +4153,253 @@ double p_gm_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// P_gm(k, a, ni), the halo-model galaxy-matter power spectrum of lens bin
+// ni, from a table of ln P per bin on na x Ntable.N_k_nlin nodes, na =
+// Ntable.N_a/5, uniform in a over the bin's range [amin_lens, amax_lens]
+// and in ln k, read bilinearly (interpol2d) and exponentiated:
+//
+//   P_gm = P_delta b_gal + GM02/n_gal
+//   GM02 = int dlnM dn/dlnM (M/rho_m) u_m(k|M) [N_s u_g(k|M) + f_c N_c]
+//
+// 2-halo: the nonlinear matter spectrum (Pdelta) times the mean galaxy
+// bias (bgal). 1-halo: the satellite-matter and central-matter pairs of
+// one halo per galaxy (ngal): satellites follow u_g, the NFW profile at
+// c_g = gc c, gc = nuisance.gc[ni] (u_g header); the central sits at the
+// center (window 1). dn/dlnM, (M/rho_m) u_m as in p_mm (its header);
+// N_c, N_s, f_c the occupation of the GALAXY PROFILES banner. The same
+// P_gm done directly: p_gm_nointerp (GM02_nointerp, GSL fixed rule),
+// called by the rows here only as the warm-up below.
+//
+// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// item 1) over ln M from ln 10^(lg M_min - 1) of the bin to
+// ln limits.halo_m_max: nodes x_q, weights w_q on [-1, 1] (gl) are mapped
+// per bin in the refill, ln M_q = mid + hw x_q, weight hw w_q.
+//
+// 2. Loop levels as in p_mm (its header, item 2): the innermost loop is
+// the NFW kernel nfw_um alone. The occupation does not depend on a
+// (HOD_nc, HOD_ns only range-check it: amin_lens is a placeholder):
+//
+//   per refill, per (bin, node) (bq)  M, hw w (rho_m/M) dlnnu/dlnM, nu0,
+//                                     r_Delta, N_s, f_c N_c
+//   per bin, per a row, threaded      D(a); Tinker f parameters; ngal, bgal
+//   per (a, node) (aq)                c = conc(M, D) and c_g = gc c, each
+//                                     with ln(1+c), m(c), r_s, ln r_s;
+//                                     vm = dn (M/rho_m)/m(c);
+//                                     W1 = vm N_s/m(c_g), W0 = vm f_c N_c
+//   per (a, k), sum over nodes        um = u_m m(c), ug = u_g m(c_g);
+//                                     GM02 = sum um (W1 ug + W0); ln P
+//
+// vm carries the 1/m(c) of the matter leg, W1 the 1/m(c_g) of the
+// satellite leg (the central has no profile). gc = 1 makes c_g = c
+// exactly, so ug = um bitwise and one kernel call serves both legs (the
+// same branch): half the kernel calls. like.halo_model[3] must be
+// HALO_PROFILE_NFW (the rows read nfw_um directly) and nuisance.gc[l] > 0
+// in every bin (u_g's condition, checked in the refill); else abort.
+//
+// - Measured 2026-09-29 (4 threads; 10 lens bins, na = 51, N_k = 512,
+//   1024 nodes): one refill 1.0 s.
+//
+// Thread safety: the single-threaded p_gm_nointerp(k_min, a_min, 0, 1)
+// call before the threaded loops (p_mm's warm-up rule) builds every lazy
+// table the rows read (sigma2, dlognudlogm, tinker_alpha of fnu_params_at,
+// the NFW table nfw_, the hod_ tables of ngal, bgal) and latches Pdelta's
+// run mode, a static set on its first call; growfac, p_lin, p_nonlin and
+// PkRatio_baryons hold no static state. One parallel region per bin.
+//
+// Cache invalidation:
+//   rebuild block (table, lim, gl, bq, aq; every allocation lives here,
+//     one block each from malloc2d/malloc3d): Ntable.random or
+//     redshift.random_clustering (bin count and a ranges: clustering n(z))
+//   refill: cosmology.random, Ntable.random, nuisance.random_galaxy_bias
+//     (HOD and gc) or redshift.random_clustering
+//
+// Parameters:
+//   k  - wavenumber in (c/H0)^-1
+//   a  - scale factor
+//   ni - lens bin, 0 <= ni < redshift.clustering_nbin (aborts otherwise)
+//
+// Returns:
+//   P_gm(k, a, ni) in (c/H0)^3; 0 outside [amin_lens(ni), amax_lens(ni)];
+//   ln P continued with unit slope outside [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
 double p_gm(
-    const double k, 
-    const double a, 
+    const double k,
+    const double a,
     const int ni
   )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table = NULL;
-  static double** lim = NULL; //lim[:,0] = amin; lim[:,1] = amax; lim[:,2] = da; 
-                              //lim[redshift.clustering_nbin][0] = lnkmin; 
-                              //lim[redshift.clustering_nbin][1] = lnkmax; 
-                              //lim[redshift.clustering_nbin][2] = dlnk; 
+  static double** lim = NULL; // [nbin+1][3]: row l < nbin the a grid of
+                              // bin l (min, max, step); row nbin the
+                              // ln k grid (min, max, step)
+  static int nbin = 0;        // lens bins of the allocation
+  static int na = 0;          // a nodes per bin
+  static int nq = 0;          // Gauss-Legendre nodes in ln M
+  static double** gl = NULL;  // [2][nq] GL nodes (0), weights (1) on [-1, 1]
+  static double*** bq = NULL; // [nbin][6][nq] per (bin, mass node): M,
+                              // hw w (rho_m/M) dlnnu/dlnM, nu at D = 1,
+                              // r_Delta, N_s, f_c N_c
+  static double*** aq = NULL; // [na][10][nq] per (a, mass node) of one bin:
+                              // c, ln(1+c), r_s, ln r_s and the same for
+                              // c_g = gc c, then the weights W1, W0
 
-  const int nbin = redshift.clustering_nbin;
-  const int na = (int) Ntable.N_a/5.0; // range is the (\delta a) of a single bin
-  
-  if (NULL == table || fdiff2(cache[1], Ntable.random))
+  // Rebuild block: the first call, or the Ntable or clustering-n(z) tag
+  // differs from the allocation's: sizes, every allocation (one block
+  // each from malloc2d/malloc3d, so one free each), the GL rule on
+  // [-1, 1], the a grid of each bin and the ln k grid (header, item 1)
+  if (NULL == table ||
+      fdiff2(cache[1], Ntable.random) ||
+      fdiff2(cache[3], redshift.random_clustering))
   {
-    if (table != NULL) free(table);
+    if (table != NULL) {
+      free(table);
+      free(lim);
+      free(gl);
+      free(bq);
+      free(aq);
+    }
+    nbin = redshift.clustering_nbin;
+    na = (int) Ntable.N_a/5.0; // a bin's a range is a slice of p_mm's
+    nq = 1024; // largest predefined GSL table
     table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
-    if (lim != NULL) free(lim);
     lim = (double**) malloc2d(nbin+1, 3);
-    for (int l=0; l<redshift.clustering_nbin; l++) {
+    gl = (double**) malloc2d(2, nq);
+    bq = (double***) malloc3d(nbin, 6, nq);
+    aq = (double***) malloc3d(na, 10, nq);
+    // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
+    // rule t mapped onto [lo, hi], and its weight; kept on [-1, 1] here
+    gsl_integration_glfixed_table* t = malloc_gslint_glfixed(nq);
+    for (int q=0; q<nq; q++) {
+      gsl_integration_glfixed_point(-1.0, 1.0, q, &gl[0][q], &gl[1][q], t);
+    }
+    gsl_integration_glfixed_table_free(t);
+    // a grid of bin l over its lens range; node i sits at
+    // lim[l][0] + i lim[l][2], both ends included
+    for (int l=0; l<nbin; l++) {
       lim[l][0] = amin_lens(l);
       lim[l][1] = amax_lens(l);
       lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.0);
     }
+    // ln k grid, shared by all bins
     lim[nbin][0] = log(limits.k_min_cH0);
     lim[nbin][1] = log(limits.k_max_cH0);
     lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])/((double) Ntable.N_k_nlin - 1.0);
   }
 
-  if (fdiff2(cache[0], cosmology.random) || 
+  // Refill: any of the four tags differs from the table's
+  if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random)    ||
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering))
-  { 
-    (void) p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1); // init static vars
-    #pragma omp parallel for collapse(3) schedule(static,1)
-    for (int l=0; l<redshift.clustering_nbin; l++) {
+  {
+    // the rows read the NFW kernel directly (header, item 2)
+    if (like.halo_model[3] != HALO_PROFILE_NFW) {
+      log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+    // Warm-up: builds every lazy table the threaded loops read (header,
+    // Thread safety); the value is thrown away
+    (void) p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
+    // Per (bin, node), serially (header, item 2, first row): the GL nodes
+    // mapped onto [ln 10^(lg M_min - 1), ln M_max] of the bin, the
+    // a-independent factors, the occupation at the placeholder a = amin;
+    // the sigma2 and dlognudlogm reads happen here, before the threads
+    const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+    const double rho_delta = Delta * rhom;
+    for (int l=0; l<nbin; l++) {
+      // u_g's condition, checked for every bin at once
+      if (!(nuisance.gc[l] > 0)) {
+        log_fatal("galaxy concentration factor gc[%d] = %g must be > 0",
+                  l, nuisance.gc[l]);
+        exit(1);
+      }
+      const double lnMmin = log(10.)*(nuisance.hod[l][0] - 1.0);
+      const double lnMmax = log(limits.halo_m_max);
+      const double hw = 0.5*(lnMmax - lnMmin);
+      const double mid = 0.5*(lnMmax + lnMmin);
+      const double fc = HOD_fc(l);
+      for (int q=0; q<nq; q++) {
+        const double m = exp(mid + hw*gl[0][q]);
+        bq[l][0][q] = m;
+        bq[l][1][q] = hw*gl[1][q]*(rhom/m)*dlognudlogm(m);
+        bq[l][2][q] = delta_c/sqrt(sigma2(m));
+        bq[l][3][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+        bq[l][4][q] = HOD_ns(m, lim[l][0], l);
+        bq[l][5][q] = fc*HOD_nc(m, lim[l][0], l);
+      }
+    }
+    // Per bin, its rows over a threaded: D(a), the Tinker f parameters
+    // (the nu-independent half, fnu_params_at), ngal and bgal of the row
+    // (header, item 2, second row)
+    for (int l=0; l<nbin; l++) {
+      const double gc = nuisance.gc[l];
+      const int same = (1.0 == gc); // c_g = c: one kernel serves both legs
+      #pragma omp parallel for schedule(static)
       for (int i=0; i<na; i++) {
+        const double ai = lim[l][0] + i*lim[l][2];
+        const double D = growfac(ai);
+        const fnu_params pf = fnu_params_at(ai);
+        const double ng = ngal(l, ai);
+        const double bg = bgal(l, ai);
+        double* restrict cq = aq[i][0];
+        double* restrict l1 = aq[i][1];
+        double* restrict rs = aq[i][2];
+        double* restrict lrs = aq[i][3];
+        double* restrict cgq = aq[i][4];
+        double* restrict l1g = aq[i][5];
+        double* restrict rsg = aq[i][6];
+        double* restrict lrsg = aq[i][7];
+        double* restrict w1 = aq[i][8];
+        double* restrict w0 = aq[i][9];
+        // Per (a, node): both concentrations, r_s and the logs of each,
+        // and the weights W1, W0 with 1/m(c), 1/m(c_g) folded in (header,
+        // item 2, third row). restrict: each row is reached only through
+        // its pointer, so no reload after the libm calls
+        for (int q=0; q<nq; q++) {
+          const double m = bq[l][0][q];
+          const double nu = bq[l][2][q]/D;
+          const double c = conc(m, D);
+          const double cg = c*gc;
+          const double l1c = log1p(c);
+          const double l1cg = log1p(cg);
+          const double mc = l1c - c/(1.0 + c);
+          const double mcg = l1cg - cg/(1.0 + cg);
+          const double dn = bq[l][1][q]*fnu_core(nu, &pf)*nu;
+          const double vm = dn*(m/rhom)/mc;
+          cq[q] = c;
+          l1[q] = l1c;
+          rs[q] = bq[l][3][q]/c;
+          lrs[q] = log(rs[q]);
+          cgq[q] = cg;
+          l1g[q] = l1cg;
+          rsg[q] = bq[l][3][q]/cg;
+          lrsg[q] = log(rsg[q]);
+          w1[q] = vm*bq[l][4][q]/mcg;
+          w0[q] = vm*bq[l][5][q];
+        }
+        // Per k: GM02 as a sum of the NFW kernel over the nodes, one call
+        // per leg or one for both (same), then ln P (header, item 2,
+        // last row)
         for (int j=0; j<Ntable.N_k_nlin; j++) {
-          table[l][i][j] = log(p_gm_nointerp(exp(lim[nbin][0] + j*lim[nbin][2]), 
-                                             lim[l][0] + i*lim[l][2], l, 0));
+          const double lk = lim[nbin][0] + j*lim[nbin][2];
+          const double kj = exp(lk);
+          double sum = 0.0;
+          if (same) {
+            for (int q=0; q<nq; q++) {
+              const double um = nfw_um(cq[q], kj*rs[q], lk + lrs[q], l1[q]);
+              sum += um*(w1[q]*um + w0[q]);
+            }
+          }
+          else {
+            for (int q=0; q<nq; q++) {
+              const double um = nfw_um(cq[q], kj*rs[q], lk + lrs[q], l1[q]);
+              const double ug = nfw_um(cgq[q], kj*rsg[q], lk + lrsg[q], l1g[q]);
+              sum += um*(w1[q]*ug + w0[q]);
+            }
+          }
+          table[l][i][j] = log(Pdelta(kj, ai)*bg + sum/ng);
         }
       }
     }
@@ -4208,8 +4411,9 @@ double p_gm(
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
-  return (a < lim[ni][0] || a > lim[ni][1]) ? 0.0 : exp(interpol2d(table[ni], 
-    na, lim[ni][0], lim[ni][1], lim[ni][2], a, 
+  // bilinear read of bin ni's ln P; 0 outside its a range
+  return (a < lim[ni][0] || a > lim[ni][1]) ? 0.0 : exp(interpol2d(table[ni],
+    na, lim[ni][0], lim[ni][1], lim[ni][2], a,
     Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], log(k)));
 }
 
@@ -4240,48 +4444,226 @@ double p_gg_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// P_gg(k, a, ni, nj), the halo-model galaxy power spectrum of lens bin ni
+// (auto-spectra only: nj must equal ni), from a table of ln P per bin as
+// in p_gm (its header: na x Ntable.N_k_nlin nodes uniform in a over the
+// bin's range and in ln k, read bilinearly and exponentiated):
+//
+//   P_gg = P_delta b_gal^2 + G02/n_gal^2
+//   G02  = int dlnM dn/dlnM [N_s^2 u_g(k|M)^2 + 2 f_c N_c N_s u_g(k|M)]
+//
+// 2-halo: the nonlinear matter spectrum (Pdelta) times the mean galaxy
+// bias (bgal) squared. 1-halo: the satellite-satellite and
+// central-satellite pairs of one halo per galaxy pair (ngal^2);
+// satellites follow u_g, the NFW profile at c_g = gc c (u_g header), the
+// central sits at the center (window 1). dn/dlnM as in p_mm (its
+// header); N_c(M), N_s(M), f_c the occupation of the GALAXY PROFILES
+// banner. p_gg_nointerp is the same P_gg done directly (G02_nointerp, GSL
+// fixed rule); the rows here call it only as the warm-up below.
+//
+// 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
+// item 1) over [ln limits.halo_m_min, ln limits.halo_m_max], the same for
+// every bin: nodes and weights are mapped once, in the rebuild block.
+//
+// 2. Loop levels as in p_mm (its header, item 2): the innermost loop is
+// the NFW kernel nfw_um alone. The occupation does not depend on a
+// (HOD_nc, HOD_ns only range-check it: amin_lens is a placeholder):
+//
+//   per refill, per node (mq)         M, w, nu0, r_Delta,
+//                                     w (rho_m/M) dlnnu/dlnM
+//   per refill, per (bin, node) (hq)  N_s, f_c N_c
+//   per bin, per a row, threaded      D(a); Tinker f parameters; ngal, bgal
+//   per (a, node) (aq)                c_g = gc conc(M, D), ln(1+c_g),
+//                                     m(c_g), r_s,g = r_Delta/c_g, ln r_s,g;
+//                                     W2 = dn (N_s/m(c_g))^2,
+//                                     W1 = 2 dn (N_s/m(c_g)) f_c N_c
+//   per (a, k), sum over nodes        ug = u_g m(c_g) (nfw_um);
+//                                     G02 = sum ug (W2 ug + W1); ln P
+//
+// W2 and W1 carry the 1/m(c_g) of each u_g (the central has no profile).
+// like.halo_model[3] must be HALO_PROFILE_NFW (the rows read nfw_um
+// directly) and nuisance.gc[l] > 0 in every bin (u_g's condition,
+// checked in the refill); else abort.
+//
+// - Measured 2026-09-29 (4 threads; 10 lens bins, na = 51, N_k = 512,
+//   1024 nodes: 2.7e8 kernel calls): one refill 1.0 s.
+//
+// Thread safety: as p_gm (its header), with the single-threaded
+// p_gg_nointerp(k_min, a_min, 0, 0, 1) call before the threaded loops as
+// the warm-up that builds every lazy table the rows read.
+//
+// Cache invalidation:
+//   as p_gm (its header); the rebuild block here holds table, lim, mq
+//     (with the mapped GL nodes), hq and aq
+//
+// Parameters:
+//   k      - wavenumber in (c/H0)^-1
+//   a      - scale factor
+//   ni, nj - lens bins, 0 <= ni < redshift.clustering_nbin and nj = ni
+//            (aborts otherwise)
+//
+// Returns:
+//   P_gg(k, a, ni) in (c/H0)^3; 0 outside [amin_lens(ni), amax_lens(ni)];
+//   ln P continued with unit slope outside [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
 double p_gg(
-    const double k, 
-    const double a, 
-    const int ni, 
+    const double k,
+    const double a,
+    const int ni,
     const int nj
   )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double*** table = NULL;
-  static double** lim = NULL; //lim[0,:] = amin; lim[:,1] = amax; lim[:,2] = da; 
-                              //lim[redshift.clustering_nbin] = lnkmin; 
-                              //lim[redshift.clustering_nbin] = lnkmax; 
-                              //lim[redshift.clustering_nbin] = dlnk; 
-  const int nbin = redshift.clustering_nbin;
-  const int na = (int) Ntable.N_a/5.0;
+  static double** lim = NULL; // [nbin+1][3]: row l < nbin the a grid of
+                              // bin l (min, max, step); row nbin the
+                              // ln k grid (min, max, step)
+  static int nbin = 0;        // lens bins of the allocation
+  static int na = 0;          // a nodes per bin
+  static int nq = 0;          // Gauss-Legendre nodes in ln M
+  static double** mq = NULL;  // [5][nq] per mass node: M, weight, nu at
+                              // D = 1, r_Delta, weight x (rho_m/M) dlnnu/dlnM
+  static double*** hq = NULL; // [nbin][2][nq] per (bin, mass node): N_s,
+                              // f_c N_c
+  static double*** aq = NULL; // [na][6][nq] per (a, mass node) of one bin:
+                              // c_g, ln(1+c_g), r_s,g, ln r_s,g, W2, W1
 
-  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    if (table != NULL) free(table);
+  // Rebuild block: the first call, or the Ntable or clustering-n(z) tag
+  // differs from the allocation's: sizes, every allocation (one block
+  // each from malloc2d/malloc3d, so one free each), the GL nodes mapped
+  // onto [ln M_min, ln M_max], the a grid of each bin and the ln k grid
+  // (header, item 1)
+  if (NULL == table ||
+      fdiff2(cache[1], Ntable.random) ||
+      fdiff2(cache[3], redshift.random_clustering))
+  {
+    if (table != NULL) {
+      free(table);
+      free(lim);
+      free(mq);
+      free(hq);
+      free(aq);
+    }
+    nbin = redshift.clustering_nbin;
+    na = (int) Ntable.N_a/5.0; // a bin's a range is a slice of p_mm's
+    nq = 1024; // largest predefined GSL table
     table = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
-    if (lim != NULL) free(lim);
     lim = (double**) malloc2d(nbin+1, 3);
-    for (int l=0; l<redshift.clustering_nbin; l++) {
+    mq = (double**) malloc2d(5, nq);
+    hq = (double***) malloc3d(nbin, 2, nq);
+    aq = (double***) malloc3d(na, 6, nq);
+    const double lnMmin = log(limits.halo_m_min);
+    const double lnMmax = log(limits.halo_m_max);
+    // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
+    // rule t mapped onto [lo, hi], and its weight
+    gsl_integration_glfixed_table* t = malloc_gslint_glfixed(nq);
+    for (int q=0; q<nq; q++) {
+      double lnM;
+      gsl_integration_glfixed_point(lnMmin, lnMmax, q, &lnM, &mq[1][q], t);
+      mq[0][q] = exp(lnM);
+    }
+    gsl_integration_glfixed_table_free(t);
+    // a grid of bin l over its lens range; node i sits at
+    // lim[l][0] + i lim[l][2], both ends included
+    for (int l=0; l<nbin; l++) {
       lim[l][0] = amin_lens(l);
       lim[l][1] = amax_lens(l);
       lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.);
     }
+    // ln k grid, shared by all bins
     lim[nbin][0] = log(limits.k_min_cH0);
     lim[nbin][1] = log(limits.k_max_cH0);
     lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])/((double) Ntable.N_k_nlin - 1.);
   }
-  if (fdiff2(cache[0], cosmology.random) || 
+  // Refill: any of the four tags differs from the table's
+  if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random)    ||
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering))
-  { 
-    (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1); // init static vars
-    #pragma omp parallel for collapse(3) schedule(static,1)
+  {
+    // the rows read the NFW kernel directly (header, item 2)
+    if (like.halo_model[3] != HALO_PROFILE_NFW) {
+      log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+    // Warm-up: builds every lazy table the threaded loops read (header,
+    // Thread safety); the value is thrown away
+    (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1);
+    // Per mass node, serially (header, item 2, first row); the sigma2 and
+    // dlognudlogm reads happen here, before the threads
+    const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+    const double rho_delta = Delta * rhom;
+    for (int q=0; q<nq; q++) {
+      const double m = mq[0][q];
+      mq[2][q] = delta_c/sqrt(sigma2(m));
+      mq[3][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+      mq[4][q] = mq[1][q]*(rhom/m)*dlognudlogm(m);
+    }
+    // Per (bin, node), serially: the occupation at the placeholder
+    // a = amin (header, item 2, second row)
     for (int l=0; l<nbin; l++) {
+      // u_g's condition, checked for every bin at once
+      if (!(nuisance.gc[l] > 0)) {
+        log_fatal("galaxy concentration factor gc[%d] = %g must be > 0",
+                  l, nuisance.gc[l]);
+        exit(1);
+      }
+      const double fc = HOD_fc(l);
+      for (int q=0; q<nq; q++) {
+        const double m = mq[0][q];
+        hq[l][0][q] = HOD_ns(m, lim[l][0], l);
+        hq[l][1][q] = fc*HOD_nc(m, lim[l][0], l);
+      }
+    }
+    // Per bin, its rows over a threaded: D(a), the Tinker f parameters
+    // (the nu-independent half, fnu_params_at), ngal and bgal of the row
+    // (header, item 2, third row)
+    for (int l=0; l<nbin; l++) {
+      const double gc = nuisance.gc[l];
+      #pragma omp parallel for schedule(static)
       for (int i=0; i<na; i++) {
+        const double ai = lim[l][0] + i*lim[l][2];
+        const double D = growfac(ai);
+        const fnu_params pf = fnu_params_at(ai);
+        const double ng = ngal(l, ai);
+        const double bg = bgal(l, ai);
+        double* restrict cgq = aq[i][0];
+        double* restrict l1g = aq[i][1];
+        double* restrict rsg = aq[i][2];
+        double* restrict lrsg = aq[i][3];
+        double* restrict w2 = aq[i][4];
+        double* restrict w1 = aq[i][5];
+        // Per (a, node): c_g, r_s,g, their logs, and the weights W2, W1
+        // with 1/m(c_g) folded in (header, item 2, fourth row). restrict:
+        // each row is reached only through its pointer, so no reload
+        // after the libm calls
+        for (int q=0; q<nq; q++) {
+          const double m = mq[0][q];
+          const double nu = mq[2][q]/D;
+          const double cg = conc(m, D)*gc;
+          const double l1cg = log1p(cg);
+          const double mcg = l1cg - cg/(1.0 + cg);
+          const double dn = mq[4][q]*fnu_core(nu, &pf)*nu;
+          const double ns = hq[l][0][q];
+          cgq[q] = cg;
+          l1g[q] = l1cg;
+          rsg[q] = mq[3][q]/cg;
+          lrsg[q] = log(rsg[q]);
+          w2[q] = dn*(ns/mcg)*(ns/mcg);
+          w1[q] = 2.0*dn*(ns/mcg)*hq[l][1][q];
+        }
+        // Per k: G02 as a sum of the NFW kernel over the nodes, then ln P
+        // (header, item 2, last row)
         for (int j=0; j<Ntable.N_k_nlin; j++) {
-          table[l][i][j] = log(p_gg_nointerp(exp(lim[nbin][0]+j*lim[nbin][2]),
-                                             lim[l][0]+i*lim[l][2], l, l, 0));
+          const double lk = lim[nbin][0] + j*lim[nbin][2];
+          const double kj = exp(lk);
+          double sum = 0.0;
+          for (int q=0; q<nq; q++) {
+            const double ug = nfw_um(cgq[q], kj*rsg[q], lk + lrsg[q], l1g[q]);
+            sum += ug*(w2[q]*ug + w1[q]);
+          }
+          table[l][i][j] = log(Pdelta(kj, ai)*bg*bg + sum/(ng*ng));
         }
       }
     }
@@ -4293,13 +4675,15 @@ double p_gg(
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
+  // auto-spectra only (header)
   if (ni != nj) {
     log_fatal("cross-tomography (ni,nj) = (%d,%d) bins not supported", ni, nj);
     exit(1);
-  }  
+  }
+  // bilinear read of bin ni's ln P; 0 outside its a range
   return (a < lim[ni][0] || a > lim[ni][1]) ? 0.0 : exp(
-    interpol2d(table[ni], 
-               na, lim[ni][0], lim[ni][1], lim[ni][2], a, 
+    interpol2d(table[ni],
+               na, lim[ni][0], lim[ni][1], lim[ni][2], a,
                Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1], lim[nbin][2], log(k)));
 }
 
