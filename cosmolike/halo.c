@@ -15,6 +15,141 @@
 
 #include "log.c/src/log.h"
 
+// ---------------------------------------------------------------------------
+// Halo model: peak-background split, halo and galaxy profiles, gas
+// (electron-pressure) profiles, and the power spectra built from them.
+//
+// Units, shared by every routine in this file:
+//
+//   k        = comoving wavenumber in (c/H0)^-1
+//   r, R     = comoving lengths in c/H0
+//   M, m     = halo masses in M_sun/h
+//   rho_crit = 3 H0^2/(8 pi G) = cosmology.rho_crit
+//            = 7.4775e21 M_sun/h per (c/H0)^3
+//              (2.775e11 h^2 M_sun/Mpc^3 times 2997.92^3)
+//   P(k)     = (c/H0)^3
+//
+// A halo of mass M is labeled by its peak height
+//
+//   nu(M, a) = delta_c/sigma(M, a),   sigma(M, a) = sqrt(sigma2(M)) D(a)
+//
+// with sigma2(M) the a = 1 variance of cosmo3D.c (top hat of Lagrangian
+// radius R = (3M/(4 pi rho_crit Omega_m))^(1/3)) and D(a) the growth
+// factor, D(1) = 1. This is the nu of Tinker et al. 2010 (1001.3162
+// sec. 2), not the nu = delta_c^2/sigma^2 of Cooray & Sheth 2002
+// (astro-ph/0206508 Eq. 57). Rare, massive halos have nu >> 1.
+//
+// The three constants below:
+//
+//   DEFAULT_INT_PREC = Gauss-Legendre node count of the quadratures of
+//                      this file; each step of
+//                      Ntable.high_def_integration adds 500
+//   delta_c          = 1.686, the linear collapse threshold of
+//                      spherical collapse, (3/20)(12 pi)^(2/3); the
+//                      value the Tinker fits assume (1001.3162 sec. 2)
+//   Delta            = 200, the halo overdensity with respect to the
+//                      MEAN matter density,
+//                      M = (4 pi/3) R_Delta^3 Delta rho_m
+//                      (1001.3162 Eq. 1). With the comoving mean
+//                      density rho_m = rho_crit Omega_m, R_Delta is
+//                      comoving and a-independent. The mass function,
+//                      the bias and the concentration below all use
+//                      this halo definition.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Glossary: the function names of this file follow the original
+// cosmolike and are terse. Each one maps to a halo-model quantity:
+//
+// Halo demographics (bias and mass function: Tinker et al. 2010,
+// 1001.3162; concentration: Bhattacharya et al. 2013, 1112.5479):
+//
+//   hb1nu        = b_1(nu), the linear (first-order) halo bias as a
+//                  function of the peak height nu: "h" halo, "b1" bias of
+//                  first order, "nu" its variable
+//   fnu          = f(nu), the halo multiplicity function: the mass
+//                  function per unit nu
+//   conc         = c(M), the NFW concentration r_Delta/r_s
+//   dlognudlogm  = d ln nu/d ln M, the Jacobian from nu to halo mass
+//   bias_norm    = int b_1 f dnu over the tabulated mass range
+//   *_params_at,
+//   *_core       = the two halves of hb1nu and fnu: the nu-independent
+//                  coefficients (once per a) and the nu-dependent
+//                  remainder (once per node)
+//
+// Profiles, in Fourier space ("u" = a profile transform):
+//
+//   u_nfw_c      = u(k|M) of the NFW profile, given its concentration c
+//   u_c          = u(k|M) of the halo matter profile (selects u_nfw_c)
+//   u_g          = u_g(k|M), the satellite-galaxy profile
+//   F0_KS        = gas-mass integral of the Komatsu-Seljak ("KS")
+//                  bound-gas profile ("0": the k = 0, mass integral)
+//   F_KS         = Fourier integral of the KS electron pressure
+//   u_KS         = F_KS/F0_KS, the bound-gas pressure shape factor
+//   frac_bnd     = f_bnd(M), fraction of the halo mass in bound gas
+//   frac_ejc     = f_ejc(M), fraction of the halo mass in ejected gas
+//   u_y_bnd      = W_p(M, k), the bound-gas electron-pressure window
+//                  ("y": the Compton-y, thermal-SZ, field it sources)
+//   u_y_ejc      = the ejected-gas electron-pressure window
+//   n_s_cmv      = comoving number density of source galaxies (no
+//                  caller; aborts if run, see its header)
+//
+// Halo occupation distribution, HOD (Zehavi et al. 2011, 1005.2413):
+//
+//   HOD_nc       = <N_c|M>, mean number of central galaxies
+//   HOD_ns       = <N_s|M>, mean number of satellite galaxies
+//   HOD_fc       = f_c, completeness factor of the centrals
+//   ngal         = n_g, comoving galaxy number density
+//   bgal         = b_g, number-weighted mean galaxy bias
+//   mmean        = <M>, mean halo mass of the galaxies
+//   fsat         = f_sat, satellite fraction
+//   int_hm_funcs = the integrand ngal, mmean, fsat and bgal share
+//                  ("hm": halo model)
+//   hm_funcs     = the dispatcher behind ngal, mmean, fsat and bgal:
+//                  func = 0, 1, 2, 3 in that order, the last three
+//                  divided by n_g
+//   set_HOD      = built-in HOD values for lens bin ni: fills
+//                  nuisance.hod[ni][0..5], sets nuisance.gc[ni] = 1 and
+//                  stores b_g in nuisance.gb[0][ni]
+//
+// Halo-model integrals, named after the I^beta_mu of Cooray & Hu 2001
+// (astro-ph/0012087 Eq. 12, whose delta_halo(k, M) is (M/rho_m) u(k|M);
+// Cooray & Sheth 2002, astro-ph/0206508 sec. 4.2, write the same
+// integral as M_ij):
+//
+//   I^beta_mu(k_1 .. k_mu) = int dM n(M) b_beta(M) (M/rho_m)^mu
+//                                 u(k_1|M) ... u(k_mu|M)
+//
+//   beta = order of the halo bias (0 = none, 1 = linear)
+//   mu   = number of profiles in the integrand
+//
+// so that P(k) = I^0_2(k, k) + [I^1_1(k)]^2 P_lin(k) (astro-ph/0012087
+// Eqs. 14-15):
+//
+//   I02_XY       = I^0_2: no bias, two profiles  -> the 1-halo term of
+//                  P_XY
+//   I11_X        = I^1_1: linear bias, one profile -> the 2-halo
+//                  amplitude, P_2h = I11_X I11_Y P_lin
+//   G02          = the galaxy-galaxy 1-halo integral (central-satellite
+//                  and satellite-satellite pairs); p_gg divides it by
+//                  n_g^2
+//   GM02         = the galaxy-matter 1-halo integral; p_gm divides it
+//                  by n_g
+//
+// Spectra: p_XY(k, a) with X, Y in {m = matter, y = electron pressure,
+// g = galaxies}: p_mm, p_my, p_yy, p_gm, p_gg.
+//
+// Suffixes:
+//
+//   *_nointerp   = direct computation at one point (no table)
+//   *_work       = batched computation over many inputs
+//   *_build_nodes
+//                = fills a static quadrature-node cache (bias_norm)
+//   int_for_*,
+//   int_*        = integrand of a mass or radius integral
+//   (no suffix)  = the cached table, read by interpolation
+// ---------------------------------------------------------------------------
+
 #define DEFAULT_INT_PREC 1000
 #define delta_c 1.686
 #define Delta 200
@@ -24,6 +159,23 @@
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // BASIC PEAK BACKGROUND SPLIT ROUTINES
+//
+// The halo model needs three functions of the halo mass: how many halos
+// there are (the mass function), how they cluster on large scales (the
+// linear bias) and how concentrated they are. In the peak height nu the
+// first two are nearly universal (Tinker et al. 2010, 1001.3162):
+//
+//   f(nu) dnu = fraction of all matter in halos with peak height in
+//               [nu, nu + dnu]                          -> fnu
+//   b(nu)     = large-scale linear bias of those halos  -> hb1nu
+//
+// and the mass function follows by the change of variable nu -> M:
+//
+//   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M           -> dlognudlogm
+//
+// bias_norm restores the consistency relation int b f dnu = 1 over the
+// finite mass range that the halo-model integrals cover; conc gives the
+// NFW concentration as a function of nu.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -48,6 +200,38 @@
 // models implemented.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// hb1nu = b_1(nu): the linear (first-order) halo bias as a function
+// of the peak height nu, from Tinker et al. 2010 (1001.3162 Eq. 6):
+//
+//   b(nu) = 1 - A nu^a/(nu^a + delta_c^a) + B nu^b + C nu^c
+//
+// 1001.3162 Table 2 gives the six coefficients as functions of
+// y = log10(Delta); at Delta = 200 (mean density, see the file header):
+//
+//   A = 1 + 0.24 y exp[-(4/y)^4]              = 1.00006
+//   a = 0.44 y - 0.88                         = 0.13245
+//   B = 0.183,  b = 1.5
+//   C = 0.019 + 0.107 y + 0.19 exp[-(4/y)^4]  = 0.26523
+//   c = 2.4
+//
+// Shape: b -> 1 as nu -> 0, but slowly because a is small (b ~ 0.6 at
+// nu = 0.2); b ~ 1 near nu = 1; the C nu^2.4 term takes over for rare,
+// massive halos (b ~ 5 at nu = 3).
+//
+// No redshift dependence: the fit combines all outputs 0 <= z <= 2.5
+// and finds no significant evolution at a given nu (1001.3162
+// sec. 3.1). The scale factor stays in the signature so that a
+// z-dependent fit could use it.
+//
+// Parameters:
+//   nu - peak height delta_c/sigma(M, a)
+//   a  - scale factor (unused by the Tinker fit)
+//
+// Returns:
+//   b(nu), dimensionless. like.halo_model[1] selects the fit;
+//   HALO_BIAS_TINKER_2010 is the only option, other values abort.
+// ---------------------------------------------------------------------------
 typedef struct {
   double ALPHA; // A of Eq. 6 (1001.3162)
   double pa;    // exponent a = 0.44 y - 0.88, y = log10(Delta)
@@ -57,8 +241,9 @@ typedef struct {
 } hb1nu_params;
 
 static inline hb1nu_params hb1nu_params_at(
-    const double a __attribute__((unused)) // the Delta = 200 fit does
-  )                                        // not evolve with a
+    const double a __attribute__((unused)) // scale factor (unused: the
+                                           // Delta = 200 fit is z-free)
+  )
 {
   hb1nu_params p;
   switch(like.halo_model[1])
@@ -82,7 +267,10 @@ static inline hb1nu_params hb1nu_params_at(
   return p;
 }
 
-static inline double hb1nu_core(const double nu, const hb1nu_params* p)
+static inline double hb1nu_core(
+    const double nu,        // peak height delta_c/(sigma(M) D(a))
+    const hb1nu_params* p   // coefficients from hb1nu_params_at
+  )
 {
   const double nu_alpha = pow(nu, p->pa);
   const double nu_beta  = pow(nu, 1.5);
@@ -91,8 +279,11 @@ static inline double hb1nu_core(const double nu, const hb1nu_params* p)
              + p->BETA * nu_beta + p->GAMMA * nu_gamma;
 }
 
-double hb1nu(const double nu, const double a)
-{ // Halo bias based on peak-background split
+double hb1nu(
+    const double nu, // peak height delta_c/(sigma(M) D(a))
+    const double a   // scale factor (unused by the Tinker bias fit)
+  )
+{
   const hb1nu_params p = hb1nu_params_at(a);
   return hb1nu_core(nu, &p);
 }
@@ -102,6 +293,52 @@ double hb1nu(const double nu, const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// fnu = f(nu): the halo multiplicity function, i.e. the mass function
+// per unit peak height nu, of Tinker et al. 2010 (1001.3162 Eq. 8):
+//
+//   f(nu) = alpha [1 + (beta nu)^(-2 phi)] nu^(2 eta) exp(-gamma nu^2/2)
+//
+// It turns into the halo mass function through
+//
+//   dn/dM = f(nu) (rho_m/M) dnu/dM
+//     ->  dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M
+//
+// so nu f(nu) is the g(sigma) of Tinker et al. 2008 (1001.3162 sec. 4).
+//
+// 1001.3162 Table 4 gives the z = 0 values at Delta = 200 (mean
+// density):
+//
+//   alpha = 0.368, beta_0 = 0.589, gamma_0 = 0.864,
+//   phi_0 = -0.729, eta_0 = -0.243
+//
+// and Eqs. 9-12 evolve four of them, with 1 + z = 1/a:
+//
+//   beta  = beta_0  (1+z)^0.20   = 0.589  a^-0.20
+//   phi   = phi_0   (1+z)^-0.08  = -0.729 a^0.08
+//   eta   = eta_0   (1+z)^0.27   = -0.243 a^-0.27
+//   gamma = gamma_0 (1+z)^-0.01  = 0.864  a^0.01
+//
+// The mass function changes more slowly as z grows, and 1001.3162
+// (text after Eq. 12) recommends the z = 3 parameters beyond z = 3:
+// hence aa = max(a, 0.25).
+//
+// Normalization. At z = 0 the Table 4 values give int f dnu = 1 (all
+// matter sits in halos) and int b f dnu = 0.999 (Eq. 7: matter is
+// unbiased with respect to itself). The paper sets alpha at each z from
+// Eq. 7; here alpha keeps its z = 0 value, so over all nu int f dnu =
+// 1.22 at z = 1 and 1.63 for z >= 3. bias_norm cancels this factor in
+// the 2-halo term; integrals weighted by f alone (1-halo terms, ngal)
+// carry it.
+//
+// Parameters:
+//   nu - peak height delta_c/sigma(M, a)
+//   a  - scale factor, 0 < a < 1 (aborts otherwise)
+//
+// Returns:
+//   f(nu), dimensionless, per unit nu. like.halo_model[0] selects the
+//   fit; HMF_TINKER_2010 is the only option, other values abort.
+// ---------------------------------------------------------------------------
 typedef struct {
   double alpha; // Eqs. 8-12 + Table 4 of 1001.3162 at Delta = 200
   double beta;
@@ -110,7 +347,9 @@ typedef struct {
   double eta;
 } fnu_params;
 
-static inline fnu_params fnu_params_at(const double a)
+static inline fnu_params fnu_params_at(
+    const double a  // scale factor, 0 < a < 1 (aborts otherwise)
+  )
 {
   if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true"); exit(1);
@@ -120,8 +359,9 @@ static inline fnu_params fnu_params_at(const double a)
   {
     case HMF_TINKER_2010:
     { // Eqs. (8-12) + Table 4 from Tinker et al. 2010
-      const double aa = fmax(0.25, a); // limit fit range of mass function evolution to
-                                       // z <= 3 (discussed after Eq. 12 of 1001.3162)
+      // aa freezes the evolution at z = 3: the paper recommends the
+      // z = 3 parameters beyond z = 3 (text after Eq. 12 of 1001.3162)
+      const double aa = fmax(0.25, a);
       p.alpha = 0.368;
       p.beta  = 0.589 * pow(aa, -0.2);
       p.gamma = 0.864 * pow(aa, 0.01);
@@ -138,14 +378,20 @@ static inline fnu_params fnu_params_at(const double a)
   return p;
 }
 
-static inline double fnu_core(const double nu, const fnu_params* p)
+static inline double fnu_core(
+    const double nu,      // peak height delta_c/(sigma(M) D(a))
+    const fnu_params* p   // parameters from fnu_params_at
+  )
 {
   return p->alpha*(1. + pow(p->beta*nu,-2*p->phi))*pow(nu,2*p->eta)*
          exp(-p->gamma*nu*nu/2.);
 }
 
-double fnu(const double nu, const double a)
-{ // Halo bias based on peak-background split
+double fnu(
+    const double nu, // peak height delta_c/(sigma(M) D(a))
+    const double a   // scale factor, 0 < a < 1 (aborts otherwise)
+  )
+{
   const fnu_params p = fnu_params_at(a);
   return fnu_core(nu, &p);
 }
@@ -155,7 +401,38 @@ double fnu(const double nu, const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double conc(const double m, const double growfac_a) 
+// ---------------------------------------------------------------------------
+// Halo concentration c = r_Delta/r_s of the NFW profile, Bhattacharya et
+// al. 2013 (1112.5479 Table 2: full halo sample, column Delta = 200
+// rho_b, i.e. 200 times the MEAN density - the halo definition of this
+// file):
+//
+//   c(M, z) = 9.0 nu^-0.29 D(z)^1.15,   nu = delta_c/(sigma(M) D(z))
+//
+// In nu the relation keeps its shape at all redshifts (1112.5479
+// sec. 4.2); at a given nu its amplitude falls with the growth factor,
+// and at a given mass the c-M relation flattens toward high z
+// (1112.5479 sec. 4.1).
+//
+// Calibration: z = 0-2 and group-to-cluster masses, with the paper's nu
+// built on delta_c = 1.673 (its reference cosmology) where this file
+// uses 1.686, a -0.2% shift in c. The halo model evaluates the fit over
+// the whole [limits.halo_m_min, limits.halo_m_max] and at every z, so
+// also in extrapolation.
+//
+// Parameters:
+//   m         - halo mass in M_sun/h
+//   growfac_a - linear growth factor D(a), D(1) = 1 (not the scale
+//               factor itself)
+//
+// Returns:
+//   c, dimensionless. like.halo_model[2] selects the fit;
+//   CONCENTRATION_BHATTACHARYA_2013 is the only option.
+// ---------------------------------------------------------------------------
+double conc(
+    const double m,         // halo mass in M_sun/h
+    const double growfac_a  // growth factor D(a), not a itself
+  )
 {
   double ans;
   switch(like.halo_model[2])
@@ -254,17 +531,26 @@ static void bias_norm_build_nodes(void)
 // Batched bias_norm over many scale factors (the _work form of
 // cosmo2D.c).
 //
-// Why a finite mass range needs a normalization at all. Over ALL halo
-// masses (0 < nu < infinity) the Tinker fits satisfy
+// Why the 2-halo term needs this normalization. The consistency
+// relation of the peak-background split (1001.3162 Eq. 7;
+// astro-ph/0206508 Eq. 71),
 //
-//   int f(nu) dnu        = 1   (all matter sits in halos)
-//   int b(nu) f(nu) dnu  = 1   (matter is unbiased with respect to itself)
+//   int_0^inf b(nu) f(nu) dnu = 1   (matter is unbiased with respect
+//                                    to itself)
 //
-// but the code integrates halos only over [limits.halo_m_min,
-// limits.halo_m_max], so the second integral falls short of 1 - most
-// of the missing part is the unresolved low-mass tail. The 2-halo term
-// (int_for_I11_X) divides by bias_norm(a), which restores the
-// large-scale limit P_2h -> P_lin at every redshift.
+// is what makes the 2-halo term of P_mm tend to P_lin as k -> 0. Two
+// effects move the integral away from 1 here:
+//
+//   mass range - the integrals stop at limits.halo_m_min, and
+//                f ~ nu^(2 eta) = nu^-0.49 as nu -> 0 puts much of the
+//                matter in light halos (below 1e6 M_sun/h, about 0.2
+//                of the integral at z = 0 for a Planck-like cosmology)
+//   alpha      - fnu keeps alpha at its z = 0 value, so the full-range
+//                integral exceeds 1 at z > 0 (1.16 at z = 1, 1.46 for
+//                z >= 3)
+//
+// int_for_I11_X divides by bias_norm(a), the integral over the covered
+// range, which removes both: I_11(k -> 0) = 1 at every a.
 //
 // Each output is the Gauss-Legendre sum of the node cache mapped onto
 // [t_min, t_max] (the node-cache header derives the substitution):
@@ -355,7 +641,9 @@ void bias_norm_work(
 // Returns:
 //   bias_norm(a) from the quadrature
 // ---------------------------------------------------------------------------
-double bias_norm_nointerp(const double a)
+double bias_norm_nointerp(
+    const double a  // scale factor, 0 < a < 1
+  )
 {
   double out = 0.0;
   bias_norm_work(&a, 1, &out);
@@ -372,9 +660,9 @@ double bias_norm_nointerp(const double a)
 // [limits.a_min, 0.9999999], filled by one bias_norm_work call and read
 // back with linear interpol1d.
 //
-// Every node holds the real integral: the grid stops at 0.9999999 < 1,
-// where f(nu) is still defined, so no sentinel value is needed, and
-// queries past the last node constant-extrapolate the true endpoint.
+// The grid stops at 0.9999999 < 1, inside the 0 < a < 1 domain of fnu,
+// so every node holds the real integral; queries past the last node
+// constant-extrapolate that endpoint (interpol1d).
 //
 // Cache invalidation:
 //   allocation and the a-grid: rebuilt when Ntable.random changes
@@ -386,7 +674,9 @@ double bias_norm_nointerp(const double a)
 // Returns:
 //   bias_norm(a), interpolated in a
 // ---------------------------------------------------------------------------
-double bias_norm(const double a)
+double bias_norm(
+    const double a  // scale factor
+  )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
@@ -418,8 +708,42 @@ double bias_norm(const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double dlognudlogm(const double M) 
-{ // if sigma(z) \propto to D(z), then d\ln \nu/dlnM independent of z
+// ---------------------------------------------------------------------------
+// Logarithmic slope d ln nu/d ln M of the peak height: the Jacobian that
+// turns f(nu) dnu into dn/dlnM (see the section banner).
+//
+// Taking the log of nu = delta_c/(sqrt(sigma2(M)) D(a)):
+//
+//   ln nu = ln delta_c - ln D(a) - (1/2) ln sigma2(M)
+//     ->  d ln nu/d ln M = -(1/2) d ln sigma2/d ln M
+//
+// delta_c and D(a) drop out, so one table at a = 1 serves every
+// redshift (this assumes scale-independent growth, sigma(M, a) =
+// sigma(M) D(a)). sigma falls with M, so the slope is positive; for a
+// local power law P ~ k^n_eff it is (n_eff + 3)/6: about 0.05 for the
+// lightest halos (n_eff near -3) and 0.3 for clusters.
+//
+// Table: Ntable.N_M nodes uniform in ln M over [ln limits.halo_m_min,
+// ln limits.halo_m_max], each a symmetric difference of ln sigma2 over
+// h = 0.05 in ln M. Near the edges the stencil is clipped to the mass
+// range (one-sided there), because the sigma2 table clamps outside it
+// and would flatten the slope. Read back with linear interpol1d;
+// constant extrapolation outside the range.
+//
+// Cache invalidation:
+//   allocation and ln M limits: rebuilt when Ntable.random changes
+//   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1])
+//
+// Parameters:
+//   M - halo mass in M_sun/h
+//
+// Returns:
+//   d ln nu/d ln M, dimensionless and positive
+// ---------------------------------------------------------------------------
+double dlognudlogm(
+    const double M  // halo mass in M_sun/h
+  )
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double* table = NULL;
   static double lim[3];
@@ -461,18 +785,65 @@ double dlognudlogm(const double M)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // HALO PROFILES
+//
+// A profile enters the halo model through its Fourier transform. For
+// the matter it is normalized by the halo mass,
+//
+//   u(k|M) = int_0^{r_Delta} 4 pi r^2 [sin(kr)/(kr)] rho(r|M) dr / M
+//
+// (astro-ph/0206508 Eq. 80), so u -> 1 as k -> 0 (on scales much larger
+// than the halo it is a point mass) and u falls off once k r_s ~ 1 (the
+// halo is resolved). Truncating the profile at r_Delta makes its mass
+// exactly the M of the mass function.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Normalized Fourier transform u(k|M) of the NFW profile truncated at
+// r_Delta, in closed form (astro-ph/0206508 Eq. 81).
+//
+// The NFW profile (astro-ph/9611107), with scale radius r_s = r_Delta/c:
+//
+//   rho(r) = rho_s / [(r/r_s) (1 + r/r_s)^2]
+//
+// Its mass inside r_Delta is M = 4 pi rho_s r_s^3 m(c), with
+// m(c) = ln(1+c) - c/(1+c) (astro-ph/0206508 Eq. 76), which sets the
+// prefactor of the transform to 1/m(c). With
+//
+//   r_Delta = (3M/(4 pi Delta rho_m))^(1/3)   (comoving, c/H0)
+//   x       = k r_Delta/c = k r_s
+//   xu      = (1 + c) x
+//
+// Eq. 81 reads
+//
+//   u = { sin x [Si(xu) - Si(x)] - sin(c x)/xu
+//         + cos x [Ci(xu) - Ci(x)] } / m(c)
+//
+// with Si, Ci the sine and cosine integrals (GSL). Check at k -> 0: the
+// three terms tend to 0, -c/(1+c) and ln(1+c), so u -> 1.
+//
+// r_Delta is comoving (rho_m = rho_crit Omega_m is the comoving mean
+// density), and so is k: the scale factor never enters.
+//
+// Parameters:
+//   c - concentration r_Delta/r_s, c > 0 (m(0) = 0)
+//   k - wavenumber in (c/H0)^-1, k > 0 (Ci diverges at 0; the GSL
+//       domain error aborts)
+//   m - halo mass in M_sun/h
+//   a - scale factor (unused)
+//
+// Returns:
+//   u(k|M), dimensionless; 1 at k -> 0
+// ---------------------------------------------------------------------------
 double u_nfw_c(
-    const double c, 
-    const double k, 
-    const double m, 
-    const double a
-  ) 
-{ // analytic FT of NFW profile, from Cooray & Sheth 01 
+    const double c, // concentration r_Delta/r_s
+    const double k, // wavenumber in (c/H0)^-1
+    const double m, // halo mass in M_sun/h
+    const double a  // scale factor (unused: r_Delta and k are comoving)
+  )
+{
   const double rho_delta = Delta * cosmology.rho_crit * cosmology.Omega_m;
   const double r_delta = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
   const double x = k * r_delta / c;
@@ -517,12 +888,26 @@ double u_nfw_c(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Normalized Fourier transform u(k|M) of the halo matter profile, with
+// the profile chosen by like.halo_model[3]: HALO_PROFILE_NFW (u_nfw_c)
+// is the only option, other values abort.
+//
+// Parameters:
+//   c - concentration r_Delta/r_s
+//   k - wavenumber in (c/H0)^-1
+//   m - halo mass in M_sun/h
+//   a - scale factor
+//
+// Returns:
+//   u(k|M), dimensionless; 1 at k -> 0
+// ---------------------------------------------------------------------------
 double u_c(
-    const double c, 
-    const double k, 
-    const double m, 
-    const double a
-  ) 
+    const double c, // concentration r_Delta/r_s
+    const double k, // wavenumber in (c/H0)^-1
+    const double m, // halo mass in M_sun/h
+    const double a  // scale factor (passed to the selected profile)
+  )
 {
   double ans;
   switch(like.halo_model[3])
@@ -546,19 +931,66 @@ double u_c(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // GALAXY PROFILES
+//
+// The halo occupation distribution (HOD) gives the mean number of
+// galaxies of lens bin ni in a halo of mass M: one central galaxy at the
+// halo center plus satellites that follow a scaled NFW profile (Zehavi
+// et al. 2011, 1005.2413 Eq. 7; Coupon et al. 2012, 1107.0616
+// sec. 4.1):
+//
+//   <N|M>  = f_c N_c(M) + N_s(M)
+//   N_c(M) = (1/2) [1 + erf((log10 M - log10 M_min)/sigma_lgM)]
+//   N_s(M) = N_c(M) [(M - M_0)/M_1]^alpha
+//
+// The six parameters per bin, nuisance.hod[ni][0..5]:
+//
+//   [0] = log10 M_min  mass at which half the halos host a central
+//   [1] = sigma_lgM    width of that step in log10 M
+//   [2] = log10 M_1    mass scale of the satellite power law (M_1' in
+//                      1005.2413)
+//   [3] = log10 M_0    satellite cutoff mass
+//   [4] = alpha        satellite power-law slope
+//   [5] = f_c          fraction of centrals in the sample (0 = unset,
+//                      read as 1 by HOD_fc)
+//
+// Masses are in M_sun/h in this file's halo definition (Delta = 200
+// times the mean density); HOD fits quoted for another halo definition
+// (the virial masses of 1107.0616, for example) carry that difference.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 
+// ---------------------------------------------------------------------------
+// Normalized Fourier transform of the satellite-galaxy profile of lens
+// bin ni: an NFW profile with the halo's truncation radius r_Delta and
+// the concentration scaled by f_g = nuisance.gc[ni],
+//
+//   c_g(M) = f_g c(M),   r_s,g = r_Delta/c_g
+//
+// f_g = 1 puts the satellites on the dark matter profile (the
+// assumption of 1005.2413 sec. 2.3); f_g < 1 spreads them out, f_g > 1
+// concentrates them. f_g must be positive: c_g = 0 makes the NFW
+// normalization m(0) vanish.
+//
+// Parameters:
+//   c  - halo concentration c(M)
+//   k  - wavenumber in (c/H0)^-1
+//   m  - halo mass in M_sun/h
+//   a  - scale factor (unused by the NFW form)
+//   ni - lens bin (indexes nuisance.gc)
+//
+// Returns:
+//   u_g(k|M), dimensionless; 1 at k -> 0
+// ---------------------------------------------------------------------------
 double u_g(
-    const double c, 
-    const double k, 
-    const double m, 
-    const double a,
-    const int ni
-  ) 
+    const double c, // halo concentration c(M)
+    const double k, // wavenumber in (c/H0)^-1
+    const double m, // halo mass in M_sun/h
+    const double a, // scale factor (unused by the NFW form)
+    const int ni    // lens bin: selects the factor nuisance.gc[ni]
+  )
 {
   return u_nfw_c(c*nuisance.gc[ni], k, m, a);
 
@@ -569,7 +1001,30 @@ double u_g(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double HOD_nc(const double m, const double a, const int ni)
+// ---------------------------------------------------------------------------
+// Mean number of central galaxies of lens bin ni in a halo of mass M
+// (1005.2413 Eq. 7, central factor):
+//
+//   N_c(M) = (1/2) [1 + erf((log10 M - log10 M_min)/sigma_lgM)]
+//
+// A smoothed step: N_c = 1/2 at M = M_min, and sigma_lgM is the scatter
+// between galaxy luminosity and halo mass, seen as a width in log10 M
+// (the erf argument has no sqrt(2)).
+//
+// Parameters:
+//   m  - halo mass in M_sun/h
+//   a  - scale factor, 0 < a < 1 (checked; the HOD does not evolve)
+//   ni - lens bin, 0 <= ni < redshift.clustering_nbin
+//
+// Returns:
+//   N_c in [0, 1]. Aborts when nuisance.hod[ni][0] = log10 M_min lies
+//   outside [10, 16], the sign that the bin's HOD is not set.
+// ---------------------------------------------------------------------------
+double HOD_nc(
+    const double m, // halo mass in M_sun/h
+    const double a, // scale factor, 0 < a < 1 (checked; HOD is z-free)
+    const int ni    // lens bin, 0 <= ni < redshift.clustering_nbin
+  )
 {
   if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true"); exit(1);
@@ -593,10 +1048,35 @@ double HOD_nc(const double m, const double a, const int ni)
   return 0.5*(1.0 + ERF.val);
 }
 
+// ---------------------------------------------------------------------------
+// Mean number of satellite galaxies of lens bin ni in a halo of mass M
+// (1005.2413 Eq. 7; 1107.0616 sec. 4.1):
+//
+//   N_s(M) = N_c(M) [(M - M_0)/M_1]^alpha
+//
+// The factor N_c makes satellites need a central: a halo too light to
+// host a central hosts no satellites either. Above M_0 the count grows
+// as a power law of slope alpha, and M_1 sets its amplitude (N_s ~ 1 at
+// M = M_1 when M_0 and M_min are well below M_1).
+//
+// Floor: for M <= M_0 the base (M - M_0)/M_1 is not positive: at
+// M = M_0 the power is 0, below it pow returns NaN for a non-integer
+// alpha. Either way the test ns > 0 fails and the function returns
+// 1e-15, which keeps N_s strictly positive; the floor's contribution to
+// every integral is negligible.
+//
+// Parameters:
+//   m  - halo mass in M_sun/h
+//   a  - scale factor (passed on to HOD_nc)
+//   ni - lens bin, 0 <= ni < redshift.clustering_nbin
+//
+// Returns:
+//   N_s(M) >= 1e-15
+// ---------------------------------------------------------------------------
 double HOD_ns(
-    const double m, 
-    const double a, 
-    const int ni
+    const double m, // halo mass in M_sun/h
+    const double a, // scale factor (passed on to HOD_nc)
+    const int ni    // lens bin, 0 <= ni < redshift.clustering_nbin
   )
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1) { 
@@ -607,7 +1087,23 @@ double HOD_ns(
   return (ns > 0) ? ns : 1.e-15;
 }
 
-double HOD_fc(const int ni)
+// ---------------------------------------------------------------------------
+// Central fraction f_c of lens bin ni: of the halos that host a central
+// above the threshold, the fraction whose central belongs to the sample
+// (a completeness factor on centrals only; not part of the
+// five-parameter form of 1005.2413). It multiplies N_c in the
+// occupation, <N|M> = f_c N_c + N_s, and in the central-satellite pair
+// count 2 f_c N_c N_s of the 1-halo term; satellites do not carry it.
+//
+// Parameters:
+//   ni - lens bin, 0 <= ni < redshift.clustering_nbin
+//
+// Returns:
+//   nuisance.hod[ni][5], or 1.0 when that slot is 0 (unset)
+// ---------------------------------------------------------------------------
+double HOD_fc(
+    const int ni  // lens bin, 0 <= ni < redshift.clustering_nbin
+  )
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
@@ -620,12 +1116,75 @@ double HOD_fc(const int ni)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // GAS PROFILES
+//
+// The electron-pressure (thermal SZ) side of the halo model, after the
+// HMx model of Mead et al. 2020 (2005.00009 secs. 3.2-3.3). The baryons
+// that belong to a halo of mass M split into three parts:
+//
+//   f_bnd(M) = gas bound inside r_Delta, in hydrostatic
+//              equilibrium, Komatsu-Seljak profile        -> frac_bnd
+//   f_*(M)   = stars                                       -> frac_ejc
+//   f_ejc(M) = gas ejected beyond r_Delta,
+//              Omega_b/Omega_m - f_bnd - f_*               -> frac_ejc
+//
+// The bound gas enters both halo terms through its pressure window
+// (u_y_bnd); the ejected gas is a smooth, warm component that enters
+// the 2-halo term only (u_y_ejc).
+//
+// Both windows are volume integrals of the electron pressure, i.e.
+// energies, in units of U = G (M_sun/h)^2/(c/H0). No factor
+// sigma_T/(m_e c^2) is applied: the "y" functions below return pressure
+// windows, not Compton-y.
+//
+// The gas parameters, nuisance.gas[0..10] (structs.h):
+//
+//   [0]  = Gamma       polytropic index of the bound gas, > 1
+//   [1]  = beta        mass slope of f_bnd
+//   [2]  = log10 M_0   mass at which halos keep half their gas bound
+//   [3]  = eps1        (not read in this file)
+//   [4]  = eps2        (not read in this file)
+//   [5]  = alpha       bound-gas temperature in units of T_v
+//   [6]  = A_*         peak stellar fraction
+//   [7]  = log10 M_*   mass of that peak
+//   [8]  = sigma_*     width of the stellar peak in log10 M
+//   [9]  = log10 T_w   temperature of the ejected gas in K
+//   [10] = f_H         hydrogen mass fraction
+//
+// Masses in M_sun/h.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_F0_KS(double x, void* params __attribute__((unused)))
+// ---------------------------------------------------------------------------
+// Integrand of the bound-gas mass normalization F0 (F0_KS_nointerp):
+//
+//   x^2 theta(x)^(1/(Gamma - 1)),   theta(x) = ln(1 + x)/x,  x = r/r_s
+//
+// theta^(1/(Gamma-1)) is the Komatsu-Seljak gas density profile in the
+// form of 2005.00009 Eq. 35 (also 1510.06034 Eq. 2.10). It follows
+// from the general solution for a polytrope, P ~ rho^Gamma, in
+// hydrostatic equilibrium in an NFW potential (astro-ph/0106151
+// Eq. 19, with the NFW integral of its Eq. 9):
+//
+//   y_gas^(Gamma-1) = 1 - B int_0^x m(u)/u^2 du = 1 - B (1 - theta)
+//
+// with B a constant set by the central temperature. The condition that
+// the gas temperature, T ~ y_gas^(Gamma-1), vanishes as r -> infinity
+// (theta -> 0) forces B = 1: y_gas = theta^(1/(Gamma-1)) and
+// T_g = T_v theta.
+//
+// Parameters:
+//   x      - radius in units of r_s
+//   params - unused (GSL signature)
+//
+// Returns:
+//   the integrand, dimensionless; Gamma = nuisance.gas[0] > 1
+// ---------------------------------------------------------------------------
+double int_F0_KS(
+    double x,                             // radius r/r_s
+    void* params __attribute__((unused))  // unused (GSL signature)
+  )
 {
   return x*x*pow(log(1.0 + x)/x, 1.0/(nuisance.gas[0] - 1.0));
 }
@@ -635,7 +1194,36 @@ double int_F0_KS(double x, void* params __attribute__((unused)))
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double F0_KS_nointerp(double c, const int init)
+// ---------------------------------------------------------------------------
+// Bound-gas mass normalization of the Komatsu-Seljak profile:
+//
+//   F0(c) = int_0^c x^2 theta(x)^(1/(Gamma - 1)) dx
+//
+// the dimensionless gas mass inside r_Delta = c r_s: the bound gas holds
+// M_bnd = 4 pi rho_bnd(0) r_s^3 F0(c) = f_bnd M (2005.00009 Eq. 13), so
+// dividing by F0 turns the pressure transform into a window per unit
+// bound-gas mass.
+//
+// Numerics:
+//   Gauss-Legendre on [0, c] with DEFAULT_INT_PREC + 500
+//   Ntable.high_def_integration nodes; init = 1 returns the integrand at
+//   the midpoint instead of the integral (its only role is to build the
+//   static GL table before a parallel region).
+//
+// Cache invalidation:
+// the static GL table rebuilds when Ntable.random changes.
+//
+// Parameters:
+//   c    - concentration (the upper limit, in units of r_s)
+//   init - 1 = build the static table only, 0 = integrate
+//
+// Returns:
+//   F0(c), dimensionless
+// ---------------------------------------------------------------------------
+double F0_KS_nointerp(
+    double c,       // concentration: upper limit, in units of r_s
+    const int init  // 1 = build the static GL table only, 0 = integrate
+  )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
@@ -670,7 +1258,28 @@ double F0_KS_nointerp(double c, const int init)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_F_KS(double x, void* params)
+// ---------------------------------------------------------------------------
+// Integrand of the bound-gas pressure transform F (F_KS_nointerp):
+//
+//   x^2 [sin(y x)/(y x)] theta(x)^(Gamma/(Gamma - 1))
+//     = x sin(y x)/y theta(x)^(Gamma/(Gamma - 1)),   y = k r_s
+//
+// The electron pressure is density times temperature (2005.00009
+// Eqs. 38, 40): P_e ~ rho_bnd T_g ~ theta^(1/(Gamma-1)) theta =
+// theta^(Gamma/(Gamma-1)). The kernel sin(y x)/(y x) is the spherical
+// Fourier transform of 2005.00009 Eq. 4.
+//
+// Parameters:
+//   x      - radius in units of r_s
+//   params - params[0] = y = k r_s
+//
+// Returns:
+//   the integrand, dimensionless
+// ---------------------------------------------------------------------------
+double int_F_KS(
+    double x,     // radius r/r_s
+    void* params  // params[0] = y = k r_s
+  )
 {
   double* ar = (double*) params;
   const double y = ar[0];  
@@ -683,7 +1292,34 @@ double int_F_KS(double x, void* params)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double F_KS_nointerp(double c, double krs, const int init) 
+// ---------------------------------------------------------------------------
+// Fourier transform of the Komatsu-Seljak electron-pressure profile,
+// truncated at r_Delta = c r_s, in units of 4 pi r_s^3 P_e(0):
+//
+//   F(c, y) = int_0^c x^2 [sin(y x)/(y x)] theta(x)^(Gamma/(Gamma-1)) dx
+//
+// Limits: F(c, 0) = int_0^c x^2 theta^(Gamma/(Gamma-1)) dx < F0(c),
+// since theta < 1 for x > 0; and |F(c, y)| <= F(c, 0) for every y.
+//
+// Numerics:
+//   Gauss-Legendre on [0, c]; init as in F0_KS_nointerp.
+//
+// Cache invalidation:
+// the static GL table rebuilds when Ntable.random changes.
+//
+// Parameters:
+//   c    - concentration (the upper limit, in units of r_s)
+//   krs  - y = k r_s, dimensionless
+//   init - 1 = build the static table only, 0 = integrate
+//
+// Returns:
+//   F(c, y), dimensionless
+// ---------------------------------------------------------------------------
+double F_KS_nointerp(
+    double c,       // concentration: upper limit, in units of r_s
+    double krs,     // y = k r_s, dimensionless
+    const int init  // 1 = build the static GL table only, 0 = integrate
+  )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
@@ -717,7 +1353,52 @@ double F_KS_nointerp(double c, double krs, const int init)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double u_KS(double c, double k, const double rv)
+// ---------------------------------------------------------------------------
+// Shape factor of the bound-gas pressure window:
+//
+//   u_KS(c, k, r_v) = F(c, y)/F0(c),   y = k r_v/c = k r_s
+//
+// the Fourier transform of the pressure profile per unit bound-gas mass
+// and per unit central temperature. The full window (u_y_bnd) is
+//
+//   W_p(M, k) = [k_B T_v f_bnd M/(m_p mu_e)] u_KS
+//
+// Unlike the matter u(k|M), u_KS does not tend to 1 at k -> 0:
+//
+//   u_KS(c, 0) = F(c, 0)/F0(c) = mass-weighted mean of theta
+//              = <T_g>/T_v < 1
+//
+// the mass-weighted gas temperature in units of the central temperature
+// T_v (theta(0) = 1). For every k, |u_KS(c, k)| <= u_KS(c, 0).
+//
+// Of the gas parameters, only Gamma = nuisance.gas[0] enters.
+//
+// Numerics:
+//   table in (c, ln y) on Ntable.halo_uks_nc x Ntable.halo_uks_nx nodes
+//   over [limits.halo_uks_cmin, limits.halo_uks_cmax] x
+//   [ln limits.halo_uks_xmin, ln limits.halo_uks_xmax], read with
+//   interpol2d. Off the table, interpol2d returns 0 for c outside its
+//   range and, for ln y beyond an edge, the edge value plus the signed
+//   overshoot (ln y - edge); neither is a clamp.
+//
+// Cache invalidation:
+//   allocation and limits: rebuilt when Ntable.random changes
+//   table refill: nuisance.random_gas (cache[0]) or Ntable.random
+//                 (cache[1])
+//
+// Parameters:
+//   c  - concentration r_Delta/r_s
+//   k  - wavenumber in (c/H0)^-1
+//   rv - halo radius r_Delta in c/H0 (comoving)
+//
+// Returns:
+//   u_KS, dimensionless, with u_KS(c, 0) < 1
+// ---------------------------------------------------------------------------
+double u_KS(
+    double c,        // concentration r_Delta/r_s
+    double k,        // wavenumber in (c/H0)^-1
+    const double rv  // halo radius r_Delta in c/H0 (comoving)
+  )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = 0;
@@ -735,7 +1416,9 @@ double u_KS(double c, double k, const double rv)
     lim[0][0] = limits.halo_uks_cmin; 
     lim[0][1] = limits.halo_uks_cmax;
     lim[0][2] = (lim[0][1] - lim[0][0])/((double) Ntable.halo_uks_nc - 1.);
-    lim[1][0] = log(limits.halo_uks_xmin); // full range of possible k*R_200/c in the code
+    // ln y range: limits.halo_uks_xmin .. xmax bracket the k r_Delta/c
+    // the code can ask for
+    lim[1][0] = log(limits.halo_uks_xmin);
     lim[1][1] = log(limits.halo_uks_xmax); 
     lim[1][2] = (lim[1][1] - lim[1][0])/((double) Ntable.halo_uks_nx - 1.); 
   }
@@ -768,7 +1451,30 @@ double u_KS(double c, double k, const double rv)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double frac_bnd(double M)
+// ---------------------------------------------------------------------------
+// Fraction of the halo mass in bound gas (2005.00009 Eq. 25, from
+// 1510.06034 Eq. 2.19):
+//
+//   f_bnd(M) = (Omega_b/Omega_m) / [1 + (M_0/M)^beta]
+//
+// Massive halos keep their cosmic share of baryons as hot bound gas
+// (M >> M_0: f_bnd -> Omega_b/Omega_m); feedback empties light halos
+// (M << M_0: f_bnd ~ (Omega_b/Omega_m)(M/M_0)^beta -> 0). A halo of
+// mass M_0 keeps half; beta sets how sharp the transition is. HMx
+// defaults (2005.00009 sec. 3.2): M_0 = 1e14 M_sun, beta = 0.6;
+// 1510.06034 sec. 2.4 fits M_c = 1.2e14 M_sun/h and beta = 0.6 to X-ray
+// gas fractions, with masses defined at 200 times the critical density.
+//
+// Parameters:
+//   M - halo mass in M_sun/h (M_0 = 10^nuisance.gas[2] M_sun/h,
+//       beta = nuisance.gas[1])
+//
+// Returns:
+//   f_bnd in [0, Omega_b/Omega_m]
+// ---------------------------------------------------------------------------
+double frac_bnd(
+    double M  // halo mass in M_sun/h
+  )
 {
   const double M0 = pow(10.0, nuisance.gas[2]);
   return cosmology.Omega_b/(cosmology.Omega_m*(1.0+ pow(M0/M, nuisance.gas[1])));
@@ -779,20 +1485,45 @@ double frac_bnd(double M)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double frac_ejc(double M)
+// ---------------------------------------------------------------------------
+// Fraction of the halo mass in ejected gas (2005.00009 Eq. 26):
+//
+//   f_ejc(M) = Omega_b/Omega_m - f_bnd(M) - f_*(M)
+//
+// The baryons of the halo's initial overdensity that are neither bound
+// gas nor stars have been pushed beyond r_Delta by feedback. The
+// stellar fraction (2005.00009 Eq. 27, from 1401.2997 sec. 3.3)
+//
+//   f_*(M) = A_* exp[-log10^2(M/M_*)/(2 sigma_*^2)]
+//
+// peaks at M_* with height A_* and width sigma_* in dex. Above M_* it
+// is floored at A_*/3, the high-mass saturation of the stellar-to-halo
+// mass relation (2005.00009 sec. 3.2):
+//
+//   f_*(M > M_*) = max(f_*(M), A_*/3)
+//
+// Sign: no clipping. Where f_bnd + f_* exceeds Omega_b/Omega_m, f_ejc
+// is negative: with M_0 = 1e14, beta = 0.6, A_* = 0.03 and
+// Omega_b/Omega_m = 0.156 this happens above about 10^15.9 M_sun/h.
+//
+// Parameters:
+//   M - halo mass in M_sun/h (A_* = nuisance.gas[6],
+//       log10 M_* = nuisance.gas[7], sigma_* = nuisance.gas[8])
+//
+// Returns:
+//   f_ejc, dimensionless, at most Omega_b/Omega_m
+// ---------------------------------------------------------------------------
+double frac_ejc(
+    double M  // halo mass in M_sun/h
+  )
 {
   const double logM = log10(M);
   const double delta = (logM - nuisance.gas[7])/nuisance.gas[8];
   
   const double tmp = nuisance.gas[6] * exp(-0.5*delta*delta);  
-  // above the peak mass M_star the stellar fraction is floored at
-  // A_star/3 (2005.00009 sec. 3.2: high-mass saturation of the
-  // stellar-to-halo mass relation)
   const double frac_star = ((logM > nuisance.gas[7]) && 
                            (tmp < nuisance.gas[6]/3.0)) ? nuisance.gas[6]/3.0 : tmp; 
   
-  // ejected gas = the halo's share of baryons that is neither bound gas
-  // nor stars: f_ejc = Omega_b/Omega_m - f_bnd - f_star (2005.00009)
   return cosmology.Omega_b/cosmology.Omega_m - frac_bnd(M) - frac_star;
 }
 
@@ -801,8 +1532,56 @@ double frac_ejc(double M)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double u_y_bnd(double c, double k, double m, double a)
-{ //unit: [G(M_solar/h)^2 / (c/H0)]
+// ---------------------------------------------------------------------------
+// Electron-pressure window of the bound gas: the Fourier-weighted volume
+// integral of the pressure (2005.00009 Eq. 4 with the pressure profile),
+//
+//   W_p(M, k) = int_0^{r_Delta} 4 pi r^2 [sin(kr)/(kr)] P_e(r) dr
+//
+// Derivation, chaining 2005.00009 Eqs. 40, 38, 39 and 13:
+//
+//   P_e = n_e k_B T_g,  n_e = rho_bnd/(m_p mu_e),  T_g = T_v theta
+//     ->  W_p = [k_B T_v/(m_p mu_e)] f_bnd M u_KS
+//   (3/2) k_B T_v = alpha G M m_p mu_p/(a r_v)
+//     ->  W_p = (2 alpha/(3a)) (mu_p/mu_e) f_bnd (G M^2/r_v) u_KS
+//
+// The value comes back with G left out, i.e. in units of
+// U = G (M_sun/h)^2/(c/H0): an energy (pressure times volume). The a
+// turns the comoving r_v into the physical radius. At k -> 0,
+// W_p ~ f_bnd M^(5/3) (2005.00009 Eq. 41): gas mass times a virial
+// temperature ~ M/r_v ~ M^(2/3).
+//
+// Mean particle masses of a fully ionized hydrogen-helium gas with
+// hydrogen mass fraction f_H (2005.00009, footnote to Eq. 40): per
+// proton mass there are 2 f_H + 3(1 - f_H)/4 particles and
+// f_H + (1 - f_H)/2 electrons, hence
+//
+//   mu_p = 4/(3 + 5 f_H),   mu_e = 2/(1 + f_H)
+//
+// r_v here is r_Delta (Delta = 200 times the mean density), where
+// 2005.00009 uses the virial overdensity (its Eq. 22); the free alpha
+// absorbs the difference, so alpha values fitted there do not carry
+// over one to one.
+//
+// Parameters:
+//   c - concentration r_Delta/r_s
+//   k - wavenumber in (c/H0)^-1
+//   m - halo mass in M_sun/h
+//   a - scale factor
+//   (alpha = nuisance.gas[5], f_H = nuisance.gas[10])
+//
+// Returns:
+//   W_p(M, k) in U = G (M_sun/h)^2/(c/H0): the full window, not a
+//   profile normalized to 1. In 2005.00009 Eqs. 1-2 it stands where the
+//   matter field has W_m = (M/rho_m) u(k|M).
+// ---------------------------------------------------------------------------
+double u_y_bnd(
+    double c, // concentration r_Delta/r_s
+    double k, // wavenumber in (c/H0)^-1
+    double m, // halo mass in M_sun/h
+    double a  // scale factor (comoving r_v -> physical, in T_v)
+  )
+{
   
   const double rho_delta = Delta * cosmology.rho_crit * cosmology.Omega_m;
   const double r_delta = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
@@ -819,15 +1598,44 @@ double u_y_bnd(double c, double k, double m, double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double u_y_ejc(double m)
-{ // [m] = [Msun/h]
-  const double num_p = 1.1892e57; // proton number in 1 solar mass, unit [1/Msun]
+// ---------------------------------------------------------------------------
+// Electron-pressure window of the ejected gas: its electron count times
+// k_B T_w, at the warm temperature T_w,
+//
+//   W_ejc(M) = N_e k_B T_w,   N_e = f_ejc M/(mu_e m_p)
+//
+// The ejected gas follows the linear density field outside halos, so it
+// has no 1-halo term and a k-independent (point-like) window in the
+// 2-halo term (2005.00009 sec. 3.3 and Eq. 36).
+//
+// Unit chain, landing on the units of u_y_bnd so the two windows add:
+//
+//   num_p = M_sun/m_p = 1.1892e57           (M_sun = 1.989e30 kg)
+//   num_p m[M_sun/h]  = h N_p
+//   k_B T_w [eV]      = 8.6173e-5 T_w[K]
+//   1 eV              = 5.616e-44 h U,   U = G (M_sun/h)^2/(c/H0)
+//     ->  E_w = 8.6173e-5 T_w 5.616e-44 = (k_B T_w in U)/h
+//     ->  num_p m f_ejc E_w/mu_e = N_e k_B T_w in U   (h cancels)
+//
+// The sign follows f_ejc (frac_ejc).
+//
+// Parameters:
+//   m - halo mass in M_sun/h (T_w = 10^nuisance.gas[9] K,
+//       f_H = nuisance.gas[10])
+//
+// Returns:
+//   W_ejc(M) in U = G (M_sun/h)^2/(c/H0)
+// ---------------------------------------------------------------------------
+double u_y_ejc(
+    double m  // halo mass in M_sun/h
+  )
+{
+  const double num_p = 1.1892e57;
   
-  // convert ejected gas T (K) to E (eV) then to [G (Msun/h)^2 / (c/H0) * h]
   const double E_w = pow(10,nuisance.gas[9]) * 8.6173e-5 * 5.616e-44;
   const double mu_e = 2./(1.+nuisance.gas[10]);
   
-  return (num_p * m * frac_ejc(m) / mu_e) * E_w; // final unit in [G(Msun/h)^2 / (c/H0)]
+  return (num_p * m * frac_ejc(m) / mu_e) * E_w;
 }
 
 // ---------------------------------------------------------------------------
@@ -835,11 +1643,37 @@ double u_y_ejc(double m)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double n_s_cmv(double a) 
+// ---------------------------------------------------------------------------
+// Comoving number density of source galaxies at scale factor a: the
+// angular density per unit redshift divided by the comoving volume per
+// unit redshift and solid angle,
+//
+//   n(a) = n_gal n_src(z) / [dV/(dz dOmega)],   z = 1/a - 1
+//
+//   n_gal          = survey.n_gal times survey.n_gal_conversion_factor
+//                    (arcmin^-2 -> sr^-1)
+//   n_src(z)       = nz_source_photoz(z, -1), intended as the all-bin
+//                    source redshift distribution with unit integral
+//   dV/(dz dOmega) = f_K(chi)^2 dchi/dz = f_K(chi)^2/(H/H0),
+//                    in (c/H0)^3
+//
+// nz_source_photoz aborts for nj < 0 (redshift_spline.c), so this
+// function cannot run as written; it has no caller and no declaration
+// in halo.h.
+//
+// Parameters:
+//   a - scale factor
+//
+// Returns:
+//   n in (c/H0)^-3
+// ---------------------------------------------------------------------------
+double n_s_cmv(
+    double a  // scale factor
+  )
 { 
-  double dV_dz = pow(f_K(chi(a)), 2.0) / hoverh0(a); // comoving dV/dz per radian^2
+  double dV_dz = pow(f_K(chi(a)), 2.0) / hoverh0(a);
   return nz_source_photoz(1.0/a - 1., -1) * survey.n_gal * 
-    survey.n_gal_conversion_factor / dV_dz; // dN/dz/radian^2/(dV/dz/radian^2)
+    survey.n_gal_conversion_factor / dV_dz;
 }
 
 // ---------------------------------------------------------------------------
