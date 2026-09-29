@@ -38,9 +38,10 @@
 // compile-time.
 //
 //   include_HOD_GX    = halo-model (HOD) galaxy power in the galaxy
-//                       probes: gg reads p_gg/p_gm from halo.c
-//                       (Limber-only; no RSD, no one-loop bias); the
-//                       gs/gk batched paths still abort. 0 by default.
+//                       probes: gg reads p_gg/p_gm and gs reads p_gm
+//                       from halo.c (Limber-only; no RSD, no one-loop
+//                       bias; gs is NLA-only); the gk batched path
+//                       still aborts. 0 by default.
 //   include_RSD_GS/GK = add the W_RSD (redshift-space distortion)
 //                       kernel to that probe's Limber integrand
 //   include_RSD_GG    = same gate for gg; defaults to 1 so the Limber
@@ -3463,7 +3464,37 @@ static void C_gs_tomo_limber_work(
   // With use_linear_ps = 1 the one-loop bias (WB[4..7], KIA[6..8]) and the
   // TATT kernels (KIA[2..5]) stay zero, so the cores reduce to b1*P_lin
   // times (WK - WS*C1): exactly the physics of the FFTLog term.
-  const int nonlinear_bias = (0 == use_linear_ps) ? has_b2_galaxies() : 0;
+  // -------------------------------------------------------------------------
+  // HOD mode (include_HOD_GX = 1): the lens galaxies are the halo-model
+  // occupation field. The density leg's power with matter is p_gm, and
+  // its cross with the NLA alignment field is C1 p_gm (delta_I = C1
+  // times the linear tidal field, so <delta_g delta_I> = C1 <delta_g
+  // delta_m>); magnification traces matter and keeps the standard
+  // term. Per quadrature node:
+  //
+  //   [ W_gal p_gm(k, a, zl) + W_mag ep b_mag P_delta ] (W_K - W_S C1)
+  //
+  // TATT crosses the density with one-loop tidal operators, which has
+  // no HOD counterpart: TATT + HOD aborts (NLA only). RSD and the
+  // one-loop bias are off in this mode, and HOD C_l^gs is Limber-only
+  // (the FFTLog linear term aborts): run with adopt_limber_gs = 1.
+  // -------------------------------------------------------------------------
+  const int hod = include_HOD_GX;
+  if (1 == hod && 1 == use_linear_ps) {
+    log_fatal("HOD C_l^gs is Limber-only: set adopt_limber_gs = 1");
+    exit(1);
+  }
+
+  int nonlinear_bias = 0;
+  if (0 == use_linear_ps && 0 == hod) {
+    nonlinear_bias = has_b2_galaxies();
+  }
+
+  // RSD is not part of the HOD model (see the note above)
+  int rsd = 0;
+  if (1 == include_RSD_GS && 0 == hod) {
+    rsd = 1;
+  }
   {
     const cosmo_nodes* cn = &cn_all[0];
     const double a    = cn->data[CN_A][0];
@@ -3486,13 +3517,18 @@ static void C_gs_tomo_limber_work(
     (void) gbmag(0.1, 0);
     (void) ZL(0);
     (void) ZS(0);
+    if (1 == hod) {
+      // halo.c builds its (a, ln k) tables inside its own OpenMP
+      // regions; trigger them before this function's parallel regions
+      (void) p_gm(ell/fK, a, 0);
+    }
     if (1 == nonlinear_bias) {
       (void) gb2(0.1, 0);
       (void) gbs2(0.1, 0);
       (void) gb3(0.1, 0);
       (void) gbK(0.1, 0);
     }
-    if (1 == include_RSD_GS) {
+    if (1 == rsd) {
       (void) a_chi(0.9);
       (void) W_RSD(100, 0.9, 0.95, 0);
     }
@@ -3526,9 +3562,20 @@ static void C_gs_tomo_limber_work(
                                          npts);
   zero4d(KIA, 10, redshift.clustering_nbin, nell, npts);
 
+  // HOD galaxy-matter spectrum at the nodes: KH[0] = p_gm(k, a, zl)
+  double**** KH = NULL;
+  if (1 == hod) {
+    KH = (double****) malloc4d(1, redshift.clustering_nbin, nell, npts);
+  }
+
   double limTATT[3];
   double limbias[3];
   const int tatt = (nuisance.IA_MODEL == IA_MODEL_TATT && 0 == use_linear_ps);
+  if (1 == hod && 1 == tatt) {
+    log_fatal("TATT with HOD has no tree-level density leg: "
+              "HOD C_l^gs supports NLA only");
+    exit(1);
+  }
   if (tatt) {
     if (0 == nuisance.IA_code) get_FPT_IA();
     limTATT[0] = log(FPTIA.k_min);
@@ -3614,6 +3661,9 @@ static void C_gs_tomo_limber_work(
           KIA[0][zl][i][p] = (0 == use_linear_ps) ? Pdelta(k, a) :
                                                     gf*gf*invgf2w[zl]*
                                        p_lin(k, apivw[zl]);
+          if (1 == hod) {
+            KH[0][zl][i][p] = p_gm(k, a, zl);
+          }
           // RSD in Limber samples the kernel at TWO radii: the j_l''
           // of the exact velocity term couples neighboring Bessel
           // orders, so the extended-Limber W_RSD (radial_weights.c)
@@ -3622,7 +3672,7 @@ static void C_gs_tomo_limber_work(
           // so chi_0 = ell/k and chi_1 = (ell+1)/k). The gg and gk
           // copies of this recipe add a reach mask (see
           // C_gg_tomo_limber_work).
-          if (1 == include_RSD_GS) {
+          if (1 == rsd) {
             const double chi_0 = ell/k;
             const double chi_1 = (ell + 1.0)/k;
             const double a_0 = a_chi(chi_0);
@@ -3707,25 +3757,45 @@ static void C_gs_tomo_limber_work(
       const double* restrict d1p3    = KIA[8][ZLNZ][i];
 
       double sum = 0.0;
-      #pragma omp simd reduction(+:sum)
-      for (int p = 0; p < npts; p++) {
-        const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
-        const double k = ell / fK[p];
-        const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
-        const double b1l =
-            int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
-              b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
-        const double ans =
-            int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
-              WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
-              g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
-              b1[p],bmag[p],b1l,ep);
-        sum += ans*amp*wt[p];
+      if (1 == hod) {
+        /* PHYSICAL DERIVATION & LOGIC FLOW
+           1. lens leg = W_gal p_gm + W_mag ell_prefactor b_mag P_delta
+              (bias inside p_gm; magnification traces matter)
+           2. source leg = W_kappa - W_source C1           (NLA only)
+           3. C_l^gs = sum_p lens x source x (dchi/da) ep2 w_p / f_K^2 */
+        const double* restrict PGM = KH[0][ZLNZ][i];
+        #pragma omp simd reduction(+:sum)
+        for (int p = 0; p < npts; p++) {
+          const double amp  = (dchida[p]/(fK[p]*fK[p]))*ep2;
+          const double lens = WGAL[p]*PGM[p] + WMAG[p]*ep*bmag[p]*PK[p];
+          const double ans  = lens*(WK[p] - WS[p]*C1[p]);
+          sum += ans*amp*wt[p];
+        }
+      }
+      else {
+        #pragma omp simd reduction(+:sum)
+        for (int p = 0; p < npts; p++) {
+          const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+          const double k = ell / fK[p];
+          const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
+          const double b1l =
+              int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
+                b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
+          const double ans =
+              int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
+                WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
+                g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
+                b1[p],bmag[p],b1l,ep);
+          sum += ans*amp*wt[p];
+        }
       }
       table[j][i] = sum;
     }
   }
   free(WB); free(WC); free(KIA);
+  if (KH != NULL) {
+    free(KH);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4132,7 +4202,8 @@ double C_gs_tomo_limber(
       fdiff2(cache[4], redshift.random_shear) ||
       fdiff2(cache[5], redshift.random_clustering) ||
       fdiff2(cache[6], Ntable.random) ||
-      fdiff2(cache[7], nuisance.random_galaxy_bias))
+      fdiff2(cache[7], nuisance.random_galaxy_bias) ||
+      fdiff2(cache[8], (uint64_t) include_HOD_GX))
   {
     cosmo_nodes cn_all[redshift.clustering_nbin];
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
@@ -4234,6 +4305,7 @@ double C_gs_tomo_limber(
     cache[5] = redshift.random_clustering;
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
+    cache[8] = (uint64_t) include_HOD_GX;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
