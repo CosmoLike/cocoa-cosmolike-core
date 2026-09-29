@@ -3062,12 +3062,6 @@ double int_for_I02_XY(double lnM, void* params)
   double vol; // one m/rho_m per matter leg (header, item 2)
   switch(XY)
   {
-    case 0:
-    { // matter-matter
-      u = u_c(c, k1, m, a) * u_c(c, k2, m, a);
-      vol = (m/rhom) * (m/rhom);
-      break;
-    }
     case 1:
     { // matter-y
       u = u_y_bnd(c, k1, m, a) * u_c(c, k2, m, a);
@@ -3443,156 +3437,89 @@ double I11_X_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-double int_for_G02(double lnM, void* param)
-{
-  double* ar = (double*) param;
-  
-  const double k = ar[0];
-  const double a = ar[1];
-  const int ni = (int) ar[2];
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
-  }
-  const double growfac_a = ar[3];
-  const double m  = exp(lnM);
-
-  const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
-  const double gnu = fnu(nu, a) * nu; 
-  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-  const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m);
-
-  const double c  = conc(m, growfac_a);
-  const double u  = u_g(c, k, m, a, ni);
-  const double ns = HOD_ns(m, a, ni);
-  const double nc = HOD_nc(m, a, ni);
-  const double fc = HOD_fc(ni);
-
-  return dNdlnM*(u*u*ns*ns + 2.0*u*ns*nc*fc);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double G02_nointerp(
-    double k, 
-    double a, 
-    int ni, 
-    const int init
-  )
-{ //needs to be divided by ngal^2
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
-  }
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = 1024; // largest predefined GSL table
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-
-  double ar[4] = {k, a, (double) ni, growfac(a)};
-  const double lnMmin = log(limits.halo_m_min);
-  const double lnMmax = log(limits.halo_m_max);
-
-  double res;
-  if (1 == init) {
-    res = int_for_G02((lnMmin + lnMmax)/2.0, (void*) ar);
-  }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_for_G02;
-    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_GM02(double lnM, void* params)
-{ // 1-halo galaxy-matter spectrum
-  double* ar = (double*) params;
-  
-  const double k = ar[0];
-  const double a = ar[1];
-  const int ni = (int) ar[2];
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni); exit(1);
-  }
-  const double growfac_a = ar[3];
-  const double m = exp(lnM);
-
-  const double nu = delta_c/(sqrt(sigma2(m))*growfac_a);
-  const double gnu  = fnu(nu, a) * nu; 
-  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
-  const double dNdlnM = gnu * (rhom/m) * dlognudlogm(m);
-
-  const double c = conc(m, growfac_a);
-  const double ns = HOD_ns(m, a, ni);
-  const double nc = HOD_nc(m, a, ni);
-  const double fc = HOD_fc(ni);
-
-  return dNdlnM*(m/rhom)*u_c(c,k,m,a)*(u_g(c,k,m,a,ni)*ns + nc*fc);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double GM02_nointerp(
-    double k, 
-    double a, 
-    int ni, 
-    const int init
-  )
-{ // needs to be divided by ngal
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("error in selecting bin number ni = %d", ni);
-    exit(1);
-  }
-
-  if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = 1024; // largest predefined GSL table
-    if (w != NULL)  gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-    cache[0] = Ntable.random;
-  }
-
-  double ar[4] = {k, a, (double) ni, growfac(a)};
-  const double lnMmin = log(10.)*(nuisance.hod[ni][0] - 1.0);
-  const double lnMmax = log(limits.halo_m_max);
-
-  double res;
-  if (1 == init) {
-    res = int_GM02((lnMmin + lnMmax)/2.0, (void*) ar);
-  }
-  else {
-    gsl_function F;
-    F.params = (void*) ar;
-    F.function = int_GM02;
-    res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // HALO MODEL POWER SPECTRA
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Warm-up of the spectrum table builders: one single-threaded call to
+// each function with lazily built static state that the threaded loops
+// of p_mm, p_my, p_yy, p_gm and p_gg read, so that inside the loops
+// those functions only read (the warm-up rule of the cosmo2D.c _work
+// functions). Each call is one table read once its build has run; the
+// values are thrown away, which the (void) casts say. The builds
+// themselves thread (sigma2, dlognudlogm, bias_norm, hod_tables,
+// tinker_alpha, nfw_table and u_KS each own a parallel loop): one more
+// reason they must start outside a parallel region.
+//
+//   sigma2, dlognudlogm   the ln M tables (cosmo3D.c; above); keys
+//                         cosmology.random, Ntable.random
+//   fnu_params_at         the tinker_alpha table; key like.halo_model
+//   nfw_table             the NFW f, G table nfw_, read by the rows
+//                         through nfw_um; key Ntable.random
+//   bias_norm             the HMx term of the I11 2-halo spectra
+//                         (matter, y); keys cosmology, Ntable
+//   ngal                  the hod_ tables of ngal and bgal (galaxies);
+//                         keys cosmology, Ntable, the HOD tag, the
+//                         clustering n(z) tag
+//   Pdelta                its run-mode latch, a static set on the
+//                         first call (galaxies: the 2-halo term)
+//   u_KS                  the gas tables (y); keys nuisance.random_gas,
+//                         Ntable.random
+//
+// Static-free, so absent: growfac, p_lin, p_nonlin, PkRatio_baryons
+// (the CAMB-fed cosmology tables); hb1nu_params_at and the *_core
+// kernels; conc (a sigma2 read); HOD_nc, HOD_ns, HOD_fc; frac_bnd,
+// frac_ejc, u_y_ejc; nfw_um.
+//
+// Preconditions, checked by the callees: 0 < a < 1 (fnu_params_at);
+// hod = 1 needs the HOD of every lens bin set (HOD_nc aborts inside
+// hod_tables); gas = 1 needs cosmology.Omega_b > 0 and
+// nuisance.gas[0] > 1, which the y builders check in their refill
+// blocks before calling here.
+//
+// Parameters:
+//   a   - a scale factor of the builder's a grid, 0 < a < 1
+//   k   - a wavenumber of the builder's k grid, (c/H0)^-1
+//   gas - 1: the y spectra (p_my, p_yy) read u_KS
+//   hod - 1: the galaxy spectra (p_gm, p_gg) read ngal, bgal and
+//         Pdelta; 0: the I11 spectra (p_mm, p_my, p_yy) read bias_norm
+//
+// Returns:
+//   nothing
+// ---------------------------------------------------------------------------
+static void halo_warmup(
+    const double a,  // scale factor of the builder's a grid, 0 < a < 1
+    const double k,  // wavenumber of the builder's k grid, (c/H0)^-1
+    const int gas,   // 1 = the y spectra read u_KS
+    const int hod    // 1 = the galaxy spectra read ngal, bgal, Pdelta
+  )
+{
+  const double mmin = limits.halo_m_min;
+  (void) sigma2(mmin);
+  (void) dlognudlogm(mmin);
+  (void) fnu_params_at(a);
+  nfw_table();
+  if (1 == hod) {
+    // 2-halo term Pdelta bgal: the hod_ tables and the Pdelta latch
+    (void) ngal(0, a);
+    (void) Pdelta(k, a);
+  }
+  else {
+    // 2-halo term I11^2 P_lin, I11 with the HMx share 1 - bias_norm
+    (void) bias_norm(a);
+  }
+  if (1 == gas) {
+    // one read at the lightest halo: c(M_min) is a sigma2 read (built
+    // above), r_v = r_Delta(M_min) as in u_y_bnd
+    const double rho_delta = Delta*cosmology.rho_crit*cosmology.Omega_m;
+    const double rv = pow(3./(4.0*M_PI)*(mmin/rho_delta), 1./3.);
+    (void) u_KS(conc(mmin, growfac(a)), k, rv);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -3611,13 +3538,6 @@ double p_xy_nointerp(
 
   switch(func)
   {
-    case 0:
-    { // PMM
-      P1H  = I02;
-      I11X = I11_X_nointerp(k, a, func, init);
-      I11Y = I11X;
-      break;
-    }
     case 1:
     { // PMY
       if (!(cosmology.Omega_b > 0)) {
@@ -3731,13 +3651,8 @@ double p_xy_nointerp(
 // - Measured 2026-09-29 (4 threads; N_a = 256, N_k = 512, 1024 nodes:
 //   1.3e8 kernel calls): one refill 0.5 s.
 //
-// Thread safety: the single-threaded p_xy_nointerp(k_min, a_min, 0, 1)
-// call before the threaded loop builds every lazy table the rows read
-// (sigma2, dlognudlogm, the tinker_alpha table of fnu_params_at,
-// bias_norm, the NFW table nfw_), so inside the loop they are only read:
-// the warm-up rule of the cosmo2D.c _work functions (halo_wrapper.hpp,
-// "The init flag"). growfac and p_lin read the CAMB-fed cosmology tables
-// and hold no static state.
+// Thread safety: the single-threaded halo_warmup call before the
+// threaded loop builds every lazy table the rows read (its header).
 //
 // Cache invalidation:
 //   rebuild block (table, mq, aq, GL nodes, both grids; every allocation
@@ -3806,9 +3721,9 @@ double p_mm(
       log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
       exit(1);
     }
-    // Warm-up: builds every lazy table the threaded loop reads (header,
-    // Thread safety); the value is thrown away
-    (void) p_xy_nointerp(exp(lim[1][0]), lim[0][0], 0, 1);
+    // Warm-up (header, Thread safety): every lazy table the threaded
+    // loop reads is built here, on one thread
+    halo_warmup(lim[0][0], exp(lim[1][0]), 0, 0);
     // Per mass node (header, item 2, first row)
     const double rhom = cosmology.rho_crit * cosmology.Omega_m;
     const double rho_delta = Delta * rhom;
@@ -3976,21 +3891,6 @@ double p_yy(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double p_gm_nointerp(
-    const double k, 
-    const double a, 
-    const int ni,
-    const int init
-  )
-{
-  return Pdelta(k, a)*bgal(ni, a) + GM02_nointerp(k, a, ni, init)/ngal(ni, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 // ---------------------------------------------------------------------------
 // P_gm(k, a, ni), the halo-model galaxy-matter power spectrum of lens bin
 // ni, from a table of ln P per bin on na x Ntable.N_k_nlin nodes, na =
@@ -4005,9 +3905,7 @@ double p_gm_nointerp(
 // one halo per galaxy (ngal): satellites follow u_g, the NFW profile at
 // c_g = gc c, gc = nuisance.gc[ni] (u_g header); the central sits at the
 // center (window 1). dn/dlnM, (M/rho_m) u_m as in p_mm (its header);
-// N_c, N_s, f_c the occupation of the GALAXY PROFILES banner. The same
-// P_gm done directly: p_gm_nointerp (GM02_nointerp, GSL fixed rule),
-// called by the rows here only as the warm-up below.
+// N_c, N_s, f_c the occupation of the GALAXY PROFILES banner.
 //
 // 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
 // item 1) over ln M from ln 10^(lg M_min - 1) of the bin to
@@ -4038,12 +3936,9 @@ double p_gm_nointerp(
 // - Measured 2026-09-29 (4 threads; 10 lens bins, na = 51, N_k = 512,
 //   1024 nodes): one refill 1.0 s.
 //
-// Thread safety: the single-threaded p_gm_nointerp(k_min, a_min, 0, 1)
-// call before the threaded loops (p_mm's warm-up rule) builds every lazy
-// table the rows read (sigma2, dlognudlogm, tinker_alpha of fnu_params_at,
-// the NFW table nfw_, the hod_ tables of ngal, bgal) and latches Pdelta's
-// run mode, a static set on its first call; growfac, p_lin, p_nonlin and
-// PkRatio_baryons hold no static state. One parallel region per bin.
+// Thread safety: the single-threaded halo_warmup call before the
+// threaded loops builds every lazy table the rows read (its header). One
+// parallel region per bin.
 //
 // Cache invalidation:
 //   rebuild block (table, lim, gl, bq, aq; every allocation lives here,
@@ -4137,9 +4032,9 @@ double p_gm(
       log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
       exit(1);
     }
-    // Warm-up: builds every lazy table the threaded loops read (header,
-    // Thread safety); the value is thrown away
-    (void) p_gm_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 1);
+    // Warm-up (header, Thread safety): every lazy table the threaded
+    // loops read is built here, on one thread
+    halo_warmup(lim[0][0], exp(lim[nbin][0]), 0, 1);
     // Per (bin, node), serially (header, item 2, first row): the GL nodes
     // mapped onto [ln 10^(lg M_min - 1), ln M_max] of the bin, the
     // a-independent factors, the occupation at the placeholder a = amin;
@@ -4260,28 +4155,6 @@ double p_gm(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double p_gg_nointerp(
-    const double k, 
-    const double a, 
-    const int ni, 
-    const int nj,
-    const int init
-  )
-{
-  if (ni != nj) {
-    log_fatal("cross-tomography (ni,nj) = (%d,%d) bins not supported", ni, nj);
-    exit(1);
-  }
-  const double bg = bgal(ni, a);
-  const double ng = ngal(ni, a);
-  return Pdelta(k, a)*bg*bg + G02_nointerp(k, a, ni, init)/(ng*ng);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 // ---------------------------------------------------------------------------
 // P_gg(k, a, ni, nj), the halo-model galaxy power spectrum of lens bin ni
 // (auto-spectra only: nj must equal ni), from a table of ln P per bin as
@@ -4297,8 +4170,7 @@ double p_gg_nointerp(
 // satellites follow u_g, the NFW profile at c_g = gc c (u_g header), the
 // central sits at the center (window 1). dn/dlnM as in p_mm (its
 // header); N_c(M), N_s(M), f_c the occupation of the GALAXY PROFILES
-// banner. p_gg_nointerp is the same P_gg done directly (G02_nointerp, GSL
-// fixed rule); the rows here call it only as the warm-up below.
+// banner.
 //
 // 1. Quadrature: the 1024-node Gauss-Legendre rule of p_mm (its header,
 // item 1) over [ln limits.halo_m_min, ln limits.halo_m_max], the same for
@@ -4327,9 +4199,7 @@ double p_gg_nointerp(
 // - Measured 2026-09-29 (4 threads; 10 lens bins, na = 51, N_k = 512,
 //   1024 nodes: 2.7e8 kernel calls): one refill 1.0 s.
 //
-// Thread safety: as p_gm (its header), with the single-threaded
-// p_gg_nointerp(k_min, a_min, 0, 0, 1) call before the threaded loops as
-// the warm-up that builds every lazy table the rows read.
+// Thread safety: as p_gm (its header).
 //
 // Cache invalidation:
 //   as p_gm (its header); the rebuild block here holds table, lim, mq
@@ -4425,9 +4295,9 @@ double p_gg(
       log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
       exit(1);
     }
-    // Warm-up: builds every lazy table the threaded loops read (header,
-    // Thread safety); the value is thrown away
-    (void) p_gg_nointerp(exp(lim[nbin][0]), lim[0][0], 0, 0, 1);
+    // Warm-up (header, Thread safety): every lazy table the threaded
+    // loops read is built here, on one thread
+    halo_warmup(lim[0][0], exp(lim[nbin][0]), 0, 1);
     // Per mass node, serially (header, item 2, first row); the sigma2 and
     // dlognudlogm reads happen here, before the threads
     const double rhom = cosmology.rho_crit * cosmology.Omega_m;
