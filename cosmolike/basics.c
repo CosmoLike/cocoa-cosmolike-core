@@ -975,7 +975,7 @@ void spline_coeffs_uniform(
 // The 2D version of the 1D strategy (spline_coeffs_uniform + the
 // direct-index Horner evaluation): a coarse table zc, exact at its
 // nxc x nyc nodes, fills a dense table zf at nxf x nyf nodes. Both
-// grids are uniform along each axis and SHARE their endpoints - that
+// grids are uniform along each axis and share their endpoints - that
 // is the contract that makes every interval lookup pure arithmetic
 // (one multiply + one cast, no search).
 //
@@ -986,24 +986,28 @@ void spline_coeffs_uniform(
 //   pass 2 (along x): each fine column of tmp -> 1D natural cubic
 //     spline -> evaluated at the nxf fine rows -> zf[nxf][nyf]
 //
-// The two passes commute: in exact arithmetic the result is the
-// unique tensor-product natural bicubic interpolant evaluated at the
-// fine nodes, so the order is a convention.
-//
-// Each 1D piece is exactly the house machinery: spline_coeffs_uniform
-// produces the c coefficients, and the cubic
+// The passes commute in exact arithmetic (both orders give the unique
+// tensor-product interpolant), so the order is a convention. Each 1D
+// piece is the house machinery: c_q = S''(x_q)/2 from the [1 4 1]
+// tridiagonal system (derived and solved by forward elimination +
+// back substitution in spline_coeffs_uniform's header), then the cubic
 //
 //   S(x_q + dx) = y_q + b dx + c_q dx^2 + d dx^3
 //     with d = (c_{q+1} - c_q) / (3 h)
 //     and  b = (y_{q+1} - y_q)/h - h (c_{q+1} + 2 c_q)/3
 //
-// is evaluated in Horner form. The fine spacings follow from the
-// shared endpoints (dxf = dxc (nxc-1)/(nxf-1)), and the interval
-// index is clamped onto the last interval against a 1-ulp overshoot
-// of the shared top endpoint, exactly as in the 1D consumers.
+// in Horner form, b and d computed once per coarse interval. The fine
+// spacings follow from the shared endpoints (dxf = dxc (nxc-1)/(nxf-1))
+// and the interval index is clamped onto the last interval against a
+// 1-ulp overshoot of the shared top endpoint, as in the 1D consumers.
 //
-// Cost: O(nxc (nyc + nyf) + nyf (nxc + nxf)) time, O(nxc nyf)
-// scratch. Called once per cache rebuild.
+// tmp is row-major [x][y], so the x direction is strided in memory:
+// pass 2 runs row-wise, every step one contiguous loop over the nyf
+// fine columns (SIMDe, 4 doubles per operation, plus a scalar tail).
+//
+// Cost: O(nxc (nyc + nyf) + nyf (nxc + nxf)) time; O(nxc nyf) scratch
+// as one 4 x nxc x nyf block plus O(nxc + nyc + nyf) small arrays.
+// Called once per cache rebuild.
 //
 // PARAMETERS:
 //   zc       - coarse table [nxc][nyc] (malloc2d layout)
@@ -1023,69 +1027,198 @@ void spline2d_upsample_uniform(
     const int nyf
   )
 {
-  // Shared endpoints fix the fine spacings: both grids span the same
-  // length per axis, so (nxf - 1) dxf = (nxc - 1) dxc, and likewise
-  // along y.
+  // shared endpoints fix the fine spacings: (nxf - 1) dxf = (nxc - 1) dxc
+  // and likewise along y
   const double dxf = dxc * ((double) (nxc - 1)) / ((double) (nxf - 1));
   const double dyf = dyc * ((double) (nyc - 1)) / ((double) (nyf - 1));
 
-  double** tmp = (double**) malloc2d(nxc, nyf); // exact in x, fine in y
+  // four [nxc][nyf] workspaces in one block: tmp (exact in x, fine in
+  // y) and the three pass-2 coefficient tables cx, bx, dx3 (below)
+  double*** w = (double***) malloc3d(4, nxc, nyf);
+  double** tmp = w[0];
   const int ncmax = (nxc > nyc) ? nxc : nyc;
-  double* cbuf = (double*) malloc(ncmax * sizeof(double)); // c coefficients
-  double* col  = (double*) malloc(nxc * sizeof(double));   // one x column
+  double* cbuf = (double*) malloc(ncmax * sizeof(double)); // 1D spline c
 
-  // pass 1 (along y): each coarse row onto the fine columns
+  // pass 1 (along y): each coarse row onto the fine columns. Fine
+  // column j has the same interval q and offset del in every row
+  // (qy, ey), and b, d are per coarse interval (by, dy), so no
+  // division runs per fine node.
+  int* qy = (int*) malloc(nyf * sizeof(int));
+  double* ey = (double*) malloc(nyf * sizeof(double));
+  for (int j=0; j<nyf; j++) {
+    // position of fine column j in coarse spacings: uniform grids with
+    // shared endpoints, so the interval index is a cast - no search
+    const double r = (double) j * dyf / dyc;
+    int q = (int) r;      // left node of the spline interval [q, q+1]
+    if (q > nyc - 2) { // shared endpoint (up to 1 ulp overshoot)
+      q = nyc - 2;
+    }
+    qy[j] = q;
+    ey[j] = (r - q) * dyc; // offset inside the interval
+  }
+  double* by = (double*) malloc((nyc - 1) * sizeof(double));
+  double* dy = (double*) malloc((nyc - 1) * sizeof(double));
   for (int i=0; i<nxc; i++) {
     // natural cubic spline through this row: cbuf[q] = S''(y_q)/2
     spline_coeffs_uniform(zc[i], nyc, dyc, cbuf);
     const double* restrict y = zc[i];
     const double* restrict cc = cbuf;
+    // cubic S(y_q + del) = y_q + b del + c_q del^2 + d del^3 with
+    //   S(y_{q+1}) = y_{q+1} (interpolate the right node)  -> b
+    //   S'' linear from 2 c_q to 2 c_{q+1}                 -> d
+    for (int q=0; q<nyc-1; q++) {
+      by[q] = (y[q+1] - y[q])/dyc - dyc*(cc[q+1] + 2.0*cc[q])/3.0;
+      dy[q] = (cc[q+1] - cc[q])/(3.0*dyc);
+    }
+    double* restrict out = tmp[i];
     for (int j=0; j<nyf; j++) {
-      // fractional coarse position of fine column j: uniform grids
-      // with shared endpoints, so the interval index is one multiply
-      // plus a cast - no search
-      const double r = (double) j * dyf / dyc;
-      int q = (int) r;      // left node of the spline interval [q, q+1]
-      if (q > nyc - 2) { // shared endpoint (up to 1 ulp overshoot)
-        q = nyc - 2;
-      }
-      const double del = (r - q) * dyc; // offset inside the interval
-      // cubic S(y_q + del) = y_q + b del + c_q del^2 + d del^3 with
-      //   S(y_{q+1}) = y_{q+1} (interpolate the right node)  -> b
-      //   S'' linear from 2 c_q to 2 c_{q+1}                 -> d
-      const double b = (y[q+1] - y[q])/dyc - dyc*(cc[q+1] + 2.0*cc[q])/3.0;
-      const double d = (cc[q+1] - cc[q])/(3.0*dyc);
-      tmp[i][j] = y[q] + del*(b + del*(cc[q] + del*d)); // Horner form
+      const int q = qy[j];
+      const double del = ey[j];
+      out[j] = y[q] + del*(by[q] + del*(cc[q] + del*dy[q])); // Horner form
     }
   }
+  free(dy);
+  free(by);
+  free(ey);
+  free(qy);
 
-  // pass 2 (along x): each fine column of tmp onto the fine table
+  // pass 2 (along x), row-wise. Every column of tmp has the same
+  // [1 4 1] system along x (spline_coeffs_uniform's header), so the
+  // multipliers m_q = 1/(4 - m_{q-1}) are shared (mq) and each solve
+  // step runs over whole rows, with the per-element arithmetic of a
+  // per-column 1D solve. cx[q][j] = S''/2 at coarse x node q of
+  // column j; bx, dx3 = per-interval b and d (rows 0 .. nxc-2 used).
+  double** cx = w[1];
+  double** bx = w[2];
+  double** dx3 = w[3];
+  double* mq = (double*) malloc(nxc * sizeof(double));
+  const double inv_dx2 = 3.0 / (dxc * dxc); // the right side's scale
+  mq[0] = 0.0; // row 1 has no subdiagonal term to eliminate
+  // natural boundaries: S'' = 0 at the first and last x node
   for (int j=0; j<nyf; j++) {
-    // gather column j into a contiguous 1D array (tmp rows run
-    // along y, so the x direction is strided)
-    for (int i=0; i<nxc; i++) {
-      col[i] = tmp[i][j];
+    cx[0][j] = 0.0;
+    cx[nxc-1][j] = 0.0;
+  }
+  // forward elimination, row by row: c_q = (rhs_q - c_{q-1}) m_q with
+  // rhs_q = (3/dxc^2)(tmp_{q-1} - 2 tmp_q + tmp_{q+1}) in each column
+  for (int q=1; q<nxc-1; q++) {
+    const double m = 1.0 / (4.0 - mq[q-1]);
+    mq[q] = m;
+    const double* restrict t0 = tmp[q-1];
+    const double* restrict t1 = tmp[q];
+    const double* restrict t2 = tmp[q+1];
+    const double* restrict c0 = cx[q-1];
+    double* restrict c1 = cx[q];
+    int j = 0;
+#ifndef COSMO2D_NOT_USE_SIMD
+    // SIMDe body, 4 columns per operation (AVX2 on x86, two NEON
+    // registers on Apple Silicon); the scalar loop after it finishes
+    // the last nyf % 4 columns and is the whole loop under
+    // COSMO2D_NOT_USE_SIMD. Every row loop below has the same shape.
+    const simde__m256d vinv = simde_mm256_set1_pd(inv_dx2);
+    const simde__m256d vtwo = simde_mm256_set1_pd(2.0);
+    const simde__m256d vm = simde_mm256_set1_pd(m);
+    for (; j <= nyf - 4; j += 4) {
+      const simde__m256d s = simde_mm256_add_pd(
+        simde_mm256_sub_pd(simde_mm256_loadu_pd(t0 + j),
+          simde_mm256_mul_pd(vtwo, simde_mm256_loadu_pd(t1 + j))),
+        simde_mm256_loadu_pd(t2 + j));
+      simde_mm256_storeu_pd(c1 + j, simde_mm256_mul_pd(simde_mm256_sub_pd(
+        simde_mm256_mul_pd(vinv, s), simde_mm256_loadu_pd(c0 + j)), vm));
     }
-    // same machinery as pass 1, now along x
-    spline_coeffs_uniform(col, nxc, dxc, cbuf);
-    for (int i=0; i<nxf; i++) {
-      const double r = (double) i * dxf / dxc;
-      int q = (int) r;      // left node of the spline interval [q, q+1]
-      if (q > nxc - 2) { // shared endpoint (up to 1 ulp overshoot)
-        q = nxc - 2;
-      }
-      const double del = (r - q) * dxc; // offset inside the interval
-      // the same two conditions fix b and d along x
-      const double b = (col[q+1] - col[q])/dxc
-                       - dxc*(cbuf[q+1] + 2.0*cbuf[q])/3.0;
-      const double d = (cbuf[q+1] - cbuf[q])/(3.0*dxc);
-      zf[i][j] = col[q] + del*(b + del*(cbuf[q] + del*d)); // Horner form
+#endif
+    for (; j<nyf; j++) {
+      const double rhs = inv_dx2 * (t0[j] - 2.0 * t1[j] + t2[j]);
+      c1[j] = (rhs - c0[j]) * m;
     }
   }
-
-  free(col);
+  // back substitution, last interior row first: c_q -= m_q c_{q+1}.
+  // The fused negative multiply-add (and the Horner rows' fused
+  // multiply-add) is what a compiler emits for the scalar expression;
+  // on NEON, SIMDe computes it as multiply + add, so there the SIMD
+  // body can differ from the scalar tail by 1 ulp.
+  for (int q=nxc-2; q>0; q--) {
+    const double m = mq[q];
+    const double* restrict c2 = cx[q+1];
+    double* restrict c1 = cx[q];
+    int j = 0;
+#ifndef COSMO2D_NOT_USE_SIMD
+    const simde__m256d vm = simde_mm256_set1_pd(m);
+    for (; j <= nyf - 4; j += 4) {
+      simde_mm256_storeu_pd(c1 + j, simde_mm256_fnmadd_pd(vm,
+        simde_mm256_loadu_pd(c2 + j), simde_mm256_loadu_pd(c1 + j)));
+    }
+#endif
+    for (; j<nyf; j++) {
+      c1[j] -= m * c2[j];
+    }
+  }
+  // per-interval b and d, one row per coarse x interval (the pass-1
+  // formulas, across the columns)
+  for (int q=0; q<nxc-1; q++) {
+    const double* restrict t0 = tmp[q];
+    const double* restrict t1 = tmp[q+1];
+    const double* restrict c0 = cx[q];
+    const double* restrict c1 = cx[q+1];
+    double* restrict bq = bx[q];
+    double* restrict dq = dx3[q];
+    int j = 0;
+#ifndef COSMO2D_NOT_USE_SIMD
+    const simde__m256d vdx = simde_mm256_set1_pd(dxc);
+    const simde__m256d vtwo = simde_mm256_set1_pd(2.0);
+    const simde__m256d vthree = simde_mm256_set1_pd(3.0);
+    const simde__m256d v3dx = simde_mm256_set1_pd(3.0*dxc);
+    for (; j <= nyf - 4; j += 4) {
+      const simde__m256d a0 = simde_mm256_loadu_pd(t0 + j);
+      const simde__m256d a1 = simde_mm256_loadu_pd(t1 + j);
+      const simde__m256d k0 = simde_mm256_loadu_pd(c0 + j);
+      const simde__m256d k1 = simde_mm256_loadu_pd(c1 + j);
+      simde_mm256_storeu_pd(bq + j, simde_mm256_sub_pd(
+        simde_mm256_div_pd(simde_mm256_sub_pd(a1, a0), vdx),
+        simde_mm256_div_pd(simde_mm256_mul_pd(vdx, simde_mm256_add_pd(k1,
+          simde_mm256_mul_pd(vtwo, k0))), vthree)));
+      simde_mm256_storeu_pd(dq + j, simde_mm256_div_pd(
+        simde_mm256_sub_pd(k1, k0), v3dx));
+    }
+#endif
+    for (; j<nyf; j++) {
+      bq[j] = (t1[j] - t0[j])/dxc - dxc*(c1[j] + 2.0*c0[j])/3.0;
+      dq[j] = (c1[j] - c0[j])/(3.0*dxc);
+    }
+  }
+  // each fine row: one interval q and offset del, then a contiguous
+  // Horner evaluation over the columns
+  for (int i=0; i<nxf; i++) {
+    const double r = (double) i * dxf / dxc;
+    int q = (int) r;      // left node of the spline interval [q, q+1]
+    if (q > nxc - 2) { // shared endpoint (up to 1 ulp overshoot)
+      q = nxc - 2;
+    }
+    const double del = (r - q) * dxc; // offset inside the interval
+    const double* restrict t0 = tmp[q];
+    const double* restrict c0 = cx[q];
+    const double* restrict bq = bx[q];
+    const double* restrict dq = dx3[q];
+    double* restrict out = zf[i];
+    int j = 0;
+#ifndef COSMO2D_NOT_USE_SIMD
+    const simde__m256d vdel = simde_mm256_set1_pd(del);
+    for (; j <= nyf - 4; j += 4) {
+      const simde__m256d h = simde_mm256_fmadd_pd(vdel,
+        simde_mm256_loadu_pd(dq + j), simde_mm256_loadu_pd(c0 + j));
+      const simde__m256d g = simde_mm256_fmadd_pd(vdel, h,
+        simde_mm256_loadu_pd(bq + j));
+      simde_mm256_storeu_pd(out + j, simde_mm256_fmadd_pd(vdel, g,
+        simde_mm256_loadu_pd(t0 + j)));
+    }
+#endif
+    for (; j<nyf; j++) {
+      out[j] = t0[j] + del*(bq[j] + del*(c0[j] + del*dq[j])); // Horner form
+    }
+  }
+  free(mq);
   free(cbuf);
-  free(tmp);
+  free(w);
 }
 
 
