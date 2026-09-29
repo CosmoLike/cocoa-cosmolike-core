@@ -39,11 +39,8 @@
 // sec. 2), not the nu = delta_c^2/sigma^2 of Cooray & Sheth 2002
 // (astro-ph/0206508 Eq. 57). Rare, massive halos have nu >> 1.
 //
-// The three constants below:
+// The two constants below:
 //
-//   DEFAULT_INT_PREC = Gauss-Legendre node count of the quadratures of
-//                      this file; each step of
-//                      Ntable.high_def_integration adds 500
 //   delta_c          = 1.686, the linear collapse threshold of
 //                      spherical collapse, (3/20)(12 pi)^(2/3); the
 //                      value the Tinker fits assume (1001.3162 sec. 2)
@@ -55,6 +52,17 @@
 //                      comoving and a-independent. The mass function,
 //                      the bias and the concentration below all use
 //                      this halo definition.
+//
+// Quadrature: Gauss-Legendre rules only in sizes GSL tabulates (the
+// "predefined GSL tables" of cosmo2D.c; GSL computes any other size on
+// the fly, with weights good to only ~5e-7). The gas integrals (F0_KS,
+// F_KS) ladder 256/512/1024 with Ntable.high_def_integration and
+// bias_norm 128/256/512; both are converged at their base size. The
+// halo-model mass integrals (ngal, hm_funcs, I02_XY, I11_X, G02,
+// GM02) run at 1024, the largest tabulated size, at every hdi: their
+// integrands read sigma2 and dlognudlogm by linear interpolation in
+// ln M, and GL converges only algebraically across those kinks (at
+// 256 nodes p_gg moves by up to 2.4e-3 from its 1024-node value).
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -150,7 +158,6 @@
 //   (no suffix)  = the cached table, read by interpolation
 // ---------------------------------------------------------------------------
 
-#define DEFAULT_INT_PREC 1000
 #define delta_c 1.686
 #define Delta 200
 
@@ -527,7 +534,9 @@ static void bias_norm_build_nodes(void)
     free(bnnodes_.x);
     free(bnnodes_.w);
   }
-  bnnodes_.n = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+  const int hdi = abs(Ntable.high_def_integration);
+  bnnodes_.n = (0 == hdi) ? 128 :
+               (1 == hdi) ? 256 : 512; // predefined GSL tables
   bnnodes_.x = (double*) malloc(sizeof(double)*bnnodes_.n);
   bnnodes_.w = (double*) malloc(sizeof(double)*bnnodes_.n);
   gsl_integration_glfixed_table* t = malloc_gslint_glfixed(bnnodes_.n);
@@ -1222,8 +1231,8 @@ double int_F0_KS(
 // bound-gas mass.
 //
 // Numerics:
-//   Gauss-Legendre on [0, c] with DEFAULT_INT_PREC + 500
-//   Ntable.high_def_integration nodes; init = 1 returns the integrand at
+//   Gauss-Legendre on [0, c] with 256/512/1024 nodes at
+//   Ntable.high_def_integration = 0/1/>=2 (predefined GSL tables); init = 1 returns the integrand at
 //   the midpoint instead of the integral (its only role is to build the
 //   static GL table before a parallel region).
 //
@@ -1246,7 +1255,9 @@ double F0_KS_nointerp(
   static gsl_integration_glfixed_table* w = NULL;
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 256 :
+                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -1342,7 +1353,9 @@ double F_KS_nointerp(
   static gsl_integration_glfixed_table* w = NULL;
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const int hdi = abs(Ntable.high_def_integration);
+    const size_t szint = (0 == hdi) ? 256 :
+                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -1774,7 +1787,7 @@ double ngal_nointerp(
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const size_t szint = 1024; // largest predefined GSL table
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -1862,7 +1875,7 @@ double hm_funcs_nointerp(
 
   if (w == NULL || fdiff2(cache[0], Ntable.random))
   {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const size_t szint = 1024; // largest predefined GSL table
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2038,7 +2051,7 @@ double I02_XY_nointerp(
   static gsl_integration_glfixed_table* w = NULL;
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const size_t szint = 1024; // largest predefined GSL table
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2120,7 +2133,7 @@ double I11_X_nointerp(
   static gsl_integration_glfixed_table* w = NULL;
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const size_t szint = 1024; // largest predefined GSL table
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2194,7 +2207,7 @@ double G02_nointerp(
     log_fatal("error in selecting bin number ni = %d", ni); exit(1);
   }
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const size_t szint = 1024; // largest predefined GSL table
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -2269,7 +2282,7 @@ double GM02_nointerp(
   }
 
   if (NULL == w || fdiff2(cache[0], Ntable.random)) {
-    const size_t szint = DEFAULT_INT_PREC + 500*Ntable.high_def_integration;
+    const size_t szint = 1024; // largest predefined GSL table
     if (w != NULL)  gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
