@@ -104,8 +104,8 @@ double dlognudlogm_cpp(const double M);
 
 // -----------------------------------------------------------------------------
 
-// integral of b(nu) f(nu) over the tabulated mass range: the 2-halo
-// renormalization (table in a)
+// integral of b(nu) f(nu) over the tabulated mass range; 1 - bias_norm is
+// the HMx additive 2-halo correction of halo.c I11_X_nointerp (table in a)
 double bias_norm_cpp(const double a);
 
 // ---------------------------------------------------------------------------

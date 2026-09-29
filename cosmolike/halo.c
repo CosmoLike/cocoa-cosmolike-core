@@ -81,7 +81,9 @@
 //                  by int b_1 f dnu = 1 (a table in a)
 //   conc         = c(M), the NFW concentration r_Delta/r_s
 //   dlognudlogm  = d ln nu/d ln M, the Jacobian from nu to halo mass
-//   bias_norm    = int b_1 f dnu over the tabulated mass range
+//   bias_norm    = int b_1 f dnu over the tabulated mass range;
+//                  1 - bias_norm is the share of the matter that range
+//                  misses (a table in a)
 //   *_params_at,
 //   *_core       = the two halves of hb1nu and fnu: the nu-independent
 //                  coefficients (once per a) and the nu-dependent
@@ -139,7 +141,8 @@
 //   I02_XY       = I^0_2: no bias, two profiles  -> the 1-halo term of
 //                  P_XY
 //   I11_X        = I^1_1: linear bias, one profile -> the 2-halo
-//                  amplitude, P_2h = I11_X I11_Y P_lin
+//                  amplitude, P_2h = I11_X I11_Y P_lin, plus the HMx
+//                  term for the halos below M_min (I11_X_nointerp)
 //   G02          = the galaxy-galaxy 1-halo integral (central-satellite
 //                  and satellite-satellite pairs); p_gg divides it by
 //                  n_g^2
@@ -180,9 +183,11 @@
 //
 //   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M           -> dlognudlogm
 //
-// bias_norm restores the consistency relation int b f dnu = 1 over the
-// finite mass range that the halo-model integrals cover; conc gives the
-// NFW concentration as a function of nu.
+// bias_norm measures how much of the consistency relation int b f dnu = 1
+// the finite mass range of the halo-model integrals covers; the 2-halo
+// integral I11_X_nointerp adds the rest, 1 - bias_norm, back as halos of
+// mass M_min (its header, item 2). conc gives the NFW concentration as a
+// function of nu.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -344,45 +349,47 @@ double hb1nu(
 //   eta   = eta_0   (1+z)^0.27   = -0.243 a^-0.27
 //   gamma = gamma_0 (1+z)^-0.01  = 0.864  a^0.01
 //
-// Shape of f. As nu -> 0 the bracket tends to 1, because -2 phi = 1.46
-// is positive and (beta nu)^1.46 vanishes, so f -> alpha nu^(2 eta) =
-// alpha nu^-0.49 at z = 0: light halos are many. As nu grows the
-// Gaussian exp(-gamma nu^2/2) takes over and rare, massive halos
-// (nu > 2) are exponentially few.
+// Shape of f. At small nu the bracket tends to 1 (-2 phi = 1.46 > 0)
+// and f is a power law that grows toward light halos,
 //
-// The mass function changes more slowly as z grows, and 1001.3162
-// (text after Eq. 12) recommends the z = 3 parameters beyond z = 3:
-// fnu_params_at evaluates everything at aa = max(a, 0.25).
+//   f -> alpha nu^(2 eta) = alpha nu^-0.49   (z = 0);
+//
+// at large nu the Gaussian exp(-gamma nu^2/2) makes massive halos
+// (nu > 2) exponentially few.
+//
+// The paper recommends the z = 3 parameters beyond z = 3 (text after
+// Eq. 12): fnu_params_at evaluates everything at aa = max(a, 0.25).
 //
 // 2. The amplitude alpha
 //
-// alpha multiplies the whole of f and is not fitted: the paper fixes it
-// at each z through the consistency relation of the peak-background
-// split (1001.3162 Eq. 7),
+// alpha is not fitted. The paper fixes it at each z through the
+// consistency relation of the peak-background split (1001.3162 Eq. 7),
 //
 //   int_0^inf b(nu) f(nu) dnu = 1,
 //
 // with b(nu) the linear halo bias of hb1nu. In words: f(nu) dnu is the
-// fraction of matter sitting in halos of peak height nu and b(nu) is
-// how strongly those halos cluster; the bias of all halos, weighted by
-// the matter each holds, is the bias of matter with respect to itself,
-// which is 1. In the halo model this is what makes the 2-halo term of
-// P_mm, I11_m(k)^2 P_lin(k) with I11_m(k -> 0) = int b f dnu, tend to
-// P_lin as k -> 0 (bias_norm header, item 1). Since alpha factors out of
-// f, Eq. 7 gives it directly:
+// fraction of matter in halos of peak height nu, b(nu) is how strongly
+// they cluster, and the matter-weighted bias of all halos is the bias
+// of matter with respect to itself, 1.
+//
+// This is what makes the 2-halo term P_2h = I11_m^2 P_lin tend to P_lin
+// as k -> 0 (bias_norm header, item 1).
+//
+// Since alpha factors out of f, Eq. 7 gives it directly:
 //
 //   alpha(a) = 1 / int_0^inf b(nu) ftilde(nu; a) dnu,
 //   ftilde   = f with alpha = 1 (the four parameters of item 1).
 //
-// tinker_alpha evaluates this integral on a table in aa (its header
-// covers the numerics) and fnu_params_at reads the table. The result
-// at z = 0 is 0.36840 (Table 4 lists 0.368); alpha falls monotonically
-// with z, 0.33951 at z = 0.5, 0.31722 at z = 1, 0.28171 at z = 2 and
-// 0.25197 for z >= 3, where the freeze above holds every parameter
-// fixed. With alpha fixed by Eq. 7 the other natural normalization,
-// int f dnu = 1 (all matter in halos), holds only at z = 0 and only
-// approximately: the integral over all nu is 1.0012 at z = 0, 1.048 at
-// z = 1 and 1.118 for z >= 3. Nothing in this file divides by it.
+// tinker_alpha tabulates this integral in aa (its header covers the
+// numerics) and fnu_params_at reads the table:
+//
+//   z        0         0.5       1         2         >= 3
+//   alpha    0.36840   0.33951   0.31722   0.28171   0.25197
+//
+// Table 4 lists 0.368 at z = 0. The other natural normalization,
+// int f dnu = 1 (all matter in halos), is not imposed and holds only
+// approximately: 1.0012 at z = 0, 1.048 at z = 1, 1.118 for z >= 3.
+// Nothing in this file divides by it.
 //
 // Parameters:
 //   nu - peak height delta_c/sigma(M, a)
@@ -400,11 +407,10 @@ typedef struct {
   double eta;
 } fnu_params;
 
-// The four shape parameters of Eq. 8 at aa (Eqs. 9-12, fnu header
-// item 1) with alpha = 1: the ftilde of the Eq. 7 integral. No clamp on
-// aa: tinker_alpha calls this at padding nodes a little outside
-// [0.25, 1] while it builds its table (its header, item 4), and the
-// power laws are harmless there; fnu_params_at clamps before calling.
+// The four shape parameters of Eq. 8 at aa (Eqs. 9-12) with alpha = 1:
+// the ftilde of the Eq. 7 integral. No clamp on aa: tinker_alpha calls
+// this a little outside [0.25, 1] while it builds its table (its
+// header, item 4); fnu_params_at clamps.
 static inline fnu_params fnu_shape(
     const double aa  // scale factor of the Tinker evolution (no clamp)
   )
@@ -438,133 +444,124 @@ static inline double fnu_core(
 //   alpha(aa) = 1/I(aa),   I(aa) = int_0^inf b(nu) ftilde(nu; aa) dnu,
 //
 // with b the Tinker bias (hb1nu_core) and ftilde the Eq. 8 shape at
-// alpha = 1 (fnu_shape). What the caller gets: alpha read by linear
-// interpolation from a table on ND = 4096 nodes uniform in aa over
-// [0.25, 1]; the table is built once per process.
+// alpha = 1 (fnu_shape). The caller gets alpha by linear interpolation
+// from a table on ND = 4096 nodes uniform in aa over [0.25, 1], built
+// once per process.
 //
 // 1. Why a table
 //
-// fnu runs at every node of every halo-model mass integral (1024 nodes
-// per integral, several integrals per k and a of the halo-model
-// spectra), and alpha is itself an integral. fnu(nu, a) calls
-// fnu_params_at once per node, so evaluating I(aa) there would run a
-// 936-term sum at every node of every mass integral. alpha depends on
-// aa alone, so the sum is done once on a grid in aa and every later
-// call is a lookup.
+// alpha is an integral (a 936-term sum, item 2), and fnu needs it at
+// every node of every halo-model mass integral: 1024 nodes per
+// integral, several integrals per k and a. alpha depends on aa alone,
+// so the sum is done once on a grid in aa and every call is a lookup.
 //
 // 2. The exact integral: a trapezoid rule in ln nu
 //
-// The trapezoid rule approximates an integral by joining the integrand
-// values at equally spaced nodes with straight lines and adding up the
-// areas under them. With nodes s_q = s_0 + q h, q = 0..N,
+// The trapezoid rule joins the integrand values at equally spaced
+// nodes s_q = s_0 + q h with straight lines and adds the areas:
 //
-//   int_{s_0}^{s_N} g(s) ds  ~  h [g_0/2 + g_1 + ... + g_{N-1} + g_N/2]:
+//   int_{s_0}^{s_N} g(s) ds  ~  h [g_0/2 + g_1 + ... + g_{N-1} + g_N/2].
 //
-// a plain sum, except that the two end values count half. On a general
-// integrand its error shrinks only as h^2. But its error formula is
-// built entirely from the integrand's derivatives at the two ends, so
-// when the integrand and its derivatives are negligible there the rule
-// is far more accurate than h^2 suggests: halving h then changes the
-// sum in its last digit. The integrand here has that property once the
-// variable is s = ln nu:
+// Its error is h^2 in general, but the error formula is built from the
+// integrand's derivatives at the two ends alone: when those are
+// negligible, the rule is far more accurate than h^2 suggests.
+//
+// The integrand has that property in s = ln nu,
 //
 //   nu = e^s,   dnu = nu ds   ->   I = int b(nu) ftilde(nu) nu ds.
 //
-// Toward small nu the factor nu ftilde behaves as nu^(1 + 2 eta) with
-// 1 + 2 eta between 0.29 (aa = 0.25) and 0.51 (aa = 1), and b -> 1, so
-// the integrand falls as e^(0.29 s) or faster as s -> -inf; toward
-// large nu the exp(-gamma nu^2/2) of ftilde kills it. The grid
+// Toward small nu, b -> 1 and
 //
-//   s = SMIN .. SMAX = -90 .. 3.5 in steps DS = 0.1:  NS = 936 nodes,
+//   nu ftilde ~ nu^(1 + 2 eta),   1 + 2 eta = 0.29 (aa = 0.25)
+//                                            to 0.51 (aa = 1),
 //
-// covers nu = e^-90 = 8e-40 to e^3.5 = 33. At s = -90 the dropped tail
-// is int_{-inf}^{-90} e^(0.29 s) ds = e^-26/0.29 = 1e-11, against
-// I ~ 4 (1/alpha): 3e-12 relative at aa = 0.25 and far less at larger
-// aa, where the power is steeper; at s = 3.5 the Gaussian factor is
-// e^-474. Checked against the same sum at DS = 0.01 over [-200, 5]:
-// the 936-node sum is exact to 2.9e-12 for every aa in [0.25, 1]
-// (worst at aa = 0.25, all of it the dropped tail), and DS = 0.05
-// reproduces it to 2e-15.
+// so the integrand falls as e^(0.29 s) or faster as s -> -inf. Toward
+// large nu the exp(-gamma nu^2/2) of ftilde kills it.
 //
-// Everything in the integrand except ftilde is the same for every aa,
-// so the build folds it into one weight per node,
+// The grid
+//
+//   s = SMIN .. SMAX = -90 .. 3.5 in steps DS = 0.1:  NS = 936 nodes
+//
+// covers nu = 8e-40 to 33. The tail dropped below s = -90 is
+//
+//   int_{-inf}^{-90} e^(0.29 s) ds = e^-26/0.29 = 1e-11,
+//
+// 3e-12 of I ~ 4 at aa = 0.25 and less at larger aa, where the power
+// is steeper; at s = 3.5 the Gaussian factor is e^-474.
+//
+// Check against the same sum at DS = 0.01 over [-200, 5]: the 936-node
+// sum is exact to 2.9e-12 for every aa in [0.25, 1] (worst at
+// aa = 0.25, all of it the dropped tail); DS = 0.05 reproduces it to
+// 2e-15.
+//
+// Everything except ftilde is the same for every aa, so the build
+// folds it into one weight per node,
 //
 //   bw[q] = w_q nu_q b(nu_q),   w_q = DS (DS/2 at the two ends),
 //
-// where the factor nu_q is the Jacobian of dnu = nu ds. One aa node
-// then costs one plain sum, I = sum_q bw[q] ftilde(nu_q; aa).
+// with nu_q the Jacobian of dnu = nu ds. One aa node then costs one
+// plain sum, I = sum_q bw[q] ftilde(nu_q; aa).
 //
 // 3. Coarse exact nodes, cubic upsampling, dense linear reads
 //
 // The house pattern for a smooth function of one variable (sigma2 in
-// cosmo3D.c does the same in ln M): exact values on a coarse grid, a
-// natural cubic spline through them onto a dense grid, linear reads of
-// the dense grid.
+// cosmo3D.c does the same in ln M):
 //
 //   exact nodes   NC = 128 uniform in aa on [0.25, 1], spacing
 //                 hc = 0.75/127 = 0.0059, plus PAD = 6 nodes beyond
 //                 each end: NE = 140 exact integrals, aa from 0.2146
 //                 (aa0) to 1.0354
 //   dense nodes   ND = 4096 uniform on [0.25, 1], spacing 1.8e-4
-//   read          interpol1d: linear between the two dense nodes around
-//                 aa; the node index is arithmetic on a uniform grid,
-//                 no search
+//   read          interpol1d, linear between the two dense nodes
+//                 around aa
 //
-// Why read linearly rather than evaluate the spline: every table in
-// this code base is read by interpol1d, linear on a uniform grid, so a
-// lookup is one index computation and one multiply-add everywhere;
-// splines build tables, they do not serve reads. Why a spline rather
-// than 4096 exact integrals: a cubic through exact values is far more
-// accurate than the linear reads it feeds (item 5), so 140 integrals
-// deliver what 4096 would.
+// Linear reads, because every table in this code base is read that
+// way (one index computation, one multiply-add). A spline rather than
+// 4096 exact integrals, because a cubic through exact values is far
+// more accurate than the linear reads it feeds (item 5).
 //
-// The spline. A natural cubic spline is a chain of cubic polynomials,
-// one per interval between nodes, joined so that value, first and
-// second derivative are continuous at every node, with the second
-// derivative set to zero at the two end nodes ("natural").
-// spline_coeffs_uniform (basics.c) solves the tridiagonal system for
-// c_j = S''(x_j)/2; on the interval that starts at node j the piece,
-// evaluated in Horner form, is
+// The spline. A natural cubic spline is a chain of cubics, one per
+// interval, with value, first and second derivative continuous at
+// every node and S'' = 0 at the two end nodes. spline_coeffs_uniform
+// (basics.c) solves the tridiagonal system for c_j = S''(x_j)/2; the
+// piece on the interval starting at node j, in Horner form, is
 //
 //   S(x_j + t) = y_j + t (b + t (c_j + t d)),       0 <= t <= hc,
 //   b = (y_{j+1} - y_j)/hc - hc (c_{j+1} + 2 c_j)/3,
 //   d = (c_{j+1} - c_j)/(3 hc),
 //
-// the same expressions sigma2 uses (its upsampling loop derives them).
-// The spline runs through alpha = 1/I, the quantity read back, not
-// through I.
+// as in sigma2. The spline runs through alpha = 1/I, the quantity read
+// back, not through I.
 //
 // 4. Why the padding
 //
-// "Natural" pins S'' = 0 at the first and last exact node, but alpha
-// is curved there: alpha''(0.25) = -2.9 (finite differences of the
-// exact integral). A spline pinned to S'' = 0 at aa = 0.25 misses
-// alpha by 2e-5 (relative) in the first interval. The rows of the
-// tridiagonal system, c_{j-1} + 4 c_j + c_{j+1} = rhs_j, pass a
-// disturbance at one node on to its neighbors damped by
-// 2 - sqrt(3) = 0.268 per interval, so an end condition is forgotten
-// by a factor 3.7 per interval. With PAD = 6 extra exact nodes on each
-// side the wrong end condition sits 6 intervals outside [0.25, 1] and
-// 0.268^6 = 4e-4 of that already small error reaches aa = 0.25. The
-// build therefore calls fnu_shape at aa0 = 0.2146 and up to 1.0354,
-// outside [0.25, 1], which is why fnu_shape carries no clamp;
-// fnu_params_at clamps.
+// S'' = 0 at the end nodes is wrong for alpha, which is curved there:
+// alpha''(0.25) = -2.9. A spline pinned at aa = 0.25 misses alpha by
+// 2e-5 (relative) in the first interval.
+//
+// The tridiagonal rows
+//
+//   c_{j-1} + 4 c_j + c_{j+1} = rhs_j
+//
+// damp a disturbance by 2 - sqrt(3) = 0.268 per interval, so with
+// PAD = 6 extra nodes on each side only 0.268^6 = 4e-4 of that error
+// reaches aa = 0.25. This is why the build calls fnu_shape at
+// aa0 = 0.2146 and up to 1.0354, and why fnu_shape carries no clamp.
 //
 // 5. Cost and accuracy
 //
-// Build: 140 sums of 936 terms, threaded over the 140 nodes with
-// schedule(static), each node's sum a serial loop of one thread (the
-// values do not depend on the thread count), then one tridiagonal
-// solve and 4096 cubic evaluations: 0.9 ms with 4 threads. Read: one
-// interpol1d.
+// Build: 140 sums of 936 terms, threaded over the nodes, then one
+// tridiagonal solve and 4096 cubic evaluations: 0.9 ms with 4 threads.
+// Read: one interpol1d.
 //
-// Accuracy, table against the exact Eq. 7 integral at 997 values of a:
+// Accuracy against the exact Eq. 7 integral at 997 values of a:
 // maximum relative error 4.7e-8 (at a = 0.2545), median 1.4e-9. The
-// linear read sets this floor, not the spline or the coarse grid: a
-// linear read misses a curved function by up to alpha'' dx^2/8 =
-// 2.9 x (1.8e-4)^2/8 = 1.2e-8 absolute near aa = 0.25, i.e. 5e-8 of
-// alpha = 0.25, and exact values on the same 4096 nodes, read
-// linearly, give 4.6e-8. The spline alone is good to 8.5e-9.
+// linear read sets this floor: it misses a curved function by up to
+//
+//   alpha'' dx^2/8 = 2.9 x (1.8e-4)^2/8 = 1.2e-8   near aa = 0.25,
+//
+// 5e-8 of alpha = 0.25. Exact values on the same 4096 nodes, read
+// linearly, give 4.6e-8; the spline alone is good to 8.5e-9.
 //
 // Cache invalidation:
 //   rebuilt when like.halo_model[0] or [1] (the mass-function and the
@@ -574,13 +571,10 @@ static inline double fnu_core(
 //   variable, sigma2 never appears) and not Ntable.
 //
 // Thread safety: the first call builds the table and must run outside
-// any parallel region. This is the warm-up rule of the cosmo2D.c _work
-// functions: every lazily built static table is built single-threaded
-// before a parallel loop reads it. bias_norm's refill calls
-// fnu(1.0, agrid[0]) serially before its loop for this reason; the
-// halo-model mass integrals reach fnu through their init = 1 calls,
-// which evaluate the integrand once, single-threaded, before any table
-// fill.
+// any parallel region (the warm-up rule of the cosmo2D.c _work
+// functions). bias_norm's refill calls fnu(1.0, agrid[0]) serially
+// before its loop; the mass integrals reach fnu through their init = 1
+// calls.
 //
 // Parameters:
 //   aa - scale factor of the Tinker evolution, max(a, 0.25), in
@@ -594,62 +588,50 @@ static double tinker_alpha(
     const double aa  // max(a, 0.25), in [0.25, 1)
   )
 {
-  // Static state: a static local lives as long as the program and keeps
-  // its value between calls. table starts NULL and key {-1, -1}, which
-  // is what makes the first call build.
+  // Static state, kept between calls; table NULL and key {-1, -1} make
+  // the first call build.
   static int key[2] = {-1, -1};  // like.halo_model[0..1] of the table
   static double* table = NULL;   // [ND] alpha on the dense aa grid
   static double lim[3];          // aa_min, aa_max, dense spacing
   const int ND = 4096;           // dense lookup nodes on [0.25, 1]
 
-  // Build block (header, items 2-4): runs on the first call and
-  // whenever the fits in use differ from the pair recorded in key.
-  // Each like.halo_model entry has one accepted value (fnu_params_at
-  // and hb1nu_params_at abort on any other), so in practice this is
-  // once per process.
+  // Build block (header, items 2-4): the first call, or a change of the
+  // fits in use. Each like.halo_model entry has one accepted value, so
+  // in practice once per process.
   if (NULL == table ||
       key[0] != like.halo_model[0] ||
       key[1] != like.halo_model[1])
   {
     // Coarse exact grid: NC nodes on [0.25, 1] plus PAD beyond each
-    // end, NE = 140 in all, spacing hc = 0.75/127 = 0.0059; node i sits
-    // at aa0 + i hc with aa0 = 0.25 - 6 hc = 0.2146 (header, item 4).
+    // end; node i sits at aa0 + i hc (header, items 3-4).
     const int NC = 128;          // exact nodes on [0.25, 1]
     const int PAD = 6;           // exact padding nodes beyond each end
     const int NE = NC + 2*PAD;
     const double hc = 0.75/((double) NC - 1.0);
     const double aa0 = 0.25 - PAD*hc;
 
-    // Trapezoid nodes in s = ln nu (header, item 2). lround rounds
-    // (SMAX - SMIN)/DS = 935 to the nearest integer, so a last-digit
-    // rounding of the division cannot lose a node: NS = 936.
+    // Trapezoid nodes in s = ln nu (header, item 2); lround keeps a
+    // last-digit rounding of the division from losing a node: NS = 936.
     const double SMIN = -90.0;   // trapezoid in s = ln nu
     const double SMAX = 3.5;
     const double DS = 0.1;
     const int NS = (int) lround((SMAX - SMIN)/DS) + 1;
     double* nus = (double*) malloc(sizeof(double)*NS);
     double* bw  = (double*) malloc(sizeof(double)*NS);
-    // Everything in the integrand that does not depend on aa, folded
-    // into one weight per node: bw = w_q nu_q b(nu_q), with w_q the
-    // trapezoid weight (DS, half of it at the two ends), nu_q the
-    // Jacobian of dnu = nu ds and b the Tinker bias. The bias fit does
-    // not evolve, so hb1nu_params_at takes any a; 1.0 is a placeholder.
+    // bw = w_q nu_q b(nu_q): trapezoid weight, Jacobian of dnu = nu ds,
+    // Tinker bias. The bias fit does not evolve, so hb1nu_params_at
+    // takes any a; 1.0 is a placeholder.
     const hb1nu_params pb = hb1nu_params_at(1.0);
     for (int q=0; q<NS; q++) {
       nus[q] = exp(SMIN + q*DS);
       const double wq = (0 == q || NS - 1 == q) ? 0.5*DS : DS;
       bw[q] = wq*nus[q]*hb1nu_core(nus[q], &pb);
     }
-    // Exact alpha at the NE coarse nodes: ye[i] = 1/I(aa_i). The
-    // restrict copies nq and wb promise the compiler that, inside the
-    // loop, the node arrays are reached only through these pointers, so
-    // the store to ye[i] cannot alias them and they need no reload per
-    // iteration (the promise covers only accesses made through nq and
-    // wb, hence the body indexes those, not nus and bw). Threaded over
-    // the nodes with schedule(static): each node's sum is one serial
-    // loop of one thread, so the values do not depend on the thread
-    // count. fnu_shape gives the alpha = 1 shape (ftilde) at this node's
-    // aa; fnu_core evaluates Eq. 8 with it.
+    // Exact alpha at the NE coarse nodes, ye[i] = 1/I(aa_i). restrict:
+    // nus and bw are reached only through nq and wb, so the compiler
+    // need not reload them after each store to ye[i]. One serial sum
+    // per node inside one thread: the values do not depend on the
+    // thread count.
     double* ye = (double*) malloc(sizeof(double)*NE);
     double* ce = (double*) malloc(sizeof(double)*NE);
     const double* restrict nq = nus;
@@ -664,8 +646,7 @@ static double tinker_alpha(
       ye[i] = 1.0/sum;
     }
     // Natural cubic spline through the NE exact values (header, item
-    // 3): ce[j] = S''(aa_j)/2, with ce[0] = ce[NE-1] = 0 at the padding
-    // ends, 6 intervals away from the used range.
+    // 3): ce[j] = S''(aa_j)/2, zero at the two padding ends.
     spline_coeffs_uniform(ye, NE, hc, ce);
 
     // Dense grid: ND nodes uniform on [0.25, 1], both ends included,
@@ -675,12 +656,10 @@ static double tinker_alpha(
     lim[0] = 0.25;
     lim[1] = 1.0;
     lim[2] = (lim[1] - lim[0])/((double) ND - 1.0);
-    // Upsampling. For dense node i: r = its distance from aa0 in coarse
-    // spacings, j = (int) r the coarse interval it falls in (the cast
-    // truncates toward zero), t = (r - j) hc the offset from coarse
-    // node j in aa. The last dense node, aa = 1, has r = 127 + 6 = 133
-    // < NE - 2 = 138, so the clamp on j is a guard only. Then the
-    // Horner form of header item 3.
+    // Upsampling: r = distance of dense node i from aa0 in coarse
+    // spacings, j = its coarse interval, t = offset from coarse node j
+    // in aa; then the Horner form of header item 3. The last dense node
+    // has r = 133 < NE - 2, so the clamp on j is a guard only.
     for (int i=0; i<ND; i++) {
       const double r = (lim[0] + i*lim[2] - aa0)/hc;
       int j = (int) r;
@@ -692,23 +671,18 @@ static double tinker_alpha(
       const double d = (ce[j+1] - ce[j])/(3.0*hc);
       table[i] = ye[j] + t*(b + t*(ce[j] + t*d));
     }
-    // The scratch of the build goes; only table and lim survive.
     free(nus);
     free(bw);
     free(ye);
     free(ce);
-    // Record which fits the table belongs to.
     key[0] = like.halo_model[0];
     key[1] = like.halo_model[1];
   }
-  // Read-out. interpol1d(f, n, a, b, dx, x) is the house linear
-  // interpolation on a uniform grid: with r = (x - a)/dx and
-  // i = floor(r) it returns f[i] + (r - i) (f[i+1] - f[i]); below a it
-  // returns f[0] and at or beyond the last node f[n-1]. Here f = table,
-  // a = 0.25, dx = lim[2], x = aa; b = lim[1] is accepted for symmetry
-  // and unused. Example: z = 0.7, aa = 1/1.7 = 0.5882 gives
-  // r = 0.3382/1.8315e-4 = 1846.76, so the value is read 76% of the way
-  // from node 1846 to node 1847.
+  // Read-out: interpol1d is the house linear interpolation on a uniform
+  // grid (index by arithmetic, no search); it returns the end values
+  // outside [lim[0], lim[1]]. Example: z = 0.7, aa = 1/1.7 = 0.5882
+  // gives r = 0.3382/1.8315e-4 = 1846.76, read 76% of the way from
+  // node 1846 to node 1847.
   return interpol1d(table, ND, lim[0], lim[1], lim[2], aa);
 }
 
@@ -723,15 +697,10 @@ static inline fnu_params fnu_params_at(
   switch(like.halo_model[0])
   {
     case HMF_TINKER_2010:
-    { // Eqs. 8-12 + Table 4 of 1001.3162 (fnu header, item 1)
-      // aa freezes the evolution at z = 3: the paper recommends the
-      // z = 3 parameters beyond z = 3 (text after Eq. 12), and z = 3
-      // is a = 1/(1 + 3) = 0.25. fmax(0.25, a) returns the larger of
-      // its two arguments, so a < 0.25 (z > 3) is replaced by 0.25 and
-      // a >= 0.25 passes through unchanged. Shape (fnu_shape) and
-      // amplitude (tinker_alpha, the Eq. 7 table) are both taken at aa,
-      // so the frozen parameters come with their own alpha and Eq. 7
-      // keeps holding at z > 3.
+    { // Eqs. 8-12 + Table 4 of 1001.3162 (fnu header, item 1).
+      // aa = max(a, 0.25) freezes the evolution at z = 3 (a = 0.25), as
+      // the paper recommends beyond z = 3. Shape and amplitude are both
+      // taken at aa, so Eq. 7 keeps holding at z > 3.
       const double aa = fmax(0.25, a);
       p = fnu_shape(aa);          // beta, gamma, phi, eta; alpha = 1
       p.alpha = tinker_alpha(aa); // alpha from Eq. 7 (a table read)
@@ -829,85 +798,78 @@ double conc(
 // limits.halo_m_min and limits.halo_m_max (1e6 and 1e17 M_sun/h by
 // default).
 //
-// What the caller gets. A table of bias_norm on Ntable.N_a nodes
-// uniform in a over [limits.a_min, 0.9999999] (by default 256 nodes
-// from a = 1/41, i.e. z = 40), read back by linear interpolation in a.
-// The table is refilled once per cosmology: one Gauss-Legendre sum per
-// node, threaded over the nodes.
+// The caller gets it by linear interpolation from a table in a
+// (item 4), refilled once per cosmology.
 //
 // 1. Why the 2-halo term needs it
 //
-// In the halo model the matter power spectrum is a 1-halo term (both
-// points in the same halo) plus a 2-halo term (the two points in two
-// different halos), P_2h = I11_m(k)^2 P_lin(k) (file glossary). As
-// k -> 0 every profile u(k|M) tends to 1 and I11_m tends to
+// The 2-halo term of the matter power spectrum, P_2h = I11_m^2 P_lin
+// (file glossary), tends to P_lin as k -> 0 because matter is unbiased
+// with respect to itself: int b f dnu = 1 over all nu (fnu header,
+// item 2). The mass integrals of this file, however, run only over
 //
-//   int dM n(M) b(M) M/rho_m = int b(nu) f(nu) dnu,
+//   M in [limits.halo_m_min, limits.halo_m_max] = [1e6, 1e17] M_sun/h
 //
-// the bias of all halos weighted by the matter each holds. The
-// consistency relation of the peak-background split (1001.3162 Eq. 7;
-// astro-ph/0206508 Eq. 71) says this is 1,
+// by default, and the two ends of the range cost very different
+// amounts.
 //
-//   int_0^inf b(nu) f(nu) dnu = 1   (matter is unbiased with respect
-//                                    to itself),
+// The heavy end loses very little. At large nu
 //
-// which is what makes P_2h -> P_lin as k -> 0, the large-scale limit
-// the halo model must reproduce. fnu satisfies Eq. 7 exactly over all
-// nu at every a: its amplitude alpha is defined by it (tinker_alpha;
-// fnu header, item 2).
+//   f ~ exp(-gamma nu^2/2),   gamma = 0.864 at z = 0,
 //
-// The halo-model mass integrals of this file, however, run over M in
-// [limits.halo_m_min, limits.halo_m_max], not over all nu. The heavy
-// end loses very little, because f falls as exp(-gamma nu^2/2) and
-// 1e17 M_sun/h is far above the most massive clusters. The light end
-// does lose: f ~ nu^(2 eta) as nu -> 0 (nu^-0.49 at z = 0, so f grows
-// toward light halos), and the halos below 1e6 M_sun/h hold about 0.2
-// of the Eq. 7 integral at z = 0 for a Planck-like cosmology. Over the
-// covered range the integral is therefore about 0.8 there, I11_m(k -> 0)
-// would be 0.8 and P_2h would tend to about 0.8^2 = 0.64 P_lin.
-// int_for_I11_X divides its integrand by bias_norm(a), the same
-// integral over the same covered range, which restores
-// I11_X(k -> 0) = 1 at every a.
+// and 1e17 M_sun/h is far above the most massive clusters.
+//
+// The light end loses a lot. At small nu (fnu header, item 1)
+//
+//   f ~ nu^(2 eta),   eta = -0.243 at z = 0   ->   f ~ nu^-0.49,
+//
+// so f grows toward light halos, and the halos below 1e6 M_sun/h hold
+// about 0.2 of the integral at z = 0 for a Planck-like cosmology.
+//
+// The table therefore holds (default limits, Planck-like cosmology)
+//
+//   z            0      0.5    1      2      3
+//   bias_norm    0.80   0.80   0.79   0.75   0.70
+//
+// and without a correction the 2-halo term would miss its limit:
+//
+//   I11_m(k -> 0) = bias_norm = 0.8,   P_2h -> 0.64 P_lin   (z = 0).
+//
+// The fix lives in I11_X_nointerp, not here: it adds the missing
+// 1 - bias_norm(a) back as halos of mass exactly M_min (its header,
+// item 2). This function measures the shortfall and nothing else; the
+// integrand of int_for_I11_X carries no bias_norm factor.
 //
 // 2. One integration domain for every a
 //
-// Both limits depend on a through the same factor 1/D(a):
-// nu_min(a) = delta_c/(sigma(M_min) D(a)), and nu_max(a) likewise. The
-// change of variable
+// Both limits depend on a through the same factor 1/D(a). With
 //
 //   t = nu D(a),   dnu = dt/D
 //
-// (t is the peak height the same halo has at a = 1) removes every
-// a-dependence from the domain:
+// (t is the peak height the same halo has at a = 1) the domain loses
+// its a-dependence:
 //
 //   bias_norm(a) = (1/D) int_{t_min}^{t_max} b(t/D) f(t/D, a) dt,
 //
 //   t_min = delta_c/sigma(M_min)   (light halos: sigma large, t small)
 //   t_max = delta_c/sigma(M_max)   (heavy halos: sigma small, t large)
 //
-// Worked example: a halo with t = 3 has nu = 3 at a = 1. At a = 0.5
-// (z = 1), where D = 0.61 for a flat Omega_m = 0.3 cosmology, the same
-// halo has nu = 3/0.61 = 4.9: the density field was smoother then, so
-// the same mass was a rarer peak. Its mass is fixed, its t is fixed,
-// and a enters only through the division by D.
+// Example: a halo with t = 3 has nu = 3 at a = 1 and, at a = 0.5 where
+// D = 0.61 (flat, Omega_m = 0.3), nu = 3/0.61 = 4.9: the field was
+// smoother then, so the same mass was a rarer peak.
 //
-// The map nu = t/D is linear, so a Gauss-Legendre rule laid out on
-// [t_min, t_max] is, node by node, the same rule laid out on
-// [nu_min(a), nu_max(a)]: nu_q(a) = t_q/D. One node set therefore
-// serves every a, sigma2 is read twice per refill (for t_min and
-// t_max) and never inside the node loop, and the Jacobian is the exact
-// constant 1/D: no numerical derivative enters anywhere.
+// The map nu = t/D is linear, so one Gauss-Legendre rule on
+// [t_min, t_max] serves every a, node by node: nu_q(a) = t_q/D. sigma2
+// is read twice per refill (t_min, t_max), never inside the node loop,
+// and the Jacobian is the exact constant 1/D.
 //
 // 3. The quadrature
 //
-// A quadrature rule approximates an integral by a weighted sum of the
-// integrand at prescribed nodes, int_a^b g(t) dt ~ sum_q w_q g(t_q).
-// Gauss-Legendre ("GL") picks the n nodes and the n weights so that the
-// sum is exact for every polynomial of degree <= 2n - 1; on an
-// integrand that is smooth over the whole interval its error falls
-// exponentially with n (the sigma2 header in cosmo3D.c, item 3, works
-// this out on the 2-node rule). GSL stores the nodes x_q and weights
-// w_q on [-1, 1]; stretched onto [t_min, t_max] with dt = h dx,
+// Gauss-Legendre (GL) with n nodes, int g(t) dt ~ sum_q w_q g(t_q), is
+// exact for every polynomial of degree <= 2n - 1 and converges
+// exponentially on a smooth integrand (sigma2 header in cosmo3D.c,
+// item 3). GSL stores x_q, w_q on [-1, 1]; stretched onto
+// [t_min, t_max] with dt = h dx,
 //
 //   bias_norm(a) = (h/D) sum_q w_q b(nu_q) f(nu_q, a),
 //
@@ -915,61 +877,38 @@ double conc(
 //   m    = (t_max + t_min)/2
 //   h    = (t_max - t_min)/2
 //
-// The integrand is made of powers and one exponential and is smooth
-// over the whole interval (the only tabulated quantity, sigma2, enters
-// through the two numbers t_min and t_max), so GL converges fast here,
-// unlike the mass integrals of this file whose integrands read tables
-// with kinks (file header). The node count ladders with
-// hdi = abs(Ntable.high_def_integration) over sizes GSL tabulates:
+// The integrand is powers and one exponential, smooth over the whole
+// interval (sigma2 enters only through t_min and t_max), so GL
+// converges fast here, unlike the mass integrals of this file, whose
+// integrands read tables with kinks (file header). The node count
+// ladders with hdi = abs(Ntable.high_def_integration):
 //
 //   hdi      0     1     >= 2
 //   nodes    128   256   512
 //
-// 128 nodes are converged to 3e-15: the larger rules of the ladder
-// change the table by no more than that, relative, which is about a
-// dozen units in the last place of a double (machine epsilon 2.2e-16).
-//
-// Data flow:
-//
-//   nodes (x, w)                                  [Ntable rebuild]
-//   sigma2 -> t_min, t_max -> m, h                [refill, serial]
-//     -> per scale factor: D = growfac(a) and the Tinker
-//        parameters (hb1nu_params_at, fnu_params_at; the
-//        latter reads the tinker_alpha table)     [threaded over a]
-//     -> per node: nu_q -> w_q b(nu_q) f(nu_q, a)  [plain sum,
-//        only the nu-dependent cores]
+// 128 nodes are converged to 3e-15 relative, about a dozen units in
+// the last place of a double.
 //
 // 4. The table
 //
-// Why a table: int_for_I11_X calls bias_norm(a) at every one of its
-// 1024 mass nodes, for every k and a of the halo-model spectra, and
-// bias_norm is itself an integral. It depends on a alone, so the sum is
-// done once per cosmology on a grid in a and every later call is a
-// lookup.
+// I11_X_nointerp calls bias_norm(a) once per (k, a) node of every
+// halo-model spectrum table, inside its threaded fill loop (256 x 512
+// calls per refill of p_mm alone). bias_norm depends on a alone, so
+// the sum is done once per cosmology on a grid in a:
 //
-// The grid: Ntable.N_a nodes uniform in a from limits.a_min to
-// 0.9999999, both ends included; by default 256 nodes from
-// 1/41 = 0.02439 in steps of 0.97561/255 = 0.003826. The top stays
-// below 1 because fnu_params_at, called at every node of the refill,
-// aborts unless 0 < a < 1; at 0.9999999 (z = 1e-7) the Tinker fit is
-// evaluated normally, so every node holds the real integral. A query
-// at a = 1 lands past the last node and interpol1d returns that node's
-// value (constant extrapolation), as it returns the first node's value
-// below a_min.
+//   Ntable.N_a nodes uniform in a from limits.a_min to 0.9999999, both
+//   ends included; by default 256 nodes from 1/41 = 0.02439 (z = 40)
+//   in steps of 0.003826.
 //
-// Thread safety: two of the tables the loop reads are built lazily, on
-// first use, by whichever call comes first: the sigma2 table
-// (cosmo3D.c) and the alpha table of tinker_alpha, reached through
-// fnu_params_at. If that first call happened inside the parallel loop,
-// several threads would build the same table at once. The refill
-// therefore touches both serially before the loop: fnu(1.0, agrid[0])
-// and the two sigma2 reads for t_min and t_max. This is the warm-up
-// rule of the cosmo2D.c _work functions. growfac has no static state
-// (norm_growfac reads cosmology.G, the growth table set_growth loads),
-// so its warm-up call has nothing to build. Inside the loop every call
-// only reads. Each table entry is its own sum inside one thread: no
-// cross-thread reduction, so the result does not depend on the thread
-// count.
+// The top stays below 1 because fnu_params_at aborts unless 0 < a < 1.
+// interpol1d returns the end values outside the grid, so a = 1 gets
+// the value at 0.9999999.
+//
+// Thread safety: the sigma2 and tinker_alpha tables are built lazily
+// by their first caller, so the refill touches both serially before
+// the parallel loop (the warm-up rule of the cosmo2D.c _work
+// functions; growfac has no static state). Each entry is its own sum
+// inside one thread, so the result does not depend on the thread count.
 //
 // Cache invalidation:
 //   allocation, the a-grid and the Gauss-Legendre nodes: rebuilt when
@@ -987,18 +926,11 @@ double bias_norm(
     const double a  // scale factor
   )
 {
-  // Static state. A static local keeps its value between calls (it
-  // lives as long as the program, not as long as one call) and starts
-  // zeroed: every pointer below is NULL, nq is 0 and cache[] is all
-  // zeros on the first call, which is what makes that call build
-  // everything. Two blocks write the statics:
-  //
-  //   Ntable rebuild block (geometry; runs when Ntable.random changes)
-  //     table/agrid/lim and the node cache nq/xg/wg. Every malloc of
-  //     this function lives there.
-  //   Refill block (physics; runs when cosmology.random or
-  //     Ntable.random changes)
-  //     the values in table, then the tags cache[0] and cache[1].
+  // Static state, kept between calls and zeroed at program start, so
+  // the first call builds everything. Two blocks write it:
+  //   Ntable rebuild block   table/agrid/lim and the node cache
+  //                          nq/xg/wg (every malloc lives there)
+  //   refill block           the values in table, then the tags cache[]
   static uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable tag
   static double* table = NULL;  // [N_a] bias_norm on the a grid
   static double* agrid = NULL;  // [N_a] the a nodes
@@ -1007,17 +939,11 @@ double bias_norm(
   static double* xg = NULL;     // [nq] Gauss-Legendre nodes on [-1, 1]
   static double* wg = NULL;     // [nq] Gauss-Legendre weights on [-1, 1]
 
-  // Ntable rebuild block. fdiff2(a, b) is plain uint64 inequality (1
-  // when the two tags differ). Ntable.random is a tag that changes
-  // whenever any Ntable setting changes; cache[1] holds the tag of the
-  // build this table comes from. On the first call table is NULL, so
-  // the block runs whatever the tags say.
+  // Ntable rebuild block: the first call, or Ntable.random (the tag of
+  // the Ntable settings) differs from the one the table was built with.
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    // The a grid: N_a nodes uniform in a from limits.a_min to
-    // 0.9999999, both endpoints included, hence N_a - 1 intervals.
-    // With the defaults lim[2] = (0.9999999 - 1/41)/255 = 0.003826.
-    // The top stays below 1 because fnu_params_at, called at every
-    // node of the refill, aborts unless 0 < a < 1 (header, item 4).
+    // The a grid (header, item 4): N_a nodes uniform in a from
+    // limits.a_min to 0.9999999, both ends included.
     if (table != NULL) free(table);
     if (agrid != NULL) free(agrid);
     table = (double*) malloc(sizeof(double)*Ntable.N_a);
@@ -1029,24 +955,15 @@ double bias_norm(
       agrid[i] = lim[0] + i*lim[2];
     }
 
-    // Node cache: the Gauss-Legendre nodes and weights on [-1, 1]
-    // (header, item 3). They depend on hdi only, never on the
-    // cosmology or on a, so they live here and the refill only reads
-    // them. The buffers of the last build go first, so a changed hdi
-    // can neither leak them nor reuse them at the wrong size.
+    // Node cache: Gauss-Legendre nodes and weights on [-1, 1] (header,
+    // item 3). They depend on hdi only, so they live here and the
+    // refill only reads them; the stretch onto [t_min, t_max] happens
+    // there. malloc_gslint_glfixed(n) wraps the GSL table of n nodes;
+    // gsl_integration_glfixed_point copies node q and its weight out.
     if (xg != NULL) {
       free(xg);
       free(wg);
     }
-    // The ladder reads "if hdi is 0 take 128, if 1 take 256, otherwise
-    // 512"; all three are sizes GSL stores as precomputed tables
-    // (sigma2 header, item 3). malloc_gslint_glfixed(n) wraps
-    // gsl_integration_glfixed_table_alloc(n), the n nodes and weights
-    // on [-1, 1]; gsl_integration_glfixed_point(-1, 1, q, &x, &w, ...)
-    // copies node q and its weight out of that GSL table, and with the
-    // interval [-1, 1] nothing is rescaled (the weights sum to 2). The
-    // stretch onto [t_min, t_max] happens in the refill, where t_min
-    // and t_max are known.
     const int hdi = abs(Ntable.high_def_integration);
     nq = (0 == hdi) ? 128 :
          (1 == hdi) ? 256 : 512; // predefined GSL tables
@@ -1058,103 +975,63 @@ double bias_norm(
     }
     gsl_integration_glfixed_table_free(t);
   }
-  // Refill block: runs when the cosmology tag or the Ntable tag differs
-  // from the one the table holds.
+  // Refill block: the cosmology tag or the Ntable tag differs from the
+  // one the table holds.
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    // Warm-up (header, Thread safety). The parallel loop below reads
-    // three tables. Two of them are built lazily by their first caller,
-    // so that first call must happen here, on one thread, before the
-    // loop starts:
-    //
-    //   fnu(1.0, agrid[0]) runs fnu_params_at -> tinker_alpha, whose
-    //     first call builds the alpha table. agrid[0] = 1/41 is below
-    //     0.25, so fnu_params_at clamps it to aa = 0.25 and
-    //     tinker_alpha gets a valid argument; the value f(1) is thrown
-    //     away.
-    //   sigma2(limits.halo_m_min), a few lines down, builds the sigma2
-    //     table on its first call (its own refill is threaded, which is
-    //     fine here, outside any parallel region).
-    //
-    // growfac needs no warm-up: norm_growfac (cosmo3D.c) reads
-    // cosmology.G, which set_growth loads, and keeps no static state,
-    // so the growfac calls inside the loop are plain reads. The (void)
-    // cast says that the returned value is deliberately unused.
+    // Warm-up (header, Thread safety): the first fnu call builds the
+    // tinker_alpha table and the first sigma2 call (below) builds the
+    // sigma2 table, so both happen here, on one thread, before the
+    // parallel loop. agrid[0] = 1/41 is clamped to aa = 0.25 inside;
+    // the value f(1) is thrown away, which the (void) cast says.
     (void) fnu(1.0, agrid[0]);
 
     // t_min, t_max, m, h of header items 2-3: the a = 1 peak heights of
     // the two mass limits, then the midpoint and half-width of
-    // [t_min, t_max]. sqrt(sigma2(M)) is sigma(M) at a = 1; a small
-    // sigma (heavy halo) gives a large t, so tmax > tmin and h > 0.
-    // These four numbers carry the whole cosmology dependence of the
-    // domain; everything else in the loop is the Tinker fit and D(a).
+    // [t_min, t_max]. Heavy halos have small sigma and large t, so
+    // tmax > tmin and h > 0.
     const double tmin = delta_c/sqrt(sigma2(limits.halo_m_min));
     const double tmax = delta_c/sqrt(sigma2(limits.halo_m_max));
     const double m = 0.5*(tmax + tmin);
     const double h = 0.5*(tmax - tmin);
 
-    // restrict copies of the node cache. restrict is a promise to the
-    // compiler that, while these pointers are in scope, the memory they
-    // point to is reached only through them; the store to table[i] and
-    // the pow and exp calls inside the two cores can then not have
-    // changed x[q] or w[q], and the compiler need not reload a node
-    // after each of them. The promise is honored only on accesses made
-    // through the qualified pointer: the loop body must index x and w,
-    // not the statics xg and wg, for it to take effect. n is a const
-    // copy of the node count, so the inner loop bound is a plain local.
+    // restrict: promises the compiler that xg and wg are reached only
+    // through x and w, so it need not reload a node after each store to
+    // table[i] or libm call (the loop body must index x and w for
+    // this). n is a plain local copy of the node count.
     const double* restrict x = xg;
     const double* restrict w = wg;
     const int n = nq;
 
-    // One thread per chunk of scale factors. schedule(static) splits
-    // the i range into contiguous chunks whose bounds depend on the
-    // thread count alone, and each entry's sum is a serial loop inside
-    // one thread over the same nodes in the same order every time: the
-    // floating-point result for a given a is bit-identical from run to
-    // run and independent of the thread count. Nothing is reduced
-    // across threads. Data sharing: everything declared before the
-    // pragma (m, h, x, w, n, table, agrid) is shared by all threads,
-    // and the only shared thing written is table[i], a distinct slot
-    // per iteration; everything declared inside the loop body (D, pb,
-    // pf, sum, nu) is private to its iteration.
+    // schedule(static): contiguous chunks of i per thread. Each entry's
+    // sum is a serial loop inside one thread, so the result does not
+    // depend on the thread count; table[i] is the only shared write,
+    // one slot per iteration, and the body's locals are private.
     #pragma omp parallel for schedule(static)
     for (int i=0; i<Ntable.N_a; i++) {
       // Once per scale factor: D(a) and the nu-independent halves of
       // the two Tinker kernels (the params/core split of the section
-      // banner). hb1nu_params_at returns the five bias constants (the
-      // bias fit has no a-dependence); fnu_params_at returns the four
-      // shape parameters of Eqs. 9-12 at aa = max(a, 0.25) plus alpha,
-      // read from the tinker_alpha table. Hoisted here, so that the
-      // node loop does only the nu-dependent arithmetic.
+      // banner), hoisted so that the node loop does only nu arithmetic.
       const double D = growfac(agrid[i]);
       const hb1nu_params pb = hb1nu_params_at(agrid[i]);
       const fnu_params pf = fnu_params_at(agrid[i]);
-      // The node sum of header item 3: nu_q = (m + h x_q)/D takes the
-      // GSL node from [-1, 1] onto [t_min, t_max] and then onto
-      // [nu_min(a), nu_max(a)]; the summand is w_q b(nu_q) f(nu_q, a).
+      // The node sum of header item 3: nu_q = (m + h x_q)/D, summand
+      // w_q b(nu_q) f(nu_q, a).
       double sum = 0.0;
       for (int q=0; q<n; q++) {
         const double nu = (m + h*x[q])/D;
         sum += w[q]*hb1nu_core(nu, &pb)*fnu_core(nu, &pf);
       }
-      // The two Jacobians, both exact constants for this a: h for
-      // dt = h dx (the [-1, 1] rule stretched onto [t_min, t_max]) and
-      // 1/D for dnu = dt/D (header, item 2).
+      // Jacobians: h for dt = h dx, 1/D for dnu = dt/D (header, item 2).
       table[i] = sum*h/D;
     }
-    // Record the tags the table now corresponds to; the next call
-    // compares against them.
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
   }
-  // Read-out. interpol1d(f, n, a, b, dx, x) is the house linear
-  // interpolation on a uniform grid: with r = (x - a)/dx and
-  // i = floor(r) it returns f[i] + (r - i) (f[i+1] - f[i]); below a it
-  // returns f[0], and at or beyond the last node f[n-1] (constant
-  // extrapolation, so a = 1 gets the value at 0.9999999). Here
-  // f = table, a = lim[0], dx = lim[2], x = the scale factor; b = lim[1]
-  // is accepted for symmetry and unused. Example with the defaults,
-  // a = 0.5: r = (0.5 - 0.02439)/0.003826 = 124.31, so the value is
-  // read 31% of the way from node 124 to node 125.
+  // Read-out: interpol1d is the house linear interpolation on a uniform
+  // grid; it returns the end values outside [lim[0], lim[1]], so a = 1
+  // gets the value at 0.9999999. Example with the defaults, a = 0.5:
+  // r = (0.5 - 0.02439)/0.003826 = 124.31, read 31% of the way from
+  // node 124 to node 125.
   return interpol1d(table, Ntable.N_a, lim[0], lim[1], lim[2], a);
 }
 
@@ -2420,7 +2297,79 @@ double bgal(const int ni, const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_for_I02_XY(double lnM, void* params) 
+// ---------------------------------------------------------------------------
+// Integrand of I02_XY_nointerp, the 1-halo integral I^0_2 of the file
+// glossary, in the variable ln M:
+//
+//   int_for_I02_XY(ln M) = dn/dlnM  W_X(M, k1)  W_Y(M, k2),
+//
+// so that its integral over ln M is int dM n(M) W_X(M, k1) W_Y(M, k2),
+// the 1-halo term of P_XY (2005.00009 Eq. 2; astro-ph/0012087 Eq. 14
+// with delta_halo = W): a halo of mass M contributes the product of its
+// two windows, weighted by how many such halos there are per volume.
+//
+// 1. The mass function
+//
+// dn/dlnM is the comoving number of halos per unit ln M per (c/H0)^3,
+// built from the multiplicity function of the section banner:
+//
+//   dn/dlnM = (rho_m/M) nu f(nu) (dln nu/dln M),
+//   nu      = delta_c/(sigma(M) D(a)).
+//
+// Right to left:
+//
+//   f(nu) dnu       fraction of all matter in halos of peak height
+//                   [nu, nu + dnu] (fnu)
+//   nu              dnu = nu dln nu: "per unit nu" -> "per unit ln nu";
+//                   gnu = nu f(nu) in the code
+//   dln nu/dln M    "per unit ln nu" -> "per unit ln M" (dlognudlogm,
+//                   an a = 1 table: its header)
+//   rho_m/M         a mass fraction over the mass of one halo is a
+//                   number density
+//
+// growfac_a arrives in params so that D(a) is not recomputed at each of
+// the 1024 nodes.
+//
+// 2. The windows: one M/rho_m per matter leg
+//
+// W_X(M, k) is the Fourier transform of the profile of field X in a
+// halo of mass M (2005.00009 Eq. 4), in the units of the field times a
+// volume:
+//
+//   matter    W_m(M, k) = (M/rho_m) u_c(k|M)    a volume, (c/H0)^3
+//   pressure  W_y(M, k) = u_y_bnd(M, k)         an energy, in U
+//
+// Matter: the profile is the overdensity rho(r)/rho_m, whose volume
+// integral is M/rho_m, and u_c is that profile normalized to 1 at
+// k = 0, so W_m -> M/rho_m as k -> 0.
+//
+// Pressure: the profile is the pressure itself and u_y_bnd is its full
+// volume integral (u_y_bnd header), gas mass f_bnd M times a virial
+// temperature ~ M^(2/3):
+//
+//   W_y ~ M^(5/3)   as k -> 0   (2005.00009 Eq. 41).
+//
+// No M/rho_m belongs in front of it; with one, a halo's pressure would
+// scale as M^(8/3) and P_my, P_yy would be weighted toward even heavier
+// halos than they are. The factor vol below encodes this:
+//
+//   XY = 0  mm   u = u_c(k1) u_c(k2)           vol = (M/rho_m)^2
+//   XY = 1  my   u = u_y_bnd(k1) u_c(k2)       vol = M/rho_m
+//   XY = 2  yy   u = u_y_bnd(k1) u_y_bnd(k2)   vol = 1
+//
+// The ejected gas has no 1-halo term (u_y_ejc header; 2005.00009
+// sec. 3.3), so only the bound gas appears here.
+//
+// Parameters:
+//   lnM    - ln of the halo mass in M_sun/h (the GSL node)
+//   params - double[5] {a, k1, k2, XY, D(a)}, packed by I02_XY_nointerp
+//            and handed over by GSL as an untyped void*
+//
+// Returns:
+//   dn/dlnM W_X(M, k1) W_Y(M, k2): (c/H0)^3 for mm, U for my,
+//   U^2 (c/H0)^-3 for yy, with U = G (M_sun/h)^2/(c/H0)
+// ---------------------------------------------------------------------------
+double int_for_I02_XY(double lnM, void* params)
 {
   double* ar = (double*) params;
   const double a = ar[0];
@@ -2437,22 +2386,26 @@ double int_for_I02_XY(double lnM, void* params)
 
   const double c = conc(m, growfac_a);
 
-  double u;
+  double u;   // product of the two profiles
+  double vol; // one m/rho_m per matter leg (header, item 2)
   switch(XY)
   {
     case 0:
     { // matter-matter
       u = u_c(c, k1, m, a) * u_c(c, k2, m, a);
+      vol = (m/rhom) * (m/rhom);
       break;
     }
     case 1:
     { // matter-y
       u = u_y_bnd(c, k1, m, a) * u_c(c, k2, m, a);
+      vol = m/rhom;
       break;
     }
     case 2:
     { // y-y 
       u = u_y_bnd(c, k1, m, a) * u_y_bnd(c, k2, m, a);
+      vol = 1.0;
       break;
     }
     default:
@@ -2460,7 +2413,7 @@ double int_for_I02_XY(double lnM, void* params)
       log_fatal("option not supported"); exit(1);
     }
   }
-  return dNdlnM * u * (m/rhom) * (m/rhom);
+  return dNdlnM * u * vol;
 }  
 
 // ---------------------------------------------------------------------------
@@ -2468,13 +2421,71 @@ double int_for_I02_XY(double lnM, void* params)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// I02_XY(k1, k2, a) = I^0_2, the 1-halo integral of the file glossary,
+//
+//   I02_XY = int_{ln M_min}^{ln M_max} dlnM  dn/dlnM W_X(M, k1) W_Y(M, k2)
+//
+// over M in [limits.halo_m_min, limits.halo_m_max] (1e6 to 1e17 M_sun/h
+// by default) with the integrand of int_for_I02_XY: the 1-halo term of
+// P_XY (2005.00009 Eq. 2). p_xy_nointerp reads it at k1 = k2 = k.
+//
+// Quadrature: Gauss-Legendre with 1024 nodes in ln M, the largest size
+// GSL tabulates, at every hdi (file header), because the integrand
+// reads sigma2 and dlognudlogm by linear interpolation in ln M and GL
+// converges only algebraically across those kinks.
+//
+// gsl_integration_glfixed(&F, lo, hi, w) evaluates F.function at the
+// 1024 nodes of table w mapped onto [lo, hi] and returns the weighted
+// sum; w holds nodes and weights on [-1, 1] and is built once per
+// Ntable.random.
+//
+// Why the finite mass range is harmless here and not in I11_X: the two
+// halo terms weight a halo differently,
+//
+//   1-halo   W_X W_Y   ~ M^2 for matter   (this integral)
+//   2-halo   W_X       ~ M   for matter   (I11_X_nointerp)
+//
+// The halos below M_min hold about 20% of the bias-weighted matter at
+// z = 0 (bias_norm header, item 1). Weighted by M^2 they add a
+// negligible share of the 1-halo term, which is carried by the mass a
+// typical unit of matter sits in, ~1e13.5 M_sun at z = 0 (2005.00009
+// sec. 2.3 and App. A), well inside the range. Weighted by M they do
+// matter: I11_X_nointerp header, item 1.
+//
+// init = 1: one evaluation of the integrand at the midpoint of ln M,
+// single-threaded, value thrown away. It triggers the lazy builds the
+// integrand reaches,
+//
+//   sigma2, dlognudlogm    their tables
+//   fnu                    the tinker_alpha table
+//   u_y_bnd                the u_KS table
+//
+// before p_mm, p_my and p_yy fill their tables in parallel: the
+// warm-up rule of the cosmo2D.c _work functions (halo_wrapper.hpp,
+// "The init flag").
+//
+// Cache invalidation:
+//   Gauss-Legendre table: rebuilt when Ntable.random changes. No value
+//   is cached here; every init = 0 call integrates.
+//
+// Parameters:
+//   k1, k2 - wavenumbers in (c/H0)^-1 of the X and Y legs
+//   a      - scale factor, 0 < a < 1 (fnu aborts otherwise)
+//   func   - 0 = mm, 1 = my (X = y at k1, Y = m at k2), 2 = yy;
+//            other values abort inside the integrand
+//   init   - 1 = warm-up evaluation (above), 0 = the integral
+//
+// Returns:
+//   I02_XY: (c/H0)^3 for mm, U for my, U^2 (c/H0)^-3 for yy
+// ---------------------------------------------------------------------------
 double I02_XY_nointerp(
-    const double k1, 
-    const double k2, 
+    const double k1,
+    const double k2,
     const double a,
     const int func, // 0 = MM, 1 = MY, 2 = YY
     const int init
-  ) 
+  )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
@@ -2509,7 +2520,51 @@ double I02_XY_nointerp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double int_for_I11_X(double lnM, void* params) 
+// ---------------------------------------------------------------------------
+// Integrand of I11_X_nointerp, the 2-halo integral I^1_1 of the file
+// glossary, in the variable ln M:
+//
+//   int_for_I11_X(ln M) = dn/dlnM  b(nu)  W_X(M, k),
+//
+// so that its integral over ln M is int dM n(M) b(M) W_X(M, k): the
+// window of field X in a halo of mass M, weighted by how many such
+// halos there are and by how strongly they cluster (b, the linear halo
+// bias of hb1nu).
+//
+// Two of these and P_lin make the 2-halo term (2005.00009 Eq. 1;
+// astro-ph/0012087 Eq. 15),
+//
+//   P_2h = I11_X I11_Y P_lin:
+//
+// the two points sit in two different halos, each halo stands in for
+// its field, and the pair is correlated through the linear density
+// field both halos trace.
+//
+// dn/dlnM is the mass function of int_for_I02_XY (its header, item 1)
+// and the windows follow the same convention (its item 2): one M/rho_m
+// on the matter leg, none on the pressure leg.
+//
+//   func = 0  matter    W_m = (M/rho_m) u_c(k|M)
+//   func = 1  pressure  W_y = u_y_bnd(M, k) + u_y_ejc(M)
+//
+// The ejected gas appears here and not in the 1-halo term: it follows
+// the linear field outside halos, so it is a point-like, k-independent
+// window that clusters with the halo it came from (u_y_ejc header;
+// 2005.00009 sec. 3.3 and Eq. 36).
+//
+// The integrand carries no normalization: the finite mass range misses
+// the halos below M_min, and I11_X_nointerp adds their share after the
+// sum (its header, item 2).
+//
+// Parameters:
+//   lnM    - ln of the halo mass in M_sun/h (the GSL node)
+//   params - double[4] {a, k, func, D(a)}, packed by I11_X_nointerp
+//
+// Returns:
+//   dn/dlnM b(nu) W_X(M, k): dimensionless for matter, U (c/H0)^-3 for
+//   the pressure
+// ---------------------------------------------------------------------------
+double int_for_I11_X(double lnM, void* params)
 {
   const double* ar = (double*) params;  
   const double a = ar[0];
@@ -2525,17 +2580,17 @@ double int_for_I11_X(double lnM, void* params)
 
   const double c = conc(m, growfac_a);
 
-  double u;
+  double w; // the window W_X(m, k)
   switch(func)
   {
     case 0:
-    { // matter
-      u = u_c(c, k, m, a);
+    { // matter: W_m = (m/rho_m) u_c
+      w = u_c(c, k, m, a) * (m/rhom);
       break;
     }
     case 1:
-    { // y
-      u = u_y_bnd(c, k, m, a) + u_y_ejc(m);
+    { // electron pressure: W_y = u_y_bnd + u_y_ejc, no m/rho_m
+      w = u_y_bnd(c, k, m, a) + u_y_ejc(m);
       break;
     }
     default:
@@ -2543,7 +2598,7 @@ double int_for_I11_X(double lnM, void* params)
       log_fatal("option not supported"); exit(1);
     }
   }
-  return dNdlnM * u * (m/rhom) * hb1nu(nu, a)/bias_norm(a);
+  return dNdlnM * w * hb1nu(nu, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -2551,13 +2606,113 @@ double int_for_I11_X(double lnM, void* params)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// I11_X(k, a) = I^1_1, the 2-halo amplitude of field X (file glossary):
+//
+//   I11_X(k) = int_{M_min}^{M_max} dM n(M) b(M) W_X(M, k)
+//            + A(a) W_X(M_min, k)/(M_min/rho_m),    A(a) = 1 - bias_norm(a)
+//
+// The first line runs over [limits.halo_m_min, limits.halo_m_max] with
+// the integrand of int_for_I11_X (Gauss-Legendre in ln M, as in
+// I02_XY_nointerp); the second is the correction of Mead et al. 2020
+// (HMx, 2005.00009 App. A) for the halos the integral does not reach.
+// p_xy_nointerp multiplies two of these with P_lin (2005.00009 Eq. 1).
+//
+// 1. Why the matter integral must tend to 1 as k -> 0
+//
+// On scales larger than any halo u_c(k|M) -> 1 and W_m -> M/rho_m
+// (int_for_I02_XY header, item 2), so I11_m(k -> 0) = int b f dnu,
+// which is 1 over all nu because matter is unbiased with respect to
+// itself (fnu header, item 2): P_2h -> P_lin as k -> 0.
+//
+// 2005.00009 Eq. 1 integrates over all M; this file starts at
+// M_min = 1e6 M_sun/h and the Tinker f grows toward light halos, so the
+// covered share is (bias_norm header, item 1)
+//
+//   z            0      0.5    1      2      3
+//   bias_norm    0.80   0.80   0.79   0.75   0.70
+//
+// and the integral alone would give P_2h -> 0.64 P_lin at z = 0; App. A
+// finds 0.67 for a standard mass function integrated from 1e10 M_sun.
+//
+// 2. The correction: the missing matter as halos of mass M_min
+//
+// What not to do (2005.00009 App. A): multiply n(M) above M_min by
+// 1/bias_norm = 1.25. Massive halos have resolved profiles (u < 1) at k
+// where light halos are still points, so moving the light halos' matter
+// into them changes the k-dependence of both halo terms. Dividing the
+// 2-halo integrand by bias_norm does the same to the 2-halo term alone.
+//
+// HMx's second option keeps n(M) and adds the missing share A as halos
+// of mass exactly M_min (its Eq. A7),
+//
+//   n(M) -> n(M) + A delta_D(M - M_min)/[b(M_min) M_min/rho_m],
+//
+// the denominator making the bias-weighted mass of the added term
+// exactly A. In the I11 integral b(M_min) cancels (Eq. A8), leaving
+// the second line of the formula at the top.
+//
+// For matter W_m(M_min, k)/(M_min/rho_m) = u_c(k|M_min): at k -> 0 the
+// correction is A and I11_m = 1 at every a; at high k it fades like
+// u_c(k|M_min), slowly, because the lightest halos are also the
+// smallest:
+//
+//   r_Delta = 2.4 kpc/h   at 1e6 M_sun/h, Omega_m = 0.3,
+//   k r_Delta = 0.24      at k = 100 h/Mpc,
+//
+// so the added halos stay point-like over the k range of the spectra,
+// as the halos below M_min are (App. A: delta-function profiles).
+//
+// For the pressure, W_y = u_y_bnd + u_y_ejc at M_min. The bound part is
+// negligible, f_bnd(1e6 M_sun/h) = 2.5e-6 with the HMx defaults (App. A
+// judges it ignorable); the ejected part, u_y_ejc(M)/(M/rho_m) = num_p
+// rho_m f_ejc(M) E_w/mu_e, does not depend on M, so the light halos put
+// their ejected gas back as the resolved halos do (u_y_ejc header).
+//
+// Size of the effect on p_mm, additive form against the multiplicative
+// alternative (integrand divided by bias_norm):
+//
+//   k [h/Mpc]    1e-3    0.3      100
+//   a = 0.3      0       +0.1%    +1.3%
+//   a = 0.99     0       +0.2%    +0.4%
+//
+// At k = 1e-3 both give I11_m = 1 (p_mm/p_lin agrees to 1e-6); the
+// additive form keeps the missing matter unresolved (u ~ 1) to high k,
+// where the multiplicative form has spread it over resolved profiles.
+//
+// 3. The pieces in the code
+//
+//   wmin            W_X at M_min with conc(M_min, D(a)), the same
+//                   expression int_for_I11_X evaluates at a node
+//   mmin/rhom       M_min/rho_m, so wmin/(mmin/rhom) is u_c(k|M_min)
+//                   for matter
+//
+// The correction is added on the init = 1 path as well, so the
+// single-threaded warm-up call of the table builders (halo_wrapper.hpp,
+// "The init flag") builds bias_norm's table before the parallel fills.
+//
+// Cache invalidation:
+//   Gauss-Legendre table: rebuilt when Ntable.random changes. No value
+//   is cached here; bias_norm keeps its own table.
+//
+// Parameters:
+//   k    - wavenumber in (c/H0)^-1
+//   a    - scale factor, 0 < a < 1 (fnu aborts otherwise)
+//   func - 0 = matter, 1 = electron pressure; other values abort
+//   init - 1 = warm-up evaluation (integrand at the midpoint of ln M
+//          plus the correction), 0 = the integral plus the correction
+//
+// Returns:
+//   I11_X(k, a): dimensionless for matter, 1 as k -> 0; in U for the
+//   pressure
+// ---------------------------------------------------------------------------
 double I11_X_nointerp(
-    const double k, 
+    const double k,
     const double a,
-    const int func, 
+    const int func,
     const int init
-  ) 
-{ 
+  )
+{
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static gsl_integration_glfixed_table* w = NULL;
 
@@ -2582,7 +2737,33 @@ double I11_X_nointerp(
     F.function = int_for_I11_X;
     res = gsl_integration_glfixed(&F, lnMmin, lnMmax, w);
   }
-  return res;
+
+  // The HMx correction (header, item 2): A W_X(M_min, k)/(M_min/rho_m)
+  // with A = 1 - bias_norm(a); wmin is W_X(M_min, k) with the window
+  // convention of int_for_I11_X. Added on the init = 1 path too, so the
+  // single-threaded warm-up builds bias_norm's table first (item 3).
+  const double mmin = limits.halo_m_min;
+  const double rhom = cosmology.rho_crit * cosmology.Omega_m;
+  const double cmin = conc(mmin, ar[3]);
+  double wmin;
+  switch(func)
+  {
+    case 0:
+    { // matter: W_m = (M_min/rho_m) u_c
+      wmin = u_c(cmin, k, mmin, a) * (mmin/rhom);
+      break;
+    }
+    case 1:
+    { // electron pressure: W_y = u_y_bnd + u_y_ejc
+      wmin = u_y_bnd(cmin, k, mmin, a) + u_y_ejc(mmin);
+      break;
+    }
+    default:
+    {
+      log_fatal("option not supported"); exit(1);
+    }
+  }
+  return res + (1.0 - bias_norm(a)) * wmin/(mmin/rhom);
 }
 
 // ---------------------------------------------------------------------------

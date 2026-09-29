@@ -287,7 +287,8 @@ double dlognudlogm_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Normalization of the halo bias over the tabulated mass range:
+// Share of the halo-bias consistency relation that the tabulated mass
+// range covers:
 //
 //   bias_norm(a) = int_{nu(M_min)}^{nu(M_max)} b(nu) f(nu) dnu
 //
@@ -295,10 +296,13 @@ double dlognudlogm_cpp(
 // nu the integral is 1 by construction: the amplitude alpha of f(nu) is
 // set at every a by Tinker et al. 2010 Eq. 7, int b f dnu = 1 (matter
 // is unbiased with respect to itself; halo.c tinker_alpha). Over the
-// tabulated mass range it is below 1, because the light halos under
-// M_min hold a sizable share of the matter; the 2-halo term divides by
-// bias_norm so that the relation holds for the finite mass range the
-// code integrates.
+// tabulated mass range it is below 1, 0.80 at z = 0 and 0.79 at z = 1
+// with the defaults, because the light halos under M_min hold a sizable
+// share of the matter. The 2-halo integrals of halo.c (I11_X_nointerp)
+// run over the tabulated range and add the missing 1 - bias_norm(a)
+// back as halos of mass exactly M_min, the additive correction of Mead
+// et al. 2020 (2005.00009 App. A), so that P_2h -> P_lin as k -> 0
+// with the mass function left as fitted.
 //
 // Calls halo.c bias_norm: a cached table on Ntable.N_a nodes in a over
 // [limits.a_min, 0.9999999], filled by one threaded Gauss-Legendre pass
@@ -595,7 +599,9 @@ double fsat_nointerp_cpp(
 //
 //   u_X = the profile of field X in one halo (matter, gas pressure,
 //         galaxies through the HOD)
-//   I_X = int dn b u_X, the bias-weighted mean profile
+//   I_X = int dn b u_X, the bias-weighted mean profile, plus the HMx
+//         term that stands in for the halos below limits.halo_m_min
+//         (halo.c I11_X_nointerp, header item 2)
 //
 // halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
 // Ntable.N_k_nlin nodes over [limits.a_min, 0.9999999] x
