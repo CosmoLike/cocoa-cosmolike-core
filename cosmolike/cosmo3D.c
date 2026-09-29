@@ -1365,16 +1365,23 @@ double MG_Sigma(double a __attribute__((unused))) {
 //
 // The integral. With x = kR,
 //
-//   sigma^2(M) = 1/(2 pi^2 R^3) int_0^inf P_lin(x/R) 9 j1(x)^2 x^2 dx,
+//   sigma^2(M) = 1/(2 pi^2 R^3) int_0^inf P_lin(x/R) 9 j1(x)^2 dx,
 //   R(M)       = (3M/(4 pi rho_crit Omega_m))^(1/3),
 //
 // a smooth spectrum modulated by the oscillating top-hat window 3 j1(x)/x.
 // The window's zeros - the roots z_n of tan x = x (4.4934, 7.7253, 10.9041,
 // 14.0662, ..., approaching (n + 1/2) pi) - split the x axis into a head
 // segment [0, z_1] (the main bump, W(0) = 1) and lobes [z_n, z_{n+1}], each
-// ONE smooth bump. A low-order Gauss-Legendre rule per segment is therefore
+// ONE smooth bump. A low-order Gauss-Legendre rule per lobe is therefore
 // exponentially accurate: the oscillation lives in the lobe structure,
-// never inside a segment.
+// never inside a lobe.
+//
+// The head segment holds nearly all of sigma^2, and for halo-scale R it
+// spans k = x/R from ~0 to z_1/R (~300 h/Mpc at M = 1e6 M_sun/h): the
+// turnover and the BAO of P_lin sit at x << 1, where a rule uniform in x
+// places no nodes. The head is therefore integrated in s = ln x over
+// [XMIN, z_1], XMIN = 1e-5; below XMIN the integrand falls as x^(3 + n_s)
+// and the truncation is below 1e-10.
 //
 // Node cache (built in the Ntable rebuild block, mass-independent - the
 // cosmo_nodes idea of cosmo2D.c):
@@ -1384,9 +1391,14 @@ double MG_Sigma(double a __attribute__((unused))) {
 //             in the per-mass loop)
 //   off[j]  = first node of segment j; off[nseg] = total node count
 //
-// Segment sizes ladder with abs(Ntable.high_def_integration): 8 + 4 hdi
-// nodes per lobe, 4x that for the head segment. NLOBE = 512 lobes reach
-// x ~ 1600, where the integrand envelope (P ~ k^-3 times 9 cos^2(x)/x^4 in
+// Segment sizes ladder with hdi = abs(Ntable.high_def_integration), in
+// sizes GSL tabulates: the head takes 256/512/1024 nodes at hdi =
+// 0/1/>=2 (measured against a dense reference at hdi = 0: 3.8e-6 max
+// error and 2.2e-6 scatter between neighboring masses, the scatter being
+// what the finite difference of halo.c's dlognudlogm sees); each lobe
+// takes 8 + 4 hdi nodes, capped at 20 (with 8, all lobes together are
+// off by < 1e-9 of sigma^2). NLOBE = 512 lobes reach x ~ 1600, where the
+// integrand envelope (P ~ k^-3 times 9 cos^2(x)/x^4 in
 // the substituted variable) leaves a tail far below the stopping tolerance
 // for any halo-scale R. The zeros of j1 solve tan x = x: McMahon's start
 // z ~ q - 1/q with q = (n + 1/2) pi lands inside the right branch, and a
@@ -1490,8 +1502,12 @@ double sigma2(
     // each with its own Gauss-Legendre rule, Bessel factor folded into
     // the weights.
     const int NLOBE = 512;
-    const int npl = 8 + 4*abs(Ntable.high_def_integration); // per lobe
-    const int nph = 4*npl;                                  // head segment
+    const int hdi = abs(Ntable.high_def_integration);
+    const int npl = 8 + 4*((hdi < 3) ? hdi : 3);  // per lobe: 8/12/16/20
+    const int nph = (0 == hdi) ? 256 :
+                    (1 == hdi) ? 512 : 1024;      // head, GL in ln x
+                                                  // (predefined GSL tables)
+    const double XMIN = 1e-5;                     // head lower edge in x
     if (xs != NULL) {
       free(xs);
       free(wf);
@@ -1527,7 +1543,14 @@ double sigma2(
       off[j] = q0;
       for (int i = 0; i < nj; i++) {
         double xi, wi;
-        gsl_integration_glfixed_point(zlo, z, i, &xi, &wi, tt);
+        if (0 == j) { // head: GL in s = ln x on [ln XMIN, ln z_1], dx = x ds
+          double si;
+          gsl_integration_glfixed_point(log(XMIN), log(z), i, &si, &wi, tt);
+          xi = exp(si);
+          wi *= xi;
+        } else {
+          gsl_integration_glfixed_point(zlo, z, i, &xi, &wi, tt);
+        }
         gsl_sf_result J1;
         gsl_sf_bessel_j1_e(xi, &J1);
         xs[q0] = xi;
