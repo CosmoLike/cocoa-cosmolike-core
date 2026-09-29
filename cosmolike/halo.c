@@ -3570,8 +3570,10 @@ double p_yy(
 // The spline follows spline_coeffs_uniform (basics.h): curvatures from
 // the tridiagonal system [1 4 1] c = (3/h^2) (second differences),
 // c = 0 at both ends, solved by the Thomas algorithm; each interval is
-// then y_q + b t + c_q t^2 + d t^3 in Horner form. All storage is the
-// caller's (thread-private scratch), so the function allocates nothing.
+// then y_q + b t + c_q t^2 + d t^3 in Horner form. The Thomas
+// multipliers depend only on the node count, so the caller computes
+// them once per rebuild (ln_k_spline_multipliers); all other storage is
+// the caller's thread-private scratch, so nothing is allocated here.
 //
 // Parameters:
 //   ln_coarse - [n_coarse] the log of the exact coarse values
@@ -3580,10 +3582,23 @@ double p_yy(
 //   pad       - pad nodes before the first dense node
 //   dlnk      - dense ln k spacing
 //   n_dense   - dense nodes
+//   mult      - [n_coarse] the Thomas multipliers
 //   curv      - [n_coarse] scratch: the spline curvatures c_q
-//   mult      - [n_coarse] scratch: the Thomas multipliers
 //   ln_dense  - [n_dense] output: the spline at the dense nodes
 // ---------------------------------------------------------------------------
+static void ln_k_spline_multipliers(
+    const int n_coarse,
+    double* restrict mult
+  )
+{
+  mult[0] = 0.0;
+  for (int q=1; q<n_coarse-1; q++) {
+    mult[q] = 1.0/(4.0 - mult[q-1]);
+  }
+  mult[n_coarse-1] = 0.0;
+}
+
+
 static void ln_k_spline_upsample(
     const double* restrict ln_coarse,
     const int n_coarse,
@@ -3591,22 +3606,23 @@ static void ln_k_spline_upsample(
     const int pad,
     const double dlnk,
     const int n_dense,
+    const double* restrict mult,
     double* restrict curv,
-    double* restrict mult,
     double* restrict ln_dense
   )
 {
-  const double h       = k_step*dlnk; // coarse spacing in ln k
-  const double inv_h2x3 = 3.0/(h*h);
+  const double h         = k_step*dlnk; // coarse spacing in ln k
+  const double inv_h     = 1.0/h;
+  const double inv_3h    = 1.0/(3.0*h);
+  const double h_third   = h/3.0;
+  const double inv_h2x3  = 3.0/(h*h);
 
   // --- 1. CURVATURES: THOMAS SOLVE OF THE NATURAL-SPLINE SYSTEM ---
 
   curv[0] = 0.0;
-  mult[0] = 0.0;
   for (int q=1; q<n_coarse-1; q++) {
     const double rhs =
         inv_h2x3*(ln_coarse[q-1] - 2.0*ln_coarse[q] + ln_coarse[q+1]);
-    mult[q] = 1.0/(4.0 - mult[q-1]);
     curv[q] = (rhs - curv[q-1])*mult[q];
   }
   curv[n_coarse-1] = 0.0;
@@ -3614,17 +3630,23 @@ static void ln_k_spline_upsample(
     curv[q] -= mult[q]*curv[q+1];
   }
 
-  // --- 2. HORNER EVALUATION AT THE DENSE NODES ---
+  // --- 2. HORNER EVALUATION, ONE COARSE INTERVAL AT A TIME ---
 
-  for (int j=0; j<n_dense; j++) {
-    const int    q = j/k_step + pad;          // coarse interval of node j
-    const double t = (j % k_step)*dlnk;       // offset into it
+  // b and d once per interval; its k_step dense nodes sit at the
+  // offsets t = r dlnk, r = 0 .. k_step - 1
+  int j = 0;
+  for (int q=pad; j<n_dense; q++) {
+    const double y = ln_coarse[q];
+    const double c = curv[q];
+    const double b = (ln_coarse[q+1] - y)*inv_h
+                     - h_third*(curv[q+1] + 2.0*c);
+    const double d = (curv[q+1] - c)*inv_3h;
 
-    const double b = (ln_coarse[q+1] - ln_coarse[q])/h
-                     - h*(curv[q+1] + 2.0*curv[q])/3.0;
-    const double d = (curv[q+1] - curv[q])/(3.0*h);
-
-    ln_dense[j] = ln_coarse[q] + t*(b + t*(curv[q] + t*d));
+    for (int r=0; r<k_step && j<n_dense; r++) {
+      const double t = r*dlnk;
+      ln_dense[j] = y + t*(b + t*(c + t*d));
+      j++;
+    }
   }
 }
 
@@ -3681,10 +3703,12 @@ static void ln_k_spline_upsample(
 // Cache invalidation:
 //   rebuild block (table, lim, gl, bin_tab, a_tab; every allocation
 //     lives here, one block each from malloc2d/malloc3d): Ntable.random
-//     or redshift.random_clustering (bin count and a ranges: clustering
-//     n(z))
+//     or redshift.random_clustering (bin count: clustering n(z))
 //   refill: cosmology.random, Ntable.random, nuisance.random_galaxy_bias
-//     (HOD and gc) or redshift.random_clustering
+//     (HOD, gc, and the magnification bias that widens amax_lens),
+//     redshift.random_clustering or nuisance.random_photoz_clustering;
+//     the per-bin a ranges (amin_lens, amax_lens: they move with the
+//     lens photo-z shift and stretch) are set at every refill
 //
 // Parameters:
 //   k  - wavenumber in (c/H0)^-1
@@ -3719,11 +3743,12 @@ double p_gm(
                                    // a-row) iteration's scratch: c,
                                    // ln(1+c), r_s, ln r_s and the same
                                    // for c_g = gc c, then W1, W0
-  static double*** k_tab   = NULL; // [n_threads][4][n_dense + pads]:
+  static double*** k_tab   = NULL; // [n_threads][3][n_dense + pads]:
                                    // the coarse ln k scratch (coarse
-                                   // ln GM02, curvatures, multipliers,
+                                   // ln GM02, curvatures,
                                    // dense ln GM02)
   static int       k_step  = 0;    // dense ln k nodes per coarse one
+  static double*   k_mult  = NULL; // [n_coarse] Thomas multipliers
   static int       n_coarse = 0;   // coarse ln k nodes, pads included
   const int        K_PAD   = 6;    // coarse pad nodes beyond each end
 
@@ -3743,6 +3768,7 @@ double p_gm(
       free(bin_tab);
       free(a_tab);
       free(k_tab);
+      free(k_mult);
     }
 
     nbin  = redshift.clustering_nbin;
@@ -3786,8 +3812,10 @@ double p_gm(
     // one scratch block per thread (the thread count of this rebuild;
     // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
     a_tab   = (double***) malloc3d(omp_get_max_threads(), 10, nnode);
-    k_tab   = (double***) malloc3d(omp_get_max_threads(), 4,
+    k_tab   = (double***) malloc3d(omp_get_max_threads(), 3,
                                    Ntable.N_k_nlin + n_coarse);
+    k_mult   = (double*) malloc1d(n_coarse);
+    ln_k_spline_multipliers(n_coarse, k_mult);
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight; kept on [-1, 1] here
@@ -3796,14 +3824,6 @@ double p_gm(
       gsl_integration_glfixed_point(-1.0, 1.0, q, &gl[0][q], &gl[1][q], t);
     }
     gsl_integration_glfixed_table_free(t);
-
-    // a grid of bin l over its lens range; node i sits at
-    // lim[l][0] + i lim[l][2], both ends included
-    for (int l=0; l<nbin; l++) {
-      lim[l][0] = amin_lens(l);
-      lim[l][1] = amax_lens(l);
-      lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.0);
-    }
 
     // ln k grid, shared by all bins
     lim[nbin][0] = log(limits.k_min_cH0);
@@ -3814,12 +3834,23 @@ double p_gm(
 
   // --- 2. REFILL: THE HOD-WEIGHTED ln P TABLE ---
 
-  // any of the four tags differs from the table's
+  // any of the five tags differs from the table's
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random)    ||
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[3], redshift.random_clustering))
+      fdiff2(cache[3], redshift.random_clustering)  ||
+      fdiff2(cache[4], nuisance.random_photoz_clustering))
   {
+    // a grid of bin l over its lens range, node i at lim[l][0] + i
+    // lim[l][2], both ends included. Set at every refill, not in the
+    // rebuild block: the range moves with the lens photo-z shift and
+    // stretch, and amax_lens widens when magnification bias is on
+    for (int l=0; l<nbin; l++) {
+      lim[l][0] = amin_lens(l);
+      lim[l][1] = amax_lens(l);
+      lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.0);
+    }
+
     // --- 2a. GUARDS AND WARM-UP ---
 
     // the k rows read the NFW kernel directly (header, item 2)
@@ -3950,8 +3981,7 @@ double p_gm(
         // at every dense node
         double* restrict ln_coarse = k_wsp[0];
         double* restrict curv      = k_wsp[1];
-        double* restrict mult      = k_wsp[2];
-        double* restrict ln_dense  = k_wsp[3];
+        double* restrict ln_dense  = k_wsp[2];
 
         const double dlnk      = lim[nbin][2];
         const double lnk_first = lim[nbin][0] - K_PAD*k_step*dlnk;
@@ -3987,7 +4017,7 @@ double p_gm(
         }
 
         ln_k_spline_upsample(ln_coarse, n_coarse, k_step, K_PAD, dlnk,
-                             Ntable.N_k_nlin, curv, mult, ln_dense);
+                             Ntable.N_k_nlin, k_mult, curv, ln_dense);
 
         for (int j=0; j<Ntable.N_k_nlin; j++) {
           const double kj = exp(lim[nbin][0] + j*dlnk);
@@ -4003,6 +4033,7 @@ double p_gm(
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
+    cache[4] = nuisance.random_photoz_clustering;
   }
 
   // --- 3. BILINEAR TABLE READ ---
@@ -4109,11 +4140,12 @@ double p_gg(
                                     // (bin, a-row) iteration's scratch:
                                     // c_g, ln(1+c_g), r_s,g, ln r_s,g,
                                     // W2, W1
-  static double*** k_tab    = NULL; // [n_threads][4][n_dense + pads]:
+  static double*** k_tab    = NULL; // [n_threads][3][n_dense + pads]:
                                     // the coarse ln k scratch (coarse
-                                    // ln G02, curvatures, multipliers,
+                                    // ln G02, curvatures,
                                     // dense ln G02)
   static int       k_step   = 0;    // dense ln k nodes per coarse one
+  static double*   k_mult   = NULL; // [n_coarse] Thomas multipliers
   static int       n_coarse = 0;    // coarse ln k nodes, pads included
   const int        K_PAD    = 6;    // coarse pad nodes beyond each end
 
@@ -4133,6 +4165,7 @@ double p_gg(
       free(occ_tab);
       free(a_tab);
       free(k_tab);
+      free(k_mult);
     }
 
     nbin  = redshift.clustering_nbin;
@@ -4176,8 +4209,10 @@ double p_gg(
     // one scratch block per thread (the thread count of this rebuild;
     // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
     a_tab    = (double***) malloc3d(omp_get_max_threads(), 6, nnode);
-    k_tab    = (double***) malloc3d(omp_get_max_threads(), 4,
+    k_tab    = (double***) malloc3d(omp_get_max_threads(), 3,
                                     Ntable.N_k_nlin + n_coarse);
+    k_mult   = (double*) malloc1d(n_coarse);
+    ln_k_spline_multipliers(n_coarse, k_mult);
 
     // GL rule mapped once onto [ln M_min, ln M_max], shared by all bins
     const double lnMmin = log(limits.halo_m_min);
@@ -4194,14 +4229,6 @@ double p_gg(
     }
     gsl_integration_glfixed_table_free(t);
 
-    // a grid of bin l over its lens range; node i sits at
-    // lim[l][0] + i lim[l][2], both ends included
-    for (int l=0; l<nbin; l++) {
-      lim[l][0] = amin_lens(l);
-      lim[l][1] = amax_lens(l);
-      lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.);
-    }
-
     // ln k grid, shared by all bins
     lim[nbin][0] = log(limits.k_min_cH0);
     lim[nbin][1] = log(limits.k_max_cH0);
@@ -4211,12 +4238,23 @@ double p_gg(
 
   // --- 2. REFILL: THE HOD-WEIGHTED ln P TABLE ---
 
-  // any of the four tags differs from the table's
+  // any of the five tags differs from the table's
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random)    ||
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[3], redshift.random_clustering))
+      fdiff2(cache[3], redshift.random_clustering)  ||
+      fdiff2(cache[4], nuisance.random_photoz_clustering))
   {
+    // a grid of bin l over its lens range, node i at lim[l][0] + i
+    // lim[l][2], both ends included. Set at every refill, not in the
+    // rebuild block: the range moves with the lens photo-z shift and
+    // stretch, and amax_lens widens when magnification bias is on
+    for (int l=0; l<nbin; l++) {
+      lim[l][0] = amin_lens(l);
+      lim[l][1] = amax_lens(l);
+      lim[l][2] = (lim[l][1] - lim[l][0])/((double) na - 1.);
+    }
+
     // --- 2a. GUARDS AND WARM-UP ---
 
     // the k rows read the NFW kernel directly (header, item 2)
@@ -4331,8 +4369,7 @@ double p_gg(
         // at every dense node
         double* restrict ln_coarse = k_wsp[0];
         double* restrict curv      = k_wsp[1];
-        double* restrict mult      = k_wsp[2];
-        double* restrict ln_dense  = k_wsp[3];
+        double* restrict ln_dense  = k_wsp[2];
 
         const double dlnk      = lim[nbin][2];
         const double lnk_first = lim[nbin][0] - K_PAD*k_step*dlnk;
@@ -4357,7 +4394,7 @@ double p_gg(
         }
 
         ln_k_spline_upsample(ln_coarse, n_coarse, k_step, K_PAD, dlnk,
-                             Ntable.N_k_nlin, curv, mult, ln_dense);
+                             Ntable.N_k_nlin, k_mult, curv, ln_dense);
 
         for (int j=0; j<Ntable.N_k_nlin; j++) {
           const double kj = exp(lim[nbin][0] + j*dlnk);
@@ -4374,6 +4411,7 @@ double p_gg(
     cache[1] = Ntable.random;
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
+    cache[4] = nuisance.random_photoz_clustering;
   }
 
   // --- 3. BILINEAR TABLE READ ---
