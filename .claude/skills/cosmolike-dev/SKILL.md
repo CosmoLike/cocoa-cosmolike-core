@@ -123,6 +123,38 @@ Run all of these before declaring a change correct:
   ~72ms dominates the emulator path; non-Limber ~12ms (was ~150ms).
   Hot path: `xi_pm_tomo` → Limber fill → Legendre summation.
 
+## Clean & Human-Readable Code Style Guide
+
+(Vivian, 2026-09-29: "you wrote the code to be fast - you got that - but
+at the same time you wrote a code in a way only another AI understand -
+student is not AI".)
+
+### Mission
+You MUST prioritize human scannability, structural clarity, and
+junior-developer (i.e., student) readability over compact or clever code
+syntax.
+
+### Non-Negotiable Formatting Boundaries
+1. **Vertical Breathing Room:** Always separate logical blocks, variable
+   initialization phases, and calculation sequences with single blank
+   lines.
+2. **Visual Banners:** Use distinct, short uppercase comment banners to
+   section out complex algorithms (e.g., `// --- 1. CONFIGURATION ---`).
+3. **Assignment Alignment:** Where clear and practical, vertically align
+   consecutive `=` assignment operators to keep variable declarations
+   neat and organized.
+4. **No Dense Logic Chains:** Break down complex multi-conditional
+   statements or ternary operators into individual, well-named temporary
+   variables or multi-line structures.
+5. **Guided Context:** Add bite-sized, purposeful inline comments before
+   mathematical equations or data-transformation loops explaining *why*
+   the code is performing that action, not just *what* it is doing.
+
+Also (same review): variable names say the physics (`n_gal`, `b_gal`,
+not `ng`, `bg`, `tq`, `occ`); logs are `ln<quantity>` (`lnk`, `lnx`,
+`ln1c`); one statement per line. Speed is never the excuse: names,
+blank lines and comments cost nothing at run time.
+
 ## Code style
 
 - **2-space indentation. Never tabs.**
