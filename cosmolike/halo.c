@@ -29,36 +29,72 @@
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double hb1nu(const double nu, const double a)
-{ // Halo bias based on peak-background split
+// ---------------------------------------------------------------------------
+// Tinker et al. 2010 kernels, split for batched evaluation.
+//
+// hb1nu and fnu run at every node of every halo-model mass integral,
+// yet most of their arithmetic does not depend on nu: the bias
+// constants depend only on Delta = 200, the mass-function parameters
+// only on a. Each kernel is therefore split in two:
+//
+//   *_params(a)      = everything independent of nu (once per call, or
+//                      once per scale factor inside a batched loop)
+//   *_core(nu, par)  = the nu-dependent remainder (once per node)
+//
+// hb1nu(nu, a) and fnu(nu, a) below are exactly params + core, with the
+// same arithmetic in the same order, so a batched caller and a scalar
+// caller get bitwise-identical values. The *_params functions dispatch
+// on like.halo_model; the cores are the Tinker 2010 forms, the only
+// models implemented.
+// ---------------------------------------------------------------------------
 
-  double ans;
+typedef struct {
+  double ALPHA; // A of Eq. 6 (1001.3162)
+  double pa;    // exponent a = 0.44 y - 0.88, y = log10(Delta)
+  double dca;   // delta_c^a
+  double BETA;  // B = 0.183
+  double GAMMA; // C
+} hb1nu_params;
+
+static inline hb1nu_params hb1nu_params_at(
+    const double a __attribute__((unused)) // the Delta = 200 fit does
+  )                                        // not evolve with a
+{
+  hb1nu_params p;
   switch(like.halo_model[1])
   {
     case HALO_BIAS_TINKER_2010:
     {
       const double y = log10(200.0);
-      
-      const double ALPHA    = 1.0 + 0.24 * y * exp(-pow(4.0 / y, 4.0));
-      const double nu_alpha = pow(nu, 0.44 * y - 0.88);
-      
-      const double BETA = 0.183;
-      const double nu_beta = pow(nu, 1.5);
-      
-      const double GAMMA = 0.019 + 0.107 * y + 0.19 * exp(-pow(4.0 / y, 4.0));
-      const double nu_gamma = pow(nu, 2.4);
-      
-      ans = 1.0 - ALPHA * nu_alpha / (nu_alpha + pow(delta_c, 0.44 * y - 0.88)) 
-               + BETA * nu_beta + GAMMA * nu_gamma;
+      p.ALPHA = 1.0 + 0.24 * y * exp(-pow(4.0 / y, 4.0));
+      p.pa    = 0.44 * y - 0.88;
+      p.dca   = pow(delta_c, 0.44 * y - 0.88);
+      p.BETA  = 0.183;
+      p.GAMMA = 0.019 + 0.107 * y + 0.19 * exp(-pow(4.0 / y, 4.0));
       break;
     }
     default:
     {
       log_fatal("like.halo_model[1] = %d not supported", like.halo_model[1]);
-      exit(1);  
+      exit(1);
     }
   }
-  return ans;
+  return p;
+}
+
+static inline double hb1nu_core(const double nu, const hb1nu_params* p)
+{
+  const double nu_alpha = pow(nu, p->pa);
+  const double nu_beta  = pow(nu, 1.5);
+  const double nu_gamma = pow(nu, 2.4);
+  return 1.0 - p->ALPHA * nu_alpha / (nu_alpha + p->dca)
+             + p->BETA * nu_beta + p->GAMMA * nu_gamma;
+}
+
+double hb1nu(const double nu, const double a)
+{ // Halo bias based on peak-background split
+  const hb1nu_params p = hb1nu_params_at(a);
+  return hb1nu_core(nu, &p);
 }
 
 // ---------------------------------------------------------------------------
@@ -66,34 +102,52 @@ double hb1nu(const double nu, const double a)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double fnu(const double nu, const double a)
-{ // Halo bias based on peak-background split 
+typedef struct {
+  double alpha; // Eqs. 8-12 + Table 4 of 1001.3162 at Delta = 200
+  double beta;
+  double gamma;
+  double phi;
+  double eta;
+} fnu_params;
+
+static inline fnu_params fnu_params_at(const double a)
+{
   if (!(a>0) || !(a<1)) {
     log_fatal("a>0 and a<1 not true"); exit(1);
   }
-  double ans;
+  fnu_params p;
   switch(like.halo_model[0])
   {
     case HMF_TINKER_2010:
     { // Eqs. (8-12) + Table 4 from Tinker et al. 2010
       const double aa = fmax(0.25, a); // limit fit range of mass function evolution to
                                        // z <= 3 (discussed after Eq. 12 of 1001.3162)
-      const double alpha = 0.368;
-      const double beta = 0.589 * pow(aa, -0.2);
-      const double gamma = 0.864 * pow(aa, 0.01);
-      const double phi = -0.729 * pow(aa, .08);
-      const double eta = -0.243 * pow(aa, -0.27);
-
-      ans = alpha*(1. + pow(beta*nu,-2*phi))*pow(nu,2*eta)*exp(-gamma*nu*nu/2.);
+      p.alpha = 0.368;
+      p.beta  = 0.589 * pow(aa, -0.2);
+      p.gamma = 0.864 * pow(aa, 0.01);
+      p.phi   = -0.729 * pow(aa, .08);
+      p.eta   = -0.243 * pow(aa, -0.27);
       break;
     }
     default:
     {
       log_fatal("like.halo_model[0] = %d not supported", like.halo_model[0]);
-      exit(1);  
+      exit(1);
     }
   }
-  return ans;
+  return p;
+}
+
+static inline double fnu_core(const double nu, const fnu_params* p)
+{
+  return p->alpha*(1. + pow(p->beta*nu,-2*p->phi))*pow(nu,2*p->eta)*
+         exp(-p->gamma*nu*nu/2.);
+}
+
+double fnu(const double nu, const double a)
+{ // Halo bias based on peak-background split
+  const fnu_params p = fnu_params_at(a);
+  return fnu_core(nu, &p);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,8 +278,10 @@ static void bias_norm_build_nodes(void)
 // Data flow:
 //
 //   node cache (x, w) + sigma2 -> t_min, t_max -> m, h   [serial, once]
-//     -> per scale factor: D = growfac(a)                [threaded over a]
-//     -> per node: nu_q -> w_q b(nu_q) f(nu_q, a)        [plain sum]
+//     -> per scale factor: D = growfac(a) and the Tinker
+//        parameters (hb1nu_params_at, fnu_params_at)  [threaded over a]
+//     -> per node: nu_q -> w_q b(nu_q) f(nu_q, a)        [plain sum,
+//        only the nu-dependent cores]
 //
 // Thread safety: the node cache, the sigma2 table and the growth table
 // are all built lazily on first use, so the serial block touches each
@@ -269,10 +325,12 @@ void bias_norm_work(
   #pragma omp parallel for schedule(static)
   for (int i=0; i<na; i++) {
     const double D = growfac(a[i]);
+    const hb1nu_params pb = hb1nu_params_at(a[i]);
+    const fnu_params pf = fnu_params_at(a[i]);
     double sum = 0.0;
     for (int q=0; q<n; q++) {
       const double nu = (m + h*x[q])/D;
-      sum += w[q]*hb1nu(nu, a[i])*fnu(nu, a[i]);
+      sum += w[q]*hb1nu_core(nu, &pb)*fnu_core(nu, &pf);
     }
     out[i] = sum*h/D;
   }
