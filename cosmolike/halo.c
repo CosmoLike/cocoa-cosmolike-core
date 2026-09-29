@@ -1155,8 +1155,9 @@ double dlognudlogm(
 //             innermost loop of the P_mm table does no pow, log1p or log
 //
 // The table holds f(t) and G(t) = g(t) + ln t of the u_nfw_c header at n
-// nodes uniform in ln t over [NFW_TMIN, NFW_TASY]; reads clamp below
-// NFW_TMIN and switch to the asymptotic series above NFW_TASY (nfw_um).
+// nodes uniform in ln t over [NFW_TMIN, NFW_TASY]; reads are linear between
+// nodes (nfw_pos), clamp below NFW_TMIN and switch to the asymptotic series
+// above NFW_TASY (nfw_um).
 // ---------------------------------------------------------------------------
 static const double NFW_TMIN = 1e-10; // reads clamp below NFW_TMIN
 static const double NFW_TASY = 50.0;  // asymptotic series above NFW_TASY
@@ -1164,6 +1165,7 @@ static struct {
   uint64_t cache;        // Ntable.random of the table
   int n;                 // ln t nodes
   double lim[3];         // ln t axis: first, last, spacing
+  double inv;            // 1/spacing (nfw_pos multiplies by it)
   double** tab;          // [2][n] f(t), G(t) = g(t) + ln t
 } nfw_ = {0};
 
@@ -1192,9 +1194,32 @@ static void nfw_table(void)
       tab[1][i] = -ci*cos(t) + (M_PI_2 - si)*sin(t) + s; // G(t) = g(t) + ln t
     }
     nfw_.n = n;
+    nfw_.inv = 1.0/lim[2];
     nfw_.tab = tab;
     nfw_.cache = Ntable.random;
   }
+}
+
+// Position of ln t on the nfw_ grid: node index i and fraction d of the way
+// from node i to node i + 1, so a read is d*(tab[i+1] - tab[i]) + tab[i].
+// f and G share the grid, so one call per position serves both planes; the
+// scaling is one multiply by the stored 1/spacing. Below NFW_TMIN, ln t is
+// raised to the first node (i = 0, d = 0: a read returns tab[0]). i is
+// clamped onto the last interval; callers read only at ln t <= ln NFW_TASY,
+// so at most a one-ulp overshoot extrapolates linearly. nfw_table must have
+// run.
+static inline int nfw_pos(
+    const double lt, // ln t
+    double* d        // output: fraction of the interval [i, i + 1]
+  )
+{
+  const double r = (fmax(lt, nfw_.lim[0]) - nfw_.lim[0])*nfw_.inv;
+  int i = (int) r;
+  if (i > nfw_.n - 2) {
+    i = nfw_.n - 2;
+  }
+  *d = r - i;
+  return i;
 }
 
 // u m(c) of the NFW transform (u_nfw_c header) for one halo at one k.
@@ -1210,14 +1235,13 @@ static inline double nfw_um(
     const double l1c  // ln(1 + c)
   )
 {
-  const int n = nfw_.n;
-  const double* lim = nfw_.lim;
-  double** tab = nfw_.tab;
+  const double* restrict tf = nfw_.tab[0];
+  const double* restrict tG = nfw_.tab[1];
   const double lxu = lx + l1c;          // ln xu, xu = (1 + c) x
   const double xu = (1.0 + c)*x;
 
-  // f(xu), G(x), G(xu): table reads up to NFW_TASY (clamped at NFW_TMIN);
-  // above NFW_TASY the asymptotic series (A&S 5.2.34-35), in nested form,
+  // f(xu), G(x), G(xu): table reads (nfw_pos) up to NFW_TASY; above
+  // NFW_TASY the asymptotic series (A&S 5.2.34-35), in nested form,
   //   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - 6!/t^6 + 8!/t^8)/t
   //   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - 7!/t^6 + 9!/t^8)/t^2
   // (the factors 2, 12, 30, 56 and 6, 20, 42, 72 are ratios of consecutive
@@ -1225,16 +1249,21 @@ static inline double nfw_um(
   // 4e-10 at t = 50). x < xu, so x may sit in the table when xu does not.
   double fu, Gx, Gu;
   if (xu <= NFW_TASY) {
-    Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
-    Gu = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
-    fu = interpol1d(tab[0], n, lim[0], lim[1], lim[2], fmax(lxu, lim[0]));
+    double du, dx;
+    const int iu = nfw_pos(lxu, &du); // f and G share the grid
+    const int ix = nfw_pos(lx, &dx);
+    Gu = du*(tG[iu + 1] - tG[iu]) + tG[iu];
+    fu = du*(tf[iu + 1] - tf[iu]) + tf[iu];
+    Gx = dx*(tG[ix + 1] - tG[ix]) + tG[ix];
   }
   else {
     const double v = 1.0/(xu*xu);
     fu = (1.0 - 2.0*v*(1.0 - 12.0*v*(1.0 - 30.0*v*(1.0 - 56.0*v))))/xu;
     Gu = v*(1.0 - 6.0*v*(1.0 - 20.0*v*(1.0 - 42.0*v*(1.0 - 72.0*v)))) + lxu;
     if (x <= NFW_TASY) {
-      Gx = interpol1d(tab[1], n, lim[0], lim[1], lim[2], fmax(lx, lim[0]));
+      double dx;
+      const int ix = nfw_pos(lx, &dx);
+      Gx = dx*(tG[ix + 1] - tG[ix]) + tG[ix];
     }
     else {
       const double w = 1.0/(x*x);
