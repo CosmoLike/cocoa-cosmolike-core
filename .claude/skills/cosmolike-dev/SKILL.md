@@ -203,6 +203,83 @@ define the baseline, called after they overwrite the boosted value.
 init_accuracy_boost's ladder in the same change** — users must never
 need a second call to shift overall accuracy.
 
+## Deep unrolling (the `_work` technology)
+
+A table build is ONE explicit loop nest in the function that owns the
+table, not a chain of calls. The pattern to remove:
+
+```
+table[i][j] = X_nointerp(x_i, y_j)     per table point
+  -> GSL fixed-order integrator        per table point
+    -> int_for_X(node, void* params)   callback, per node
+      -> more table lookups            per node
+```
+
+It hides the loop nest from the compiler and from the reader.
+Invariants get recomputed at the innermost level (halo.c u_KS: its
+integrand `int_F_KS` recomputes the profile power theta^p =
+pow(log(1+x)/x, p) for every (c, y, node) although it depends only on
+(c, node): 256x redundant at the default `Ntable.halo_uks_nx`).
+Callbacks through function pointers cannot vectorize. And only the
+outermost loop can be threaded.
+
+Rules:
+
+- Outer loops = table axes; innermost loop = quadrature nodes.
+- Fold single-caller helpers (`*_nointerp`, `int_for_*` callbacks) into
+  the owner and delete them. A `*_work` batch whose only caller is the
+  table owner folds in too (`sigma2_work` into `sigma2`; `bias_norm_work`
+  into `bias_norm`).
+- Hoist every quantity to the outermost loop level it depends on: per
+  Ntable (nodes, weights), per cosmology (sigma(M), nu), per parameter
+  change (HOD occupations, profile powers), per axis value (fit
+  parameters at each a), per node (the rest).
+- Innermost loop = a plain multiply-add over node arrays: local
+  `restrict` pointers + `omp simd` (SIMDe only where `omp simd` fails).
+- Thread/collapse the loops that carry enough independent work, with no
+  cross-thread reductions (determinism).
+- Quadrature nodes placed on an existing table's grid turn its
+  interpolation into a gather with weights 0/1 (e.g. a halo-model mass
+  integral quadratured on the sigma2 ln M nodes reads sigma2 exactly).
+- Code duplication across consumers is acceptable when it buys speed.
+- Gauss-Legendre sizes only from GSL's precomputed set (2–20, 32, 64,
+  96, 100, 128, 256, 512, 1024); the cosmo2D.c hdi ladders use
+  64/96/128/256/512/1024 ("predefined GSL tables"). GSL computes any
+  other size on the fly, with weights good to only ~5e-7. halo.c's
+  `DEFAULT_INT_PREC` = 1000 (+500 per hdi step) and sigma2's head
+  segment at odd hdi (48, 80 nodes) break this rule — known remaining
+  work.
+
+Worked example: `sigma2` (cosmo3D.c) — the lobe-node cache is built in
+its Ntable rebuild block, and one threaded lobe-sum loop refills the
+table per cosmology.
+
+## No C code only for tests
+
+A C function whose only caller is a Python binding used by tests (a
+`*_nointerp` point diagnostic, plus its header declaration, its
+generic_interface/halo_wrapper wrapper and one binding per project) is
+maintenance surface in the core with no production value. Delete all of
+it and test the production function — the cached table — against an
+independent Python (numpy/mpmath) reference:
+
+- at the table's own nodes (interpolation weights 0/1, so exact node
+  values: checks the quadrature);
+- between nodes (checks the interpolation).
+
+`*_nointerp` functions with real C callers (table fills, other
+integrands) stay until deep unrolling folds them into their owner.
+
+## When the maintainer's intent is unclear
+
+If a request from the maintainer (Vivian) is ambiguous, or a first
+reading keeps getting corrected, do not act on a guess and do not ask
+her to re-explain first. Launch a subagent with `model: "fable"`: give
+it her words verbatim, the relevant code paths and the current reading,
+and ask what she wants, what she does not want, and the concrete next
+action. Act on that interpretation and state it to her in one line.
+Clear requests need no consult.
+
 ## Patch review checklist
 
 Reject or push back unless all of these hold (details in
