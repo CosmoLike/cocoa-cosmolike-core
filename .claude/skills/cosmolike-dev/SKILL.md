@@ -1,6 +1,6 @@
 ---
 name: cosmolike-dev
-description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, or tomographic C_ell appear in a C-code context, even if optimization isn't mentioned explicitly.
+description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c, halo.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, tomographic C_ell, halo model, or HOD appear in a C-code context, even if optimization isn't mentioned explicitly.
 ---
 
 # CosmoLike Development
@@ -108,6 +108,14 @@ Run all of these before declaring a change correct:
   (CCL, for comparison, ~2.5–31% depending on configuration).
 - Confirm auto-vectorization with GCC `-fopt-info-vec-all`; look for
   "loop vectorized using 32 byte vectors" on the loop you care about.
+- Under the default strict flags (`-frounding-math`, no
+  `-fassociative-math`) clang auto-vectorizes no FP loop, and says
+  nothing about it: check `-Rpass=loop-vectorize` /
+  `-Rpass-missed=loop-vectorize` remarks before believing a loop is
+  vectorized. SIMDe intrinsics do compile to vector instructions (verify
+  by disassembly; `u_KS` S/Q sums: `v4d` mul then add). SIMDe and scalar
+  agree to ~1e-12, not bitwise; `COSMO2D_NOT_USE_SIMD` selects the
+  scalar path.
 - Mind IPC interpretation: this workload is memory-bound (~1.1 IPC, ~25% LLC
   miss rate is normal). Low IPC is not by itself a problem to "fix".
 - Landmarks (June 2026 snapshot; re-measure, don't trust): full benchmark
@@ -143,7 +151,8 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
   no underscore). SIMDe gives AVX2 on Linux and NEON on Apple Silicon from the
   same source — never use raw `_mm256_*` intrinsics.
 - Allocation only through the custom `malloc1d/2d/3d/4d` (posix_memalign,
-  64-byte cache-line padded rows). Zero only through `zero1d/2d/3d/4d`.
+  64-byte cache-line padded rows). Each returns one block, pointer rows
+  included: one `free` per table. Zero only through `zero1d/2d/3d/4d`.
   **Never** a flat `memset` over a padded multi-dim allocation (see pitfalls).
 - Every SIMD/fast-path block is wrapped in a preprocessor guard with the slow
   reference path in the `#else`/guarded branch.
@@ -152,7 +161,11 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
 - Function naming for the established decompositions: `<name>_work` for
   batched tomographic-block computation, `<name>_fill` for gather-based
   interpolation table fills, `int_for_<name>_core` for scalar integrand cores
-  callable from both SIMD bodies and scalar tails.
+  callable from both SIMD bodies and scalar tails, `<name>_params_at` /
+  `<name>_core` for a fit split into its per-axis coefficients (once per
+  a) and its per-node remainder (halo.c: `hb1nu`, `fnu`). Batched and
+  scalar callers both run params_at then core, with the same arithmetic
+  in the same order, so their results are bitwise identical.
 
 ## Codebase map (hot-path oriented)
 
@@ -171,6 +184,11 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
   `g_tomo`/`g2_tomo`/`g_lens` (factored cumulative trapezoid, P − chi*Q).
 - `cfftlog/` — non-Limber pipeline; `cfftlog_ells_cocoa0` hoists the
   ell-independent forward FFT out of the convergence loop.
+- `halo.c` — halo model: Tinker multiplicity and bias (`tinker_alpha`,
+  `fnu`, `hb1nu`, `bias_norm`), NFW and KS gas profiles (`u_nfw_c` on the
+  f/G table; `u_KS` on `ks_upsample1d` tables), HOD tables (`hod_tables`:
+  `ngal`, `bgal`), spectra `p_mm`/`p_gm`/`p_gg`. Every lazily built table
+  is warmed by `halo_warmup`. Numerics: "halo.c numerics" below.
 - `basics.c` — allocators, `zero*d`, interpolation utilities
   (`spline_coeffs_uniform` + direct-index Horner is the house spline;
   `spline2d_upsample_uniform` its tensor-product 2D form).
@@ -254,6 +272,143 @@ Rules:
 Worked example: `sigma2` (cosmo3D.c) — the lobe-node cache is built in
 its Ntable rebuild block, and one threaded lobe-sum loop refills the
 table per cosmology.
+
+## halo.c numerics
+
+Developer record for halo.c: quadrature choices, table designs,
+accuracy protocols, measured accuracy and cost, and the rules they
+imply. Source comments state what the code does and its invariants; the
+numbers and their reasons live here. Dated figures are snapshots:
+re-measure before relying on them.
+
+### Quadrature
+
+Every Gauss-Legendre rule in halo.c is a size GSL has precomputed (the
+rule above). `Ntable.high_def_integration` (hdi) selects the size per
+integral family:
+
+- `u_KS` gas integrals: 96 / 128 / 256 / 512 / 1024; 96 nodes converge
+  F0 to 2e-14, so the ladder buys nothing.
+- `bias_norm`: 128 / 256 / 512; 128 nodes converged to 3e-15 (powers
+  and one exponential; `sigma2` enters only at the end points). The
+  ladder never needs raising.
+- `ngal` / `bgal` (`hod_tables`), GL in ln M: 128 / 256 / 512 / 1024.
+  Node study (2026-09-29; 5 bins x a = 0.5 / 0.75 / 0.95 vs 32-node
+  panels 0.05 wide): 5e-7 / 1.3e-7 / 3e-8 / 5e-9 at 128 / 256 / 512 /
+  1024 nodes. The floor is the linear reads of `sigma2` and
+  `dlognudlogm` (a kink per cell), not the HOD shape; splitting at
+  M_min / M_0 does not help. The linear read in a (<= 1.4e-5) dominates
+  at 128 nodes: raising hdi buys nothing for `ngal` / `bgal` until
+  `N_a` is raised.
+- Mass integrals of the spectra (`p_mm`, `p_gm`, `p_gg`; `I02_XY`,
+  `I11_X`): 1024 at every hdi, the largest tabulated size. Their
+  integrands read `sigma2` and `dlognudlogm` by linear interpolation in
+  ln M, and GL converges only algebraically across those kinks (at 256
+  nodes `p_gg` moves by up to 2.4e-3 from its 1024-node value). Do not
+  ladder them below 1024 while those reads stay interpolated; the
+  gather bullet above is the way to make a smaller rule exact.
+
+Trapezoid rules, uniform in a log variable:
+
+- `u_KS` Q and P in s = ln t: hdi 0: [-32, 4], step 0.2 (181 nodes);
+  hdi 1: [-40, 4], 0.2 (221); hdi >= 2: [-40, 4], 0.1 (441). Dropped
+  tail of Q ~ z e^{smin}: 3e-9 at z = ZHI = 2.5e5 (hdi 0), 1e-12
+  (hdi >= 1); smax = 4 is generous (e^-164 at z = 3). End weights are
+  not halved (the integrand is negligible at both ends).
+- `tinker_alpha` in s = ln nu: [-90, 3.5], DS = 0.1 (936 nodes), exact
+  to 2.9e-12 vs DS = 0.01 on [-200, 5] (the difference is the dropped
+  lower tail).
+
+### Tables and splines
+
+- House spline (`spline_coeffs_uniform` + direct-index Horner)
+  instances: `tinker_alpha`'s table, `ks_upsample1d` (the `u_KS`
+  tables), the `p_*` coarse ln k grid; `sigma2`'s refill in cosmo3D.c.
+- Natural-spline padding: S'' = 0 at the ends is wrong for a curved
+  function (alpha''(0.25) = -2.9 gives a 2e-5 miss unpadded). The
+  [1 4 1] rows damp an end error by 2 - sqrt(3) = 0.268 per interval,
+  so PAD = 6 leaves 4e-4 of it. Spline the quantity that is read back
+  (alpha = 1/I, not I). A `*_shape` helper evaluated at padding nodes
+  must not clamp; the clamp lives in the caller.
+- NFW f/G table (`nfw_table`): NFW_TASY = 50 is the smallest switch to
+  the asymptotic series at table accuracy: the series stops after
+  8!/t^8 (f) and 9!/t^8 (g), and the first omitted terms are 4e-11 and
+  4e-10 at t = 50. Below NFW_TMIN = 1e-10, f and G are flat to 3e-9, so
+  the clamp is safe. `nfw_pos` readers stay at ln t <= ln NFW_TASY, so
+  the last-interval clamp extrapolates by at most one ulp.
+- `u_KS` axes: the ln c axis is 1e2-1e4x more accurate than uniform c
+  at equal nodes; PAD = 6 (ln z padded below only) gives 20-200x less
+  edge error than no padding. ZHI = 2.5e5 must exceed
+  k_max r_v(M_max) = 3e6 x 3.8e-3 ~ 1.1e4; the c clamp [0.05, 100] is
+  a safety margin (c ~ 0.16 at a = 1/41).
+- `hod_tables` builds all lens bins at once, so every bin's HOD must be
+  set before the first call; `hod_.lim[0]` is a placeholder a for
+  `HOD_nc`'s range check (the HOD does not depend on a).
+
+### Accuracy protocols
+
+Independent mpmath references; the record is the last run. Re-run when
+the named knobs change.
+
+- `tinker_alpha`: table vs exact Eq. 7 at 997 values of a. Record: max
+  4.7e-8 (a = 0.2545), median 1.4e-9, set by the linear read of the
+  ND = 4096 grid (alpha'' dx^2/8): to go lower raise ND, not NC. Re-run
+  when ND, NC, PAD or the trapezoid window change.
+- `u_nfw_c`: 3000 random (c, k, m), c in [0.05, 100], vs Eq. 81 of
+  astro-ph/0206508 at 30 digits. Record: max 6.1e-7 (c < 0.1, where
+  m(c) ~ c^2/2 amplifies the table error), median 1e-10. Re-run when
+  `halo_nfw_n`, NFW_TMIN or NFW_TASY change.
+- `u_KS`: 20000 random (c, z), c in [0.05, 100], z in [1e-6, 1.2e4],
+  Gamma = 1.17, vs an mpmath-verified evaluator. Record: boost 1: max
+  4.8e-6 of the local envelope (median 8e-7), 1.8e-5 relative where
+  |u| > 1e-2; boost 2: 1.1e-6; hdi changes nothing (the floor is the
+  table reads, not the quadrature). Re-run when a `u_KS` grid size,
+  PAD, ZHI, a trapezoid window or a contour ray changes.
+
+### Complex helpers (`ks_ctheta`, `ks_cg`)
+
+- Complex ln(1 + x) near x = 0 (`ks_ctheta`):
+  0.5 log1p(2 Re x + |x|^2) + i atan2(Im x, 1 + Re x), not clog(1 + x);
+  below |x| = 1e-4 the 5-term Taylor series of ln(1 + x)/x (dropped
+  term ~1e-21). Same recipe for any future complex profile helper.
+- `ks_cg` takes theta^p as cexp(p clog theta) on the principal branch;
+  |arg theta| < pi/2 is verified on both `u_KS` contour rays for c in
+  [0.05, 100]. Changing the rays or the concentration range needs the
+  check redone: a branch jump makes `u_KS` silently wrong.
+
+### Constants under -frounding-math
+
+- Compile-time physics constants (the Tinker bias coefficients at
+  Delta = 200) are numeric literals, never log10/exp/pow expressions:
+  under `-frounding-math` an inexact constant expression is not folded
+  and runs on every call. Derive offline (mpmath, 40 digits; write 21
+  significant digits) and guard with `#if Delta != 200` / `#error`.
+
+### Warm-up and determinism
+
+- Every lazily built static table is first called outside any parallel
+  region. halo.c does this through one function, `halo_warmup`: it
+  builds every lazy table halo.c reads, serially, before any threaded
+  loop runs. A new lazy table is added to `halo_warmup`, not warmed at
+  its call sites.
+- Each table value is one serial sum over its quadrature nodes, and
+  threading runs only across table nodes (`tinker_alpha`: each coarse
+  value ye[i] is a serial sum over the NS nodes, threaded across coarse
+  nodes). No cross-thread reductions, so no table depends on the thread
+  count.
+
+### Sizes and costs (snapshots; re-measure)
+
+- `u_KS` at boost 1: NC = 40, NZ = 64, NW = 6, NY = 191, N1 = 60,
+  PAD = 6; refinement MC = 12, MW = 32, MZ = 16, MY = 115, M1 = 70;
+  dense grids 613 x 545 (S) and 613 x 1105 (each Q), ~13.8 MB total.
+- `u_KS` at 7362e15, 4 threads: refill per Gamma change 1.1 ms (six
+  upsamplings under `schedule(dynamic, 1)`, so the two Q jobs run side
+  by side); one read 46 ns (cos, sin, 3 log, 3 exp, 5 table reads); the
+  shared ln tau grid needs 563 `ks_cg` calls for P (36743 without it).
+- `hod_tables` refill, 2026-09-29, 4 threads, 10 lens bins x
+  N_a = 256: 3.9 ms.
+- `tinker_alpha` build, 4 threads: 0.9 ms, once per process.
 
 ## No C code only for tests
 
