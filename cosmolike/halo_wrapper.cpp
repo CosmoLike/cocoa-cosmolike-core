@@ -301,8 +301,9 @@ double dlognudlogm_cpp(
 // code integrates.
 //
 // Calls halo.c bias_norm: a cached table on Ntable.N_a nodes in a over
-// [limits.a_min, 0.9999999], filled by one bias_norm_work call and read
-// by linear interpolation (constant extrapolation past the last node).
+// [limits.a_min, 0.9999999], filled by one threaded Gauss-Legendre pass
+// and read by linear interpolation (constant extrapolation past the
+// last node).
 //
 // Parameters:
 //   a - scale factor
@@ -315,32 +316,6 @@ double bias_norm_cpp(
   )
 {
   return bias_norm(a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// The bias_norm integral evaluated directly at a (Gauss-Legendre in nu,
-// no table): the point diagnostic of the table above. Their difference
-// at the same a is the table's interpolation error.
-//
-// Calls halo.c bias_norm_nointerp, a one-a call into bias_norm_work
-// (the same quadrature that fills the table).
-//
-// Parameters:
-//   a - scale factor, 0 < a < 1 (f(nu) aborts otherwise)
-//
-// Returns:
-//   bias_norm(a), dimensionless
-// ---------------------------------------------------------------------------
-double bias_norm_nointerp_cpp(
-    const double a   // scale factor
-  )
-{
-  return bias_norm_nointerp(a);
 }
 
 // ---------------------------------------------------------------------------

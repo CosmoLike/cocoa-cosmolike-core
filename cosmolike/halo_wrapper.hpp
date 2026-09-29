@@ -108,9 +108,6 @@ double dlognudlogm_cpp(const double M);
 // renormalization (table in a)
 double bias_norm_cpp(const double a);
 
-// the same integral evaluated directly at a (no table)
-double bias_norm_nointerp_cpp(const double a);
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
