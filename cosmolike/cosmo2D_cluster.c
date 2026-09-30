@@ -970,27 +970,33 @@ static void C_cs_tomo_limber_work(
 
   // --- 3. ALLOCATION ---
   double** limber_weight = (double**) malloc2d(nbin_cluster, npts_max);
-  double*** cluster_kernel =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
-  double*** cluster_density =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
-  double*** cluster_magnification =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
-  double*** source_kappa =
-    (double***) malloc3d(nbin_cluster, nbin_source, npts_max);
-  double*** source_alignment =
-    (double***) malloc3d(nbin_cluster, nbin_source, npts_max);
+
+  // The three cluster-leg kernels share one shape, so they live in one
+  // block (one allocation, one zero, one free), each named by an alias:
+  //   [0] W_c, [1] b_nl W_c, [2] C_c W_mag,c  (cluster bin, richness, node)
+  const int ncluster_leg = 3;
+  double**** cluster_leg = (double****) malloc4d(ncluster_leg,
+    nbin_cluster, nbin_richness, npts_max);
+  double*** cluster_kernel        = cluster_leg[0];
+  double*** cluster_density       = cluster_leg[1];
+  double*** cluster_magnification = cluster_leg[2];
+
+  // Same for the source leg:
+  //   [0] W_kappa, [1] W_source x IA amplitude  (cluster bin, source, node)
+  const int nsource_leg = 2;
+  double**** source_leg = (double****) malloc4d(nsource_leg,
+    nbin_cluster, nbin_source, npts_max);
+  double*** source_kappa     = source_leg[0];
+  double*** source_alignment = source_leg[1];
+
   double*** p_nonlinear =
     (double***) malloc3d(nbin_cluster, nell, npts_max);
   double**** p_one_halo =
     (double****) malloc4d(nbin_cluster, nbin_richness, nell, npts_max);
 
   zero2d(limber_weight, nbin_cluster, npts_max);
-  zero3d(cluster_kernel, nbin_cluster, nbin_richness, npts_max);
-  zero3d(cluster_density, nbin_cluster, nbin_richness, npts_max);
-  zero3d(cluster_magnification, nbin_cluster, nbin_richness, npts_max);
-  zero3d(source_kappa, nbin_cluster, nbin_source, npts_max);
-  zero3d(source_alignment, nbin_cluster, nbin_source, npts_max);
+  zero4d(cluster_leg, ncluster_leg, nbin_cluster, nbin_richness, npts_max);
+  zero4d(source_leg, nsource_leg, nbin_cluster, nbin_source, npts_max);
   zero3d(p_nonlinear, nbin_cluster, nell, npts_max);
   zero4d(p_one_halo, nbin_cluster, nbin_richness, nell, npts_max);
 
@@ -1091,11 +1097,8 @@ static void C_cs_tomo_limber_work(
 
   // --- 7. RELEASE ---
   free(limber_weight);
-  free(cluster_kernel);
-  free(cluster_density);
-  free(cluster_magnification);
-  free(source_kappa);
-  free(source_alignment);
+  free(cluster_leg);
+  free(source_leg);
   free(p_nonlinear);
   free(p_one_halo);
 }
@@ -1311,16 +1314,20 @@ static void C_cc_tomo_limber_work(
 
   // --- 3. ALLOCATION ---
   double** limber_weight = (double**) malloc2d(nbin_cluster, npts_max);
-  double*** cluster_density =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
-  double*** cluster_magnification =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
+
+  // One block for both cluster-leg kernels (see C_cs_tomo_limber_work):
+  //   [0] b_nl W_c, [1] C_c W_mag,c  (cluster bin, richness, node)
+  const int ncluster_leg = 2;
+  double**** cluster_leg = (double****) malloc4d(ncluster_leg,
+    nbin_cluster, nbin_richness, npts_max);
+  double*** cluster_density       = cluster_leg[0];
+  double*** cluster_magnification = cluster_leg[1];
+
   double*** p_nonlinear =
     (double***) malloc3d(nbin_cluster, nell, npts_max);
 
   zero2d(limber_weight, nbin_cluster, npts_max);
-  zero3d(cluster_density, nbin_cluster, nbin_richness, npts_max);
-  zero3d(cluster_magnification, nbin_cluster, nbin_richness, npts_max);
+  zero4d(cluster_leg, ncluster_leg, nbin_cluster, nbin_richness, npts_max);
   zero3d(p_nonlinear, nbin_cluster, nell, npts_max);
 
   // --- 4. NODE QUANTITIES AND SPECTRA ---
@@ -1365,8 +1372,7 @@ static void C_cc_tomo_limber_work(
 
   // --- 6. RELEASE ---
   free(limber_weight);
-  free(cluster_density);
-  free(cluster_magnification);
+  free(cluster_leg);
   free(p_nonlinear);
 }
 
@@ -1607,20 +1613,29 @@ static void C_cg_tomo_limber_work(
 
   // --- 3. ALLOCATION ---
   double** limber_weight = (double**) malloc2d(nbin_cluster, npts_max);
-  double*** cluster_density =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
-  double*** cluster_magnification =
-    (double***) malloc3d(nbin_cluster, nbin_richness, npts_max);
-  double** galaxy_density       = (double**) malloc2d(npairs, npts_max);
-  double** galaxy_magnification = (double**) malloc2d(npairs, npts_max);
+
+  // One block for both cluster-leg kernels (see C_cs_tomo_limber_work):
+  //   [0] b_nl W_c, [1] C_c W_mag,c  (cluster bin, richness, node)
+  const int ncluster_leg = 2;
+  double**** cluster_leg = (double****) malloc4d(ncluster_leg,
+    nbin_cluster, nbin_richness, npts_max);
+  double*** cluster_density       = cluster_leg[0];
+  double*** cluster_magnification = cluster_leg[1];
+
+  // and one for the galaxy leg:
+  //   [0] b1 W_gal, [1] b_mag W_mag  (cg pair, node)
+  const int ngalaxy_leg = 2;
+  double*** galaxy_leg =
+    (double***) malloc3d(ngalaxy_leg, npairs, npts_max);
+  double** galaxy_density       = galaxy_leg[0];
+  double** galaxy_magnification = galaxy_leg[1];
+
   double*** p_nonlinear =
     (double***) malloc3d(nbin_cluster, nell, npts_max);
 
   zero2d(limber_weight, nbin_cluster, npts_max);
-  zero3d(cluster_density, nbin_cluster, nbin_richness, npts_max);
-  zero3d(cluster_magnification, nbin_cluster, nbin_richness, npts_max);
-  zero2d(galaxy_density, npairs, npts_max);
-  zero2d(galaxy_magnification, npairs, npts_max);
+  zero4d(cluster_leg, ncluster_leg, nbin_cluster, nbin_richness, npts_max);
+  zero3d(galaxy_leg, ngalaxy_leg, npairs, npts_max);
   zero3d(p_nonlinear, nbin_cluster, nell, npts_max);
 
   // --- 4. NODE QUANTITIES: cluster leg, galaxy leg ---
@@ -1684,10 +1699,8 @@ static void C_cg_tomo_limber_work(
 
   // --- 6. RELEASE ---
   free(limber_weight);
-  free(cluster_density);
-  free(cluster_magnification);
-  free(galaxy_density);
-  free(galaxy_magnification);
+  free(cluster_leg);
+  free(galaxy_leg);
   free(p_nonlinear);
 }
 
