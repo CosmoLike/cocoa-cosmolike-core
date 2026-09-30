@@ -30,6 +30,7 @@ extern "C" {
 //             (the Poisson term only when <ln lambda> > 0)
 //   P = [erf(x_max) - erf(x_min)]/2,  x = (ln lambda_edge - <ln lambda>)
 //                                        /(sqrt(2) sigma)
+// (evaluated with erfc of the tails: accurate where P is tiny)
 // Closed form: no table.
 // ---------------------------------------------------------------------------
 double prob_richness_bin_given_m(const double lnM, const double z,
@@ -45,7 +46,8 @@ double ncl_richness(const double a, const int nl);
 // Richness-weighted linear bias (eq 21):
 //   b_nl(a) = int dlnM (dn/dlnM) P(nl|M) b_h(M, a) S(M, a) / n_nl(a)
 // with S = 1, or the Y1 mass-dependent selection bias
-// b_s0 (M/M_piv)^b_s1 ((1+z)/1.45)^b_s2 when
+// b_s0 (M/M_piv)^b_s1 ((1+z)/(1+z_piv))^b_s2 (cluster.mor_pivot_mass,
+// cluster.mor_pivot_1pz) when
 // cluster.selection_model == CLUSTER_SELECTION_Y1.
 // ---------------------------------------------------------------------------
 double bcl_richness(const double a, const int nl);
@@ -54,7 +56,9 @@ double bcl_richness(const double a, const int nl);
 // One-halo cluster-matter power spectrum of richness bin nl (eq 22):
 //   P1h_nl(k, a) = int dlnM (dn/dlnM) P(nl|M) (M/rho_m) u_NFW(k|M, a)
 //                  / n_nl(a)
-// Coarse exact ln k nodes + house-spline upsample (the p_gm design).
+// Exact ln k nodes (the halo_nk_step ladder, refined: a richness bin
+// selects a narrow mass window, so P1h keeps NFW wiggles in k), house
+// spline in ln k, linear in a.
 // ---------------------------------------------------------------------------
 double pcm_1h_richness(const double k, const double a, const int nl);
 
