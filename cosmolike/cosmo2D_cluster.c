@@ -2297,8 +2297,9 @@ double w_cg_tomo(
 //        <phi_ni|z>                                     (phi_cluster)
 //   4. N_{ni, nl} = Omega_s int dz [dV/dz dOmega] <phi_ni|z> n_nl(z)
 //      over the support of <phi_ni|z>, with Omega_s = survey.area (deg^2)
-//      times survey.area_conversion_factor ((pi/180)^2 sr per deg^2,
-//      set by reset_survey_struct).
+//      times (pi/180)^2 sr per deg^2. The conversion is a local constant:
+//      survey.area_conversion_factor is set only by reset_survey_struct,
+//      which the interface never calls, so it is 0 at run time.
 //   5. Gauss-Legendre in z on the support: the same tabulated-size rule
 //      (hdi ladder) as the Limber support panel; a top-hat kernel is
 //      smooth inside its support, an erf kernel has its edges resolved.
@@ -2319,7 +2320,8 @@ static void cluster_counts_fill(
   const int nodes = (int) w->n;
 
   // survey solid angle in steradians
-  const double omega_s = survey.area*survey.area_conversion_factor;
+  const double deg2_to_sr = (M_PI/180.0)*(M_PI/180.0);
+  const double omega_s = survey.area*deg2_to_sr;
 
   zero2d(counts, nbin_cluster, nbin_richness);
 
