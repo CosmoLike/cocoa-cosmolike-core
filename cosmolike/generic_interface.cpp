@@ -1104,7 +1104,10 @@ void init_bias(vector bias_z_evol_model)
 // Writes like.Ncl, like.lmin, like.lmax, like.lmax_shear and reallocates
 // like.ell with the Ncl log-spaced bin centers
 //   ell_i = exp(ln(lmin) + (i + 0.5) dlnl),  dlnl = ln(lmax/lmin)/Ncl.
-// No cache key is bumped.
+// No cache key is bumped, and none is needed (unlike the real-space
+// binning below): no cached table holds values at the band powers. The
+// Fourier data vectors hand like.ell to the *_ells functions of
+// cosmo2D.c on every call.
 //
 // Validation: nells > 0, else critical() + exit(1).
 //
@@ -1177,7 +1180,12 @@ void init_binning_fourier(
 // Writes Ntable.Ntheta and the angular range Ntable.vtmin/vtmax (input in
 // arcmin, stored in rad). Bin centers derive from these in
 // compute_binning_real_space and in the real-space projections (cosmo2D.c).
-// No cache key is bumped.
+//
+// Cache invalidation:
+// bumps Ntable.random when Ntheta or the range changed (fdiff), so the
+// bin-averaged Legendre kernels and the real-space blocks summed with
+// them rebuild (they are keyed on Ntable.random, not on the range);
+// unchanged input leaves the key alone.
 //
 // Validation: Ntheta > 0, else critical() + exit(1).
 //
@@ -1204,9 +1212,26 @@ void init_binning_real_space(
   debug(debugsel, fname, "Ntheta", Ntheta);
   debug(debugsel, fname, "theta_min_arcmin", theta_min_arcmin);
   debug(debugsel, fname, "theta_max_arcmin", theta_max_arcmin);
-  Ntable.Ntheta = Ntheta;
-  Ntable.vtmin  = theta_min_arcmin * 2.90888208665721580e-4; // arcmin to rad conv
-  Ntable.vtmax  = theta_max_arcmin * 2.90888208665721580e-4; // arcmin to rad conv  
+  const double vtmin = theta_min_arcmin * 2.90888208665721580e-4; // arcmin to rad conv
+  const double vtmax = theta_max_arcmin * 2.90888208665721580e-4; // arcmin to rad conv
+  // The bin-averaged Legendre kernels (set_bin_average in basics.c, the
+  // kernels of cosmo2D.c, cosmo2D_scuts.c and cosmo2D_cluster.c) and the
+  // real-space blocks summed with them are cached on Ntable.random, not
+  // on the binning itself. Without a new key, a new range with the same
+  // Ntheta returned the old range's values, and a new Ntheta read blocks
+  // allocated with the old one.
+  int cache_update = 0;
+  if (Ntable.Ntheta != Ntheta ||
+      fdiff(Ntable.vtmin, vtmin) ||
+      fdiff(Ntable.vtmax, vtmax)) {
+    cache_update = 1;
+    Ntable.Ntheta = Ntheta;
+    Ntable.vtmin  = vtmin;
+    Ntable.vtmax  = vtmax;
+  }
+  if (1 == cache_update || 1 == force_cache_update_test) {
+    Ntable.random = RandomNumber::get_instance().get(); // update cache
+  }
   debug("{}: {}", fname, errends);
   return;
 }

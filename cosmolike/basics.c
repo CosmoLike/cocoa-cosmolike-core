@@ -776,6 +776,9 @@ double fmax(
 // cached values without recomputation.
 //
 // The angular bins are log-spaced between Ntable.vtmin and Ntable.vtmax.
+// The range is not a cache key here: init_binning_real_space
+// (generic_interface.cpp) redraws Ntable.random when Ntheta or the range
+// changes, which rebuilds this table and every kernel built from it.
 // ---------------------------------------------------------------------------
 bin_avg set_bin_average(
     const int i_theta,  // angular bin index, must be in [0, Ntable.Ntheta)
