@@ -36,10 +36,10 @@ void reset_cluster_struct(void)
   cluster.mor_pivot_mass = 5.0e14;
   cluster.mor_pivot_1pz = 1.45;
 
-  cluster.probe_N = 0;
-  cluster.probe_cs = 0;
-  cluster.probe_cc = 0;
-  cluster.probe_cg = 0;
+  cluster.probe[CLUSTER_PROBE_N] = 0;
+  cluster.probe[CLUSTER_PROBE_CS] = 0;
+  cluster.probe[CLUSTER_PROBE_CC] = 0;
+  cluster.probe[CLUSTER_PROBE_CG] = 0;
 
   cluster.richness_nbin = 0;
 
@@ -49,25 +49,25 @@ void reset_cluster_struct(void)
     free(cluster.zdist_table);
     cluster.zdist_table = NULL;
   }
-  cluster.zdist_zmin_all = 0.0;
-  cluster.zdist_zmax_all = 0.0;
+  cluster.zdist_zall[RANGE_MIN] = 0.0;
+  cluster.zdist_zall[RANGE_MAX] = 0.0;
 
   cluster.cs_npowerspectra = 0;
   cluster.cg_npowerspectra = 0;
   cluster.cc_npowerspectra = 0;
 
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
-    cluster.richness_min[i] = 0.0;
-    cluster.richness_max[i] = 0.0;
-    cluster.zdist_zmin[i] = 0.0;
-    cluster.zdist_zmax[i] = 0.0;
-    cluster.zbin_min[i] = 0.0;
-    cluster.zbin_max[i] = 0.0;
+    cluster.richness[RANGE_MIN][i] = 0.0;
+    cluster.richness[RANGE_MAX][i] = 0.0;
+    cluster.zdist_z[RANGE_MIN][i] = 0.0;
+    cluster.zdist_z[RANGE_MAX][i] = 0.0;
+    cluster.zbin[RANGE_MIN][i] = 0.0;
+    cluster.zbin[RANGE_MAX][i] = 0.0;
     cluster.cg_lens_bin[i] = -1;
     cluster.mor[i] = 0.0;
     cluster.selection[i] = 0.0;
   }
 
-  cluster.m_min = 1.0e12;
-  cluster.m_max = 1.0e16;
+  cluster.m[RANGE_MIN] = 1.0e12;
+  cluster.m[RANGE_MAX] = 1.0e16;
 }

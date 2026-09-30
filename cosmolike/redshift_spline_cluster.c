@@ -30,8 +30,8 @@
 // builder below fills all of them at once. The pair maps are warmed by
 // the interface (any accessor call, see the pair-map banner).
 //
-// Nothing in this file writes the nominal bin edges cluster.zbin_min/max
-// or the kernel support cluster.zdist_zmin/zmax: the tables copy them.
+// Nothing in this file writes the nominal bin edges cluster.zbin[RANGE_MIN]/max
+// or the kernel support cluster.zdist_z[RANGE_MIN]/zmax: the tables copy them.
 // ============================================================================
 
 #include <math.h>
@@ -77,7 +77,7 @@ double amin_cluster(const int ni)
       cluster.zdist_nbin);
     exit(1);
   }
-  return 1.0/(1.0 + cluster.zdist_zmax[ni]);
+  return 1.0/(1.0 + cluster.zdist_z[RANGE_MAX][ni]);
 }
 
 
@@ -104,7 +104,7 @@ double amax_cluster(const int ni)
       cluster.zdist_nbin);
     exit(1);
   }
-  return 1.0/(1.0 + cluster.zdist_zmin[ni]);
+  return 1.0/(1.0 + cluster.zdist_z[RANGE_MIN][ni]);
 }
 
 
@@ -129,13 +129,13 @@ double zmid_cluster(const int ni)
       cluster.zdist_nbin);
     exit(1);
   }
-  if (!(cluster.zbin_max[ni] > cluster.zbin_min[ni])) {
+  if (!(cluster.zbin[RANGE_MAX][ni] > cluster.zbin[RANGE_MIN][ni])) {
     log_fatal("nominal z_lambda edges of cluster bin %d not set "
-      "(zbin_min = %e, zbin_max = %e)", ni, cluster.zbin_min[ni],
-      cluster.zbin_max[ni]);
+      "(zbin_min = %e, zbin_max = %e)", ni, cluster.zbin[RANGE_MIN][ni],
+      cluster.zbin[RANGE_MAX][ni]);
     exit(1);
   }
-  return 0.5*(cluster.zbin_min[ni] + cluster.zbin_max[ni]);
+  return 0.5*(cluster.zbin[RANGE_MIN][ni] + cluster.zbin[RANGE_MAX][ni]);
 }
 
 
@@ -316,8 +316,8 @@ static void selection_kernel_table(void)
     }
 
     for (int ni=0; ni<nbin; ni++) {
-      const double zmin = cluster.zdist_zmin[ni];
-      const double zmax = cluster.zdist_zmax[ni];
+      const double zmin = cluster.zdist_z[RANGE_MIN][ni];
+      const double zmax = cluster.zdist_z[RANGE_MAX][ni];
       if (!(zmin > 0.0) || !(zmax > zmin)) {
         log_fatal("invalid support of cluster bin %d: [%e, %e] (need "
           "0 < zmin < zmax)", ni, zmin, zmax);
@@ -343,7 +343,7 @@ static void selection_kernel_table(void)
     // --- 3. ONE UNIFORM GRID PER BIN, ENDS ON THE SUPPORT EDGES ---
     int n_max = 0;
     for (int ni=0; ni<nbin; ni++) {
-      const double width = cluster.zdist_zmax[ni] - cluster.zdist_zmin[ni];
+      const double width = cluster.zdist_z[RANGE_MAX][ni] - cluster.zdist_z[RANGE_MIN][ni];
 
       int n_steps = (int) ceil(width/dz_target - ALIGNMENT_SLACK);
       if (n_steps < 1) {
@@ -351,8 +351,8 @@ static void selection_kernel_table(void)
       }
 
       phi_.n[ni]      = n_steps + 1;
-      phi_.zmin[ni]   = cluster.zdist_zmin[ni];
-      phi_.zmax[ni]   = cluster.zdist_zmax[ni];
+      phi_.zmin[ni]   = cluster.zdist_z[RANGE_MIN][ni];
+      phi_.zmax[ni]   = cluster.zdist_z[RANGE_MAX][ni];
       phi_.dz[ni]     = width/((double) n_steps);
       phi_.inv_dz[ni] = 1.0/phi_.dz[ni];
 

@@ -300,10 +300,10 @@ static void mor_check(void)
     exit(1);
   }
   for (int nl=0; nl<cluster.richness_nbin; nl++) {
-    if (!(cluster.richness_min[nl] > 0.0) ||
-        !(cluster.richness_max[nl] > cluster.richness_min[nl])) {
+    if (!(cluster.richness[RANGE_MIN][nl] > 0.0) ||
+        !(cluster.richness[RANGE_MAX][nl] > cluster.richness[RANGE_MIN][nl])) {
       log_fatal("richness bin %d = [%g, %g) is not a valid interval", nl,
-                cluster.richness_min[nl], cluster.richness_max[nl]);
+                cluster.richness[RANGE_MIN][nl], cluster.richness[RANGE_MAX][nl]);
       exit(1);
     }
   }
@@ -340,8 +340,8 @@ double prob_richness_bin_given_m(
   const double inv_sqrt2_sigma = mor_inv_sqrt2_sigma(mu);
 
   // erf arguments at the two edges of the bin
-  const double x_min = (log(cluster.richness_min[nl]) - mu)*inv_sqrt2_sigma;
-  const double x_max = (log(cluster.richness_max[nl]) - mu)*inv_sqrt2_sigma;
+  const double x_min = (log(cluster.richness[RANGE_MIN][nl]) - mu)*inv_sqrt2_sigma;
+  const double x_max = (log(cluster.richness[RANGE_MAX][nl]) - mu)*inv_sqrt2_sigma;
 
   return richness_bin_probability(x_min, x_max);
 }
@@ -1208,7 +1208,7 @@ static void cluster_nfw_check(void)
 //
 // One fill (cluster_mass_tables) computes, at every node of the a grid and
 // for every richness bin, the Gauss-Legendre sums in ln M on
-// [ln cluster.m_min, ln cluster.m_max] (nodes ln M_q, weights w_q):
+// [ln cluster.m[RANGE_MIN], ln cluster.m[RANGE_MAX]] (nodes ln M_q, weights w_q):
 //
 //   n_nl(a)    = sum_q dn_q(a) P_q
 //   b_nl(a)    = sum_q dn_q(a) P_q b_q(a) / n_nl(a)
@@ -1510,29 +1510,29 @@ static void cluster_mass_tables(void)
     }
     // inside the ln M range of halo.c's sigma2 and dlognudlogm tables,
     // which clamp outside it
-    if (!(cluster.m_min >= limits.halo_m[RANGE_MIN]) ||
-        !(cluster.m_max <= limits.halo_m[RANGE_MAX]) ||
-        !(cluster.m_max > cluster.m_min)) {
+    if (!(cluster.m[RANGE_MIN] >= limits.halo_m[RANGE_MIN]) ||
+        !(cluster.m[RANGE_MAX] <= limits.halo_m[RANGE_MAX]) ||
+        !(cluster.m[RANGE_MAX] > cluster.m[RANGE_MIN])) {
       log_fatal("cluster mass range [%g, %g] not inside the halo.c tables' "
-                "[%g, %g]", cluster.m_min, cluster.m_max,
+                "[%g, %g]", cluster.m[RANGE_MIN], cluster.m[RANGE_MAX],
                 limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]);
       exit(1);
     }
     mor_check();
 
     for (int nl=0; nl<nl_bins; nl++) {
-      cl_.lnlam[0][nl] = log(cluster.richness_min[nl]);
-      cl_.lnlam[1][nl] = log(cluster.richness_max[nl]);
+      cl_.lnlam[0][nl] = log(cluster.richness[RANGE_MIN][nl]);
+      cl_.lnlam[1][nl] = log(cluster.richness[RANGE_MAX][nl]);
     }
 
     // --- 2b. THE a GRID: EVERY CLUSTER BIN'S SUPPORT ---
     // [a_lo, a_hi] = [1/(1 + max_i zmax_i), 1/(1 + min_i zmin_i)], a_hi
     // capped below 1 (fnu); pads dropped where they would leave (0, A_TOP]
-    double zmin_support = cluster.zdist_zmin[0];
-    double zmax_support = cluster.zdist_zmax[0];
+    double zmin_support = cluster.zdist_z[RANGE_MIN][0];
+    double zmax_support = cluster.zdist_z[RANGE_MAX][0];
     for (int i=1; i<cluster.zdist_nbin; i++) {
-      zmin_support = fmin(zmin_support, cluster.zdist_zmin[i]);
-      zmax_support = fmax(zmax_support, cluster.zdist_zmax[i]);
+      zmin_support = fmin(zmin_support, cluster.zdist_z[RANGE_MIN][i]);
+      zmax_support = fmax(zmax_support, cluster.zdist_z[RANGE_MAX][i]);
     }
 
     const double a_lo = 1.0/(1.0 + zmax_support);
@@ -1567,8 +1567,8 @@ static void cluster_mass_tables(void)
     // sigma2 and dlognudlogm (ln M tables; conc reads sigma2 too) and
     // tinker_alpha (inside fnu, which cluster_tinker_check calls while it
     // checks the private Tinker copy) build here, before the threads start
-    (void) sigma2(cluster.m_min);
-    (void) dlognudlogm(cluster.m_min);
+    (void) sigma2(cluster.m[RANGE_MIN]);
+    (void) dlognudlogm(cluster.m[RANGE_MIN]);
     cluster_tinker_check();
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (the section header)
@@ -1590,8 +1590,8 @@ static void cluster_mass_tables(void)
     // header): rho_m, or rho_cb under like.halo_model[4] = HALO_FIELD_CB
     const double rho_hmf   = cosmology.rho_crit*omega_halo_field();
 
-    const double lnM_min    = log(cluster.m_min);
-    const double lnM_max    = log(cluster.m_max);
+    const double lnM_min    = log(cluster.m[RANGE_MIN]);
+    const double lnM_max    = log(cluster.m[RANGE_MAX]);
     const double half_width = 0.5*(lnM_max - lnM_min);
     const double mid        = 0.5*(lnM_max + lnM_min);
 
@@ -2715,13 +2715,13 @@ void cluster_warmup(void)
   // the one-halo table only enters cluster lensing (C_cs); its work
   // function warms pcm_1h_richness serially itself before its threaded
   // loops, so a run without cluster lensing skips this refill
-  if (1 == cluster.probe_cs) {
+  if (1 == cluster.probe[CLUSTER_PROBE_CS]) {
     cluster_p1h_table();
   }
 
   // --- 2. redshift_spline_cluster.c ---
   for (int ni=0; ni<cluster.zdist_nbin; ni++) {
-    const double z_mid = 0.5*(cluster.zdist_zmin[ni] + cluster.zdist_zmax[ni]);
+    const double z_mid = 0.5*(cluster.zdist_z[RANGE_MIN][ni] + cluster.zdist_z[RANGE_MAX][ni]);
     const double a_mid = 1.0/(1.0 + z_mid);
 
     (void) phi_cluster(z_mid, ni);

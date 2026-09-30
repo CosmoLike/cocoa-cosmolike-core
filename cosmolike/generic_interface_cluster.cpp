@@ -64,8 +64,8 @@ static int cluster_richness_npairs()
 // 1 when any cluster probe is on.
 static int any_cluster_probe()
 {
-  if (cluster.probe_N || cluster.probe_cs ||
-      cluster.probe_cc || cluster.probe_cg) {
+  if (cluster.probe[CLUSTER_PROBE_N] || cluster.probe[CLUSTER_PROBE_CS] ||
+      cluster.probe[CLUSTER_PROBE_CC] || cluster.probe[CLUSTER_PROBE_CG]) {
     return 1;
   }
   return 0;
@@ -114,12 +114,12 @@ static void check_cluster_state(std::string_view fname)
     exit(1);
   }
   warmup_cluster_pair_maps();
-  if (1 == cluster.probe_cg && 0 == cluster.cg_npowerspectra) [[unlikely]] {
+  if (1 == cluster.probe[CLUSTER_PROBE_CG] && 0 == cluster.cg_npowerspectra) [[unlikely]] {
     critical("{}: w_cg is on but no cluster bin has a lens bin (call "
       "init_cluster_pairs after set_cluster_zdist)", fname);
     exit(1);
   }
-  if (1 == cluster.probe_cs && 1 == cluster.ytransform &&
+  if (1 == cluster.probe[CLUSTER_PROBE_CS] && 1 == cluster.ytransform &&
       Ntable.Ntheta < ytransform_min_ntheta) [[unlikely]] {
     critical("{}: the Y transform needs Ntheta >= {} (Ntheta = {})",
       fname, ytransform_min_ntheta, Ntable.Ntheta);
@@ -204,16 +204,16 @@ void init_probes_cluster(std::string possible_probes)
   const flags_t& flags = it->second;
 
   like.probe[PROBE_SS] = flags(cluster_block::ss);
-  like.probe[PROBE_GS]   = flags(cluster_block::gs);
-  like.probe[PROBE_GG]     = flags(cluster_block::gg);
+  like.probe[PROBE_GS] = flags(cluster_block::gs);
+  like.probe[PROBE_GG] = flags(cluster_block::gg);
   like.probe[PROBE_GK] = 0;
   like.probe[PROBE_KS] = 0;
   like.probe[PROBE_KK] = 0;
 
-  cluster.probe_cg = flags(cluster_block::cg);
-  cluster.probe_N  = flags(cluster_block::N);
-  cluster.probe_cc = flags(cluster_block::cc);
-  cluster.probe_cs = flags(cluster_block::cs);
+  cluster.probe[CLUSTER_PROBE_CG] = flags(cluster_block::cg);
+  cluster.probe[CLUSTER_PROBE_N]  = flags(cluster_block::N);
+  cluster.probe[CLUSTER_PROBE_CC] = flags(cluster_block::cc);
+  cluster.probe[CLUSTER_PROBE_CS] = flags(cluster_block::cs);
 
   debug(debugsel, fname, "possible_probes", probe_key);
   debug("{}: {}", fname, errends);
@@ -241,10 +241,10 @@ void init_cluster_probes(
       exit(1);
     }
   }
-  cluster.probe_N  = N;
-  cluster.probe_cs = cs;
-  cluster.probe_cc = cc;
-  cluster.probe_cg = cg;
+  cluster.probe[CLUSTER_PROBE_N]  = N;
+  cluster.probe[CLUSTER_PROBE_CS] = cs;
+  cluster.probe[CLUSTER_PROBE_CC] = cc;
+  cluster.probe[CLUSTER_PROBE_CG] = cg;
 
   debug("{}: {}", fname, errends);
 }
@@ -422,12 +422,12 @@ void init_cluster_richness_bins(vector lambda_min, vector lambda_max)
   bool changed = (cluster.richness_nbin != nbin);
   const bool new_nbin = changed;
   for (int nl=0; nl<nbin; nl++) {
-    if (fdiff(cluster.richness_min[nl], lambda_min(nl)) ||
-        fdiff(cluster.richness_max[nl], lambda_max(nl))) {
+    if (fdiff(cluster.richness[RANGE_MIN][nl], lambda_min(nl)) ||
+        fdiff(cluster.richness[RANGE_MAX][nl], lambda_max(nl))) {
       changed = true;
     }
-    cluster.richness_min[nl] = lambda_min(nl);
-    cluster.richness_max[nl] = lambda_max(nl);
+    cluster.richness[RANGE_MIN][nl] = lambda_min(nl);
+    cluster.richness[RANGE_MAX][nl] = lambda_max(nl);
   }
   cluster.richness_nbin = nbin;
 
@@ -439,7 +439,7 @@ void init_cluster_richness_bins(vector lambda_min, vector lambda_max)
   }
   for (int nl=0; nl<nbin; nl++) {
     debug("{}: richness bin {} = [{}, {}]", fname, nl,
-      cluster.richness_min[nl], cluster.richness_max[nl]);
+      cluster.richness[RANGE_MIN][nl], cluster.richness[RANGE_MAX][nl]);
   }
   debug("{}: {}", fname, errends);
 }
@@ -554,8 +554,8 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
       }
     }
     for (int k=0; k<nbin && !changed; k++) {
-      if (fdiff(cluster.zbin_min[k], zbin_min(k)) ||
-          fdiff(cluster.zbin_max[k], zbin_max(k))) {
+      if (fdiff(cluster.zbin[RANGE_MIN][k], zbin_min(k)) ||
+          fdiff(cluster.zbin[RANGE_MAX][k], zbin_max(k))) {
         changed = true;
       }
     }
@@ -591,8 +591,8 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
       tab[k][i] = input_table(i,k+1);
     }
   }
-  cluster.zdist_zmin_all = fmax(z_v[0], cluster_zdist_zmin_floor);
-  cluster.zdist_zmax_all = z_v[nz-1];
+  cluster.zdist_zall[RANGE_MIN] = fmax(z_v[0], cluster_zdist_zmin_floor);
+  cluster.zdist_zall[RANGE_MAX] = z_v[nz-1];
 
   // --- 5. SUPPORT OF EACH KERNEL ---
 
@@ -620,14 +620,14 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
     const int first_widened = (first > 0) ? first - 1 : 0;
     const int last_widened  = (last < nz - 1) ? last + 1 : nz - 1;
 
-    cluster.zdist_zmin[k] = fmax(z_v[first_widened], cluster.zdist_zmin_all);
-    cluster.zdist_zmax[k] = z_v[last_widened];
-    cluster.zbin_min[k] = zbin_min(k);
-    cluster.zbin_max[k] = zbin_max(k);
+    cluster.zdist_z[RANGE_MIN][k] = fmax(z_v[first_widened], cluster.zdist_zall[RANGE_MIN]);
+    cluster.zdist_z[RANGE_MAX][k] = z_v[last_widened];
+    cluster.zbin[RANGE_MIN][k] = zbin_min(k);
+    cluster.zbin[RANGE_MAX][k] = zbin_max(k);
 
     debug("{}: cluster bin {}: nominal [{}, {}], support [{}, {}]", fname, k,
-      cluster.zbin_min[k], cluster.zbin_max[k],
-      cluster.zdist_zmin[k], cluster.zdist_zmax[k]);
+      cluster.zbin[RANGE_MIN][k], cluster.zbin[RANGE_MAX][k],
+      cluster.zdist_z[RANGE_MIN][k], cluster.zdist_z[RANGE_MAX][k]);
   }
 
   cluster.random_zdist = RandomNumber::get_instance().get();
@@ -1306,16 +1306,16 @@ vector compute_data_vector_cluster_masked()
 
     const matrix selection = compute_cluster_selection_factor();
 
-    if (1 == cluster.probe_cg) {
+    if (1 == cluster.probe[CLUSTER_PROBE_CG]) {
       compute_cg_block_masked(dv, start(cluster_block::cg), selection);
     }
-    if (1 == cluster.probe_N) {
+    if (1 == cluster.probe[CLUSTER_PROBE_N]) {
       compute_N_block_masked(dv, start(cluster_block::N));
     }
-    if (1 == cluster.probe_cc) {
+    if (1 == cluster.probe[CLUSTER_PROBE_CC]) {
       compute_cc_block_masked(dv, start(cluster_block::cc), selection);
     }
-    if (1 == cluster.probe_cs) {
+    if (1 == cluster.probe[CLUSTER_PROBE_CS]) {
       matrix T;
       if (1 == cluster.ytransform) {
         T = compute_cluster_ytransform_matrix();
@@ -1414,10 +1414,10 @@ void IPCluster::set_mask(std::string mask_filename)
   enabled(cluster_block::ss) = like.probe[PROBE_SS];
   enabled(cluster_block::gs) = like.probe[PROBE_GS];
   enabled(cluster_block::gg) = like.probe[PROBE_GG];
-  enabled(cluster_block::cg) = cluster.probe_cg;
-  enabled(cluster_block::N)  = cluster.probe_N;
-  enabled(cluster_block::cc) = cluster.probe_cc;
-  enabled(cluster_block::cs) = cluster.probe_cs;
+  enabled(cluster_block::cg) = cluster.probe[CLUSTER_PROBE_CG];
+  enabled(cluster_block::N)  = cluster.probe[CLUSTER_PROBE_N];
+  enabled(cluster_block::cc) = cluster.probe[CLUSTER_PROBE_CC];
+  enabled(cluster_block::cs) = cluster.probe[CLUSTER_PROBE_CS];
   for (int b=0; b<cluster_block::count; b++) {
     if (0 == enabled(b)) {
       for (int i=start(b); i<start(b) + sizes(b); i++) {
@@ -1428,7 +1428,7 @@ void IPCluster::set_mask(std::string mask_filename)
 
   // --- 3. Y SPACE: THE LAST THETA BIN OF EVERY cs ROW ---
 
-  if (1 == cluster.probe_cs && 1 == cluster.ytransform) {
+  if (1 == cluster.probe[CLUSTER_PROBE_CS] && 1 == cluster.ytransform) {
     const int ntheta = Ntable.Ntheta;
     const int nrows = cluster.cs_npowerspectra*cluster.richness_nbin;
     int nforced = 0;

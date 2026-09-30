@@ -16,8 +16,8 @@ extern "C" {
 // densities in (c/H0)^-3, P(k) in (c/H0)^3.
 //
 // The tables below come out of ONE deep-unrolled fill over (richness bin,
-// a node) with Gauss-Legendre nodes in ln M on [ln cluster.m_min,
-// ln cluster.m_max] (halo_nm / high_def_integration ladder). Their a-range
+// a node) with Gauss-Legendre nodes in ln M on [ln cluster.m[RANGE_MIN],
+// ln cluster.m[RANGE_MAX]] (halo_nm / high_def_integration ladder). Their a-range
 // covers every cluster redshift bin's support; outside it they return 0.
 // Cache keys: Ntable.random, cosmology.random, cluster.random_model,
 // cluster.random_zdist, cluster.random_mor (and cluster.random_selection

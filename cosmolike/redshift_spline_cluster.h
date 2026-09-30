@@ -9,7 +9,7 @@ extern "C" {
 // ============================================================================
 //
 // Inputs: cluster.zdist_table (selection kernels <phi_i|z_true>, set from
-// Python), cluster.zbin_min/max, cluster.kernel_mode (structs_cluster.h).
+// Python), cluster.zbin[RANGE_MIN]/max, cluster.kernel_mode (structs_cluster.h).
 // Index names: ni = cluster redshift bin, nl = richness bin, ns = source
 // bin, ng = lens bin.
 

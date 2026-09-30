@@ -58,6 +58,13 @@ extern "C" {
                                    // 0.923, 0.909 at z = 0.2, 0.3, 0.4,
                                    // 0.5, 0.6 (counts 3-9% below mode 0)
 
+// Slots of cluster.probe[]: 1 = the probe is part of the data vector
+#define CLUSTER_PROBE_N 0    // cluster counts
+#define CLUSTER_PROBE_CS 1   // cluster lensing (gamma_t or Sigma)
+#define CLUSTER_PROBE_CC 2   // cluster-cluster clustering w_cc
+#define CLUSTER_PROBE_CG 3   // cluster-galaxy clustering w_cg
+#define NCLUSTER_PROBES 4
+
 typedef struct
 {
   // ---------------------------------------------------------------------------
@@ -91,17 +98,14 @@ typedef struct
   // ---------------------------------------------------------------------------
   // PROBES IN THE DATA VECTOR
   // ---------------------------------------------------------------------------
-  int probe_N;               // cluster counts
-  int probe_cs;              // cluster lensing (gamma_t or Sigma)
-  int probe_cc;              // cluster-cluster clustering w_cc
-  int probe_cg;              // cluster-galaxy clustering w_cg
+  int probe[NCLUSTER_PROBES]; // 1 = in the data vector; slots CLUSTER_PROBE_*
 
   // ---------------------------------------------------------------------------
   // OBSERVED-RICHNESS BINS
   // ---------------------------------------------------------------------------
   int richness_nbin;
-  double richness_min[MAX_SIZE_ARRAYS];  // lower lambda_obs edge of bin nl
-  double richness_max[MAX_SIZE_ARRAYS];  // upper lambda_obs edge of bin nl
+  double richness[2][MAX_SIZE_ARRAYS];  // [RANGE_MIN|RANGE_MAX][nl]: the
+                                        // lambda_obs edges of bin nl
 
   // ---------------------------------------------------------------------------
   // CLUSTER REDSHIFT BINS: SELECTION KERNELS <phi_i|z_true>
@@ -116,16 +120,13 @@ typedef struct
   int zdist_nbin;
   int zdist_nz;                          // number of z rows of the input
   double** zdist_table;                  // [zdist_nbin + 1][zdist_nz]
-  double zdist_zmin_all;
-  double zdist_zmax_all;
+  double zdist_zall[2];                  // [RANGE_MIN, RANGE_MAX] of the table
   // support of <phi_i|z>: the zero nodes bracketing the nonzero values of
   // each column (zmin > 0), so a top-hat edge is kept exactly
-  double zdist_zmin[MAX_SIZE_ARRAYS];
-  double zdist_zmax[MAX_SIZE_ARRAYS];
+  double zdist_z[2][MAX_SIZE_ARRAYS];    // [RANGE_MIN|RANGE_MAX][bin]
   // nominal z_lambda edges of each bin: the selection-bias zbar and the
   // physical scale cuts read these; a kernel table never overwrites them
-  double zbin_min[MAX_SIZE_ARRAYS];
-  double zbin_max[MAX_SIZE_ARRAYS];
+  double zbin[2][MAX_SIZE_ARRAYS];       // [RANGE_MIN|RANGE_MAX][bin]
 
   // ---------------------------------------------------------------------------
   // TOMOGRAPHIC PAIRS
@@ -158,8 +159,8 @@ typedef struct
   // ---------------------------------------------------------------------------
   // INTEGRATION LIMITS
   // ---------------------------------------------------------------------------
-  double m_min;                          // cluster mass integrals, Msun/h
-  double m_max;
+  double m[2];                           // mass range [RANGE_MIN, RANGE_MAX]
+                                         // of the cluster integrals, Msun/h
 } clusterparams;
 
 extern clusterparams cluster;

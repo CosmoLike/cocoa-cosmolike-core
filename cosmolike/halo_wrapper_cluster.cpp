@@ -293,7 +293,7 @@ arma::Cube<double> prob_richness_bin_given_m_cpp(
 //   P1h_nl(k, a) = int dlnM dn/dlnM P(nl|M) (M/rho_m) u_NFW(k|M) / n_nl
 //                                            (one-halo cluster-matter)
 //
-// over [cluster.m_min, cluster.m_max]. halo_cluster.c tabulates them on
+// over [cluster.m[RANGE_MIN], cluster.m[RANGE_MAX]]. halo_cluster.c tabulates them on
 // an a grid that covers the support of every cluster redshift bin and
 // returns 0 outside it; the tables refill when the cosmology, the
 // cluster model, the selection kernels or the mass-observable relation
@@ -432,7 +432,7 @@ arma::Mat<double> bcl_richness_cpp(
 // spline in ln k, linear in a, flat below the lowest tabulated k and a
 // power law above the highest) after cluster_warmup on the calling
 // thread. cluster_warmup builds this table only when cluster lensing is
-// on (cluster.probe_cs); otherwise the first read builds it, here, on
+// on (cluster.probe[CLUSTER_PROBE_CS]); otherwise the first read builds it, here, on
 // the calling thread.
 //
 // Parameters:

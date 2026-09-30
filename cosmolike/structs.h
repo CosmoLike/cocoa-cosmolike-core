@@ -394,7 +394,8 @@ typedef struct
 
 // Slots of like.probe[]: 1 = the probe is part of the data vector. The
 // probe strings of init_probes (generic_interface.cpp) and
-// init_probes_cluster (generic_interface_cluster.cpp) set them.
+// init_probes_cluster (generic_interface_cluster.cpp) set them; the
+// cluster probes are cluster.probe[] (structs_cluster.h).
 #define PROBE_SS 0           // cosmic shear (xi+-, C_ss)
 #define PROBE_GS 1           // galaxy-galaxy lensing (gamma_t, C_gs)
 #define PROBE_GG 2           // galaxy clustering (w, C_gg)
@@ -405,11 +406,7 @@ typedef struct
 #define PROBE_SY 7           // shear x tSZ
 #define PROBE_KY 8           // CMB lensing x tSZ
 #define PROBE_YY 9           // tSZ
-#define PROBE_CLUSTER_N 10   // cluster number counts
-#define PROBE_CLUSTER_WL 11  // cluster lensing (cluster x source)
-#define PROBE_CLUSTER_CG 12  // cluster x galaxy clustering
-#define PROBE_CLUSTER_CC 13  // cluster clustering
-#define NPROBES 14
+#define NPROBES 10
 
 // Slots of like.adopt_limber[]
 #define LIMBER_GG 0          // galaxy clustering
