@@ -188,7 +188,7 @@ int check_LF(void)
   const double LF_Q = nuisance.ia[0][6];
   const double LF_red_Q = nuisance.ia[0][9]; 
 
-  double a = 1./(1. + redshift.shear_zdist_zmax_all) + 0.005;
+  double a = 1./(1. + redshift.shear_zdist_zall[RANGE_MAX]) + 0.005;
   
   const double MABS = M_abs(survey.m_lim, a);
 

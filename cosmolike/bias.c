@@ -39,8 +39,8 @@ double gb1(const double z, const int ni)
     case B1_PER_BIN_PASS_EVOLV:
     {
       const double z_evolv_passiv = growfac(1. / (z + 1.)) /
-                growfac(1. / (1. + 0.5 * (redshift.clustering_zdist_zmin[ni] +
-                                          redshift.clustering_zdist_zmax[ni])));
+                growfac(1. / (1. + 0.5 * (redshift.clustering_zdist_z[RANGE_MIN][ni] +
+                                          redshift.clustering_zdist_z[RANGE_MAX][ni])));
       
       ans = (nuisance.gb[0][ni] - 1.) / z_evolv_passiv + 1.;
       break;

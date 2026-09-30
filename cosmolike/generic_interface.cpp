@@ -1283,15 +1283,15 @@ void init_binning_real_space(
 // the IPCMB singleton (a front end to the C global struct cmb).
 //
 // Writes cmb.fwhm (input beam fwhm in arcmin, stored in rad),
-// cmb.lmink_wxk/lmaxk_wxk, and the tabulated HealPix window
+// cmb.lk_wxk[RANGE_MIN]/lmaxk_wxk, and the tabulated HealPix window
 // (cmb.healpixwin = column 1 of healpixwin_filename).
 //
 // Cache invalidation:
 // bumps cmb.random so tables keyed on it rebuild.
 //
 // Parameters:
-//   lmin                - lowest multipole of the w_xk sum (cmb.lmink_wxk)
-//   lmax                - highest multipole of the w_xk sum (cmb.lmaxk_wxk)
+//   lmin                - lowest multipole of the w_xk sum (cmb.lk_wxk[RANGE_MIN])
+//   lmax                - highest multipole of the w_xk sum (cmb.lk_wxk[RANGE_MAX])
 //   fwhm                - CMB beam fwhm (arcmin; stored in rad)
 //   healpixwin_filename - table whose column 1 is the HealPix window
 //
@@ -3001,7 +3001,7 @@ void set_nuisance_clustering_photoz(vector CP)
 // ---------------------------------------------------------------------------
 // Set the per-bin lens photo-z stretch nuisance.photoz[1][1][i]
 // (nz_lens_photoz rescales z around the fiducial bin mean
-// redshift.clustering_zdist_zmean by 1/stretch).
+// redshift.clustering_zdist_z[ZDIST_MEAN] by 1/stretch).
 //
 // Cache invalidation:
 // bumps nuisance.random_photoz_clustering when any
@@ -3586,9 +3586,9 @@ void set_lens_sample(arma::Mat<double> input_table)
       }
     }
     
-    redshift.clustering_zdist_zmin_all = fmax(z_v[0], 1.e-5);
+    redshift.clustering_zdist_zall[RANGE_MIN] = fmax(z_v[0], 1.e-5);
     
-    redshift.clustering_zdist_zmax_all = z_v[nzbins-1] + 
+    redshift.clustering_zdist_zall[RANGE_MAX] = z_v[nzbins-1] + 
       (z_v[nzbins-1] - z_v[0]) / ((double) nzbins - 1.);
 
     for (int k=0; k<Ntomo; k++) { // Set tomography bin boundaries
@@ -3612,8 +3612,8 @@ void set_lens_sample(arma::Mat<double> input_table)
         critical("{}: n(z) of bin {} has no positive entry", fname, k);
         exit(1);
       }
-      redshift.clustering_zdist_zmin[k] = z_v[first];
-      redshift.clustering_zdist_zmax[k] = z_v[last];
+      redshift.clustering_zdist_z[RANGE_MIN][k] = z_v[first];
+      redshift.clustering_zdist_z[RANGE_MAX][k] = z_v[last];
     }
     // READ THE N(Z) FILE ENDS ------------
     redshift.random_clustering = RandomNumber::get_instance().get();
@@ -3640,7 +3640,7 @@ void set_lens_sample(arma::Mat<double> input_table)
     for (int k=0; k<Ntomo; k++) {
       nuisance.photoz[1][0][k] = shift[k];
       nuisance.photoz[1][1][k] = stretch[k];
-      redshift.clustering_zdist_zmean[k] = zm[k];
+      redshift.clustering_zdist_z[ZDIST_MEAN][k] = zm[k];
       debug("{}: bin {} - {} = {}.", fname, k, "<z_l>", zm[k]);
     }
   }
@@ -3768,8 +3768,8 @@ void set_source_sample(arma::Mat<double> input_table)
       }
     }
   
-    redshift.shear_zdist_zmin_all = fmax(z_v[0], 1.e-5);
-    redshift.shear_zdist_zmax_all = z_v[nzbins-1] + (z_v[nzbins-1] - z_v[0]) / ((double) nzbins - 1.);
+    redshift.shear_zdist_zall[RANGE_MIN] = fmax(z_v[0], 1.e-5);
+    redshift.shear_zdist_zall[RANGE_MAX] = z_v[nzbins-1] + (z_v[nzbins-1] - z_v[0]) / ((double) nzbins - 1.);
 
     for (int k=0; k<Ntomo; k++)  { // Set tomography bin boundaries
       // The bin support is where n(z) exceeds 0.999e-8 of its maximum.
@@ -3792,18 +3792,18 @@ void set_source_sample(arma::Mat<double> input_table)
         critical("{}: n(z) of bin {} has no positive entry", fname, k);
         exit(1);
       }
-      redshift.shear_zdist_zmin[k] = fmax(z_v[first], 1.001e-5);
-      redshift.shear_zdist_zmax[k] = z_v[last];
+      redshift.shear_zdist_z[RANGE_MIN][k] = fmax(z_v[first], 1.001e-5);
+      redshift.shear_zdist_z[RANGE_MAX][k] = z_v[last];
     }
   
     // READ THE N(Z) FILE ENDS ------------
-    if (redshift.shear_zdist_zmax_all < redshift.shear_zdist_zmax[Ntomo-1] || 
-        redshift.shear_zdist_zmin_all > redshift.shear_zdist_zmin[0]) [[unlikely]] {
+    if (redshift.shear_zdist_zall[RANGE_MAX] < redshift.shear_zdist_z[RANGE_MAX][Ntomo-1] || 
+        redshift.shear_zdist_zall[RANGE_MIN] > redshift.shear_zdist_z[RANGE_MIN][0]) [[unlikely]] {
       critical("{}: {} = {}, {} = {}", fname, "zhisto_min", 
-          redshift.shear_zdist_zmin_all, "zhisto_max", redshift.shear_zdist_zmax_all);
+          redshift.shear_zdist_zall[RANGE_MIN], "zhisto_max", redshift.shear_zdist_zall[RANGE_MAX]);
       critical("{}: {} = {}, {} = {}", fname, "shear_zdist_zmin[0]", 
-          redshift.shear_zdist_zmin[0], "shear_zdist_zmax[redshift.shear_nbin-1]", 
-          redshift.shear_zdist_zmax[Ntomo-1]);
+          redshift.shear_zdist_z[RANGE_MIN][0], "shear_zdist_zmax[redshift.shear_nbin-1]", 
+          redshift.shear_zdist_z[RANGE_MAX][Ntomo-1]);
       exit(1);
     } 
     // bump the key BEFORE the warm-up, as set_lens_sample does: the
@@ -4625,8 +4625,8 @@ void IPCMB::set_kk_theory_offset(std::string theory_offset_filename)
 //
 // Parameters:
 //   nb   - number of kk band powers (cmb.nbp_kk)
-//   lmin - lowest multipole entering the bands (cmb.lminbp_kk)
-//   lmax - highest multipole entering the bands (cmb.lmaxbp_kk)
+//   lmin - lowest multipole entering the bands (cmb.lbp_kk[RANGE_MIN])
+//   lmax - highest multipole entering the bands (cmb.lbp_kk[RANGE_MAX])
 //
 // Returns:
 //   void
@@ -4653,8 +4653,8 @@ void IPCMB::set_kk_binning_bandpower (
   debug(debugsel, fname, "lmax", lmax);
   this->is_kk_bandpower_ = 1;
   this->params_->nbp_kk  = nb;
-  this->params_->lminbp_kk = lmin;
-  this->params_->lmaxbp_kk = lmax;
+  this->params_->lbp_kk[RANGE_MIN] = lmin;
+  this->params_->lbp_kk[RANGE_MAX] = lmax;
   debug("{}: {}", fname, errends);
 }
 

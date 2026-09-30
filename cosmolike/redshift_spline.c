@@ -89,7 +89,7 @@ double zmax_source_photoz(void)
   for (int j=0; j<redshift.shear_nbin; j++) {
     max_shift = fmax(max_shift, nuisance.photoz[0][0][j]);
   }
-  return redshift.shear_zdist_zmax_all + max_shift;
+  return redshift.shear_zdist_zall[RANGE_MAX] + max_shift;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,10 +115,10 @@ double zmax_source_photoz(void)
 // ---------------------------------------------------------------------------
 double zmax_lens_photoz(void)
 {
-  const double zmax_all = redshift.clustering_zdist_zmax_all;
+  const double zmax_all = redshift.clustering_zdist_zall[RANGE_MAX];
   double zmax = zmax_all;
   for (int i=0; i<redshift.clustering_nbin; i++) {
-    const double zmean   = redshift.clustering_zdist_zmean[i];
+    const double zmean   = redshift.clustering_zdist_z[ZDIST_MEAN][i];
     const double stretch = nuisance.photoz[1][1][i];
     const double shift   = nuisance.photoz[1][0][i];
     // Only a positive shift or a stretch > 1 can move the edge above
@@ -162,7 +162,7 @@ double amin_source(int ni)
 //
 //   a_max = 1 / (1 + max(zmin_all, 0.001))
 //
-// where zmin_all = redshift.shear_zdist_zmin_all, the lower edge of the
+// where zmin_all = redshift.shear_zdist_zall[RANGE_MIN], the lower edge of the
 // tabulated source n(z) range; the z >= 0.001 floor keeps a_max strictly
 // below 1. The bin argument is unused: the bound is common to all bins.
 //
@@ -174,7 +174,7 @@ double amin_source(int ni)
 // ---------------------------------------------------------------------------
 double amax_source(int i __attribute__((unused))) 
 {
-  return 1. / (1. + fmax(redshift.shear_zdist_zmin_all, 0.001));
+  return 1. / (1. + fmax(redshift.shear_zdist_zall[RANGE_MIN], 0.001));
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ double amax_source_IA(int ni)
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
   }
-  return 1. / (1. + fmax(redshift.shear_zdist_zmin_all, 0.001));
+  return 1. / (1. + fmax(redshift.shear_zdist_zall[RANGE_MIN], 0.001));
 }
 
 // ---------------------------------------------------------------------------
@@ -226,9 +226,9 @@ double amin_lens(int ni)
     exit(1);
   }
   const double zmax = 
-    (redshift.clustering_zdist_zmax[ni] 
-      - redshift.clustering_zdist_zmean[ni])*nuisance.photoz[1][1][ni]
-      + redshift.clustering_zdist_zmean[ni];
+    (redshift.clustering_zdist_z[RANGE_MAX][ni] 
+      - redshift.clustering_zdist_z[ZDIST_MEAN][ni])*nuisance.photoz[1][1][ni]
+      + redshift.clustering_zdist_z[ZDIST_MEAN][ni];
   return 1. / (1 + zmax + 2.*fabs(nuisance.photoz[1][0][ni]));
 }
 
@@ -264,12 +264,12 @@ double amax_lens(int ni)
   }
 
   const double zmin = 
-    (redshift.clustering_zdist_zmin[ni] 
-      - redshift.clustering_zdist_zmean[ni])*nuisance.photoz[1][1][ni]
-      + redshift.clustering_zdist_zmean[ni];
+    (redshift.clustering_zdist_z[RANGE_MIN][ni] 
+      - redshift.clustering_zdist_z[ZDIST_MEAN][ni])*nuisance.photoz[1][1][ni]
+      + redshift.clustering_zdist_z[ZDIST_MEAN][ni];
 
   if (gbmag(0.0, ni) != 0) {
-    return 1. / (1. + fmax(redshift.shear_zdist_zmin_all, 0.001));
+    return 1. / (1. + fmax(redshift.shear_zdist_zall[RANGE_MIN], 0.001));
   }
   return 1. / (1 + fmax(zmin -2.*fabs(nuisance.photoz[1][0][ni]), 0.001));
 }
@@ -309,8 +309,8 @@ int test_kmax(double l, int ni)
     
   if (chiref[0] < 0) {
     for (int i=0; i<redshift.clustering_nbin; i++) {
-      chiref[i] = chi(1.0/(1. + 0.5 * (redshift.clustering_zdist_zmin[i] + 
-                                       redshift.clustering_zdist_zmax[i])));
+      chiref[i] = chi(1.0/(1. + 0.5 * (redshift.clustering_zdist_z[RANGE_MIN][i] + 
+                                       redshift.clustering_zdist_z[RANGE_MAX][i])));
     }
   }
 
@@ -849,7 +849,7 @@ double zdistr_histo_n(double z, const int ni)
     exit(1);
   } 
   double res = 0.0;
-  if ((z >= redshift.shear_zdist_zmin_all) && (z<redshift.shear_zdist_zmax_all)) 
+  if ((z >= redshift.shear_zdist_zall[RANGE_MIN]) && (z<redshift.shear_zdist_zall[RANGE_MAX])) 
   {
     const int ntomo = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
@@ -988,8 +988,8 @@ double nz_source_photoz(double zz, const int nj)
 
     if (table != NULL) free(table);
     table = (double**) malloc2d(ntomo + 2, nzbins);
-    const double zmin = redshift.shear_zdist_zmin_all;
-    const double zmax = redshift.shear_zdist_zmax_all;
+    const double zmin = redshift.shear_zdist_zall[RANGE_MIN];
+    const double zmax = redshift.shear_zdist_zall[RANGE_MAX];
     const double dz_histo = (zmax - zmin) / ((double) nzbins);
     // dz_histo here is the width of the nzbins cells spanning
     // [zmin_all, zmax_all). It equals the node spacing zdistr_histo_n
@@ -1262,8 +1262,8 @@ double zmean_source(int ni)
       gsl_function F;
       F.params = ar;
       F.function = int_for_zmean_source;
-      table[i] = gsl_integration_glfixed(&F, redshift.shear_zdist_zmin[i], 
-                                             redshift.shear_zdist_zmax[i], w);
+      table[i] = gsl_integration_glfixed(&F, redshift.shear_zdist_z[RANGE_MIN][i], 
+                                             redshift.shear_zdist_z[RANGE_MAX][i], w);
     }
     cache[0] = Ntable.random;
     cache[1] = redshift.random_shear;
@@ -1307,8 +1307,8 @@ double pf_histo_n(double z, const int ni)
   } 
   
   double res = 0.0;
-  if ((z >= redshift.clustering_zdist_zmin_all) && 
-      (z < redshift.clustering_zdist_zmax_all)) 
+  if ((z >= redshift.clustering_zdist_zall[RANGE_MIN]) && 
+      (z < redshift.clustering_zdist_zall[RANGE_MAX])) 
   {
     
     const int ntomo = redshift.clustering_nbin;             // alias
@@ -1448,8 +1448,8 @@ double nz_lens_photoz(double zz, int nj)
 
     if (table != NULL) free(table);
     table = (double**) malloc2d(ntomo + 2, nzbins);
-    const double zmin = redshift.clustering_zdist_zmin_all;
-    const double zmax = redshift.clustering_zdist_zmax_all;
+    const double zmin = redshift.clustering_zdist_zall[RANGE_MIN];
+    const double zmax = redshift.clustering_zdist_zall[RANGE_MAX];
     const double dz_histo = (zmax - zmin) / ((double) nzbins);
     // dz_histo here is the width of the nzbins cells spanning
     // [zmin_all, zmax_all). It equals the node spacing pf_histo_n
@@ -1579,8 +1579,8 @@ double nz_lens_photoz(double zz, int nj)
     exit(1);
   }
   zz = (zz - nuisance.photoz[1][0][nj]
-           - redshift.clustering_zdist_zmean[nj]) / nuisance.photoz[1][1][nj]
-       + redshift.clustering_zdist_zmean[nj];
+           - redshift.clustering_zdist_z[ZDIST_MEAN][nj]) / nuisance.photoz[1][1][nj]
+       + redshift.clustering_zdist_z[ZDIST_MEAN][nj];
 
 #ifdef DONT_NZ_FAST_SUMBSAMPLE
   const int nzbins = redshift.clustering_nzbins;
@@ -1719,7 +1719,7 @@ double norm_for_zmean(double z, void* params)
 //
 // No cache: set_lens_sample calls it once per n(z) load, with the lens
 // photo-z nuisance at the identity, to fill the fiducial means
-// redshift.clustering_zdist_zmean that zmean() returns. A cached copy
+// redshift.clustering_zdist_z[ZDIST_MEAN] that zmean() returns. A cached copy
 // keyed on the n(z) alone would hand a later caller the value of
 // whatever shifts were current at its last rebuild.
 //
@@ -1742,12 +1742,12 @@ void zmean_all(double* out)
 
     F.function = int_for_zmean;
     const double num = gsl_integration_glfixed(&F,
-                                        redshift.clustering_zdist_zmin[i],
-                                        redshift.clustering_zdist_zmax[i], w);
+                                        redshift.clustering_zdist_z[RANGE_MIN][i],
+                                        redshift.clustering_zdist_z[RANGE_MAX][i], w);
     F.function = norm_for_zmean;
     const double den = gsl_integration_glfixed(&F,
-                                        redshift.clustering_zdist_zmin[i],
-                                        redshift.clustering_zdist_zmax[i], w);
+                                        redshift.clustering_zdist_z[RANGE_MIN][i],
+                                        redshift.clustering_zdist_z[RANGE_MAX][i], w);
     if (!(den > 0.0)) {
       log_fatal("zmean denominator is non-positive (lens bin %d)", i);
       exit(1);
@@ -1761,7 +1761,7 @@ void zmean_all(double* out)
 // Fiducial mean true redshift of lens bin ni: the mean of the loaded lens
 // n(z) with no photo-z shift and no stretch, computed once per n(z) load
 // by set_lens_sample (zmean_all) and stored in
-// redshift.clustering_zdist_zmean.
+// redshift.clustering_zdist_z[ZDIST_MEAN].
 //
 // Its users treat it as a fixed reference redshift of the bin: the pivot
 // of the separable linear term of the non-Limber w_gg (cosmo2D.c), the
@@ -1784,12 +1784,12 @@ double zmean(const int ni)
   }
   // a mean redshift is positive once a lens n(z) is loaded; the stored
   // value is zero before set_lens_sample runs
-  if (!(redshift.clustering_zdist_zmean[ni] > 0.0)) {
+  if (!(redshift.clustering_zdist_z[ZDIST_MEAN][ni] > 0.0)) {
     log_fatal("lens bin %d has no fiducial mean redshift (lens n(z) not "
               "loaded)", ni);
     exit(1);
   }
-  return redshift.clustering_zdist_zmean[ni];
+  return redshift.clustering_zdist_z[ZDIST_MEAN][ni];
 }
 
 // ---------------------------------------------------------------------------

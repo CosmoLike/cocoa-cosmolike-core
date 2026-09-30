@@ -527,7 +527,7 @@ double bgal_cpp(
 //
 // halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
 // Ntable.N_k_nlin nodes over [limits.a_min, 0.9999999] x
-// [limits.k_min_cH0, limits.k_max_cH0] for p_mm, p_my, p_yy; per lens
+// [limits.k_cH0[RANGE_MIN], limits.k_cH0[RANGE_MAX]] for p_mm, p_my, p_yy; per lens
 // bin over that bin's a-range for p_gm, p_gg - and interpolates
 // bilinearly. The first call pays the whole table build (a mass
 // integral per node); later calls are lookups.
@@ -1119,8 +1119,8 @@ void set_nuisance_gas_cpp(
 //
 // halo.c tabulates ln S_dI and ln S_II on a uniform (a, ln k) grid -
 // Ntable.halo_ia_na x Ntable.N_k_nlin nodes over the source a range
-// [min_i amin_source(i), max_i amax_source(i)] x [limits.k_min_cH0,
-// limits.k_max_cH0] - and f_rc on the same a nodes. The readers return
+// [min_i amin_source(i), max_i amax_source(i)] x [limits.k_cH0[RANGE_MIN],
+// limits.k_cH0[RANGE_MAX]] - and f_rc on the same a nodes. The readers return
 // 0 outside the source a range. The tables are refilled when the
 // cosmology, Ntable, the IA parameters (nuisance.random_ia_halo), the
 // source n(z) or the source photo-z shifts change; the first call pays

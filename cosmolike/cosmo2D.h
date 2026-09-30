@@ -45,7 +45,7 @@ double w_gk_tomo(const int nt, const int ni, const int limber);
 double w_ks_tomo(const int nt, const int ni, const int limber);
 
 // CMB beam transfer function B_l (Gaussian approximation); zero outside
-// the [cmb.lmink_wxk, cmb.lmaxk_wxk] cross-correlation multipole range.
+// the [cmb.lk_wxk[RANGE_MIN], cmb.lk_wxk[RANGE_MAX]] cross-correlation multipole range.
 double beam_cmb(const int l);
 
 // Precomputed HEALPix pixel window function at multipole l; zero for

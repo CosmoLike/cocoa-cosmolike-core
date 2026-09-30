@@ -15,14 +15,16 @@ extern "C" {
 #define CHAR_MAX_SIZE 1024
 #define MAX_SIZE_ARRAYS 20
 
-// Slots of every two-entry [min, max] range array (limits.halo_m[],
-// limits.halo_uks_c[], Ntable.vt[])
+// Slots of every [min, max] range array (limits.halo_m[], limits.k_cH0[],
+// Ntable.vt[], redshift.shear_zdist_z[][], cmb.lk_wxk[], ...)
 #define RANGE_MIN 0
 #define RANGE_MAX 1
+// third slot of redshift.clustering_zdist_z[][]: the fiducial mean
+#define ZDIST_MEAN 2
 
 // Slots of every two-entry node-count array of Ntable whose table is
 // computed exactly on coarse nodes and spline-upsampled to dense ones
-// (Ntable.N_ell[], N_M[], dCX_dlnk_nlnk[])
+// (Ntable.N_ell[], N_M[], dCX_dlnk_nlnk[], halo_hmf_n[][])
 #define NODES_DENSE 0    // the nodes the table is read on
 #define NODES_COARSE 1   // the exact-quadrature nodes; 0 = exact on
                          // every dense node
@@ -31,8 +33,7 @@ typedef struct
 {
   double a_min;
   double a_min_hm;
-  double k_min_cH0;
-  double k_max_cH0;
+  double k_cH0[2];      // k range [RANGE_MIN, RANGE_MAX] in units of H0/c
   
   int LMIN_tab;
   int LMAX_NOLIMBER;
@@ -112,8 +113,7 @@ typedef struct
                         // exact ln k nodes (the ell axis pairs with
                         // N_ell[NODES_COARSE]; bicubic upsampled); 0 =
                         // exact (ln k carries the BAO wiggles)
-  double dCX_dlnk_kmin;
-  double dCX_dlnk_kmax;
+  double dCX_dlnk_k[2];  // k range [RANGE_MIN, RANGE_MAX] of the dC_X/dlnk tables
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED BY FASPT
@@ -134,8 +134,9 @@ typedef struct
   int halo_uks_m[NUKS_M];  // u_KS dense refinement factors; slots UKS_M_*
   // mass-function table sizes, one entry per like.halo_model[0] option
   // (HMF_TINKER_2010: the tinker_alpha normalization table)
-  int halo_hmf_nc[MAX_SIZE_ARRAYS]; // exact aa nodes on [0.25, 1]
-  int halo_hmf_nd[MAX_SIZE_ARRAYS]; // dense aa lookup nodes
+  int halo_hmf_n[2][MAX_SIZE_ARRAYS]; // [NODES_COARSE] exact aa nodes on
+                                      // [0.25, 1]; [NODES_DENSE] dense aa
+                                      // lookup nodes
   int halo_nm;      // spectra GL mass nodes at high_def_integration 0
                     // (doubled per rung; not boosted)
   int halo_nk_step; // p_gm/p_gg coarse ln k step at high_def_integration
@@ -488,16 +489,14 @@ typedef struct
   double fwhm;     // beam fwhm in rad (smoothed by a Gaussian beam)
   int healpixwin_ncls; // Precomputed HealPix window function
   double* healpixwin;
-  int lmink_wxk;
-  int lmaxk_wxk;
+  int lk_wxk[2];   // multipole range [RANGE_MIN, RANGE_MAX] of the w_xk sums
   // ---------------------------------------------------
   // ---------------------------------------------------
   // auto-correlation kk bandpower
   // ---------------------------------------------------
   // ---------------------------------------------------
   int nbp_kk;
-  int lminbp_kk;
-  int lmaxbp_kk;
+  int lbp_kk[2];   // multipole range [RANGE_MIN, RANGE_MAX] of the kk bands
   double alpha_Hartlap_cov_kkkk;
   double* theory_offset_kk;
   double** binning_matrix_kk;
@@ -533,10 +532,9 @@ typedef struct
   int shear_photoz;
   int shear_nzbins;
   double** shear_zdist_table;
-  double shear_zdist_zmin_all;
-  double shear_zdist_zmax_all;
-  double shear_zdist_zmin[MAX_SIZE_ARRAYS];
-  double shear_zdist_zmax[MAX_SIZE_ARRAYS];
+  double shear_zdist_zall[2];  // [RANGE_MIN, RANGE_MAX] of the whole table
+  double shear_zdist_z[2][MAX_SIZE_ARRAYS]; // [RANGE_MIN|RANGE_MAX][bin]:
+                                            // each bin's n(z) support
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CLUSTERING n(z)
@@ -546,11 +544,11 @@ typedef struct
   int clustering_photoz;
   int clustering_nzbins;
   double** clustering_zdist_table;
-  double clustering_zdist_zmin_all;
-  double clustering_zdist_zmax_all;
-  double clustering_zdist_zmin[MAX_SIZE_ARRAYS];
-  double clustering_zdist_zmax[MAX_SIZE_ARRAYS];
-  double clustering_zdist_zmean[MAX_SIZE_ARRAYS];
+  double clustering_zdist_zall[2];  // [RANGE_MIN, RANGE_MAX] of the table
+  double clustering_zdist_z[3][MAX_SIZE_ARRAYS]; // [RANGE_MIN|RANGE_MAX][bin]:
+                                                 // each bin's n(z) support;
+                                                 // [ZDIST_MEAN][bin]: its
+                                                 // fiducial mean (zmean())
 } redshiftparams;
 
 // --------------------------------------------------------------------

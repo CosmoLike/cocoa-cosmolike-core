@@ -344,8 +344,8 @@ public:
     }
     
     void set_wxk_lminmax(const int lmin, const int lmax) {
-      this->params_->lmink_wxk = lmin;
-      this->params_->lmaxk_wxk = lmax;
+      this->params_->lk_wxk[RANGE_MIN] = lmin;
+      this->params_->lk_wxk[RANGE_MAX] = lmax;
       this->is_wxk_lminmax_set_ = true;
       return;
     }
@@ -407,11 +407,11 @@ public:
     }
     
     int get_lmin_kk_bandpower() const {
-      return this->params_->lminbp_kk; 
+      return this->params_->lbp_kk[RANGE_MIN]; 
     }
     
     int get_lmax_kk_bandpower() const {
-      return this->params_->lmaxbp_kk;
+      return this->params_->lbp_kk[RANGE_MAX];
     }
 
   private: 

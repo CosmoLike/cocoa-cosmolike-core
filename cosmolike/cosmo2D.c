@@ -192,7 +192,7 @@ static void halo_IA_unsupported(const char* where)
 //   l - multipole moment
 //
 // Returns:
-//   B_l for l inside [cmb.lmink_wxk, cmb.lmaxk_wxk], the multipole range
+//   B_l for l inside [cmb.lk_wxk[RANGE_MIN], cmb.lk_wxk[RANGE_MAX]], the multipole range
 //   used for the CMB lensing cross-correlations (gk, ks, kk); 0 outside it
 // ---------------------------------------------------------------------------
 double beam_cmb(
@@ -200,7 +200,7 @@ double beam_cmb(
   )
 {
   const double s = cmb.fwhm/sqrt(16.0*log(2.0));
-  return ((l<cmb.lmink_wxk) || (l>cmb.lmaxk_wxk)) ? 0.0 : exp(-l*(l+1.0)*s*s);
+  return ((l<cmb.lk_wxk[RANGE_MIN]) || (l>cmb.lk_wxk[RANGE_MAX])) ? 0.0 : exp(-l*(l+1.0)*s*s);
 }
 
 // ---------------------------------------------------------------------------
@@ -2729,7 +2729,7 @@ void C_ss_tomo_limber_nointerp_ells(
   }
 
   const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
-  const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
+  const double amax = 1./(1.+fmax(redshift.shear_zdist_zall[RANGE_MIN],1e-6));
 
   cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 
@@ -2862,7 +2862,7 @@ void dC_ss_dlnk_tomo_limber_work(
 {
   halo_IA_unsupported("dC_ss_dlnk_tomo_limber_work");
   const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
-  const double amax = 1./(1. + fmax(redshift.shear_zdist_zmin_all, 1e-6));
+  const double amax = 1./(1. + fmax(redshift.shear_zdist_zall[RANGE_MIN], 1e-6));
 
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
@@ -3377,7 +3377,7 @@ double C_ss_tomo_limber(
       fdiff2(cache[6], nuisance.random_ia_halo))
   {
     const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
-    const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
+    const double amax = 1./(1.+fmax(redshift.shear_zdist_zall[RANGE_MIN],1e-6));
     
     cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
 

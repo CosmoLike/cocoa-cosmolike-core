@@ -26,12 +26,10 @@ CMBparams cmb =
   .fwhm = 0.0,
   .healpixwin_ncls = 0,
   .healpixwin = NULL,
-  .lmink_wxk = 0,
-  .lmaxk_wxk = 0,
+  .lk_wxk = {0, 0},
   .alpha_Hartlap_cov_kkkk = 1.0,
   .nbp_kk = 0,
-  .lminbp_kk = 0,
-  .lmaxbp_kk = 0,
+  .lbp_kk = {0, 0},
   .binning_matrix_kk = NULL,
   .theory_offset_kk = NULL
 };
@@ -39,8 +37,7 @@ CMBparams cmb =
 lim limits = 
 {
   .a_min = 1.0/(1.0 + 40.0),    // a_min (z = 40, needed for CMB lensing)
-  .k_min_cH0 = 2.e-2,           // k_min_cH0
-  .k_max_cH0 = 3.e+6,           // k_max_cH0
+  .k_cH0 = {2.e-2, 3.e+6},     // k range in units of H0/c
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
   .halo_m = {1.0e+6, 1.0e+17},  // halo.c mass range (M_sun/h)
@@ -148,8 +145,8 @@ void reset_redshift_struct(void)
     redshift.shear_zdist_table = NULL;
   }
   redshift.shear_nzbins = 0;
-  redshift.shear_zdist_zmin_all = 0.0;
-  redshift.shear_zdist_zmax_all = 0.0;
+  redshift.shear_zdist_zall[RANGE_MIN] = 0.0;
+  redshift.shear_zdist_zall[RANGE_MAX] = 0.0;
 
   redshift.clustering_nbin = 0;
   redshift.clustering_nzbins = 0;
@@ -158,15 +155,15 @@ void reset_redshift_struct(void)
     redshift.clustering_zdist_table = NULL;
   }
   redshift.clustering_photoz = 0;
-  redshift.clustering_zdist_zmin_all = 0.0;
-  redshift.clustering_zdist_zmax_all = 0.0;
+  redshift.clustering_zdist_zall[RANGE_MIN] = 0.0;
+  redshift.clustering_zdist_zall[RANGE_MAX] = 0.0;
 
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
-    redshift.shear_zdist_zmin[i] = 0.0;
-    redshift.shear_zdist_zmax[i] = 0.0; 
-    redshift.clustering_zdist_zmin[i] = 0.0;
-    redshift.clustering_zdist_zmax[i] = 0.0;
-    redshift.clustering_zdist_zmean[i] = 0.0;
+    redshift.shear_zdist_z[RANGE_MIN][i] = 0.0;
+    redshift.shear_zdist_z[RANGE_MAX][i] = 0.0; 
+    redshift.clustering_zdist_z[RANGE_MIN][i] = 0.0;
+    redshift.clustering_zdist_z[RANGE_MAX][i] = 0.0;
+    redshift.clustering_zdist_z[ZDIST_MEAN][i] = 0.0;
   }
 }
 
@@ -236,8 +233,8 @@ void reset_cmb_struct(void)
   }
   cmb.alpha_Hartlap_cov_kkkk = 1.0;
   cmb.nbp_kk = 0;
-  cmb.lminbp_kk = 0;
-  cmb.lmaxbp_kk = 0;
+  cmb.lbp_kk[RANGE_MIN] = 0;
+  cmb.lbp_kk[RANGE_MAX] = 0;
   if (cmb.theory_offset_kk != NULL) {
     free(cmb.theory_offset_kk);
     cmb.theory_offset_kk = NULL;
@@ -269,8 +266,8 @@ void reset_Ntable_struct(void)
   Ntable.halo_uks_m[UKS_M_LNZ] = 16;       // u_KS dense refinement: ln z
   Ntable.halo_uks_m[UKS_M_LNY] = 115;      // u_KS dense refinement: ln y
   Ntable.halo_uks_m[UKS_M_LNC1D] = 70;     // u_KS dense refinement: ln c (1D)
-  Ntable.halo_hmf_nc[HMF_TINKER_2010] = 128;  // tinker_alpha exact aa
-  Ntable.halo_hmf_nd[HMF_TINKER_2010] = 4096; // tinker_alpha dense aa
+  Ntable.halo_hmf_n[NODES_COARSE][HMF_TINKER_2010] = 128;  // tinker_alpha exact aa
+  Ntable.halo_hmf_n[NODES_DENSE][HMF_TINKER_2010] = 4096; // tinker_alpha dense aa
   Ntable.halo_nm = 64;       // spectra mass nodes at hdi 0: chi2 ladder in
                              // the skill file (floor: 64)
   Ntable.halo_nk_step = 4;   // p_gm/p_gg coarse ln k step at hdi 0
@@ -281,8 +278,8 @@ void reset_Ntable_struct(void)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
   Ntable.dCX_dlnk_nlnk[NODES_DENSE] = 256;
-  Ntable.dCX_dlnk_kmin = 1.e-5;
-  Ntable.dCX_dlnk_kmax = 1.e2;
+  Ntable.dCX_dlnk_k[RANGE_MIN] = 1.e-5;
+  Ntable.dCX_dlnk_k[RANGE_MAX] = 1.e2;
   Ntable.dCX_dlnk_nlnk[NODES_COARSE] = 128; // half the dCX grid: measured
   // response error <= what the retired fixed quadrature imposed
   // (max |dRF| 5.9e-3, medians ~1e-6) at 2x the refill; 0 = exact 

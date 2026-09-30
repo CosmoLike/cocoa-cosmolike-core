@@ -339,8 +339,8 @@ static void limber_krow_blend(
 // itself, not dC/C.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
-// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_kmin,
-// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
+// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
+// Ntable.dCX_dlnk_k[RANGE_MAX]] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
 // covering every l >= 1; lookups interpolate bilinearly in (ln k, ln l)
 // and a (k, l) outside the table returns 0.
 //
@@ -397,8 +397,8 @@ double dC_ss_dlnk_tomo_limber(
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-    lim[3] = log(Ntable.dCX_dlnk_kmin);
-    lim[4] = log(Ntable.dCX_dlnk_kmax);
+    lim[3] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+    lim[4] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
 
     if (table != NULL) free(table);
@@ -553,8 +553,8 @@ double dC_ss_dlnk_tomo_limber(
 // C_ss maps the entry to 0.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
-// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_kmin,
-// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
+// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
+// Ntable.dCX_dlnk_k[RANGE_MAX]] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
 // covering every l >= 1 (the same grid as dC_ss_dlnk_tomo_limber);
 // lookups interpolate bilinearly in (ln k, ln l) and a (k, l) outside
 // the table returns 0.
@@ -612,8 +612,8 @@ double dlnC_ss_dlnk_tomo_limber(
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-    lim[3] = log(Ntable.dCX_dlnk_kmin);
-    lim[4] = log(Ntable.dCX_dlnk_kmax);
+    lim[3] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+    lim[4] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
 
     if (table != NULL) free(table);
@@ -802,8 +802,8 @@ double dC_ks_dlnk_tomo_limber(
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-    lim[3] = log(Ntable.dCX_dlnk_kmin);
-    lim[4] = log(Ntable.dCX_dlnk_kmax);
+    lim[3] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+    lim[4] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
 
     if (table != NULL) free(table);
@@ -931,7 +931,7 @@ double dC_ks_dlnk_tomo_limber(
 //
 // Table design: [shear_nbin][nlnk][nell] (one component per source
 // bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
-// [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell[NODES_DENSE]
+// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]] and nell = Ntable.N_ell[NODES_DENSE]
 // log-spaced multipoles covering every l >= 1 (the same grid as
 // dC_ks_dlnk_tomo_limber); lookups interpolate bilinearly in
 // (ln k, ln l) and a (k, l) outside the table returns 0.
@@ -986,8 +986,8 @@ double dlnC_ks_dlnk_tomo_limber(
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-    lim[3] = log(Ntable.dCX_dlnk_kmin);
-    lim[4] = log(Ntable.dCX_dlnk_kmax);
+    lim[3] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+    lim[4] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
 
     if (table != NULL) free(table);
@@ -1231,8 +1231,8 @@ void RF_C_ss_tomo_limber_work(
     exit(1);
   }
   const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
-  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+  const double lnk0 = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+  const double dx = (log(Ntable.dCX_dlnk_k[RANGE_MAX]) - lnk0)
                     / ((double) nlnk - 1.0);
   const double lnk1 = lnk0 + (nlnk - 1)*dx;
   double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
@@ -1354,8 +1354,8 @@ void RF_C_ks_tomo_limber_work(
     exit(1);
   }
   const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
-  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+  const double lnk0 = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+  const double dx = (log(Ntable.dCX_dlnk_k[RANGE_MAX]) - lnk0)
                     / ((double) nlnk - 1.0);
   const double lnk1 = lnk0 + (nlnk - 1)*dx;
   double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
@@ -1464,7 +1464,7 @@ void RF_C_ks_tomo_limber_work(
 //   (caller frees), one row per xi component, each row flattened as
 //   nz*Ntheta + i over (tomo pair nz, angular bin i) with
 //   NSIZE = tomo.shear_Npowerspectra; all zeros when k is outside the
-//   open interval (Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax)
+//   open interval (Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX])
 // ---------------------------------------------------------------------------
 double** dlnxi_dlnk_pm_tomo_nointerp(
     const double k    // wavenumber in (Mpc/h)^-1
@@ -1585,7 +1585,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
     }
   }
   const double lnk = log(k);
-  if (lnk > log(Ntable.dCX_dlnk_kmin) && lnk < log(Ntable.dCX_dlnk_kmax)) {
+  if (lnk > log(Ntable.dCX_dlnk_k[RANGE_MIN]) && lnk < log(Ntable.dCX_dlnk_k[RANGE_MAX])) {
     // build (or reuse) the cached dC table single-threaded before the
     // parallel loops below read it
     (void) dC_ss_dlnk_tomo_limber(k, (double) limits.LMIN_tab,
@@ -1678,8 +1678,8 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
 //
 // Table design: [2][shear_Npowerspectra*Ntheta][nlnk], one row per
 // (xi component, tomo pair x angular bin), with nlnk =
-// Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_kmin,
-// Ntable.dCX_dlnk_kmax]; lookups interpolate linearly in ln k and a k
+// Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
+// Ntable.dCX_dlnk_k[RANGE_MAX]]; lookups interpolate linearly in ln k and a k
 // outside the grid returns 0. The fill calls the nointerp pipeline once
 // per k node (each call returns every pair and angular bin).
 //
@@ -1721,8 +1721,8 @@ double dlnxi_dlnk_pm_tomo(
   const int NSIZE = tomo.shear_Npowerspectra;
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-    lim[0] = log(Ntable.dCX_dlnk_kmin);
-    lim[1] = log(Ntable.dCX_dlnk_kmax);
+    lim[0] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+    lim[1] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nlnk);
@@ -1916,8 +1916,8 @@ double dlnxi_dlnk_pm_tomo(
 //   newly allocated [NSIZE*Ntheta] array of dlnw_ks/dlnk values (caller
 //   frees), flattened as nz*Ntheta + i over (source bin nz, angular
 //   bin i) with NSIZE = redshift.shear_nbin; all zeros when k is
-//   outside the open interval (Ntable.dCX_dlnk_kmin,
-//   Ntable.dCX_dlnk_kmax)
+//   outside the open interval (Ntable.dCX_dlnk_k[RANGE_MIN],
+//   Ntable.dCX_dlnk_k[RANGE_MAX])
 // ---------------------------------------------------------------------------
 double* dlnw_ks_dlnk_tomo_nointerp(
     const double k    // wavenumber in (Mpc/h)^-1
@@ -2020,7 +2020,7 @@ double* dlnw_ks_dlnk_tomo_nointerp(
   }
   double* ans = (double*) calloc1d(NSIZE*Ntable.Ntheta);
   const double lnk = log(k);
-  if (lnk > log(Ntable.dCX_dlnk_kmin) && lnk < log(Ntable.dCX_dlnk_kmax)) {
+  if (lnk > log(Ntable.dCX_dlnk_k[RANGE_MIN]) && lnk < log(Ntable.dCX_dlnk_k[RANGE_MAX])) {
     // build (or reuse) the cached dC table single-threaded before the
     // parallel loops below read it
     (void) dC_ks_dlnk_tomo_limber(k, (double) limits.LMIN_tab, 0);
@@ -2103,7 +2103,7 @@ double* dlnw_ks_dlnk_tomo_nointerp(
 //
 // Table design: [shear_nbin*Ntheta][nlnk], one row per (source bin x
 // angular bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
-// [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax]; lookups interpolate
+// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]]; lookups interpolate
 // linearly in ln k and a k outside the grid returns 0. The fill calls
 // the nointerp pipeline once per k node (each call returns every bin).
 //
@@ -2146,8 +2146,8 @@ double dlnw_ks_dlnk_tomo(
   }
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
     nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-    lim[0] = log(Ntable.dCX_dlnk_kmin);
-    lim[1] = log(Ntable.dCX_dlnk_kmax);
+    lim[0] = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+    lim[1] = log(Ntable.dCX_dlnk_k[RANGE_MAX]);
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
     if (table != NULL) free(table);
     table = (double**) malloc2d(NSIZE*Ntable.Ntheta, nlnk);
@@ -2344,8 +2344,8 @@ void RF_xi_tomo_limber_work(
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
   const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
-  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+  const double lnk0 = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+  const double dx = (log(Ntable.dCX_dlnk_k[RANGE_MAX]) - lnk0)
                     / ((double) nlnk - 1.0);
   const double lnk1 = lnk0 + (nlnk - 1)*dx;
   double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes
@@ -2465,8 +2465,8 @@ void RF_w_ks_tomo_limber_work(
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
   const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
-  const double lnk0 = log(Ntable.dCX_dlnk_kmin);
-  const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
+  const double lnk0 = log(Ntable.dCX_dlnk_k[RANGE_MIN]);
+  const double dx = (log(Ntable.dCX_dlnk_k[RANGE_MAX]) - lnk0)
                     / ((double) nlnk - 1.0);
   const double lnk1 = lnk0 + (nlnk - 1)*dx;
   double* kv = (double*) malloc1d(nlnk); // the grid's own k nodes

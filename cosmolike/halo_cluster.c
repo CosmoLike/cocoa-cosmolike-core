@@ -1866,8 +1866,8 @@ double bcl_richness(
 //
 //   a nodes     the n_a nodes of the fill (no pads)
 //   ln k nodes  uniform, spacing = the p_gm coarse step on the p_gm dense
-//               grid (Ntable.N_k_nlin nodes on [ln limits.k_min_cH0,
-//               ln limits.k_max_cH0]; step Ntable.halo_nk_step, halved at
+//               grid (Ntable.N_k_nlin nodes on [ln limits.k_cH0[RANGE_MIN],
+//               ln limits.k_cH0[RANGE_MAX]]; step Ntable.halo_nk_step, halved at
 //               high_def_integration 1, 1 from 2 on) divided by
 //               CLUSTER_K_REFINE (CONSTANTS: why), plus
 //               Ntable.halo_spline_pad pads beyond each end
@@ -1913,7 +1913,7 @@ static struct {
                        // pads start after it)
   double lnk_first;    // ln k of node 0
   double dlnk;         // ln k spacing
-  double lnk_min;      // ln limits.k_min_cH0: reads clamp below
+  double lnk_min;      // ln limits.k_cH0[RANGE_MIN]: reads clamp below
   double lnk_last;     // ln k of node k_last: reads extrapolate above
   double*** ln_p;      // [nl][n_a][n_k] ln P1h
   double*** curv;      // [nl][n_a][n_k] spline coefficients in ln k
@@ -1927,7 +1927,7 @@ static struct {
 // ln k spacing of the P1h nodes (section header).
 static double cluster_p1h_lnk_spacing(void)
 {
-  const double dlnk_dense = (log(limits.k_max_cH0) - log(limits.k_min_cH0))
+  const double dlnk_dense = (log(limits.k_cH0[RANGE_MAX]) - log(limits.k_cH0[RANGE_MIN]))
                             /((double) Ntable.N_k_nlin - 1.0);
 
   const int accuracy = abs(Ntable.high_def_integration);
@@ -1985,9 +1985,9 @@ static void cluster_p1h_table(void)
     // uniform ln k nodes from ln k_min (node K_PAD) past ln k_max (node
     // k_last), K_PAD pads beyond each end
     p1h_.dlnk    = cluster_p1h_lnk_spacing();
-    p1h_.lnk_min = log(limits.k_min_cH0);
+    p1h_.lnk_min = log(limits.k_cH0[RANGE_MIN]);
 
-    const double lnk_span = log(limits.k_max_cH0) - p1h_.lnk_min;
+    const double lnk_span = log(limits.k_cH0[RANGE_MAX]) - p1h_.lnk_min;
     const int n_inside = (int) ceil(lnk_span/p1h_.dlnk) + 1;
 
     p1h_.n_k       = n_inside + 2*K_PAD;
@@ -2032,7 +2032,7 @@ static void cluster_p1h_table(void)
     if (log(k_limber_max) > p1h_.lnk_last && 0 == p1h_.k_warned) {
       log_warn("P1h cluster table ends at k = %g (c/H0)^-1 below the Limber "
                "k_max = %g of the cluster support: extrapolated as a power "
-               "law (raise limits.k_max_cH0 to tabulate it)",
+               "law (raise limits.k_cH0[RANGE_MAX] to tabulate it)",
                exp(p1h_.lnk_last), k_limber_max);
       p1h_.k_warned = 1;
     }

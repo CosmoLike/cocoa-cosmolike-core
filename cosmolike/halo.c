@@ -491,7 +491,7 @@ static double tinker_alpha(
       key[1] != like.halo_model[1] ||
       fdiff2(ntable_key, Ntable.random))
   {
-    ND = Ntable.halo_hmf_nd[like.halo_model[0]];
+    ND = Ntable.halo_hmf_n[NODES_DENSE][like.halo_model[0]];
 
     /* PHYSICAL DERIVATION & LOGIC FLOW
        1. trapezoid in s = ln nu: bias_weight[q] = w_q nu_q b(nu_q)
@@ -502,7 +502,7 @@ static double tinker_alpha(
     // --- 1. COARSE PADDED aa NODES ---
     // aa_i = aa0 + i hc: NC exact nodes on [0.25, 1] plus PAD beyond
     // each end; 0.75 below is the width of the [0.25, 1] range.
-    const int NC  = Ntable.halo_hmf_nc[like.halo_model[0]]; // exact nodes
+    const int NC  = Ntable.halo_hmf_n[NODES_COARSE][like.halo_model[0]]; // exact nodes
     const int PAD = Ntable.halo_spline_pad; // exact nodes beyond each end
     const int NE  = NC + 2*PAD;
     const double hc  = 0.75/((double) NC - 1.0);
@@ -3356,8 +3356,8 @@ static void hod_tables(void)
     // a 1e-12 relative margin: the last row amin + (na - 1) step of p_gm
     // and p_gg can round a few ulps past amax_lens (the first row is amin
     // exactly, so the bottom needs none).
-    const double a_table_min = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
-    const double a_table_max = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
+    const double a_table_min = 1.0/(redshift.clustering_zdist_zall[RANGE_MAX] + 1.0);
+    const double a_table_max = 1.0/(redshift.clustering_zdist_zall[RANGE_MIN] + 1.0);
     double a_lower = a_table_min;
     double a_upper = a_table_max;
     for (int l=0; l<redshift.clustering_nbin; l++) {
@@ -3812,8 +3812,8 @@ double p_mm(
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;  // a_max, just below a = 1 (today)
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
-    lim[1][0] = log(limits.k_min_cH0);
-    lim[1][1] = log(limits.k_max_cH0);
+    lim[1][0] = log(limits.k_cH0[RANGE_MIN]);
+    lim[1][1] = log(limits.k_cH0[RANGE_MAX]);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
 
@@ -4156,8 +4156,8 @@ double p_my(
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;  // a_max, just below a = 1 (today)
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
-    lim[1][0] = log(limits.k_min_cH0);
-    lim[1][1] = log(limits.k_max_cH0);
+    lim[1][0] = log(limits.k_cH0[RANGE_MIN]);
+    lim[1][1] = log(limits.k_cH0[RANGE_MAX]);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
 
@@ -4560,8 +4560,8 @@ double p_yy(
     lim[0][0] = limits.a_min;
     lim[0][1] = 0.9999999;  // a_max, just below a = 1 (today)
     lim[0][2] = (lim[0][1] - lim[0][0]) / ((double) Ntable.N_a - 1.0);
-    lim[1][0] = log(limits.k_min_cH0);
-    lim[1][1] = log(limits.k_max_cH0);
+    lim[1][0] = log(limits.k_cH0[RANGE_MIN]);
+    lim[1][1] = log(limits.k_cH0[RANGE_MAX]);
     lim[1][2] = (lim[1][1] - lim[1][0]) / ((double) Ntable.N_k_nlin - 1.0);
   }
 
@@ -5004,8 +5004,8 @@ double p_gm(
     gsl_integration_glfixed_table_free(t);
 
     // ln k grid, shared by all bins
-    lim[nbin][0] = log(limits.k_min_cH0);
-    lim[nbin][1] = log(limits.k_max_cH0);
+    lim[nbin][0] = log(limits.k_cH0[RANGE_MIN]);
+    lim[nbin][1] = log(limits.k_cH0[RANGE_MAX]);
     lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])
                    /((double) Ntable.N_k_nlin - 1.0);
   }
@@ -5559,8 +5559,8 @@ double p_gg(
     gsl_integration_glfixed_table_free(t);
 
     // ln k grid, shared by all bins
-    lim[nbin][0] = log(limits.k_min_cH0);
-    lim[nbin][1] = log(limits.k_max_cH0);
+    lim[nbin][0] = log(limits.k_cH0[RANGE_MIN]);
+    lim[nbin][1] = log(limits.k_cH0[RANGE_MAX]);
     lim[nbin][2] = (lim[nbin][1]-lim[nbin][0])
                    /((double) Ntable.N_k_nlin - 1.);
   }
@@ -7025,8 +7025,8 @@ static void ia_tables(void)
     gsl_integration_glfixed_table_free(gl_table);
 
     // the ln k axis (p_mm's)
-    ia_.lim[1][0] = log(limits.k_min_cH0);
-    ia_.lim[1][1] = log(limits.k_max_cH0);
+    ia_.lim[1][0] = log(limits.k_cH0[RANGE_MIN]);
+    ia_.lim[1][1] = log(limits.k_cH0[RANGE_MAX]);
     ia_.lim[1][2] = (ia_.lim[1][1] - ia_.lim[1][0])
                     /((double) Ntable.N_k_nlin - 1.0);
 
