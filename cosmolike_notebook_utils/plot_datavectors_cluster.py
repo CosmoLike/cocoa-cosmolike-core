@@ -93,18 +93,24 @@ def _select_bins(nbins, which):
     return sel
 
 
-def _entry_colors(nentry, param, cmap):
+def _entry_colors(nentry, param, cmap, bar = None):
     """One color per list entry.
 
     With param the color is read at the entry's own position on the
     colorbar axis, so line and bar colors agree exactly (a sweep of
     five values would otherwise sit visibly off the bar); without it
-    the entries are spread evenly over the colormap.
+    the entries are spread evenly over the colormap. In a figure
+    with a colorbar the colors are read from the bar itself:
+    matplotlib widens the range of a bar whose param values are all
+    equal (a list of one entry), and only the bar holds the range it
+    ended up with.
 
     Arguments:
       nentry = number of list entries (curves of the sweep).
       param  = the parameter values, or None.
       cmap   = colormap name.
+      bar    = the colorbar _sweep_colorbar returned, or None for a
+               figure without one.
 
     Returns:
       list of RGBA tuples, one per entry.
@@ -112,6 +118,9 @@ def _entry_colors(nentry, param, cmap):
     cm = plt.get_cmap(cmap)
     if param is None or len(param) != nentry:
         return [cm(x/nentry) for x in range(nentry)]
+    if not (bar is None):
+        # to_rgba applies the bar's own normalization and colormap
+        return [bar.mappable.to_rgba(p) for p in param]
     norm = matplotlib.colors.Normalize(np.min(param), np.max(param))
     return [cm(norm(p)) for p in param]
 
@@ -125,6 +134,10 @@ def _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink):
       colorbarlabel = its label (LaTeX string), or None.
       cmap, colorbarshrink = colormap name and bar length as a
                   fraction of the panels' height.
+
+    Returns:
+      the matplotlib Colorbar, from which _entry_colors reads the
+      colors of the list entries.
     """
     # the colorbar is not read off the plotted lines: it is drawn
     # from a ScalarMappable, a bare description of "this colormap
@@ -139,6 +152,7 @@ def _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink):
         shrink = colorbarshrink)
     if not (colorbarlabel is None):
         cb.set_label(label = colorbarlabel, size = 20, weight = 'bold', labelpad = 2)
+    return cb
 
 
 def _proxy_legend(fig, axes, handles, labels, legendloc, legendfontsize):
@@ -309,14 +323,15 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
             squeeze = False,
             gridspec_kw = {'wspace': 0, 'hspace': 0})
 
+    bar = None
     if not (param is None or colorbar is None):
-        _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink)
+        bar = _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink)
 
     # color follows the list entry, line style the richness curve;
     # with one entry the color follows the richness curve, with one
     # richness curve the styles follow the entries (module docstring)
     cm = plt.get_cmap(cmap)
-    entrycolor = _entry_colors(nentry, param, cmap)
+    entrycolor = _entry_colors(nentry, param, cmap, bar)
     curvecolor = [cm(c/ncurve) for c in range(ncurve)]
     if linestyle is None:
         linestyle = _RICHNESS_LINESTYLES if ncurve > 1 else ['solid']
@@ -630,10 +645,11 @@ def plot_N_cluster(N, N_ref = None, param = None, colorbarlabel = None, richness
         gridspec_kw = {'wspace': 0, 'hspace': 0})
     axes = axes[0,:]
 
+    bar = None
     if not (param is None or colorbar is None):
-        _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink)
+        bar = _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink)
 
-    color = _entry_colors(nentry, param, cmap)
+    color = _entry_colors(nentry, param, cmap, bar)
     if linestyle is None:
         linestyle = ['solid']
     if linewidth is None:

@@ -264,6 +264,9 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
             gridspec_kw = {'wspace': 0, 'hspace': 0})
     
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(C_ss)) for x in range(len(C_ss))]
     
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -283,6 +286,11 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
         if len(param) != len(C_ss):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)
@@ -376,15 +384,15 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                         tmp = Cl[:,i,j] / C_ss_ref[:,i,j] - 1
                     if marker is None:
                         axes[j,i].plot(ell, tmp, 
-                                       color=cm(x/len(C_ss)), 
+                                       color=curvecolor[x], 
                                        linewidth=next(linewidthcycler), 
                                        linestyle=next(linestylecycler))
                     else:
                         axes[j,i].plot(ell, tmp, 
-                                       color=cm(x/len(C_ss)), 
+                                       color=curvecolor[x], 
                                        markerfacecolor='None', 
                                        marker=next(markercycler), 
-                                       markeredgecolor=cm(x/len(C_ss)), 
+                                       markeredgecolor=curvecolor[x], 
                                        linestyle='None', 
                                        markersize=markersize)
     
@@ -545,6 +553,9 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
         )    
 
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(xi)) for x in range(len(xi))]
 
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -565,6 +576,11 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
         if len(param) != len(xi):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)
@@ -677,20 +693,20 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                     for x, (theta, xip, xim) in enumerate(xi):
                         if pm > 0:
                             if marker is None:
-                                axes[j,i].plot(theta, theta*xip[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, theta*xip[:,i,j]*10**4*fac, color=curvecolor[x], 
                                                linewidth=next(linewidthcycler), linestyle=next(linestylecycler))
                             else:
-                                axes[j,i].plot(theta, theta*xip[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, theta*xip[:,i,j]*10**4*fac, color=curvecolor[x], 
                                                markerfacecolor='None', marker=next(markercycler), 
-                                               markeredgecolor=cm(x/len(xi)), linestyle='None', markersize=markersize)
+                                               markeredgecolor=curvecolor[x], linestyle='None', markersize=markersize)
                         else:
                             if marker is None:   
-                                axes[j,i].plot(theta, theta*xim[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, theta*xim[:,i,j]*10**4*fac, color=curvecolor[x], 
                                     linewidth=next(linewidthcycler), linestyle=next(linestylecycler))
                             else:
-                                axes[j,i].plot(theta, theta*xim[:,i,j]*10**4*fac, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, theta*xim[:,i,j]*10**4*fac, color=curvecolor[x], 
                                                markerfacecolor='None', marker=next(markercycler), 
-                                               markeredgecolor=cm(x/len(xi)), linestyle='None', markersize=markersize)
+                                               markeredgecolor=curvecolor[x], linestyle='None', markersize=markersize)
                 else:
                     (theta_ref, xip_ref, xim_ref) = xi_ref
                     for x, (theta, xip, xim) in enumerate(xi):
@@ -699,21 +715,21 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                             return 0
                         if pm > 0:
                             if marker is None:
-                                axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, color=curvecolor[x], 
                                                linewidth=next(linewidthcycler), linestyle=next(linestylecycler))
                             else:
                                 axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, 
-                                               color=cm(x/len(xi)), markerfacecolor='None',
-                                               marker=next(markercycler),  markeredgecolor=cm(x/len(xi)), 
+                                               color=curvecolor[x], markerfacecolor='None',
+                                               marker=next(markercycler),  markeredgecolor=curvecolor[x], 
                                                linestyle='None', markersize=markersize)
                         else:
                             if marker is None:   
-                                lines = axes[j,i].plot(theta, xim[:,i,j]/xim_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
+                                lines = axes[j,i].plot(theta, xim[:,i,j]/xim_ref[:,i,j]-1.0, color=curvecolor[x], 
                                                        linewidth=next(linewidthcycler), linestyle=next(linestylecycler))
                             else:
-                                axes[j,i].plot(theta, xim[:,i,j]/xim_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, xim[:,i,j]/xim_ref[:,i,j]-1.0, color=curvecolor[x], 
                                                markerfacecolor='None', marker=next(markercycler), 
-                                               markeredgecolor=cm(x/len(xi)), 
+                                               markeredgecolor=curvecolor[x], 
                                                linestyle='None', markersize=markersize)    
     if not (rescale is None):
         _hide_glued_edge_ticklabels(
@@ -868,6 +884,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
             gridspec_kw = {'wspace': 0, 'hspace': 0})
 
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(C_gs)) for x in range(len(C_gs))]
     
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -887,6 +906,11 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
         if len(param) != len(C_gs):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)
@@ -997,16 +1021,16 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                 if marker is None:
                     axes[j,i].plot(ell,
                                    tmp,
-                                   color=cm(x/len(C_gs)),
+                                   color=curvecolor[x],
                                    linewidth=next(linewidthcycler),
                                    linestyle=next(linestylecycler))
                 else:
                     axes[j,i].plot(ell,
                                    tmp,
-                                   color=cm(x/len(C_gs)),
+                                   color=curvecolor[x],
                                    markerfacecolor='None',
                                    marker=next(markercycler),
-                                   markeredgecolor=cm(x/len(C_gs)),
+                                   markeredgecolor=curvecolor[x],
                                    linestyle='None',
                                    markersize=markersize)
 
@@ -1178,6 +1202,9 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             gridspec_kw = {'wspace': 0, 'hspace': 0})
     
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(C_gg)) for x in range(len(C_gg))]
     
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -1197,6 +1224,11 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         if len(param) != len(C_gg):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)     
@@ -1295,16 +1327,16 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
             if marker is None:
                 axes[i].plot(ell, 
                              tmp, 
-                             color=cm(x/len(C_gg)), 
+                             color=curvecolor[x], 
                              linewidth=next(linewidthcycler), 
                              linestyle=next(linestylecycler))
             else:
                 axes[i].plot(ell, 
                              tmp, 
-                             color=cm(x/len(C_gg)), 
+                             color=curvecolor[x], 
                              markerfacecolor='None',
                              marker=next(markercycler),
-                             markeredgecolor=cm(x/len(C_gg)),
+                             markeredgecolor=curvecolor[x],
                              linestyle='None',
                              markersize=markersize)
     
@@ -1493,6 +1525,9 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             gridspec_kw = {'wspace': 0, 'hspace': 0})
     
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(theta_gammat)) for x in range(len(theta_gammat))]
     
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -1512,6 +1547,11 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
         if len(param) != len(theta_gammat):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)
@@ -1623,16 +1663,16 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                 if marker is None:
                     axes[j,i].plot(theta, 
                                    tmp, 
-                                   color=cm(x/len(theta_gammat)), 
+                                   color=curvecolor[x], 
                                    linewidth=next(linewidthcycler), 
                                    linestyle=next(linestylecycler))
                 else:
                     axes[j,i].plot(theta, 
                                    tmp, 
-                                   color=cm(x/len(theta_gammat)), 
+                                   color=curvecolor[x], 
                                    markerfacecolor='None', 
                                    marker=next(markercycler),
-                                   markeredgecolor=cm(x/len(theta_gammat)), 
+                                   markeredgecolor=curvecolor[x], 
                                    linestyle='None', 
                                    markersize=markersize)                    
     
@@ -1815,6 +1855,9 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             gridspec_kw = {'wspace': 0, 'hspace': 0})
     
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(theta_wtheta)) for x in range(len(theta_wtheta))]
     
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -1834,6 +1877,11 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         if len(param) != len(theta_wtheta):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     if not (marker is None):
         markercycler = itertools.cycle(marker)    
@@ -1923,16 +1971,16 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
             if marker is None:
                 axes[i].plot(theta, 
                                tmp, 
-                               color=cm(x/len(theta_wtheta)), 
+                               color=curvecolor[x], 
                                linewidth=next(linewidthcycler), 
                                linestyle=next(linestylecycler))
             else:
                 axes[i].plot(theta, 
                                tmp, 
-                               color=cm(x/len(theta_wtheta)), 
+                               color=curvecolor[x], 
                                markerfacecolor='None', 
                                marker=next(markercycler),
-                               markeredgecolor=cm(x/len(theta_wtheta)), 
+                               markeredgecolor=curvecolor[x], 
                                linestyle='None', 
                                markersize=markersize)                    
     
@@ -2051,6 +2099,9 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
     # a colormap is a function: cm(0.0) is the first color of the
     # map, cm(1.0) the last, with a continuous blend in between
     cm = plt.get_cmap(cmap)
+    # one color per curve. Without a colorbar the curves are spread
+    # evenly over the colormap: curve x of N takes the position x/N
+    curvecolor = [cm(x/len(sup)) for x in range(len(sup))]
 
     if not (param is None or colorbar is None):
         # the colorbar is not read off the plotted lines: it is drawn
@@ -2070,6 +2121,11 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
         if len(param) != len(sup):
             print("Bad Input")
             return 0
+        # with a colorbar each curve takes the color the bar shows at
+        # its own param value (to_rgba applies the bar's normalization
+        # and colormap), so curve and bar agree for a sweep of any
+        # length and for unevenly spaced values
+        curvecolor = [cb.mappable.to_rgba(value) for value in param]
 
     # itertools.cycle repeats a list forever: each next(...) in the
     # curve loop pulls the following width, wrapping at the end
@@ -2086,8 +2142,7 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
     # reuses the solid style
     zstyles = ['solid', 'dashed', 'dashdot', 'dotted']
     # enumerate yields (position, entry) pairs, so x counts the
-    # curves; x/len(sup) is this curve's position in 0..1, the
-    # coordinate the colormap expects
+    # curves and curvecolor[x] is the color of curve x
     for x, S in enumerate(sup):
         S = np.asarray(S)
         lw = next(linewidthcycler)
@@ -2096,7 +2151,7 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
             # suppression at one redshift, over all k
             ax.plot(k,
                     S[iz],
-                    color = cm(x/len(sup)),
+                    color = curvecolor[x],
                     linewidth = lw,
                     linestyle = zstyles[iz % len(zstyles)])
 
