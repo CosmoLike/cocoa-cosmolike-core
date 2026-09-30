@@ -8443,6 +8443,16 @@ void cfftlog_ells_p2(
 //        fx[i][1] = -chi * n(z) * D(a) * (H/H0) * f    (RSD velocity)
 //        fx[i][2] = (W_mag / fK / coverH0^2) * D        (magnification)
 //      The magnification component is skipped when bmag = 0 for all bins.
+//      The RSD component is zero unless include_RSD_GG = 1 and the HOD is
+//      off, the gate of the Limber terms it is paired with.
+//      All three are nonzero on the Limber integration range of the lens
+//      bin, z in [1/amax_lens - 1, 1/amin_lens - 1], the range of the two
+//      Limber terms of step 6. With bmag != 0 that range reaches down to
+//      the lowest source redshift, because W_mag has support in front of
+//      the lens galaxies. On the n(z) support alone the FFTLog term would
+//      miss the foreground magnification x magnification power that the
+//      linear Limber term keeps, and the pair would not cancel at high l
+//      (C_gs_tomo uses the same range for its lens rows).
 //   3. Phase 1 (cfftlog_ells_p1): forward FFT of the radial functions
 //      (ell-independent, done once)
 //   4. Phase 2 (cfftlog_ells_p2): ell-dependent inverse transform,
@@ -8580,6 +8590,17 @@ void C_cl_tomo(
   C_gg_tomo_limber_linpsopt_nointerp_ells(lx, limits.LMAX_NOLIMBER, nbins, 0, CLnl);
   C_gg_tomo_limber_linpsopt_nointerp_ells(lx, limits.LMAX_NOLIMBER, nbins, 1, CLlin);
 
+  double zlo[nbins]; // Limber lens range (see the header comment)
+  double zhi[nbins];
+  for (int i=0; i<nbins; i++) {
+    zlo[i] = 1./amax_lens(i) - 1.;
+    zhi[i] = 1./amin_lens(i) - 1.;
+  }
+  // The RSD slot follows the gate of the two Limber terms it is paired
+  // with (C_gg_tomo_limber_linpsopt_nointerp_ells: include_RSD_GG and no
+  // HOD); an RSD row the Limber terms lack would not cancel at high l
+  const int rsd = (1 == include_RSD_GG && 0 == include_HOD_GX) ? 1 : 0;
+
   #pragma omp parallel for schedule(static)
   for (int j=0; j<nchi; j++) {
     x[j] = chi_min * exp(dlnchi * j);
@@ -8592,8 +8613,7 @@ void C_cl_tomo(
     const double D = growfac_a.D;
     const double f = growfac_a.f;
     for (int i=0; i<nbins; i++) {  
-      if (z < redshift.clustering_zdist_zmin[i] || 
-          z > redshift.clustering_zdist_zmax[i]) { 
+      if (z < zlo[i] || z > zhi[i]) {
         fx[i][0][j] = 0.;
         fx[i][1][j] = 0.;
         fx[i][2][j] = 0.;
@@ -8602,8 +8622,8 @@ void C_cl_tomo(
         const double pf = nz_lens_photoz(z,i);
         const double WM = W_mag(a, fK, i);
         fx[i][0][j] =  chi*pf*D*hoverh0_a*gb1(z,i);
-        fx[i][1][j] = -chi*pf*D*hoverh0_a*f;
-        fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2] 
+        fx[i][1][j] = (1 == rsd) ? -chi*pf*D*hoverh0_a*f : 0.0;
+        fx[i][2][j] = (WM/fK/(real_coverH0*real_coverH0))*D; // [Mpc^-2]
       }
     }
   }
@@ -8927,10 +8947,11 @@ void C_gg_tomo_ells(
 //
 // DIFFERENCES FROM C_cl_tomo (the galaxy clustering counterpart):
 //   - Lens rows are nonzero on the Limber integration range of the lens bin,
-//     z in [1/amax_lens - 1, 1/amin_lens - 1]. With bmag != 0 this range
-//     reaches down to the lowest source redshift. On the n(z) support alone
-//     (the C_cl_tomo choice) the magnification row would miss the foreground
-//     that the Limber terms keep, and the pair would never cancel.
+//     z in [1/amax_lens - 1, 1/amin_lens - 1], as in C_cl_tomo. With
+//     bmag != 0 this range reaches down to the lowest source redshift. On
+//     the n(z) support alone the magnification row would miss the
+//     foreground that the Limber terms keep, and the pair would never
+//     cancel.
 //   - Convergence is tested per lens-source pair, not per bin.
 //   - SIZE2 = 3 always: the broad source kernel uses slot 2, which has the
 //     wide N_pad guard band. When C_cl_tomo runs in the same evaluation with
