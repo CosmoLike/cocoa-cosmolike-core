@@ -333,7 +333,7 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 //
 //   yaml option      -> init_* here            -> C struct field
 //                                              -> consumer
-//   probe            -> init_probes            -> like.shear_shear..kk
+//   probe            -> init_probes            -> like.probe[PROBE_SS]..kk
 //                       -> gates every Mx2pt block (the hpp templates)
 //   n_theta, theta_* -> init_binning_real_space-> Ntable.Ntheta/vtmin/
 //                       vtmax -> real-space kernels (cosmo2D.c)
@@ -350,11 +350,11 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 // ---------------------------------------------------------------------------
 // Reset every Cosmolike global struct to a defined startup state.
 //
-// Zeroes the probe flags (like.shear_shear/shear_pos/pos_pos, gk/kk/ks),
+// Zeroes the probe flags (like.probe[PROBE_SS]/shear_pos/pos_pos, gk/kk/ks),
 // the Fourier binning (like.Ncl/lmin/lmax) and the cluster flags, then runs
 // the reset_*_struct family (redshift, nuisance, cosmology, tomo, Ntable,
-// like, cmb). Afterwards sets the defaults like.adopt_limber_gg = 0,
-// like.adopt_limber_gs = 1 and pdeltaparams.runmode = "Halofit", and loads
+// like, cmb). Afterwards sets the defaults like.adopt_limber[LIMBER_GG] = 0,
+// like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit", and loads
 // the spdlog verbosity from the environment (SPDLOG_LEVEL).
 //
 // Runs once, before any other init_/set_ call, so later writes land on a
@@ -372,23 +372,14 @@ void initial_setup()
   spdlog::cfg::load_env_levels();
   debug("{}: {}", fname, errbegins);
 
-  like.shear_shear = 0;
-  like.shear_pos = 0;
-  like.pos_pos = 0;
+  // every probe off; init_probes and init_probes_cluster turn them on
+  for (int i=0; i<NPROBES; i++) {
+    like.probe[i] = 0;
+  }
 
   like.Ncl = 0;
   like.lmin = 0;
   like.lmax = 0;
-
-  like.gk = 0;
-  like.kk = 0;
-  like.ks = 0;
-  
-  // cluster probes off (this interface carries no cluster likelihood)
-  like.clusterN = 0;
-  like.clusterWL = 0;
-  like.clusterCG = 0;
-  like.clusterCC = 0;
 
   // reset bias - pretty important to setup variables to zero or 1 via reset
   reset_redshift_struct();
@@ -399,8 +390,8 @@ void initial_setup()
   reset_like_struct();
   reset_cmb_struct();
 
-  like.adopt_limber_gg = 0;
-  like.adopt_limber_gs = 1;
+  like.adopt_limber[LIMBER_GG] = 0;
+  like.adopt_limber[LIMBER_GS] = 1;
 
   std::string mode = "Halofit";
   memcpy(pdeltaparams.runmode, mode.c_str(), mode.size() + 1);
@@ -437,7 +428,7 @@ void init_ntable_lmax(const int lmax) {
 // ---------------------------------------------------------------------------
 // Set the internal coarse ell grid of the Limber C_l tables.
 //
-// The C_ss, C_gs, C_gk and C_ks tables keep Ntable.N_ell nodes with
+// The C_ss, C_gs, C_gk and C_ks tables keep Ntable.N_ell[NODES_DENSE] nodes with
 // linear interpolation (the real-space Legendre sums interpolate
 // ~100k multipoles through the vectorized gather fill), but their
 // construction cost is N_ell x N_pairs Limber quadratures. Those
@@ -457,7 +448,7 @@ void init_ntable_lmax(const int lmax) {
 // bumps Ntable.random so every table rebuilds.
 //
 // Parameters:
-//   nell_internal - coarse node count (4 <= n <= Ntable.N_ell), or 0
+//   nell_internal - coarse node count (4 <= n <= Ntable.N_ell[NODES_DENSE]), or 0
 //                   for exact
 //
 // Returns:
@@ -467,12 +458,12 @@ void init_ntable_ell_internal(const int nell_internal) {
   static constexpr std::string_view fname = "init_ntable_ell_internal"sv;
   debug("{}: {}", fname, errbegins);
   if (nell_internal != 0 &&
-      (nell_internal < 4 || nell_internal > Ntable.N_ell)) [[unlikely]] {
+      (nell_internal < 4 || nell_internal > Ntable.N_ell[NODES_DENSE])) [[unlikely]] {
     critical("{}: nell_internal = {} not 0 and outside [4, {}]",
-             fname, nell_internal, Ntable.N_ell);
+             fname, nell_internal, Ntable.N_ell[NODES_DENSE]);
     exit(1);
   }
-  Ntable.N_ell_internal = nell_internal;
+  Ntable.N_ell[NODES_COARSE] = nell_internal;
   Ntable.random = RandomNumber::get_instance().get(); // update cache
   debug("{}: {}", fname, errends);
   return;
@@ -486,7 +477,7 @@ void init_ntable_ell_internal(const int nell_internal) {
 // active, the exact evaluations run on the coarse nodes and a
 // tensor-product bicubic (spline2d_upsample_uniform, basics.c) fills
 // the unchanged dense table. This knob coarsens the ln k axis; the
-// ell axis follows Ntable.N_ell_internal. The ln k direction carries
+// ell axis follows Ntable.N_ell[NODES_COARSE]. The ln k direction carries
 // the BAO wiggles of P(k); the default (128 of the 256-node grid)
 // keeps the measured response error at or below what the retired
 // fixed quadrature imposed (max |dRF| 5.9e-3, medians ~1e-6) at
@@ -501,7 +492,7 @@ void init_ntable_ell_internal(const int nell_internal) {
 //
 // Parameters:
 //   nlnk_internal - coarse ln k node count
-//                   (4 <= n <= Ntable.dCX_dlnk_nlnk), or 0 for exact
+//                   (4 <= n <= Ntable.dCX_dlnk_nlnk[NODES_DENSE]), or 0 for exact
 //
 // Returns:
 //   void
@@ -512,12 +503,12 @@ void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
   debug("{}: {}", fname, errbegins);
   if (nlnk_internal != 0 &&
       (nlnk_internal < 4 ||
-       nlnk_internal > Ntable.dCX_dlnk_nlnk)) [[unlikely]] {
+       nlnk_internal > Ntable.dCX_dlnk_nlnk[NODES_DENSE])) [[unlikely]] {
     critical("{}: nlnk_internal = {} not 0 and outside [4, {}]",
-             fname, nlnk_internal, Ntable.dCX_dlnk_nlnk);
+             fname, nlnk_internal, Ntable.dCX_dlnk_nlnk[NODES_DENSE]);
     exit(1);
   }
-  Ntable.dCX_dlnk_nlnk_internal = nlnk_internal;
+  Ntable.dCX_dlnk_nlnk[NODES_COARSE] = nlnk_internal;
   Ntable.random = RandomNumber::get_instance().get(); // update cache
   debug("{}: {}", fname, errends);
   return;
@@ -526,7 +517,7 @@ void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
 // ---------------------------------------------------------------------------
 // Set the internal coarse mass grid of the sigma^2(M) halo-model table.
 //
-// sigma^2(M)'s cached table keeps Ntable.N_M nodes in ln M; when this
+// sigma^2(M)'s cached table keeps Ntable.N_M[NODES_DENSE] nodes in ln M; when this
 // knob is active the exact lobe-summed quadratures run on the coarse
 // nodes only and the house cubic spline upsamples ln sigma^2 onto the
 // unchanged dense table (ln sigma^2 is smooth and monotone in ln M).
@@ -540,7 +531,7 @@ void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
 // bumps Ntable.random so every table rebuilds.
 //
 // Parameters:
-//   nm_internal - coarse node count (4 <= n <= Ntable.N_M), or 0 for
+//   nm_internal - coarse node count (4 <= n <= Ntable.N_M[NODES_DENSE]), or 0 for
 //                 exact
 //
 // Returns:
@@ -550,12 +541,12 @@ void init_ntable_nm_internal(const int nm_internal) {
   static constexpr std::string_view fname = "init_ntable_nm_internal"sv;
   debug("{}: {}", fname, errbegins);
   if (nm_internal != 0 &&
-      (nm_internal < 4 || nm_internal > Ntable.N_M)) [[unlikely]] {
+      (nm_internal < 4 || nm_internal > Ntable.N_M[NODES_DENSE])) [[unlikely]] {
     critical("{}: nm_internal = {} not 0 and outside [4, {}]",
-             fname, nm_internal, Ntable.N_M);
+             fname, nm_internal, Ntable.N_M[NODES_DENSE]);
     exit(1);
   }
-  Ntable.N_M_internal = nm_internal;
+  Ntable.N_M[NODES_COARSE] = nm_internal;
   Ntable.random = RandomNumber::get_instance().get(); // update cache
   debug("{}: {}", fname, errends);
   return;
@@ -590,7 +581,7 @@ void init_ntable_halo_ia_lmax(const int halo_ia_lmax) {
 // ---------------------------------------------------------------------------
 // Diagnostic read of the halo-model mass variance sigma^2(M) at a = 1:
 // the cached table (lobe-summed, and coarse-M upsampled when
-// Ntable.N_M_internal is active). M in M_sun/h.
+// Ntable.N_M[NODES_COARSE] is active). M in M_sun/h.
 //
 // Cache invalidation:
 // none here; the cached table rebuilds on cosmology.random /
@@ -701,7 +692,7 @@ void init_fpt_internal_boost(const double internal_boost)
 
 // ---------------------------------------------------------------------------
 // Choose the galaxy-galaxy lensing C_l^gs computation, writing
-// like.adopt_limber_gs: 1 = Limber at every multipole (the default); 0 =
+// like.adopt_limber[LIMBER_GS]: 1 = Limber at every multipole (the default); 0 =
 // the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in gamma_t
 // (w_gammat_tomo) and in the Fourier-space data vectors (C_gs_tomo_ells).
 // Likelihood yaml key: adopt_limber_gs. Example: adopt_limber_gs: 0 in
@@ -725,7 +716,7 @@ void init_adopt_limber_gs(const int adopt_limber_gs)
     critical("{}: invalid adopt_limber_gs = {}", fname, adopt_limber_gs);
     exit(1);
   }
-  like.adopt_limber_gs = adopt_limber_gs;
+  like.adopt_limber[LIMBER_GS] = adopt_limber_gs;
   debug("{}: {}", fname, errends);
   return;
 }
@@ -739,7 +730,7 @@ void init_adopt_limber_gs(const int adopt_limber_gs)
 
 // ---------------------------------------------------------------------------
 // Choose the galaxy clustering C_l^gg computation, writing
-// like.adopt_limber_gg: 0 = the non-Limber C_cl_tomo below
+// like.adopt_limber[LIMBER_GG]: 0 = the non-Limber C_cl_tomo below
 // limits.LMAX_NOLIMBER (the default of the real-space projects), in
 // w(theta) (w_gg_tomo) and in the Fourier-space data vectors
 // (C_gg_tomo_ells); 1 = Limber at every multipole (the default of the
@@ -765,7 +756,7 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
     critical("{}: invalid adopt_limber_gg = {}", fname, adopt_limber_gg);
     exit(1);
   }
-  like.adopt_limber_gg = adopt_limber_gg;
+  like.adopt_limber[LIMBER_GG] = adopt_limber_gg;
   debug("{}: {}", fname, errends);
   return;
 }
@@ -906,13 +897,13 @@ void init_halo_matter_field(const int halo_matter_field)
 // repeated calls do not compound:
 //
 //   Ntable.N_a                     -> ceil(baseline * boost)
-//   Ntable.N_ell                   -> ceil(baseline * boost)
-//   Ntable.N_ell_internal          -> ceil(baseline * boost)
-//   Ntable.dCX_dlnk_nlnk           -> ceil(baseline * boost)
-//   Ntable.dCX_dlnk_nlnk_internal  -> ceil(baseline * boost)
-//   Ntable.N_M_internal            -> ceil(baseline * boost)
-//   Ntable.halo_uks_nc             -> ceil(baseline * boost)
-//   Ntable.halo_uks_nz             -> ceil(baseline * boost)
+//   Ntable.N_ell[NODES_DENSE]                   -> ceil(baseline * boost)
+//   Ntable.N_ell[NODES_COARSE]          -> ceil(baseline * boost)
+//   Ntable.dCX_dlnk_nlnk[NODES_DENSE]           -> ceil(baseline * boost)
+//   Ntable.dCX_dlnk_nlnk[NODES_COARSE]  -> ceil(baseline * boost)
+//   Ntable.N_M[NODES_COARSE]            -> ceil(baseline * boost)
+//   Ntable.halo_uks_n[UKS_N_LNC]   -> ceil(baseline * boost)
+//   Ntable.halo_uks_n[UKS_N_LNZ]   -> ceil(baseline * boost)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.halo_ia_na              -> ceil(baseline * boost)
@@ -955,11 +946,11 @@ void init_accuracy_boost(
   if (0 == cache[0]) cache[0] = Ntable.N_a;
   Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
   
-  if (0 == cache[1]) cache[1] = Ntable.N_ell;
-  Ntable.N_ell = static_cast<int>(ceil(cache[1]*accuracy_boost));
+  if (0 == cache[1]) cache[1] = Ntable.N_ell[NODES_DENSE];
+  Ntable.N_ell[NODES_DENSE] = static_cast<int>(ceil(cache[1]*accuracy_boost));
 
-  if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk;
-  Ntable.dCX_dlnk_nlnk = static_cast<int>(ceil(cache[2]*accuracy_boost));
+  if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
+  Ntable.dCX_dlnk_nlnk[NODES_DENSE] = static_cast<int>(ceil(cache[2]*accuracy_boost));
 
   if (0 == cache[3]) cache[3] = Ntable.NL_Nchi;
   Ntable.NL_Nchi = static_cast<int>(ceil(cache[3]*accuracy_boost));
@@ -968,21 +959,21 @@ void init_accuracy_boost(
   Ntable.nz_fine_sampling_factor = 
                                 static_cast<int>(ceil(cache[4]*accuracy_boost));
 
-  if (0 == cache[5]) cache[5] = Ntable.N_ell_internal;
-  Ntable.N_ell_internal = static_cast<int>(ceil(cache[5]*accuracy_boost));
+  if (0 == cache[5]) cache[5] = Ntable.N_ell[NODES_COARSE];
+  Ntable.N_ell[NODES_COARSE] = static_cast<int>(ceil(cache[5]*accuracy_boost));
 
-  if (0 == cache[6]) cache[6] = Ntable.dCX_dlnk_nlnk_internal;
-  Ntable.dCX_dlnk_nlnk_internal =
+  if (0 == cache[6]) cache[6] = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
+  Ntable.dCX_dlnk_nlnk[NODES_COARSE] =
       static_cast<int>(ceil(cache[6]*accuracy_boost));
 
-  if (0 == cache[7]) cache[7] = Ntable.N_M_internal;
-  Ntable.N_M_internal = static_cast<int>(ceil(cache[7]*accuracy_boost));
+  if (0 == cache[7]) cache[7] = Ntable.N_M[NODES_COARSE];
+  Ntable.N_M[NODES_COARSE] = static_cast<int>(ceil(cache[7]*accuracy_boost));
 
-  if (0 == cache[8]) cache[8] = Ntable.halo_uks_nc;
-  Ntable.halo_uks_nc = static_cast<int>(ceil(cache[8]*accuracy_boost));
+  if (0 == cache[8]) cache[8] = Ntable.halo_uks_n[UKS_N_LNC];
+  Ntable.halo_uks_n[UKS_N_LNC] = static_cast<int>(ceil(cache[8]*accuracy_boost));
 
-  if (0 == cache[9]) cache[9] = Ntable.halo_uks_nz;
-  Ntable.halo_uks_nz = static_cast<int>(ceil(cache[9]*accuracy_boost));
+  if (0 == cache[9]) cache[9] = Ntable.halo_uks_n[UKS_N_LNZ];
+  Ntable.halo_uks_n[UKS_N_LNZ] = static_cast<int>(ceil(cache[9]*accuracy_boost));
 
   if (0 == cache[10]) cache[10] = Ntable.halo_nfw_n;
   Ntable.halo_nfw_n = static_cast<int>(ceil(cache[10]*accuracy_boost));
@@ -1010,8 +1001,8 @@ void init_accuracy_boost(
   Ntable.N_k_nlin = 
     static_cast<int>(ceil(Ntable.N_k_nlin*sampling_boost));
 
-  Ntable.N_M = 
-    static_cast<int>(ceil(Ntable.N_M*sampling_boost));
+  Ntable.N_M[NODES_DENSE] = 
+    static_cast<int>(ceil(Ntable.N_M[NODES_DENSE]*sampling_boost));
   */
 
   Ntable.high_def_integration = int(integration_accuracy);
@@ -1221,7 +1212,7 @@ void init_binning_fourier(
 // ---------------------------------------------------------------------------
 // Define the real-space angular binning of the data vector.
 //
-// Writes Ntable.Ntheta and the angular range Ntable.vtmin/vtmax (input in
+// Writes Ntable.Ntheta and the angular range Ntable.vt[RANGE_MIN]/vtmax (input in
 // arcmin, stored in rad). Bin centers derive from these in
 // compute_binning_real_space and in the real-space projections (cosmo2D.c).
 //
@@ -1266,12 +1257,12 @@ void init_binning_real_space(
   // allocated with the old one.
   int cache_update = 0;
   if (Ntable.Ntheta != Ntheta ||
-      fdiff(Ntable.vtmin, vtmin) ||
-      fdiff(Ntable.vtmax, vtmax)) {
+      fdiff(Ntable.vt[RANGE_MIN], vtmin) ||
+      fdiff(Ntable.vt[RANGE_MAX], vtmax)) {
     cache_update = 1;
     Ntable.Ntheta = Ntheta;
-    Ntable.vtmin  = vtmin;
-    Ntable.vtmax  = vtmax;
+    Ntable.vt[RANGE_MIN]  = vtmin;
+    Ntable.vt[RANGE_MAX]  = vtmax;
   }
   if (1 == cache_update || 1 == force_cache_update_test) {
     Ntable.random = RandomNumber::get_instance().get(); // update cache
@@ -1513,8 +1504,8 @@ void init_IA(const int IA_MODEL, const int IA_REDSHIFT_EVOL)
 // ---------------------------------------------------------------------------
 // Turn on the probes that enter the data vector.
 //
-// Writes the flags like.shear_shear, like.shear_pos, like.pos_pos, like.gk,
-// like.ks, like.kk from a named combination (probe_map keys: "xi",
+// Writes the flags like.probe[PROBE_SS], like.probe[PROBE_GS], like.probe[PROBE_GG], like.probe[PROBE_GK],
+// like.probe[PROBE_KS], like.probe[PROBE_KK] from a named combination (probe_map keys: "xi",
 // "gammat", "wtheta", "2x2pt", "3x2pt", "5x2pt", "6x2pt" and the partial
 // ss/sg/gg/gk/sk/kk combinations below; input trimmed and lowercased for
 // the lookup). IP::set_mask reads these flags to zero the mask entries of
@@ -1582,12 +1573,12 @@ void init_probes(std::string possible_probes)
   }
   const auto& flags = it->second;
 
-  like.shear_shear = flags(0);
-  like.shear_pos = flags(1);
-  like.pos_pos = flags(2);
-  like.gk = flags(3);
-  like.ks = flags(4);
-  like.kk = flags(5);
+  like.probe[PROBE_SS] = flags(0);
+  like.probe[PROBE_GS] = flags(1);
+  like.probe[PROBE_GG] = flags(2);
+  like.probe[PROBE_GK] = flags(3);
+  like.probe[PROBE_KS] = flags(4);
+  like.probe[PROBE_KK] = flags(5);
   debug(debugsel, fname, "possible_probes", names.at(probe_key));
   debug("{}: Ends", "init_probes");
   return;
@@ -3902,7 +3893,7 @@ double compute_pm(const int zl, const int zs, const double theta)
 //
 //   theta_i = (2/3) (th_max^3 - th_min^3) / (th_max^2 - th_min^2)
 //
-// over Ntable.Ntheta bins spanning [Ntable.vtmin, Ntable.vtmax].
+// over Ntable.Ntheta bins spanning [Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX]].
 //
 // Validation: Ntheta and the (vtmin, vtmax) range must be set (via
 // init_binning_real_space), else critical() + exit(1).
@@ -3920,11 +3911,11 @@ vector compute_binning_real_space()
   if (0 == Ntable.Ntheta)  [[unlikely]] {
     critical(errornset, fname, "Ntable.Ntheta"); exit(1);
   }
-  if (!(Ntable.vtmax > Ntable.vtmin))  [[unlikely]] {
-    critical(errornset, fname, "Ntable.vtmax and Ntable.vtmin"); exit(1);
+  if (!(Ntable.vt[RANGE_MAX] > Ntable.vt[RANGE_MIN]))  [[unlikely]] {
+    critical(errornset, fname, "Ntable.vt[RANGE_MAX] and Ntable.vt[RANGE_MIN]"); exit(1);
   }
-  const double logvtmin = std::log(Ntable.vtmin);
-  const double logvtmax = std::log(Ntable.vtmax);
+  const double logvtmin = std::log(Ntable.vt[RANGE_MIN]);
+  const double logvtmax = std::log(Ntable.vt[RANGE_MAX]);
   const double logdt=(logvtmax - logvtmin)/Ntable.Ntheta;
   constexpr double fac = (2./3.);
 

@@ -775,7 +775,7 @@ double fmax(
 // up to Ntable.LMAX. Subsequent calls with unchanged parameters return
 // cached values without recomputation.
 //
-// The angular bins are log-spaced between Ntable.vtmin and Ntable.vtmax.
+// The angular bins are log-spaced between Ntable.vt[RANGE_MIN] and Ntable.vt[RANGE_MAX].
 // The range is not a cache key here: init_binning_real_space
 // (generic_interface.cpp) redraws Ntable.random when Ntheta or the range
 // changes, which rebuilds this table and every kernel built from it.
@@ -809,10 +809,10 @@ bin_avg set_bin_average(
 
     xminmax = (double**) malloc2d(2, Ntable.Ntheta);
 
-    const double logdt = (log(Ntable.vtmax)-log(Ntable.vtmin))/ Ntable.Ntheta;
+    const double logdt = (log(Ntable.vt[RANGE_MAX])-log(Ntable.vt[RANGE_MIN]))/ Ntable.Ntheta;
     for(int i=0; i<Ntable.Ntheta ; i++) {
-      xminmax[0][i] = cos(exp(log(Ntable.vtmin) + (i + 0.)*logdt));
-      xminmax[1][i] = cos(exp(log(Ntable.vtmin) + (i + 1.)*logdt));
+      xminmax[0][i] = cos(exp(log(Ntable.vt[RANGE_MIN]) + (i + 0.)*logdt));
+      xminmax[1][i] = cos(exp(log(Ntable.vt[RANGE_MIN]) + (i + 1.)*logdt));
     }
 
     #pragma omp parallel for

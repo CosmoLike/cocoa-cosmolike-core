@@ -1516,8 +1516,8 @@ double MG_Sigma(double a __attribute__((unused))) {
 // Cached sigma^2(M) at a = 1: the variance of the linear density field
 // after smoothing with a top-hat sphere that holds the mass M.
 //
-// What the caller gets. A table of ln sigma^2 on Ntable.N_M nodes
-// uniform in ln M over [ln limits.halo_m_min, ln limits.halo_m_max]
+// What the caller gets. A table of ln sigma^2 on Ntable.N_M[NODES_DENSE] nodes
+// uniform in ln M over [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]]
 // (by default 1024 nodes over M = 1e6..1e17 M_sun/h), read back by
 // linear interpolation in ln M and exponentiated. The table is built
 // at a = 1 once per cosmology; halo.c rescales with the growth factor
@@ -1715,7 +1715,7 @@ double MG_Sigma(double a __attribute__((unused))) {
 //
 // 9. Coarse grid and cubic upsampling
 //
-// When Ntable.N_M_internal is active (192 by default) the exact sums
+// When Ntable.N_M[NODES_COARSE] is active (192 by default) the exact sums
 // run only on that many coarse ln M nodes, and a natural cubic spline
 // of ln sigma^2 fills the 1024-node table (the spline is explained at
 // the upsampling loop). ln sigma^2 is smooth and monotone in ln M, so
@@ -1754,7 +1754,7 @@ double MG_Sigma(double a __attribute__((unused))) {
 //
 // Returns:
 //   sigma^2(M) at a = 1, linearly interpolated in ln M from the table;
-//   constant outside [limits.halo_m_min, limits.halo_m_max]
+//   constant outside [limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]]
 // ---------------------------------------------------------------------------
 double sigma2(
     const double M  // halo mass in M_sun/h
@@ -1800,13 +1800,13 @@ double sigma2(
     // both endpoints included, hence N_M - 1 intervals. With the
     // defaults lim[2] = ln(1e17/1e6)/1023 = 25.328/1023 = 0.02476.
     if (table != NULL) free(table);
-    table = (double*) malloc(sizeof(double)*Ntable.N_M);
-    lim[0] = log(limits.halo_m_min);
-    lim[1] = log(limits.halo_m_max);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
+    table = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
+    lim[0] = log(limits.halo_m[RANGE_MIN]);
+    lim[1] = log(limits.halo_m[RANGE_MAX]);
+    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M[NODES_DENSE] - 1.0);
     if (lnMv != NULL) free(lnMv);
-    lnMv = (double*) malloc(sizeof(double)*Ntable.N_M);
-    for (int i=0; i<Ntable.N_M; i++) {
+    lnMv = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
+    for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
       lnMv[i] = lim[0] + i*lim[2];
     }
 
@@ -1825,8 +1825,8 @@ double sigma2(
     // 3 nodes, so the cubic spline has interior nodes to solve for)
     // and really coarser than the dense one; otherwise ncoarse = 0 and
     // the refill computes every dense node exactly.
-    const int nc = Ntable.N_M_internal;
-    ncoarse = (nc > 3 && nc < Ntable.N_M) ? nc : 0;
+    const int nc = Ntable.N_M[NODES_COARSE];
+    ncoarse = (nc > 3 && nc < Ntable.N_M[NODES_DENSE]) ? nc : 0;
     if (ncoarse > 0) {
       // ncoarse nodes uniform in ln M over the same [lim[0], lim[1]]
       // as the dense grid; default 192 nodes, dlnc = 25.328/191 =
@@ -1856,9 +1856,9 @@ double sigma2(
       // of the same length), and (int) r names an interval that does
       // not exist. The clamp moves that node onto the last interval,
       // at qdel = dlnc, its right endpoint.
-      qidx = (int*) malloc(sizeof(int)*Ntable.N_M);
-      qdel = (double*) malloc(sizeof(double)*Ntable.N_M);
-      for (int i=0; i<Ntable.N_M; i++) {
+      qidx = (int*) malloc(sizeof(int)*Ntable.N_M[NODES_DENSE]);
+      qdel = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
+      for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
         const double r = (double) i * lim[2] / dlnc;
         int j = (int) r;
         if (j > ncoarse - 2) {
@@ -1991,7 +1991,7 @@ double sigma2(
     // exact path it runs over all N_M dense nodes lnMv and writes table
     // directly. The three selectors let one loop serve both paths.
     const double* lnm = (ncoarse > 0) ? lnMc : lnMv;
-    const int nm = (ncoarse > 0) ? ncoarse : Ntable.N_M;
+    const int nm = (ncoarse > 0) ? ncoarse : Ntable.N_M[NODES_DENSE];
     double* out = (ncoarse > 0) ? tabc : table;
 
     // The smoothed field (header, item 10): total matter, or cold dark
@@ -2116,7 +2116,7 @@ double sigma2(
       const double hc = dlnc;
       const double inv_hc = 1.0/dlnc;
       #pragma omp parallel for schedule(static)
-      for (int i=0; i<Ntable.N_M; i++) {
+      for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
         const int j = qidx[i];
         const double b = (tabc[j+1] - tabc[j])*inv_hc
                          - hc*(cspl[j+1] + 2.0*cspl[j])/3.0;
@@ -2126,7 +2126,7 @@ double sigma2(
     }
     else {
       // Exact path: every dense node holds its own sum; store the log.
-      for (int i=0; i<Ntable.N_M; i++) {
+      for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
         table[i] = log(table[i]);
       }
     }
@@ -2139,11 +2139,11 @@ double sigma2(
   // interpolation on a uniform grid: with r = (x - a)/dx and
   // i = floor(r) it returns f[i] + (r - i) (f[i+1] - f[i]); below a it
   // returns f[0], and at or beyond the last node f[n-1] (constant
-  // extrapolation, so a mass outside [halo_m_min, halo_m_max] gets the
+  // extrapolation, so a mass outside [halo_m[RANGE_MIN], halo_m[RANGE_MAX]] gets the
   // edge value). Here f = table (ln sigma^2), a = lim[0], dx = lim[2],
   // x = ln M; b = lim[1] is accepted for symmetry and unused. Example
   // with the defaults, M = 3e10: r = ln(3e4)/0.02476 = 416.37, so the
   // value is read 37% of the way from node 416 to node 417. exp undoes
   // the stored log.
-  return exp(interpol1d(table, Ntable.N_M, lim[0], lim[1], lim[2], log(M)));
+  return exp(interpol1d(table, Ntable.N_M[NODES_DENSE], lim[0], lim[1], lim[2], log(M)));
 }

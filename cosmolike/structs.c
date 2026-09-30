@@ -14,7 +14,6 @@ redshiftparams redshift;
 nuisanceparams nuisance;
 likepara like;
 sur survey;
-//clusterparams Cluster;
 
 pdeltapara pdeltaparams =
 {
@@ -44,26 +43,9 @@ lim limits =
   .k_max_cH0 = 3.e+6,           // k_max_cH0
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
-/*
-  .cluster_util_log_M_min = 12.0,
-  .cluster_util_log_M_max = 15.9,
-  .binned_P_lambda_obs_given_M_zmin_table = 0.20,
-  .binned_P_lambda_obs_given_M_zmax_table = 0.80,
-  .SDSS_P_lambda_obs_given_M_true_lambda_min = 3.0,
-  .SDSS_P_lambda_obs_given_M_true_lambda_max = 160.0,
-  .halo_exclusion_k_min = 1E-2,
-  .halo_exclusion_k_max = 3E6,
-  .halo_exclusion_k_min_hankel = 5.0E-4,
-  .halo_exclusion_k_max_hankel = 1.0E8,
-  .halo_exclusion_R_min = 0.0,
-  .halo_exclusion_R_max = 15.0/2997.,
-*/
-  .sigma2_m_min = 1.0e+6,
-  .sigma2_m_max = 1.0e+17,
-  .halo_m_min = 1.0e+6,     // halo.c M_min
-  .halo_m_max = 1.0e+17,     // halo.c M_max
-  .halo_uks_cmin = 0.05,    // halo.c u_KS concentration range (queries
-  .halo_uks_cmax = 100.0    //   outside are clamped to it)
+  .halo_m = {1.0e+6, 1.0e+17},  // halo.c mass range (M_sun/h)
+  .halo_uks_c = {0.05, 100.0}   // halo.c u_KS concentration range (queries
+                                //   outside are clamped to it)
 };
 
 Ntab Ntable;
@@ -95,22 +77,11 @@ void reset_like_struct(void)
   like.lmax_shear = 0;
   
   like.bias = 0;
-  like.clusterN = 0;
-  like.clusterWL = 0;
-  like.clusterCG = 0;
-  like.clusterCC = 0;
-  like.shear_shear = 0;
-  like.shear_pos = 0;
-  like.pos_pos = 0;
-  like.gk = 0;
-  like.kk = 0;
-  like.ks = 0;
-  like.gy = 0;
-  like.sy = 0;
-  like.ky = 0;
-  like.yy = 0;
-  like.adopt_limber_gg = 0;
-  like.adopt_limber_gs = 1;
+  for (int i=0; i<NPROBES; i++) {
+    like.probe[i] = 0;
+  }
+  like.adopt_limber[LIMBER_GG] = 0;
+  like.adopt_limber[LIMBER_GS] = 1;
   // halo.c model choices (halo.h macros, all 0): HMF_TINKER_2010,
   // HALO_BIAS_TINKER_2010, CONCENTRATION_BHATTACHARYA_2013,
   // HALO_PROFILE_NFW, HALO_FIELD_MATTER - set explicitly so the
@@ -284,20 +255,20 @@ void reset_Ntable_struct(void)
   Ntable.N_a      = 256;   // N_a       
   Ntable.N_k_lin  = 512;   // N_k_lin
   Ntable.N_k_nlin = 512;   // N_k_nlin
-  Ntable.N_ell    = 512;   // N_ell
-  Ntable.N_ell_internal = 192; // ss/gs table coarse grid; 0 = exact N_ell      
+  Ntable.N_ell[NODES_DENSE]    = 512;   // N_ell
+  Ntable.N_ell[NODES_COARSE] = 192; // ss/gs table coarse grid; 0 = exact N_ell      
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
-  Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
-  Ntable.N_M_internal = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
-  Ntable.halo_uks_nc = 40;  // u_KS coarse ln c nodes (upsampled; halo.c)
-  Ntable.halo_uks_nz = 64;  // u_KS coarse ln z nodes (upsampled; halo.c)
+  Ntable.N_M[NODES_DENSE]      = 1024;  // N_M, M = mass (Halo Model)
+  Ntable.N_M[NODES_COARSE] = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
+  Ntable.halo_uks_n[UKS_N_LNC] = 40;       // u_KS coarse ln c nodes (upsampled; halo.c)
+  Ntable.halo_uks_n[UKS_N_LNZ] = 64;       // u_KS coarse ln z nodes (upsampled; halo.c)
   Ntable.halo_nfw_n = 131072; // u_nfw_c exact dense ln t nodes (halo.c)
   Ntable.halo_spline_pad = 6; // halo.c coarse spline padding nodes
-  Ntable.halo_uks_mc = 12;    // u_KS dense refinement: ln c (2D)
-  Ntable.halo_uks_mw = 32;    // u_KS dense refinement: w
-  Ntable.halo_uks_mz = 16;    // u_KS dense refinement: ln z
-  Ntable.halo_uks_my = 115;   // u_KS dense refinement: ln y
-  Ntable.halo_uks_m1 = 70;    // u_KS dense refinement: ln c (1D)
+  Ntable.halo_uks_m[UKS_M_LNC2D] = 12;     // u_KS dense refinement: ln c (2D)
+  Ntable.halo_uks_m[UKS_M_W] = 32;         // u_KS dense refinement: w
+  Ntable.halo_uks_m[UKS_M_LNZ] = 16;       // u_KS dense refinement: ln z
+  Ntable.halo_uks_m[UKS_M_LNY] = 115;      // u_KS dense refinement: ln y
+  Ntable.halo_uks_m[UKS_M_LNC1D] = 70;     // u_KS dense refinement: ln c (1D)
   Ntable.halo_hmf_nc[HMF_TINKER_2010] = 128;  // tinker_alpha exact aa
   Ntable.halo_hmf_nd[HMF_TINKER_2010] = 4096; // tinker_alpha dense aa
   Ntable.halo_nm = 64;       // spectra mass nodes at hdi 0: chi2 ladder in
@@ -309,10 +280,10 @@ void reset_Ntable_struct(void)
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
-  Ntable.dCX_dlnk_nlnk = 256;
+  Ntable.dCX_dlnk_nlnk[NODES_DENSE] = 256;
   Ntable.dCX_dlnk_kmin = 1.e-5;
   Ntable.dCX_dlnk_kmax = 1.e2;
-  Ntable.dCX_dlnk_nlnk_internal = 128; // half the dCX grid: measured
+  Ntable.dCX_dlnk_nlnk[NODES_COARSE] = 128; // half the dCX grid: measured
   // response error <= what the retired fixed quadrature imposed
   // (max |dRF| 5.9e-3, medians ~1e-6) at 2x the refill; 0 = exact 
   Ntable.nz_fine_sampling_factor = 5; // nz fine-sampling (to ensure uniform points)
@@ -324,20 +295,6 @@ void reset_Ntable_struct(void)
   Ntable.FPT_internal_accuracy_boost = 0.5;
 }
 
-/*
-void reset_cluster_struct(void)
-{
-  Cluster.N200_min = 0.0;
-  Cluster.N200_max = 0.0;
-  Cluster.N200_Nbin = 0;
-  for(int i=0; i<MAX_SIZE_ARRAYS; i++)
-  {
-    Cluster.N_min[i] = 0.0;
-    Cluster.N_max[i] = 0.0;
-  }
-  sprintf(Cluster.model, "%s", "default");
-}
-*/
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

@@ -623,11 +623,11 @@ static int cluster_keys_cg(uint64_t* keys)
 // (the range of cosmo2D.c). Two uniform grids in ln l share those ends:
 //
 //   exact grid  the Limber quadrature runs here:
-//                 C_cs        Ntable.N_ell_internal nodes (pattern P1b, as
+//                 C_cs        Ntable.N_ell[NODES_COARSE] nodes (pattern P1b, as
 //                             cosmo2D.c's C_gs: smooth in ln l with one
 //                             broad lensing kernel; the 1-halo/2-halo
 //                             transition spans about an e-fold in l)
-//                 C_cc, C_cg  Ntable.N_ell nodes (two narrow density kernels
+//                 C_cc, C_cg  Ntable.N_ell[NODES_DENSE] nodes (two narrow density kernels
 //                             leave BAO wiggles in l: the node count of
 //                             cosmo2D.c's exact C_gg)
 //   dense grid  CLUSTER_ELL_REFINEMENT (N_ell - 1) + 1 nodes, filled by the
@@ -908,18 +908,18 @@ static void limber_table_cluster_update(
     limber_table_cluster_free(T);
 
     // the spline needs at least four nodes
-    const int nell_house = Ntable.N_ell;
+    const int nell_house = Ntable.N_ell[NODES_DENSE];
     if (nell_house < 4) {
-      log_fatal("Ntable.N_ell = %d < 4", nell_house);
+      log_fatal("Ntable.N_ell[NODES_DENSE] = %d < 4", nell_house);
       exit(1);
     }
 
     int nexact = nell_house;
     if (1 == smooth_in_ln_ell &&
-        Ntable.N_ell_internal > 3 &&
-        Ntable.N_ell_internal < nell_house)
+        Ntable.N_ell[NODES_COARSE] > 3 &&
+        Ntable.N_ell[NODES_COARSE] < nell_house)
     {
-      nexact = Ntable.N_ell_internal;
+      nexact = Ntable.N_ell[NODES_COARSE];
     }
     const int nell = CLUSTER_ELL_REFINEMENT*(nell_house - 1) + 1;
 
@@ -2182,7 +2182,7 @@ double C_cg_tomo_limber(
 //
 // The real-space statistics are full-sky Legendre sums, averaged over each
 // angular bin (the theta binning of the galaxy statistics: Ntable.Ntheta
-// log bins in [Ntable.vtmin, Ntable.vtmax], set_bin_average of basics.c):
+// log bins in [Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX]], set_bin_average of basics.c):
 //
 //   spin 0 (w_cc, w_cg; eq 11, the w_gg_tomo kernel):
 //     w(theta_i) = sum_l Pl0[i][l] C_l

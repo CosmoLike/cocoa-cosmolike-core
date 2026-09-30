@@ -1125,7 +1125,7 @@ double xi_pm_tomo(
 //   limber = 0: the non-Limber C_gs_tomo for l < LMAX_NOLIMBER (it already
 //     continues converged pairs with the Limber values), then
 //     C_gs_tomo_limber_fill for l = LMAX_NOLIMBER..LMAX-1
-// The data vector selects the path with like.adopt_limber_gs (yaml key
+// The data vector selects the path with like.adopt_limber[LIMBER_GS] (yaml key
 // adopt_limber_gs; 1 by default).
 //
 // The final Hankel sum is SIMD-vectorized via #pragma omp simd.
@@ -1381,7 +1381,7 @@ double w_gammat_tomo(
 //     2. High-ell (l = LMIN_tab..LMAX-1): C_gg_tomo_limber_fill
 //   limber = 0: non-Limber FFTLog (C_cl_tomo) for l < LMAX_NOLIMBER,
 //     then Limber fill for l >= LMAX_NOLIMBER
-// The data vector selects the path with like.adopt_limber_gg (yaml key
+// The data vector selects the path with like.adopt_limber[LIMBER_GG] (yaml key
 // adopt_limber_gg; 0 by default in the real-space projects).
 //
 // Only auto-correlations (ni = nj) are supported.
@@ -3218,7 +3218,7 @@ static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
 // C_ss_tomo_limber_work, then caches it for subsequent lookups. Returns
 // the interpolated value at the requested l via interpol1d.
 //
-// When Ntable.N_ell_internal is active, the exact quadrature instead
+// When Ntable.N_ell[NODES_COARSE] is active, the exact quadrature instead
 // runs on the internal coarse grid and the house cubic spline
 // upsamples onto the unchanged N_ell nodes (the strategy block inside
 // explains why this wins).
@@ -3278,7 +3278,7 @@ double C_ss_tomo_limber(
 
   if (NULL == table || fdiff2(cache[4], Ntable.random))
   {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab - 1., 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
@@ -3325,7 +3325,7 @@ double C_ss_tomo_limber(
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
-    const int nc = Ntable.N_ell_internal;
+    const int nc = Ntable.N_ell[NODES_COARSE];
     ncoarse = (nc > 3 && nc < nell) ? nc : 0;
     if (ncoarse > 0) {
       dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
@@ -4263,7 +4263,7 @@ static void C_gs_tomo_limber_work(
 //       IA through C1 only (the exact
 //       content of the FFTLog term).
 //
-// Example: w_gammat_tomo with like.adopt_limber_gs = 0 calls C_gs_tomo,
+// Example: w_gammat_tomo with like.adopt_limber[LIMBER_GS] = 0 calls C_gs_tomo,
 // which calls this function twice with ells = 0, 1, ..., 149 (use_linear_ps
 // = 0 and 1) to get both Limber terms of the non-Limber split at once.
 //
@@ -4439,12 +4439,12 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 // Galaxy-shear angular power spectrum C_l^gs with interpolation.
 //
 // On first call (or when cosmology/nuisance parameters change), builds a
-// log-spaced interpolation table covering l = LMIN_tab..LMAX (Ntable.N_ell
+// log-spaced interpolation table covering l = LMIN_tab..LMAX (Ntable.N_ell[NODES_DENSE]
 // points) using C_gs_tomo_limber_work with per-lens-bin cosmo_nodes and
 // precomputed ell prefactors, then caches it for subsequent lookups.
 // Returns the interpolated value at the requested l via interpol1d.
 //
-// When Ntable.N_ell_internal is active, the exact quadrature instead
+// When Ntable.N_ell[NODES_COARSE] is active, the exact quadrature instead
 // runs on the internal coarse grid and the house cubic spline
 // upsamples onto the unchanged N_ell nodes (the strategy block inside
 // explains why this wins).
@@ -4512,7 +4512,7 @@ double C_gs_tomo_limber(
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[6], Ntable.random)) {
-    nell   = Ntable.N_ell;
+    nell   = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.0);
@@ -4590,7 +4590,7 @@ double C_gs_tomo_limber(
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
-    const int nc = Ntable.N_ell_internal;
+    const int nc = Ntable.N_ell[NODES_COARSE];
     ncoarse = (nc > 3 && nc < nell) ? nc : 0;
     if (ncoarse > 0) {
       dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
@@ -5443,7 +5443,7 @@ void C_gg_tomo_limber_nointerp_ells(
 // l = lmin, ..., lmax-1, written at their own index: Cl[nz][l].
 // Thin wrapper around C_gg_tomo_limber_nointerp_ells.
 //
-// Example: w_gg_tomo (like.adopt_limber_gg = 1) calls it with lmin = 1 and
+// Example: w_gg_tomo (like.adopt_limber[LIMBER_GG] = 1) calls it with lmin = 1 and
 // lmax = limits.LMIN_tab = 20 for the multipoles below the interpolation
 // table; Cl[nz][0] is left untouched.
 //
@@ -5503,7 +5503,7 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 // (auto spectra only: ni must equal nj).
 //
 // Builds the (lens bin, log ell) table with one
-// C_gg_tomo_limber_nointerp_ells call (log-spaced grid, Ntable.N_ell
+// C_gg_tomo_limber_nointerp_ells call (log-spaced grid, Ntable.N_ell[NODES_DENSE]
 // points covering l = LMIN_tab..LMAX), then caches it for subsequent
 // lookups. Returns the interpolated value at the requested l via
 // interpol1d.
@@ -5528,7 +5528,7 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 //
 // The table keeps the exact per-node quadrature at every one of its
 // N_ell nodes: do NOT apply the internal coarse-grid upsampling of the
-// ss/gs tables here (Ntable.N_ell_internal) - the clustering auto
+// ss/gs tables here (Ntable.N_ell[NODES_COARSE]) - the clustering auto
 // spectra carry BAO wiggles in exactly the ell range the spline would
 // smooth over.
 //
@@ -5561,7 +5561,7 @@ double C_gg_tomo_limber(
   static double lim[3];
 
   if (NULL == table || fdiff2(cache[3], Ntable.random)) {
-    nell   = Ntable.N_ell;
+    nell   = Ntable.N_ell[NODES_DENSE];
     NSIZE  = redshift.clustering_nbin;
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
@@ -6101,7 +6101,7 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 // Galaxy x CMB-lensing angular power spectrum C_l^gk with interpolation.
 //
 // Builds the (lens bin, log ell) table with one
-// C_gk_tomo_limber_nointerp_ells call (log-spaced grid, Ntable.N_ell
+// C_gk_tomo_limber_nointerp_ells call (log-spaced grid, Ntable.N_ell[NODES_DENSE]
 // points covering l = LMIN_tab..LMAX), then caches it for subsequent
 // lookups. Returns the interpolated value at the requested l via
 // interpol1d.
@@ -6127,7 +6127,7 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 // Stored values carry no CMB beam or pixel window; w_gk_tomo
 // multiplies its own copy by the beam_cmb/w_pixel filter.
 //
-// When Ntable.N_ell_internal is active, the exact quadrature instead
+// When Ntable.N_ell[NODES_COARSE] is active, the exact quadrature instead
 // runs on the internal coarse grid and the house cubic spline
 // upsamples onto the unchanged N_ell nodes (the strategy block inside
 // explains why this wins).
@@ -6164,12 +6164,12 @@ double C_gk_tomo_limber(const double l, const int ni)
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[3], Ntable.random)) {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
+    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell[NODES_DENSE] - 1.0);
     if (table != NULL) free(table);
-    table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_ell);
+    table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_ell[NODES_DENSE]);
 
     gk_.tab    = table;
     gk_.lim[0] = lim[0];
@@ -6201,7 +6201,7 @@ double C_gk_tomo_limber(const double l, const int ni)
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
-    const int nc = Ntable.N_ell_internal;
+    const int nc = Ntable.N_ell[NODES_COARSE];
     ncoarse = (nc > 3 && nc < nell) ? nc : 0;
     if (ncoarse > 0) {
       dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
@@ -7114,7 +7114,7 @@ static struct { double** tab; double lim[3]; int nell; } ks_ = {0};
 // ln(ell) limits, spacing and node count) in the file-scope struct,
 // and the reader picks them up there.
 //
-// When Ntable.N_ell_internal is active, the exact quadrature instead
+// When Ntable.N_ell[NODES_COARSE] is active, the exact quadrature instead
 // runs on the internal coarse grid and the house cubic spline
 // upsamples onto the unchanged N_ell nodes (the strategy block inside
 // explains why this wins).
@@ -7154,13 +7154,13 @@ double C_ks_tomo_limber(
   static double** cspl = NULL; // natural-cubic-spline c coefficients
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
+    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell[NODES_DENSE] - 1.0);
 
     if (table != NULL) free(table);
-    table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_ell);
+    table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_ell[NODES_DENSE]);
 
     ks_.tab    = table;
     ks_.lim[0] = lim[0];
@@ -7192,7 +7192,7 @@ double C_ks_tomo_limber(
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
-    const int nc = Ntable.N_ell_internal;
+    const int nc = Ntable.N_ell[NODES_COARSE];
     ncoarse = (nc > 3 && nc < nell) ? nc : 0;
     if (ncoarse > 0) {
       dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
@@ -7337,7 +7337,7 @@ double C_ks_tomo_limber(
     log_fatal("internal logic error in selecting bin number");
     exit(1);
   }
-  return interpol1d(table[q], Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
+  return interpol1d(table[q], Ntable.N_ell[NODES_DENSE], lim[0], lim[1], lim[2], lnl);
 }
 
 // ---------------------------------------------------------------------------
@@ -7494,7 +7494,7 @@ double C_kk_limber_nointerp(const double l, const int init)
 // ---------------------------------------------------------------------------
 // CMB lensing convergence auto power spectrum C_l^kk with interpolation.
 //
-// Builds a single log-spaced table (Ntable.N_ell points covering
+// Builds a single log-spaced table (Ntable.N_ell[NODES_DENSE] points covering
 // l = LMIN_tab..LMAX) filled per ell by C_kk_limber_nointerp inside an
 // OpenMP loop, after one single-threaded init call warms the statics.
 // There is no tomography, so the table is one-dimensional.
@@ -7521,14 +7521,14 @@ double C_kk_limber(const double l)
   if (NULL == table || fdiff2(cache[1], Ntable.random)) {
     lim[0] = log(fmax(limits.LMIN_tab, 1.0));
     lim[1] = log(Ntable.LMAX + 1);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell - 1.0);
+    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_ell[NODES_DENSE] - 1.0);
     if (table != NULL) free(table);
-    table = (double*) malloc1d(Ntable.N_ell);
+    table = (double*) malloc1d(Ntable.N_ell[NODES_DENSE]);
   }
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
     (void) C_kk_limber_nointerp(exp(lim[0]), 1); // init static vars    
     #pragma omp parallel for schedule(static)
-    for (int i=0; i<Ntable.N_ell; i++) {
+    for (int i=0; i<Ntable.N_ell[NODES_DENSE]; i++) {
       const double lx = exp(lim[0] + i*lim[2]);
       table[i] = C_kk_limber_nointerp(lx, 0);
     }
@@ -7543,7 +7543,7 @@ double C_kk_limber(const double l)
   if (lnl > lim[1]) {
     log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(lim[1]));
   }
-  return interpol1d(table, Ntable.N_ell, lim[0], lim[1], lim[2], lnl);
+  return interpol1d(table, Ntable.N_ell[NODES_DENSE], lim[0], lim[1], lim[2], lnl);
 }
 
 // ---------------------------------------------------------------------------
@@ -8813,7 +8813,7 @@ void C_cl_tomo(
 // Galaxy clustering C_l^gg (auto spectra) at arbitrary multipoles, with the
 // non-Limber correction of C_cl_tomo below limits.LMAX_NOLIMBER. The
 // Fourier-space data vectors call it (generic_interface.hpp,
-// like.adopt_limber_gg = 0): their multipoles like.ell are band centers,
+// like.adopt_limber[LIMBER_GG] = 0): their multipoles like.ell are band centers,
 // not integers. The gg counterpart of C_gs_tomo_ells.
 //
 // C_cl_tomo works at integer multipoles only. At a band center l this
@@ -8937,7 +8937,7 @@ void C_gg_tomo_ells(
 //      integrator of the Limber path, C_gs_tomo_limber_linpsopt_nointerp_ells
 //      (use_linear_ps = 0 for P_delta, 1 for the separable linear spectrum).
 //      The P_delta term is therefore bit-identical to what w_gammat_tomo uses
-//      when like.adopt_limber_gs = 1.
+//      when like.adopt_limber[LIMBER_GS] = 1.
 //   3. cfftlog_ells_p1: forward FFT of every row (independent of l, done once).
 //   4. Blocks of BLOCK = 16 multipoles: cfftlog_ells_p2 computes the Hankel
 //      transforms of every active row; k^3 P_lin(k) and 1/y^2 are tabulated
@@ -9365,7 +9365,7 @@ void C_gs_tomo(
 // ---------------------------------------------------------------------------
 // Galaxy-galaxy lensing C_l^gs at arbitrary multipoles, with the non-Limber
 // correction of C_gs_tomo below limits.LMAX_NOLIMBER. The Fourier-space
-// data vectors call it (generic_interface.hpp, like.adopt_limber_gs = 0):
+// data vectors call it (generic_interface.hpp, like.adopt_limber[LIMBER_GS] = 0):
 // their multipoles like.ell are band centers, not integers.
 //
 // C_gs_tomo works at integer multipoles only. At a band center l this

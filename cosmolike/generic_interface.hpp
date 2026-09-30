@@ -1035,7 +1035,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
 
   if constexpr (0 == M) {
-    if (1 == like.shear_shear) { 
+    if (1 == like.probe[PROBE_SS]) { 
       for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
         const int z1 = Z1(nz);
         const int z2 = Z2(nz);
@@ -1063,7 +1063,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (1 == M) {
-    if (1 == like.shear_pos) {
+    if (1 == like.probe[PROBE_GS]) {
       for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
         const int zs = ZS(nz);
         for (int i=0; i<Nlen[N]; i++) {
@@ -1086,7 +1086,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (2 == M) {
-    if (1 == like.pos_pos) {
+    if (1 == like.probe[PROBE_GG]) {
       for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
           const int index = start + Nlen[N]*nz + i;
@@ -1098,7 +1098,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (3 == M) {
-    if (1 == like.gk) {
+    if (1 == like.probe[PROBE_GK]) {
       for (int nz=0; nz<redshift.clustering_nbin; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
           const int index = start + Nlen[N]*nz + i;
@@ -1110,7 +1110,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (4 == M) {
-    if (1 == like.ks) {
+    if (1 == like.probe[PROBE_KS]) {
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         for (int i=0; i<Nlen[N]; i++) {
           const int index = start + Nlen[N]*nz + i; 
@@ -1125,7 +1125,7 @@ void add_calib_and_set_mask_X_N(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (5 == M) {
-    if (1 == like.kk) {
+    if (1 == like.probe[PROBE_KK]) {
       IPCMB& cmb = IPCMB::get_instance();
       if (0 == cmb.is_kk_bandpower()) {
         for (int i=0; i<like.Ncl; i++) {
@@ -1203,9 +1203,9 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
 //   M = 0  ss  xi_pm_tomo (xi+ half-block, then xi-)
 //              / C_ss_tomo_limber_nointerp_ells (EE only)
 //   M = 1  gs  w_gammat_tomo / C_gs_tomo_limber_nointerp_ells or the
-//              non-Limber C_gs_tomo_ells (like.adopt_limber_gs picks)
+//              non-Limber C_gs_tomo_ells (like.adopt_limber[LIMBER_GS] picks)
 //   M = 2  gg  w_gg_tomo / C_gg_tomo_limber_nointerp_ells or the
-//              non-Limber C_gg_tomo_ells (like.adopt_limber_gg picks)
+//              non-Limber C_gg_tomo_ells (like.adopt_limber[LIMBER_GG] picks)
 //   M = 3  gk  w_gk_tomo (real only; fourier: no engine, block stays
 //              at the caller's zeros)
 //   M = 4  ks  w_ks_tomo (real only; fourier: no engine, ditto)
@@ -1234,7 +1234,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
   arma::Col<int>::fixed<2> Nlen = {Ntable.Ntheta, like.Ncl};
 
   if constexpr (0 == M) {
-    if (1 == like.shear_shear) {
+    if (1 == like.probe[PROBE_SS]) {
       if constexpr (0 == N) {
         for (int nz = 0; nz < tomo.shear_Npowerspectra; nz++) {
           const int z1 = Z1(nz);
@@ -1275,7 +1275,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (1 == M) {
-    if (1 == like.shear_pos) {
+    if (1 == like.probe[PROBE_GS]) {
       if constexpr (0 == N) {
         for (int nz = 0; nz < tomo.ggl_Npowerspectra; nz++) {
           const int zl = ZL(nz);
@@ -1283,7 +1283,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           for (int i = 0; i < Nlen[N]; i++) {
             const int index = start + Nlen[N]*nz + i;
             if (survey.get_mask(index)) {
-              dv(index) = w_gammat_tomo(i, zl, zs, like.adopt_limber_gs);
+              dv(index) = w_gammat_tomo(i, zl, zs, like.adopt_limber[LIMBER_GS]);
             }
           }
         }
@@ -1292,7 +1292,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
         
         double** out = (double**) malloc2d(tomo.ggl_Npowerspectra, Nlen[N]);
 
-        if (1 == like.adopt_limber_gs) {
+        if (1 == like.adopt_limber[LIMBER_GS]) {
           C_gs_tomo_limber_nointerp_ells(like.ell,
                                          Nlen[N],
                                          tomo.ggl_Npowerspectra,
@@ -1319,11 +1319,11 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (2 == M) {
-    if (1 == like.pos_pos) {
+    if (1 == like.probe[PROBE_GG]) {
       double** out = NULL; // Fourier space: every multipole in one batch
       if constexpr (N != 0) {
         out = (double**) malloc2d(tomo.clustering_Npowerspectra, Nlen[N]);
-        if (1 == like.adopt_limber_gg) {
+        if (1 == like.adopt_limber[LIMBER_GG]) {
           C_gg_tomo_limber_nointerp_ells(like.ell, 
                                          Nlen[N],
                                          tomo.clustering_Npowerspectra, 
@@ -1341,7 +1341,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
           const int index = start + Nlen[N]*nz + i;
           if (survey.get_mask(index)) {
             if constexpr (N == 0) {  
-              dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
+              dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber[LIMBER_GG]);
             }
             else {
               dv(index) = out[nz][i];
@@ -1354,7 +1354,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (3 == M) {
-    if (1 == like.gk) {
+    if (1 == like.probe[PROBE_GK]) {
       for (int nz=0; nz<redshift.clustering_nbin; nz++) {
         if constexpr (N == 0) {
           for (int i=0; i<Ntable.Ntheta; i++) {
@@ -1375,7 +1375,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (4 == M) {
-    if (1 == like.ks) {
+    if (1 == like.probe[PROBE_KS]) {
       for (int nz=0; nz<redshift.shear_nbin; nz++) {
         if constexpr (N == 0) {
           for (int i=0; i<Ntable.Ntheta; i++) {
@@ -1396,7 +1396,7 @@ void compute_X_N_masked(arma::Col<double>& dv, const int start)
     }
   }
   else if constexpr (5 == M) {
-    if (1 == like.kk) {
+    if (1 == like.probe[PROBE_KK]) {
       IPCMB& cmb = IPCMB::get_instance();
       if (0 == cmb.is_kk_bandpower()) {
         for (int i=0; i<like.Ncl; i++) {
@@ -1633,14 +1633,14 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
 
   arma::Col<int>::fixed<M> sizes = compute_data_vector_Mx2pt_N_sizes<N,M>();
   arma::Col<int>::fixed<M> start = compute_data_vector_Mx2pt_N_starts<N,M>(ord);
-  if (0 == like.shear_shear) {
+  if (0 == like.probe[PROBE_SS]) {
     const int A = start(0);
     const int B = A + sizes(0);
     for (int i=A; i<B; i++) {
       this->mask_(i) = 0;
     }
   }
-  if (0 == like.shear_pos) 
+  if (0 == like.probe[PROBE_GS]) 
   {
     const int A = start(1);
     const int B = A + sizes(1);
@@ -1648,7 +1648,7 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
       this->mask_(i) = 0;
     }
   }
-  if (0 == like.pos_pos) 
+  if (0 == like.probe[PROBE_GG]) 
   {
     const int A = start(2);
     const int B = A + sizes(2);
@@ -1657,21 +1657,21 @@ void IP::set_mask(std::string mask_filename, arma::Col<int>::fixed<M> ord)
     }
   }
   if constexpr (6 == M) {
-    if (0 == like.gk) {
+    if (0 == like.probe[PROBE_GK]) {
       const int A = start(3);
       const int B = A + sizes(3);;
       for (int i=A; i<B; i++) {
         this->mask_(i) = 0.0;
       }
     }
-    if (0 == like.ks)  {
+    if (0 == like.probe[PROBE_KS])  {
       const int A = start(4);
       const int B = A + sizes(4);
       for (int i=A; i<B; i++) {
         this->mask_(i) = 0.0;
       }
     }
-    if (0 == like.kk) {
+    if (0 == like.probe[PROBE_KK]) {
       const int A = start(5);
       const int B = A + sizes(5);
       for (int i=A; i<B; i++) {

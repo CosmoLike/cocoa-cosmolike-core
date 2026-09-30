@@ -1510,12 +1510,12 @@ static void cluster_mass_tables(void)
     }
     // inside the ln M range of halo.c's sigma2 and dlognudlogm tables,
     // which clamp outside it
-    if (!(cluster.m_min >= limits.halo_m_min) ||
-        !(cluster.m_max <= limits.halo_m_max) ||
+    if (!(cluster.m_min >= limits.halo_m[RANGE_MIN]) ||
+        !(cluster.m_max <= limits.halo_m[RANGE_MAX]) ||
         !(cluster.m_max > cluster.m_min)) {
       log_fatal("cluster mass range [%g, %g] not inside the halo.c tables' "
                 "[%g, %g]", cluster.m_min, cluster.m_max,
-                limits.halo_m_min, limits.halo_m_max);
+                limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]);
       exit(1);
     }
     mor_check();

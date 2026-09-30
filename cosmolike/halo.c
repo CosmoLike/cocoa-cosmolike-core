@@ -662,8 +662,8 @@ double fnu(
 //
 // The fit is calibrated at z = 0-2 and group-to-cluster masses, with
 // delta_c = 1.673 where this file uses 1.686 (a -0.2% shift in c). The
-// halo model evaluates it over all of [limits.halo_m_min,
-// limits.halo_m_max] and at every z, so also in extrapolation.
+// halo model evaluates it over all of [limits.halo_m[RANGE_MIN],
+// limits.halo_m[RANGE_MAX]] and at every z, so also in extrapolation.
 //
 // Parameters:
 //   m         - halo mass in M_sun/h
@@ -710,7 +710,7 @@ double conc(
 // with b the linear halo bias (hb1nu), f the multiplicity function
 // (fnu), sigma(M) the a = 1 value (sigma2 in cosmo3D.c), D the growth
 // factor with D(1) = 1, and nu_min, nu_max the peak heights of
-// limits.halo_m_min and limits.halo_m_max.
+// limits.halo_m[RANGE_MIN] and limits.halo_m[RANGE_MAX].
 //
 // Why the 2-halo term needs it: matter is unbiased with respect to
 // itself, int b f dnu = 1 over all nu, so P_2h = I11_m^2 P_lin (file
@@ -822,8 +822,8 @@ double bias_norm(
 
     // tmin, tmax: a = 1 peak heights of M_min, M_max (heavy halos:
     // small sigma, large t); tmid, thalf: midpoint and half-width
-    const double tmin  = delta_c/sqrt(sigma2(limits.halo_m_min));
-    const double tmax  = delta_c/sqrt(sigma2(limits.halo_m_max));
+    const double tmin  = delta_c/sqrt(sigma2(limits.halo_m[RANGE_MIN]));
+    const double tmax  = delta_c/sqrt(sigma2(limits.halo_m[RANGE_MAX]));
     const double tmid  = 0.5*(tmax + tmin);
     const double thalf = 0.5*(tmax - tmin);
 
@@ -872,8 +872,8 @@ double bias_norm(
 // 0.3 for clusters.
 //
 // Code map: table[i] is the slope at ln M_i = lim[0] + i lim[2],
-// Ntable.N_M nodes uniform in ln M over [ln limits.halo_m_min,
-// ln limits.halo_m_max], as the symmetric difference
+// Ntable.N_M[NODES_DENSE] nodes uniform in ln M over [ln limits.halo_m[RANGE_MIN],
+// ln limits.halo_m[RANGE_MAX]], as the symmetric difference
 //
 //   -(1/2) [ln sigma2(M_hi) - ln sigma2(M_lo)] / (ln M_hi - ln M_lo),
 //   ln M_lo, ln M_hi = ln M_i -+ 0.05   (lnMlo, lnMhi in the code)
@@ -890,7 +890,7 @@ double bias_norm(
 //
 // Returns:
 //   d ln nu/d ln M, dimensionless and positive, linearly interpolated
-//   in ln M; constant outside [limits.halo_m_min, limits.halo_m_max]
+//   in ln M; constant outside [limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]]
 // ---------------------------------------------------------------------------
 double dlognudlogm(
     const double M  // halo mass in M_sun/h
@@ -905,10 +905,10 @@ double dlognudlogm(
     if (table != NULL) {
       free(table);
     }
-    table = (double*) malloc(sizeof(double)*Ntable.N_M);
-    lim[0] = log(limits.halo_m_min);
-    lim[1] = log(limits.halo_m_max);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M - 1.0);
+    table = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
+    lim[0] = log(limits.halo_m[RANGE_MIN]);
+    lim[1] = log(limits.halo_m[RANGE_MAX]);
+    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M[NODES_DENSE] - 1.0);
   }
 
   // --- 2. TABLE REFILL: SYMMETRIC DIFFERENCE AT EVERY MASS NODE ---
@@ -923,7 +923,7 @@ double dlognudlogm(
     // the difference is pulled inside the mass range at the two edges
     // (the sigma2 table clamps outside it and would flatten the slope)
     #pragma omp parallel for schedule(static,1)
-    for (int i=0; i<Ntable.N_M; i++) {
+    for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
       const double half_step = 0.05;  // half-width in ln M
       const double lnMlo = fmax(lim[0] + i*lim[2] - half_step, lim[0]);
       const double lnMhi = fmin(lim[0] + i*lim[2] + half_step, lim[1]);
@@ -934,7 +934,7 @@ double dlognudlogm(
     cache[1] = Ntable.random;
   }
 
-  return interpol1d(table, Ntable.N_M, lim[0], lim[1], lim[2], log(M));
+  return interpol1d(table, Ntable.N_M[NODES_DENSE], lim[0], lim[1], lim[2], log(M));
 }
 
 
@@ -2457,11 +2457,11 @@ static void ks_upsample1d(
 // like quantities (P -> p/y^3) are gentler curves for the spline than
 // the quantities themselves.
 //
-// Used ranges: ln c in [ln limits.halo_uks_cmin, ln limits.halo_uks_cmax]
+// Used ranges: ln c in [ln limits.halo_uks_c[RANGE_MIN], ln limits.halo_uks_c[RANGE_MAX]]
 // (a query outside is clamped to the edge), w in [0, ZSW^2], ln z in
 // [ln ZSW, ln ZHI], ln y in [ln(ZSW/cmax), ln(ZHI/cmin)] (y = z/c at
 // the corners of the (c, z) range). The coarse node counts of ln c and
-// ln z are Ntable.halo_uks_nc and Ntable.halo_uks_nz (scaled by
+// ln z are Ntable.halo_uks_n[UKS_N_LNC] and Ntable.halo_uks_n[UKS_N_LNZ] (scaled by
 // init_accuracy_boost); the others follow. Each used end gets PAD
 // extra coarse nodes (a natural spline sets S'' = 0 at its ends; the
 // lookups clamp to the used range, so the padding is never read),
@@ -2500,11 +2500,11 @@ double u_KS(
   const double ZSW = 3.0;    // z = k r_v below: table of u(ln c, z^2)
   const double ZHI = 2.5e5;  // top of the ln z axis of Q
   const int PAD = Ntable.halo_spline_pad; // coarse padding beyond ends
-  const int MC  = Ntable.halo_uks_mc;     // dense refinement factors
-  const int MW  = Ntable.halo_uks_mw;
-  const int MZ  = Ntable.halo_uks_mz;
-  const int MY  = Ntable.halo_uks_my;
-  const int M1  = Ntable.halo_uks_m1;
+  const int MC  = Ntable.halo_uks_m[UKS_M_LNC2D];     // dense refinement factors
+  const int MW  = Ntable.halo_uks_m[UKS_M_W];
+  const int MZ  = Ntable.halo_uks_m[UKS_M_LNZ];
+  const int MY  = Ntable.halo_uks_m[UKS_M_LNY];
+  const int M1  = Ntable.halo_uks_m[UKS_M_LNC1D];
 
   // --- 2. STATIC STATE ---
   // Built on the first call (u_dense == NULL). Suffix "p" = padded
@@ -2560,10 +2560,10 @@ double u_KS(
 
     // Used ranges of ln c and ln y (header, item 4): y = z/c is smallest
     // at z = ZSW, c = cmax and largest at z = ZHI, c = cmin.
-    const double lnc0 = log(limits.halo_uks_cmin);
-    const double lnc1 = log(limits.halo_uks_cmax);
-    const double lny0 = log(ZSW/limits.halo_uks_cmax);
-    const double lny1 = log(ZHI/limits.halo_uks_cmin);
+    const double lnc0 = log(limits.halo_uks_c[RANGE_MIN]);
+    const double lnc1 = log(limits.halo_uks_c[RANGE_MAX]);
+    const double lny0 = log(ZSW/limits.halo_uks_c[RANGE_MAX]);
+    const double lny1 = log(ZHI/limits.halo_uks_c[RANGE_MIN]);
 
     // Coarse spacings hc (ln c) and hz (ln z) from the two knobs. hs is
     // the trapezoid step h of header item 2, halved for high-def
@@ -2572,8 +2572,8 @@ double u_KS(
     // ln y axis at least as fine as the ln z axis). NW, NY and N1 are
     // the coarse counts of w, ln y and the 1D ln c axis; NY is whatever
     // the spacing hy needs to cover the used ln y range.
-    const int NC = Ntable.halo_uks_nc;
-    const int NZ = Ntable.halo_uks_nz;
+    const int NC = Ntable.halo_uks_n[UKS_N_LNC];
+    const int NZ = Ntable.halo_uks_n[UKS_N_LNZ];
     const double hc = (lnc1 - lnc0)/((double) NC - 1.0);
     const double hz = (log(ZHI) - log(ZSW))/((double) NZ - 1.0);
     const int hdi = abs(Ntable.high_def_integration);  // accuracy knob
@@ -3002,8 +3002,8 @@ double u_KS(
   // concentration and the true phase. (interpol2d returns 0 outside
   // its first axis, so the clamp on ln c is what keeps every read
   // inside the padded table.)
-  const double c_clamped = fmin(fmax(c, limits.halo_uks_cmin),
-                                limits.halo_uks_cmax);
+  const double c_clamped = fmin(fmax(c, limits.halo_uks_c[RANGE_MIN]),
+                                limits.halo_uks_c[RANGE_MAX]);
   const double lnc = log(c_clamped);
   const double z   = k*rv;  // the phase z = k r_v
 
@@ -3021,8 +3021,8 @@ double u_KS(
   // P, g and F0 come back from their logs.
   const double y   = z/c_clamped;
   const double lnz = log(fmin(z, ZHI));
-  const double lny = fmin(fmax(log(y), log(ZSW/limits.halo_uks_cmax)),
-                          log(ZHI/limits.halo_uks_cmin));
+  const double lny = fmin(fmax(log(y), log(ZSW/limits.halo_uks_c[RANGE_MAX])),
+                          log(ZHI/limits.halo_uks_c[RANGE_MIN]));
 
   const double P = exp(interpol1d(lnP_dense, nyd, lim[3][0], lim[3][1],
                                   lim[3][2], lny));
@@ -3227,7 +3227,7 @@ static struct {
 //
 // Quadrature: Gauss-Legendre in ln M (the node count follows an
 // Ntable.high_def_integration ladder, set in the rebuild block) over
-// [ln 10^(lg M_min - 2), ln limits.halo_m_max] of each bin (N_c is an
+// [ln 10^(lg M_min - 2), ln limits.halo_m[RANGE_MAX]] of each bin (N_c is an
 // erf tail below). Nodes x_q and weights w_q on [-1, 1] map to
 // ln M_q = mid + half_width x_q with weight half_width w_q.
 //
@@ -3389,7 +3389,7 @@ static void hod_tables(void)
     for (int b=0; b<nbin; b++) {
       // lower bound 2 dex below the HOD lg M_min (N_c is an erf tail)
       const double lnMmin = log(10.0)*(nuisance.hod[b][0] - 2.);
-      const double lnMmax = log(limits.halo_m_max);
+      const double lnMmax = log(limits.halo_m[RANGE_MAX]);
 
       // GL map onto [lnMmin, lnMmax]: ln M_q = mid + half_width x_q
       const double half_width = 0.5*(lnMmax - lnMmin);
@@ -3658,7 +3658,7 @@ static void halo_warmup(
     const int hod    // 1 = the galaxy spectra read ngal, bgal, Pdelta
   )
 {
-  const double mmin = limits.halo_m_min;
+  const double mmin = limits.halo_m[RANGE_MIN];
 
   (void) sigma2(mmin);
   (void) dlognudlogm(mmin);
@@ -3797,8 +3797,8 @@ double p_mm(
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight
-    const double lnMmin = log(limits.halo_m_min);
-    const double lnMmax = log(limits.halo_m_max);
+    const double lnMmin = log(limits.halo_m[RANGE_MIN]);
+    const double lnMmax = log(limits.halo_m[RANGE_MAX]);
     gsl_integration_glfixed_table* gl_table = malloc_gslint_glfixed(n_nodes);
     for (int q=0; q<n_nodes; q++) {
       double lnM;
@@ -3866,7 +3866,7 @@ double p_mm(
     // --- 4. PER a ROW, THREADED ---
     // each row: D(a), the Tinker f and b parameters (*_params_at, the
     // nu-independent halves), A(a), c(M_min) (header, item 2, second row)
-    const double m_min = limits.halo_m_min;  // M_min of A u_c(k|M_min)
+    const double m_min = limits.halo_m[RANGE_MIN];  // M_min of A u_c(k|M_min)
 
     #pragma omp parallel for schedule(static)
     for (int i=0; i<Ntable.N_a; i++) {
@@ -4141,8 +4141,8 @@ double p_my(
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight
-    const double lnMmin = log(limits.halo_m_min);
-    const double lnMmax = log(limits.halo_m_max);
+    const double lnMmin = log(limits.halo_m[RANGE_MIN]);
+    const double lnMmax = log(limits.halo_m[RANGE_MAX]);
     gsl_integration_glfixed_table* gl_table = malloc_gslint_glfixed(n_nodes);
     for (int q=0; q<n_nodes; q++) {
       double lnM;
@@ -4238,7 +4238,7 @@ double p_my(
     const double sigma8 = sqrt(sigma2(4.0*M_PI/3.0*rho_m*R8*R8*R8));
 
     // the M_min pieces: M_min/rho_m, r_Delta, B(M_min), W_ejc(M_min)
-    const double m_min      = limits.halo_m_min;
+    const double m_min      = limits.halo_m[RANGE_MIN];
     const double vol_min    = m_min/rho_m;
     const double rdelta_min = pow(3./(4.0*M_PI)*(m_min/rho_delta), 1./3.);
     const double B_min      = frac_bnd(m_min)*m_min*(m_min/rdelta_min);
@@ -4545,8 +4545,8 @@ double p_yy(
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight
-    const double lnMmin = log(limits.halo_m_min);
-    const double lnMmax = log(limits.halo_m_max);
+    const double lnMmin = log(limits.halo_m[RANGE_MIN]);
+    const double lnMmax = log(limits.halo_m[RANGE_MAX]);
     gsl_integration_glfixed_table* gl_table = malloc_gslint_glfixed(n_nodes);
     for (int q=0; q<n_nodes; q++) {
       double lnM;
@@ -4634,7 +4634,7 @@ double p_yy(
     const double sigma8 = sqrt(sigma2(4.0*M_PI/3.0*rho_m*R8*R8*R8));
 
     // the M_min pieces: M_min/rho_m, r_Delta, B(M_min), W_ejc(M_min)
-    const double m_min      = limits.halo_m_min;
+    const double m_min      = limits.halo_m[RANGE_MIN];
     const double vol_min    = m_min/rho_m;
     const double rdelta_min = pow(3./(4.0*M_PI)*(m_min/rho_delta), 1./3.);
     const double B_min      = frac_bnd(m_min)*m_min*(m_min/rdelta_min);
@@ -4845,7 +4845,7 @@ static void ln_k_spline_upsample(
 //
 // 1. Quadrature: the Gauss-Legendre rule of p_mm (its header,
 // item 1) over ln M from ln 10^(lg M_min - 1) of the bin to
-// ln limits.halo_m_max: nodes x_q, weights w_q on [-1, 1] (gl) are
+// ln limits.halo_m[RANGE_MAX]: nodes x_q, weights w_q on [-1, 1] (gl) are
 // mapped per bin in the refill, ln M_q = mid + half_width x_q, weight
 // half_width w_q.
 //
@@ -5073,7 +5073,7 @@ double p_gm(
       // GL map [-1, 1] -> [ln 10^(lg M_min - 1), ln M_max]: one decade
       // below the bin's minimum HOD mass up to the global maximum
       const double lnMmin     = log(10.)*(nuisance.hod[l][0] - 1.0);
-      const double lnMmax     = log(limits.halo_m_max);
+      const double lnMmax     = log(limits.halo_m[RANGE_MAX]);
       const double half_width = 0.5*(lnMmax - lnMmin);
       const double mid        = 0.5*(lnMmax + lnMmin);
 
@@ -5401,7 +5401,7 @@ double p_gm(
 // banner.
 //
 // 1. Quadrature: the Gauss-Legendre rule of p_mm (its header,
-// item 1) over [ln limits.halo_m_min, ln limits.halo_m_max], the same for
+// item 1) over [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]], the same for
 // every bin: nodes and weights are mapped once, in the rebuild block.
 //
 // 2. Loop levels as in p_mm (its header, item 2): the innermost loop is
@@ -5544,8 +5544,8 @@ double p_gg(
     ln_k_spline_multipliers(n_coarse, k_mult);
 
     // GL rule mapped once onto [ln M_min, ln M_max], shared by all bins
-    const double lnMmin = log(limits.halo_m_min);
-    const double lnMmax = log(limits.halo_m_max);
+    const double lnMmin = log(limits.halo_m[RANGE_MIN]);
+    const double lnMmax = log(limits.halo_m[RANGE_MAX]);
 
     // gsl_integration_glfixed_point(lo, hi, q, &x, &w, t): node q of the
     // rule t mapped onto [lo, hi], and its weight
@@ -6871,7 +6871,7 @@ static inline double ia_gamma_hat_m(
 //
 // 1. Quadrature: the Gauss-Legendre rule of p_mm (its header, item 1:
 // the Ntable.halo_nm ladder on Ntable.high_def_integration) over
-// [ln limits.halo_m_min, ln limits.halo_m_max]. Only the nodes with
+// [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]]. Only the nodes with
 // red satellites (N_rs > 0: above the satellite cutoff M_0) enter the
 // S sums ("active" nodes); every node enters n_g and f_rc.
 //
@@ -7013,8 +7013,8 @@ static void ia_tables(void)
     ln_k_spline_multipliers(n_coarse, ia_.k_mult);
 
     // GL nodes M_q and weights w_q on [ln M_min, ln M_max]
-    const double lnMmin = log(limits.halo_m_min);
-    const double lnMmax = log(limits.halo_m_max);
+    const double lnMmin = log(limits.halo_m[RANGE_MIN]);
+    const double lnMmax = log(limits.halo_m[RANGE_MAX]);
     gsl_integration_glfixed_table* gl_table = malloc_gslint_glfixed(n_nodes);
     for (int q=0; q<n_nodes; q++) {
       double lnM;
@@ -7490,7 +7490,7 @@ static double hod_bgal_direct(
   // ln M range: two decades below the bin's lg M_min up to the global
   // maximum halo mass
   const double lnMmin = log(10.0)*(nuisance.hod[ni][0] - 2.);
-  const double lnMmax = log(limits.halo_m_max);
+  const double lnMmax = log(limits.halo_m[RANGE_MAX]);
 
   // --- 2. COSMOLOGY AND HOD FACTORS AT THIS SCALE FACTOR ---
 

@@ -66,7 +66,7 @@ namespace cosmolike_interface
 
 // ---------------------------------------------------------------------------
 // Area-weighted bin-center angles (arcmin) of the Ntheta angular bins.
-// Bin edges are log-spaced between Ntable.vtmin and Ntable.vtmax
+// Bin edges are log-spaced between Ntable.vt[RANGE_MIN] and Ntable.vt[RANGE_MAX]
 // (radians); each center is the area-weighted mean angle over its
 // annulus,
 //
@@ -77,7 +77,7 @@ namespace cosmolike_interface
 // real-space kernels in cosmo2D.c.
 //
 // Parameters:
-//   none (reads Ntable.Ntheta, Ntable.vtmin, Ntable.vtmax)
+//   none (reads Ntable.Ntheta, Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX])
 //
 // Returns:
 //   arma::Col of length Ntable.Ntheta: the bin-center angles in arcmin
@@ -85,10 +85,10 @@ namespace cosmolike_interface
 arma::Col<double> get_binning_real_space()
 {  
   arma::Col<double> result(Ntable.Ntheta, arma::fill::none);
-  const double logdt=(std::log(Ntable.vtmax)-std::log(Ntable.vtmin))/Ntable.Ntheta;
+  const double logdt=(std::log(Ntable.vt[RANGE_MAX])-std::log(Ntable.vt[RANGE_MIN]))/Ntable.Ntheta;
   for (int i = 0; i < Ntable.Ntheta; i++) {  
-    const double thetamin = std::exp(log(Ntable.vtmin) + (i + 0.0) * logdt);
-    const double thetamax = std::exp(log(Ntable.vtmin) + (i + 1.0) * logdt);
+    const double thetamin = std::exp(log(Ntable.vt[RANGE_MIN]) + (i + 0.0) * logdt);
+    const double thetamax = std::exp(log(Ntable.vt[RANGE_MIN]) + (i + 1.0) * logdt);
     const double theta = (2./ 3.) * (std::pow(thetamax,3) - std::pow(thetamin,3)) /
                                     (thetamax*thetamax    - thetamin*thetamin);
     result(i) = theta / 2.90888208665721580e-4; 
@@ -174,7 +174,7 @@ py::tuple xi_pm_tomo_cpp()
 // ---------------------------------------------------------------------------
 // Galaxy-galaxy lensing gamma_t at every angular bin and ggl pair.
 //
-// Engine: w_gammat_tomo with the limber flag = like.adopt_limber_gs
+// Engine: w_gammat_tomo with the limber flag = like.adopt_limber[LIMBER_GS]
 // (1 = full Limber; 0 = non-Limber FFTLog + Limber hybrid below
 // limits.LMAX_NOLIMBER), so the wrapper follows the likelihood's gs
 // Limber choice. Serial loop: the first engine call computes and caches
@@ -182,7 +182,7 @@ py::tuple xi_pm_tomo_cpp()
 //
 // Parameters:
 //   none (reads Ntable.Ntheta, tomo.ggl_Npowerspectra, redshift bin
-//   counts, like.adopt_limber_gs)
+//   counts, like.adopt_limber[LIMBER_GS])
 //
 // Returns:
 //   arma::Cube (Ntheta, clustering_nbin, shear_nbin): rows = angular
@@ -198,7 +198,7 @@ arma::Cube<double> w_gammat_tomo_cpp()
   for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
     for (int i=0; i<Ntable.Ntheta; i++) {
       result(i,ZL(nz),ZS(nz)) = w_gammat_tomo(i, ZL(nz), ZS(nz), 
-                                               like.adopt_limber_gs);
+                                               like.adopt_limber[LIMBER_GS]);
     }
   }
   return result;
@@ -210,7 +210,7 @@ arma::Cube<double> w_gammat_tomo_cpp()
 // ---------------------------------------------------------------------------
 // Galaxy clustering w(theta) at every angular bin (auto pairs only).
 //
-// Engine: w_gg_tomo with the limber flag = like.adopt_limber_gg
+// Engine: w_gg_tomo with the limber flag = like.adopt_limber[LIMBER_GG]
 // (1 = full Limber; 0 = non-Limber FFTLog + Limber hybrid below
 // limits.LMAX_NOLIMBER), so the wrapper follows the likelihood's gg
 // Limber choice. Serial loop over the auto enumeration
@@ -218,7 +218,7 @@ arma::Cube<double> w_gammat_tomo_cpp()
 //
 // Parameters:
 //   none (reads Ntable.Ntheta, tomo.clustering_Npowerspectra,
-//   redshift.clustering_nbin, like.adopt_limber_gg)
+//   redshift.clustering_nbin, like.adopt_limber[LIMBER_GG])
 //
 // Returns:
 //   arma::Cube (Ntheta, clustering_nbin, clustering_nbin): rows =
@@ -233,7 +233,7 @@ arma::Cube<double> w_gg_tomo_cpp()
                             arma::fill::zeros);
   for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
     for (int i=0; i<Ntable.Ntheta; i++) {
-      result(i, nz, nz) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
+      result(i, nz, nz) = w_gg_tomo(i, nz, nz, like.adopt_limber[LIMBER_GG]);
     }
   }
   return result;

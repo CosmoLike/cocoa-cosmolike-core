@@ -203,12 +203,12 @@ void init_probes_cluster(std::string possible_probes)
   }
   const flags_t& flags = it->second;
 
-  like.shear_shear = flags(cluster_block::ss);
-  like.shear_pos   = flags(cluster_block::gs);
-  like.pos_pos     = flags(cluster_block::gg);
-  like.gk = 0;
-  like.ks = 0;
-  like.kk = 0;
+  like.probe[PROBE_SS] = flags(cluster_block::ss);
+  like.probe[PROBE_GS]   = flags(cluster_block::gs);
+  like.probe[PROBE_GG]     = flags(cluster_block::gg);
+  like.probe[PROBE_GK] = 0;
+  like.probe[PROBE_KS] = 0;
+  like.probe[PROBE_KK] = 0;
 
   cluster.probe_cg = flags(cluster_block::cg);
   cluster.probe_N  = flags(cluster_block::N);
@@ -890,11 +890,11 @@ matrix compute_cluster_ytransform_matrix()
       fname, ytransform_min_ntheta, N);
     exit(1);
   }
-  if (!(Ntable.vtmax > Ntable.vtmin) || !(Ntable.vtmin > 0.0)) [[unlikely]] {
-    critical(errornset, fname, "Ntable.vtmax and Ntable.vtmin");
+  if (!(Ntable.vt[RANGE_MAX] > Ntable.vt[RANGE_MIN]) || !(Ntable.vt[RANGE_MIN] > 0.0)) [[unlikely]] {
+    critical(errornset, fname, "Ntable.vt[RANGE_MAX] and Ntable.vt[RANGE_MIN]");
     exit(1);
   }
-  const double Delta = std::log(Ntable.vtmax/Ntable.vtmin)/N;
+  const double Delta = std::log(Ntable.vt[RANGE_MAX]/Ntable.vt[RANGE_MIN])/N;
 
   // --- 1. TRAPEZOID MATRIX S ---
 
@@ -1062,7 +1062,7 @@ static void compute_gs_block_masked(vector& dv, const int start)
     for (int i=0; i<ntheta; i++) {
       const int index = start + ntheta*nz + i;
       if (ipc.get_mask(index)) {
-        const double gammat = w_gammat_tomo(i, zl, zs, like.adopt_limber_gs);
+        const double gammat = w_gammat_tomo(i, zl, zs, like.adopt_limber[LIMBER_GS]);
         const double point_mass =
           PointMass::get_instance().get_pm(zl, zs, theta(i));
         dv(index) = (gammat + point_mass)*shear_calib;
@@ -1084,7 +1084,7 @@ static void compute_gg_block_masked(vector& dv, const int start)
     for (int i=0; i<ntheta; i++) {
       const int index = start + ntheta*nz + i;
       if (ipc.get_mask(index)) {
-        dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber_gg);
+        dv(index) = w_gg_tomo(i, nz, nz, like.adopt_limber[LIMBER_GG]);
       }
     }
   }
@@ -1286,13 +1286,13 @@ vector compute_data_vector_cluster_masked()
 
   // --- 1. GALAXY BLOCKS ---
 
-  if (1 == like.shear_shear) {
+  if (1 == like.probe[PROBE_SS]) {
     compute_ss_block_masked(dv, start(cluster_block::ss));
   }
-  if (1 == like.shear_pos) {
+  if (1 == like.probe[PROBE_GS]) {
     compute_gs_block_masked(dv, start(cluster_block::gs));
   }
-  if (1 == like.pos_pos) {
+  if (1 == like.probe[PROBE_GG]) {
     compute_gg_block_masked(dv, start(cluster_block::gg));
   }
 
@@ -1411,9 +1411,9 @@ void IPCluster::set_mask(std::string mask_filename)
   // --- 2. ZERO THE BLOCKS OF DISABLED PROBES ---
 
   arma::Col<int>::fixed<cluster_block::count> enabled;
-  enabled(cluster_block::ss) = like.shear_shear;
-  enabled(cluster_block::gs) = like.shear_pos;
-  enabled(cluster_block::gg) = like.pos_pos;
+  enabled(cluster_block::ss) = like.probe[PROBE_SS];
+  enabled(cluster_block::gs) = like.probe[PROBE_GS];
+  enabled(cluster_block::gg) = like.probe[PROBE_GG];
   enabled(cluster_block::cg) = cluster.probe_cg;
   enabled(cluster_block::N)  = cluster.probe_N;
   enabled(cluster_block::cc) = cluster.probe_cc;

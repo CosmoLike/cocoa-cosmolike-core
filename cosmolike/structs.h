@@ -15,6 +15,18 @@ extern "C" {
 #define CHAR_MAX_SIZE 1024
 #define MAX_SIZE_ARRAYS 20
 
+// Slots of every two-entry [min, max] range array (limits.halo_m[],
+// limits.halo_uks_c[], Ntable.vt[])
+#define RANGE_MIN 0
+#define RANGE_MAX 1
+
+// Slots of every two-entry node-count array of Ntable whose table is
+// computed exactly on coarse nodes and spline-upsampled to dense ones
+// (Ntable.N_ell[], N_M[], dCX_dlnk_nlnk[])
+#define NODES_DENSE 0    // the nodes the table is read on
+#define NODES_COARSE 1   // the exact-quadrature nodes; 0 = exact on
+                         // every dense node
+
 typedef struct 
 {
   double a_min;
@@ -26,31 +38,28 @@ typedef struct
   int LMAX_NOLIMBER;
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
-  // ---------------------------------------------------
-  double cluster_util_log_M_min;
-  double cluster_util_log_M_max;
-  double binned_P_lambda_obs_given_M_zmin_table;
-  double binned_P_lambda_obs_given_M_zmax_table;
-  double SDSS_P_lambda_obs_given_M_true_lambda_min;
-  double SDSS_P_lambda_obs_given_M_true_lambda_max;
-  // ---------------------------------------------------
-  // ---------------------------------------------------
-  // COSMO3D MODEL
-  // ---------------------------------------------------
-  // --------------------------------------------------- 
-  double sigma2_m_min;
-  double sigma2_m_max;
-  // ---------------------------------------------------
-  // ---------------------------------------------------
   // HALO MODEL
   // ---------------------------------------------------
   // --------------------------------------------------- 
-  double halo_m_min;
-  double halo_m_max;
-  double halo_uks_cmin;
-  double halo_uks_cmax;
+  double halo_m[2];       // halo.c mass range [RANGE_MIN, RANGE_MAX]
+                          // (M_sun/h)
+  double halo_uks_c[2];   // halo.c u_KS concentration range [RANGE_MIN,
+                          // RANGE_MAX]; queries outside are clamped to it
 } lim;
+
+// Slots of Ntable.halo_uks_n[]: coarse node counts of the u_KS tables of
+// halo.c (both scaled by init_accuracy_boost)
+#define UKS_N_LNC 0     // ln c axis
+#define UKS_N_LNZ 1     // ln z axis
+#define NUKS_N 2
+// Slots of Ntable.halo_uks_m[]: dense refinement factors of the u_KS
+// coarse -> dense splines of halo.c
+#define UKS_M_LNC2D 0   // ln c axis of the 2D table
+#define UKS_M_W 1       // w axis
+#define UKS_M_LNZ 2     // ln z axis
+#define UKS_M_LNY 3     // ln y axis
+#define UKS_M_LNC1D 4   // ln c axis of the 1D table
+#define NUKS_M 5
 
 typedef struct 
 {
@@ -69,15 +78,16 @@ typedef struct
   int N_a;          
   int N_k_lin;
   int N_k_nlin;
-  int N_ell;
-  int N_ell_internal; // coarse exact-quadrature ell nodes of the C_ss, C_gs,
-                      // C_gk and C_ks tables, cubic-spline upsampled to
-                      // N_ell; 0 = exact (C_gg always exact: BAO wiggles)
+  int N_ell[2];     // [NODES_DENSE] ell nodes of the C_l tables;
+                    // [NODES_COARSE] coarse exact-quadrature ell nodes of
+                    // the C_ss, C_gs, C_gk and C_ks tables, cubic-spline
+                    // upsampled to the dense ones; 0 = exact (C_gg always
+                    // exact: BAO wiggles)
   int Ntheta;
-  int N_M;
-  int N_M_internal; // coarse exact nodes of the sigma^2(M) halo-model
-                    // table, cubic-spline upsampled to N_M in ln sigma^2;
-                    // 0 = exact
+  int N_M[2];       // [NODES_DENSE] ln M nodes of the sigma^2(M) halo-
+                    // model table; [NODES_COARSE] its coarse exact nodes,
+                    // cubic-spline upsampled to the dense ones in
+                    // ln sigma^2; 0 = exact
   int NL_Nell_block;   // Cosmo2D - NL = NonLimber
   int NL_Nchi;         // Cosmo2D - NL = NonLimber
   // ---------------------------------------------------
@@ -85,8 +95,7 @@ typedef struct
   // THETA RANGE ON REAL SPACE CORRELATION FUNCTIONS
   // ---------------------------------------------------
   // ---------------------------------------------------
-  double vtmax;
-  double vtmin;
+  double vt[2];     // theta range [RANGE_MIN, RANGE_MAX] (radians)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED ON COSMOLIKE INTEGRALS
@@ -98,13 +107,13 @@ typedef struct
   // CONTROL NUM POINTS EVALUATED ON LIMBER DERIVATIVES
   // ---------------------------------------------------
   // ---------------------------------------------------
-  int dCX_dlnk_nlnk;
+  int dCX_dlnk_nlnk[2]; // [NODES_DENSE] ln k nodes of the dC_X/dlnk
+                        // scale-cut tables; [NODES_COARSE] their coarse
+                        // exact ln k nodes (the ell axis pairs with
+                        // N_ell[NODES_COARSE]; bicubic upsampled); 0 =
+                        // exact (ln k carries the BAO wiggles)
   double dCX_dlnk_kmin;
   double dCX_dlnk_kmax;
-  int dCX_dlnk_nlnk_internal; // coarse exact ln k nodes of the dC_X/dlnk
-                              // scale-cut tables (the ell axis pairs with
-                              // N_ell_internal; bicubic upsampled);
-                              // 0 = exact (ln k carries the BAO wiggles)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CONTROL NUM POINTS EVALUATED BY FASPT
@@ -116,17 +125,13 @@ typedef struct
   // HALO MODEL
   // ---------------------------------------------------
   // ---------------------------------------------------  
-  int halo_uks_nc;  // u_KS coarse ln c nodes (halo.c; boosted)
-  int halo_uks_nz;  // u_KS coarse ln z nodes (halo.c; boosted)
+  int halo_uks_n[NUKS_N];  // u_KS coarse nodes (halo.c; boosted); slots
+                           // UKS_N_* (above Ntab)
   int halo_nfw_n;   // u_nfw_c dense ln t nodes (halo.c; boosted)
   int halo_spline_pad; // exact coarse nodes beyond each end of every
                        // halo.c coarse -> dense spline (u_KS axes,
                        // tinker_alpha, coarse ln k of p_gm/p_gg)
-  int halo_uks_mc;  // u_KS dense refinement factor, ln c axis (2D)
-  int halo_uks_mw;  // u_KS dense refinement factor, w axis
-  int halo_uks_mz;  // u_KS dense refinement factor, ln z axis
-  int halo_uks_my;  // u_KS dense refinement factor, ln y axis
-  int halo_uks_m1;  // u_KS dense refinement factor, ln c axis (1D)
+  int halo_uks_m[NUKS_M];  // u_KS dense refinement factors; slots UKS_M_*
   // mass-function table sizes, one entry per like.halo_model[0] option
   // (HMF_TINKER_2010: the tinker_alpha normalization table)
   int halo_hmf_nc[MAX_SIZE_ARRAYS]; // exact aa nodes on [0.25, 1]
@@ -139,18 +144,6 @@ typedef struct
   int halo_ia_lmax; // halo-model IA: highest multipole (2, 4 or 6)
   int halo_ia_na;   // halo-model IA tables: a nodes over the source range
                     // (boosted)
-  // ---------------------------------------------------
-  // ---------------------------------------------------
-  // HALO MODEL
-  // ---------------------------------------------------
-  // ---------------------------------------------------  
-  int N_a_halo_exclusion;        // N_a for binned_p_cc_incl_halo_exclusion (cluster_util.c)
-  int N_k_halo_exclusion;        // N_k for binned_p_cc_incl_halo_exclusion (cluster_util.c)
-  int N_k_hankel_halo_exclusion; // N for 3D Hankel Transform (pk_to_xi and xi_to_pk)
-  int N_R_halo_exclusion;
-  int binned_P_lambda_obs_given_M_size_z_table;
-  int binned_P_lambda_obs_given_M_size_M_table;
-  int binned_p_cm_size_a_table;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // n(z) fin-sampling
@@ -396,17 +389,31 @@ typedef struct
   // HOD of the IA (source) population, {lg M_min, sigma_lgM, lg M_1,
   // lg M_0, alpha, f_c} (the Zheng07 form of HOD_nc, HOD_ns)
   double ia_hod[MAX_SIZE_ARRAYS];
-  // ---------------------------------------------------
-  // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
-  // ---------------------------------------------------
-  // ---------------------------------------------------
-  /*
-  // Variables for the 4x2pt+N (see: 2008.10757 & 2010.01138)
-  double cluster_MOR[MAX_SIZE_ARRAYS];
-  double cluster_selection[MAX_SIZE_ARRAYS];
-  */
 } nuisanceparams;
+
+// Slots of like.probe[]: 1 = the probe is part of the data vector. The
+// probe strings of init_probes (generic_interface.cpp) and
+// init_probes_cluster (generic_interface_cluster.cpp) set them.
+#define PROBE_SS 0           // cosmic shear (xi+-, C_ss)
+#define PROBE_GS 1           // galaxy-galaxy lensing (gamma_t, C_gs)
+#define PROBE_GG 2           // galaxy clustering (w, C_gg)
+#define PROBE_GK 3           // galaxy x CMB lensing
+#define PROBE_KK 4           // CMB lensing
+#define PROBE_KS 5           // CMB lensing x shear
+#define PROBE_GY 6           // galaxy x tSZ
+#define PROBE_SY 7           // shear x tSZ
+#define PROBE_KY 8           // CMB lensing x tSZ
+#define PROBE_YY 9           // tSZ
+#define PROBE_CLUSTER_N 10   // cluster number counts
+#define PROBE_CLUSTER_WL 11  // cluster lensing (cluster x source)
+#define PROBE_CLUSTER_CG 12  // cluster x galaxy clustering
+#define PROBE_CLUSTER_CC 13  // cluster clustering
+#define NPROBES 14
+
+// Slots of like.adopt_limber[]
+#define LIMBER_GG 0          // galaxy clustering
+#define LIMBER_GS 1          // galaxy-galaxy lensing
+#define NLIMBER 2
 
 typedef struct
 {
@@ -421,22 +428,10 @@ typedef struct
   double Rmin_shear;
   int lmax_shear;
   int bias;
-  int shear_shear;
-  int shear_pos;
-  int pos_pos;
-  int gk;
-  int kk;
-  int ks;
-  int gy;
-  int sy;
-  int ky;
-  int yy;
-  int clusterN;
-  int clusterWL;
-  int clusterCG;
-  int clusterCC;
-  int adopt_limber_gg;
-  int adopt_limber_gs;
+  int probe[NPROBES];         // 1 = the probe is in the data vector;
+                              // slots PROBE_* (above likepara)
+  int adopt_limber[NLIMBER];  // 1 = Limber at every multipole, 0 = the
+                              // non-Limber low-l path; slots LIMBER_*
   int use_ggl_efficiency_zoverlap;
   // ---------------------------------------------------
   // ---------------------------------------------------
@@ -556,53 +551,7 @@ typedef struct
   double clustering_zdist_zmin[MAX_SIZE_ARRAYS];
   double clustering_zdist_zmax[MAX_SIZE_ARRAYS];
   double clustering_zdist_zmean[MAX_SIZE_ARRAYS];
-  // ---------------------------------------------------
-  // ---------------------------------------------------
-  // CLUSTER ROUTINES (ALPHA STAGE)
-  // ---------------------------------------------------
-  // ---------------------------------------------------
-  /*
-  int cluster_Nbin;       // number of lens cluster redshift bins
-  int clusters_photoz;
-  char clusters_REDSHIFT_FILE[CHAR_MAX_SIZE];
-  */
-  /*
-  int cgl_Npowerspectra;             // number of cluster-galaxy lensing tomography combinations
-  int cg_clustering_Npowerspectra;   // number of cluster-galaxy clustering tomography combinations
-  int cc_clustering_Npowerspectra;   // number of cluster-cluster clustering tomography combinations 
-  double cluster_zmax[MAX_SIZE_ARRAYS];
-  double cluster_zmin[MAX_SIZE_ARRAYS];
-  // we assume cluster bin = galaxy bin (no cross)
-  int external_selection_cg_clustering[MAX_SIZE_ARRAYS];
-  */
 } redshiftparams;
-
-/*
-// ---------------------------------------------------
-// CLUSTER ROUTINES (ALPHA STAGE)
-// ---------------------------------------------------
-typedef struct
-{
-  int interpolate_survey_area;
-  int bias_model;                 // Bias model
-  int hmf_model;                  // HMF model 
-  int nonlinear_bias;             // Do we include nonlinear bias in cluster analysis?
-
-  int N_MOR;                      // Mass observable relation (number of nuisance params)
-  int N_SF;                       // selection function (number of nuisance params)
-
-  int halo_exclusion_model;
-  double delta_exclusion;  // delta for exclusion radius (halo_exclusion) according to Baldauf 2013
-
-  int N200_Nbin;                  // number of cluster bins in lambda_obs (observed richness)
-  double N200_min;                // global lambda_obs_min (observed richness)
-  double N200_max;                // global lambda_obs_max (observed richness)
-  double N_min[MAX_SIZE_ARRAYS];  // lambda_obs_min in each bin in lambda_obs (observed richness)
-  double N_max[MAX_SIZE_ARRAYS];  // lambda_obs_max in each bin in lambda_obs (observed richness)
-  
-  char model[CHAR_MAX_SIZE];
-} clusterparams;
-*/
 
 // --------------------------------------------------------------------
 // --------------------------------------------------------------------
@@ -635,8 +584,6 @@ extern Ntab Ntable;
 extern FPT FPTbias;
 
 extern FPT FPTIA;
-
-//extern clusterparams Cluster;
 
 // --------------------------------------------------------------------
 // --------------------------------------------------------------------

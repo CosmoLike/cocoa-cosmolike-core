@@ -393,7 +393,7 @@ double fmax(
 // up to Ntable.LMAX. Subsequent calls with unchanged parameters return
 // cached values without recomputation.
 //
-// The angular bins are log-spaced between Ntable.vtmin and Ntable.vtmax.
+// The angular bins are log-spaced between Ntable.vt[RANGE_MIN] and Ntable.vt[RANGE_MAX].
 // ---------------------------------------------------------------------------
 bin_avg set_bin_average(
     const int i_theta,  // angular bin index, must be in [0, Ntable.Ntheta)

@@ -339,13 +339,13 @@ static void limber_krow_blend(
 // itself, not dC/C.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
-// nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
-// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell log-spaced multipoles
+// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_kmin,
+// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
 // covering every l >= 1; lookups interpolate bilinearly in (ln k, ln l)
 // and a (k, l) outside the table returns 0.
 //
-// When the internal coarse grids are active (Ntable.N_ell_internal on
-// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// When the internal coarse grids are active (Ntable.N_ell[NODES_COARSE] on
+// the ell axis, Ntable.dCX_dlnk_nlnk[NODES_COARSE] on ln k), the exact
 // evaluations run on the coarse nodes and a tensor-product bicubic
 // upsamples onto the unchanged dense table (see the strategy note in
 // the refill block).
@@ -391,12 +391,12 @@ double dC_ss_dlnk_tomo_limber(
   static double**** tabc = NULL; // coarse dC values
   
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
-    nlnk = Ntable.dCX_dlnk_nlnk;
+    nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[3] = log(Ntable.dCX_dlnk_kmin);
     lim[4] = log(Ntable.dCX_dlnk_kmax);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
@@ -424,8 +424,8 @@ double dC_ss_dlnk_tomo_limber(
 
     // Coarse-grid workspace: allocations live HERE, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
-    // coarsens independently: Ntable.N_ell_internal on the ell axis
-    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
     // (where the BAO wiggles live; the default 128 keeps the response
     // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
@@ -434,8 +434,8 @@ double dC_ss_dlnk_tomo_limber(
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
-    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
-    const int nl_int = Ntable.N_ell_internal;
+    const int nk_int = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
+    const int nl_int = Ntable.N_ell[NODES_COARSE];
     nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
     nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
     dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
@@ -553,14 +553,14 @@ double dC_ss_dlnk_tomo_limber(
 // C_ss maps the entry to 0.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
-// nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
-// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell log-spaced multipoles
+// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_kmin,
+// Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
 // covering every l >= 1 (the same grid as dC_ss_dlnk_tomo_limber);
 // lookups interpolate bilinearly in (ln k, ln l) and a (k, l) outside
 // the table returns 0.
 //
-// When the internal coarse grids are active (Ntable.N_ell_internal on
-// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// When the internal coarse grids are active (Ntable.N_ell[NODES_COARSE] on
+// the ell axis, Ntable.dCX_dlnk_nlnk[NODES_COARSE] on ln k), the exact
 // evaluations run on the coarse nodes and a tensor-product bicubic
 // upsamples onto the unchanged dense table (see the strategy note in
 // the refill block).
@@ -606,12 +606,12 @@ double dlnC_ss_dlnk_tomo_limber(
   static double**** tabc = NULL; // coarse dC values
   
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
-    nlnk = Ntable.dCX_dlnk_nlnk;
+    nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[3] = log(Ntable.dCX_dlnk_kmin);
     lim[4] = log(Ntable.dCX_dlnk_kmax);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
@@ -632,8 +632,8 @@ double dlnC_ss_dlnk_tomo_limber(
 
     // Coarse-grid workspace: allocations live HERE, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
-    // coarsens independently: Ntable.N_ell_internal on the ell axis
-    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
     // (where the BAO wiggles live; the default 128 keeps the response
     // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
@@ -642,8 +642,8 @@ double dlnC_ss_dlnk_tomo_limber(
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
-    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
-    const int nl_int = Ntable.N_ell_internal;
+    const int nk_int = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
+    const int nl_int = Ntable.N_ell[NODES_COARSE];
     nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
     nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
     dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
@@ -752,8 +752,8 @@ double dlnC_ss_dlnk_tomo_limber(
 // (ln k, ln l) grid as the ss tables: the Ntable.dCX_dlnk k range and
 // every multipole l >= 1; a (k, l) outside the table returns 0.
 //
-// When the internal coarse grids are active (Ntable.N_ell_internal on
-// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// When the internal coarse grids are active (Ntable.N_ell[NODES_COARSE] on
+// the ell axis, Ntable.dCX_dlnk_nlnk[NODES_COARSE] on ln k), the exact
 // evaluations run on the coarse nodes and a tensor-product bicubic
 // upsamples onto the unchanged dense table (see the strategy note in
 // the refill block).
@@ -796,12 +796,12 @@ double dC_ks_dlnk_tomo_limber(
   static double*** tabc = NULL; // coarse dC values
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
-    nlnk = Ntable.dCX_dlnk_nlnk;
+    nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[3] = log(Ntable.dCX_dlnk_kmin);
     lim[4] = log(Ntable.dCX_dlnk_kmax);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
@@ -829,8 +829,8 @@ double dC_ks_dlnk_tomo_limber(
 
     // Coarse-grid workspace: allocations live HERE, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
-    // coarsens independently: Ntable.N_ell_internal on the ell axis
-    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
     // (where the BAO wiggles live; the default 128 keeps the response
     // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
@@ -839,8 +839,8 @@ double dC_ks_dlnk_tomo_limber(
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
-    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
-    const int nl_int = Ntable.N_ell_internal;
+    const int nk_int = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
+    const int nl_int = Ntable.N_ell[NODES_COARSE];
     nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
     nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
     dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
@@ -930,14 +930,14 @@ double dC_ks_dlnk_tomo_limber(
 // unnormalized and an effectively zero C_ks maps the entry to 0.
 //
 // Table design: [shear_nbin][nlnk][nell] (one component per source
-// bin), with nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in
-// [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell
+// bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
+// [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax] and nell = Ntable.N_ell[NODES_DENSE]
 // log-spaced multipoles covering every l >= 1 (the same grid as
 // dC_ks_dlnk_tomo_limber); lookups interpolate bilinearly in
 // (ln k, ln l) and a (k, l) outside the table returns 0.
 //
-// When the internal coarse grids are active (Ntable.N_ell_internal on
-// the ell axis, Ntable.dCX_dlnk_nlnk_internal on ln k), the exact
+// When the internal coarse grids are active (Ntable.N_ell[NODES_COARSE] on
+// the ell axis, Ntable.dCX_dlnk_nlnk[NODES_COARSE] on ln k), the exact
 // evaluations run on the coarse nodes and a tensor-product bicubic
 // upsamples onto the unchanged dense table (see the strategy note in
 // the refill block).
@@ -980,12 +980,12 @@ double dlnC_ks_dlnk_tomo_limber(
   static double*** tabc = NULL; // coarse dC values
 
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nell = Ntable.N_ell;
+    nell = Ntable.N_ell[NODES_DENSE];
     lim[0] = 0.0; // ln(l = 1): the grid covers every multipole l >= 1
     lim[1] = log(Ntable.LMAX + 1.);
     lim[2] = (lim[1] - lim[0]) / ((double) nell - 1.);
 
-    nlnk = Ntable.dCX_dlnk_nlnk;
+    nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[3] = log(Ntable.dCX_dlnk_kmin);
     lim[4] = log(Ntable.dCX_dlnk_kmax);
     lim[5] = (lim[4] - lim[3]) / ((double) nlnk - 1.);
@@ -1006,8 +1006,8 @@ double dlnC_ks_dlnk_tomo_limber(
 
     // Coarse-grid workspace: allocations live HERE, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
-    // coarsens independently: Ntable.N_ell_internal on the ell axis
-    // (smooth) and Ntable.dCX_dlnk_nlnk_internal on the ln k axis
+    // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
+    // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
     // (where the BAO wiggles live; the default 128 keeps the response
     // error at the level the retired fixed quadrature imposed). An
     // axis whose knob is 0 (off) or out of range - fewer than the 4
@@ -1016,8 +1016,8 @@ double dlnC_ks_dlnk_tomo_limber(
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
-    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
-    const int nl_int = Ntable.N_ell_internal;
+    const int nk_int = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
+    const int nl_int = Ntable.N_ell[NODES_COARSE];
     nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
     nlc = (nl_int > 3 && nl_int < nell) ? nl_int : nell;
     dkc = (lim[4] - lim[3]) / ((double) nkc - 1.0);
@@ -1230,7 +1230,7 @@ void RF_C_ss_tomo_limber_work(
     log_fatal("nkmax = %d must be positive", nkmax);
     exit(1);
   }
-  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
   const double lnk0 = log(Ntable.dCX_dlnk_kmin);
   const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
                     / ((double) nlnk - 1.0);
@@ -1353,7 +1353,7 @@ void RF_C_ks_tomo_limber_work(
     log_fatal("nkmax = %d must be positive", nkmax);
     exit(1);
   }
-  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
   const double lnk0 = log(Ntable.dCX_dlnk_kmin);
   const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
                     / ((double) nlnk - 1.0);
@@ -1566,8 +1566,8 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
     // per-call work arrays whose sizes only change with Ntable or the
     // tomography: allocated once here, overwritten on every call
     if (dCgrid != NULL) free(dCgrid);
-    dCgrid = (double***) malloc3d(2, NSIZE, Ntable.N_ell);
-    zero3d(dCgrid, 2, NSIZE, Ntable.N_ell);
+    dCgrid = (double***) malloc3d(2, NSIZE, Ntable.N_ell[NODES_DENSE]);
+    zero3d(dCgrid, 2, NSIZE, Ntable.N_ell[NODES_DENSE]);
     if (cx != NULL) free(cx);
     cx = (double***) malloc3d(2, NSIZE, Ntable.LMAX);
     zero3d(cx, 2, NSIZE, Ntable.LMAX);
@@ -1594,7 +1594,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
     // la/ldx must reproduce the dC table's ln l grid (lim[0], lim[2])
     // exactly: the exact-node read here, and limber_fill_interp's
     // inverse map below, rely on the two grids being the same
-    const int nell = Ntable.N_ell;
+    const int nell = Ntable.N_ell[NODES_DENSE];
     const double la = 0.0; // ln(l = 1): the dC table's multipole grid start
     const double ldx = (log(Ntable.LMAX + 1.) - la)/((double) nell - 1.);
     // At fixed k the bilinear table read at an exact ell node is one
@@ -1678,7 +1678,7 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
 //
 // Table design: [2][shear_Npowerspectra*Ntheta][nlnk], one row per
 // (xi component, tomo pair x angular bin), with nlnk =
-// Ntable.dCX_dlnk_nlnk log-spaced k in [Ntable.dCX_dlnk_kmin,
+// Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_kmin,
 // Ntable.dCX_dlnk_kmax]; lookups interpolate linearly in ln k and a k
 // outside the grid returns 0. The fill calls the nointerp pipeline once
 // per k node (each call returns every pair and angular bin).
@@ -1720,7 +1720,7 @@ double dlnxi_dlnk_pm_tomo(
   static double*** cspl = NULL; // natural-cubic-spline c coefficients
   const int NSIZE = tomo.shear_Npowerspectra;
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nlnk = Ntable.dCX_dlnk_nlnk;
+    nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[0] = log(Ntable.dCX_dlnk_kmin);
     lim[1] = log(Ntable.dCX_dlnk_kmax);
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
@@ -1733,13 +1733,13 @@ double dlnxi_dlnk_pm_tomo(
     // cache costs one full nointerp build - the expensive-node case
     // the coarse-exact + cubic-upsample pattern exists for. The same
     // scale-cut k knob gates both grids
-    // (Ntable.dCX_dlnk_nlnk_internal; 0 or out of range = exact;
+    // (Ntable.dCX_dlnk_nlnk[NODES_COARSE]; 0 or out of range = exact;
     // > 3 because a natural cubic spline needs 4 nodes).
     if (qidx != NULL) { free(qidx); qidx = NULL; }
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
-    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    const int nk_int = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
     nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
     dkc = (lim[1] - lim[0]) / ((double) nkc - 1.0);
     if (nkc < nlnk) {
@@ -1995,8 +1995,8 @@ double* dlnw_ks_dlnk_tomo_nointerp(
     // per-call work arrays whose sizes only change with Ntable or the
     // tomography: allocated once here, overwritten on every call
     if (dCgrid != NULL) free(dCgrid);
-    dCgrid = (double**) malloc2d(NSIZE, Ntable.N_ell);
-    zero2d(dCgrid, NSIZE, Ntable.N_ell);
+    dCgrid = (double**) malloc2d(NSIZE, Ntable.N_ell[NODES_DENSE]);
+    zero2d(dCgrid, NSIZE, Ntable.N_ell[NODES_DENSE]);
     if (cx != NULL) free(cx);
     cx = (double**) malloc2d(NSIZE, Ntable.LMAX);
     zero2d(cx, NSIZE, Ntable.LMAX);
@@ -2028,7 +2028,7 @@ double* dlnw_ks_dlnk_tomo_nointerp(
     // la/ldx must reproduce the dC table's ln l grid (lim[0], lim[2])
     // exactly: the exact-node read here, and limber_fill_interp's
     // inverse map below, rely on the two grids being the same
-    const int nell = Ntable.N_ell;
+    const int nell = Ntable.N_ell[NODES_DENSE];
     const double la = 0.0; // ln(l = 1): the dC table's multipole grid start
     const double ldx = (log(Ntable.LMAX + 1.) - la)/((double) nell - 1.);
     // the same fixed-weight two-row blend as the ss fill above, on
@@ -2102,7 +2102,7 @@ double* dlnw_ks_dlnk_tomo_nointerp(
 // beam/pixel-window filter w_ks_tomo applies.
 //
 // Table design: [shear_nbin*Ntheta][nlnk], one row per (source bin x
-// angular bin), with nlnk = Ntable.dCX_dlnk_nlnk log-spaced k in
+// angular bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
 // [Ntable.dCX_dlnk_kmin, Ntable.dCX_dlnk_kmax]; lookups interpolate
 // linearly in ln k and a k outside the grid returns 0. The fill calls
 // the nointerp pipeline once per k node (each call returns every bin).
@@ -2145,7 +2145,7 @@ double dlnw_ks_dlnk_tomo(
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
   if (NULL == table || fdiff2(cache[4], Ntable.random)) {
-    nlnk = Ntable.dCX_dlnk_nlnk;
+    nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
     lim[0] = log(Ntable.dCX_dlnk_kmin);
     lim[1] = log(Ntable.dCX_dlnk_kmax);
     lim[2] = (lim[1] - lim[0]) / ((double) nlnk - 1.);
@@ -2158,13 +2158,13 @@ double dlnw_ks_dlnk_tomo(
     // cache costs one full dlnw nointerp build - the expensive-node case
     // the coarse-exact + cubic-upsample pattern exists for. The same
     // scale-cut k knob gates both grids
-    // (Ntable.dCX_dlnk_nlnk_internal; 0 or out of range = exact;
+    // (Ntable.dCX_dlnk_nlnk[NODES_COARSE]; 0 or out of range = exact;
     // > 3 because a natural cubic spline needs 4 nodes).
     if (qidx != NULL) { free(qidx); qidx = NULL; }
     if (qdel != NULL) { free(qdel); qdel = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
     if (cspl != NULL) { free(cspl); cspl = NULL; }
-    const int nk_int = Ntable.dCX_dlnk_nlnk_internal;
+    const int nk_int = Ntable.dCX_dlnk_nlnk[NODES_COARSE];
     nkc = (nk_int > 3 && nk_int < nlnk) ? nk_int : nlnk;
     dkc = (lim[1] - lim[0]) / ((double) nkc - 1.0);
     if (nkc < nlnk) {
@@ -2343,7 +2343,7 @@ void RF_xi_tomo_limber_work(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
   const double lnk0 = log(Ntable.dCX_dlnk_kmin);
   const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
                     / ((double) nlnk - 1.0);
@@ -2464,7 +2464,7 @@ void RF_w_ks_tomo_limber_work(
   if (0 == Ntable.Ntheta) {
     log_fatal("Ntable.Ntheta not initialized"); exit(1);
   }
-  const int nlnk = Ntable.dCX_dlnk_nlnk;
+  const int nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
   const double lnk0 = log(Ntable.dCX_dlnk_kmin);
   const double dx = (log(Ntable.dCX_dlnk_kmax) - lnk0)
                     / ((double) nlnk - 1.0);

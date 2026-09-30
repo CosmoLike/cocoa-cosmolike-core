@@ -289,8 +289,8 @@ double conc_cpp(
 //
 //   d ln nu/d ln M = -(1/2) d ln sigma2(M)/d ln M
 //
-// Calls halo.c dlognudlogm: a cached table on Ntable.N_M nodes in ln M
-// over [limits.halo_m_min, limits.halo_m_max], read by linear
+// Calls halo.c dlognudlogm: a cached table on Ntable.N_M[NODES_DENSE] nodes in ln M
+// over [limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]], read by linear
 // interpolation.
 //
 // Parameters:
@@ -317,7 +317,7 @@ double dlognudlogm_cpp(
 //
 //   bias_norm(a) = int_{nu(M_min)}^{nu(M_max)} b(nu) f(nu) dnu
 //
-// with M_min, M_max = limits.halo_m_min, limits.halo_m_max. Over all
+// with M_min, M_max = limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]. Over all
 // nu the integral is 1 by construction: the amplitude alpha of f(nu) is
 // set at every a by Tinker et al. 2010 Eq. 7, int b f dnu = 1 (matter
 // is unbiased with respect to itself; halo.c tinker_alpha). Over the
@@ -408,7 +408,7 @@ double u_nfw_c_cpp(
 //   theta(x) = ln(1 + x)/x,  x = r/r_s,  y = k r_s = k rv/c
 //
 // Calls halo.c u_KS: cached tables in ln c, the phase z = k rv and ln y
-// (Ntable.halo_uks_nc and halo_uks_nz coarse nodes, cubic-upsampled;
+// (Ntable.halo_uks_n[UKS_N_LNC] and halo_uks_n[UKS_N_LNZ] coarse nodes, cubic-upsampled;
 // the oscillation in z is carried by an exact cos z, sin z at lookup,
 // see the u_KS header), refilled when nuisance.random_gas changes
 // (set_nuisance_gas_cpp bumps it).
@@ -443,7 +443,7 @@ double u_KS_cpp(
 // with the six parameters nuisance.hod[ni][0..5] = {lg M_min, sigma_lgM,
 // lg M_1, lg M_0, alpha, f_c}. Each quantity below integrates a weight
 // times <N|M> over the mass function dn/dlnM, from
-// 10^(nuisance.hod[ni][0] - 2) to limits.halo_m_max in M_sun/h:
+// 10^(nuisance.hod[ni][0] - 2) to limits.halo_m[RANGE_MAX] in M_sun/h:
 //
 //   ngal  = int dlnM dn/dlnM <N|M>                 (number density)
 //   bgal  = int dlnM dn/dlnM <N|M> b(M) / ngal     (mean galaxy bias)
@@ -522,7 +522,7 @@ double bgal_cpp(
 //   u_X = the profile of field X in one halo (matter, gas pressure,
 //         galaxies through the HOD)
 //   I_X = int dn b u_X, the bias-weighted mean profile, plus the HMx
-//         term that stands in for the halos below limits.halo_m_min
+//         term that stands in for the halos below limits.halo_m[RANGE_MIN]
 //         (halo.c POWER SPECTRA banner)
 //
 // halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
