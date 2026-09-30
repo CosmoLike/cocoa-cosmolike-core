@@ -1,0 +1,145 @@
+#include <stdint.h>
+#include "structs.h"
+
+#ifndef __COSMOLIKE_STRUCTS_CLUSTER_H
+#define __COSMOLIKE_STRUCTS_CLUSTER_H
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ============================================================================
+// [SECTION] CLUSTER STATE FOR THE 4x2pt + N ANALYSIS
+// ============================================================================
+//
+// Every piece of cluster state lives in the single global `cluster` below,
+// so the core structs (structs.h) carry no cluster fields.
+//
+// Model: DES Y6 methods paper, arXiv 2503.13631 (equation numbers below),
+// with switches that recover the DES Y1 choices of arXiv 2008.10757.
+//
+// Units (the library's): comoving distance chi in c/H0, wavenumber k in
+// (c/H0)^-1, halo mass M in Msun/h (M200m), number densities in (c/H0)^-3,
+// survey area (survey.area) in deg^2.
+//
+// Index names used by every cluster function:
+//   ni, nj = cluster redshift (z_lambda) bin   (0 .. zdist_nbin - 1)
+//   nl     = observed-richness (lambda_obs) bin (0 .. richness_nbin - 1)
+//   ns     = source redshift bin, ng = lens (galaxy) redshift bin
+
+// mass-observable relation models (cluster.mor_model)
+#define CLUSTER_MOR_LOGNORMAL 0   // eqs (18)-(19), Buzzard/Cardinal form
+
+// radial kernel of clusters in the 2pt functions (cluster.kernel_mode)
+#define CLUSTER_KERNEL_VOLUME 0   // q_i(z) ~ dV/dz <phi_i|z> (Y1 eq 15)
+#define CLUSTER_KERNEL_ABUNDANCE 1 // q_iA(z) ~ dV/dz <phi_i|z> n_A(z)
+
+// selection-bias models (cluster.selection_model)
+#define CLUSTER_SELECTION_NONE 0
+#define CLUSTER_SELECTION_Y1 1     // b_s0 (M/M_piv)^b_s1 ((1+z)/1.45)^b_s2
+                                   // inside the bias mass integral (Y1 eq 1)
+#define CLUSTER_SELECTION_Y6 2     // b_s1 + b_s2 exp(-theta chi(zbar)/r0)
+                                   // on the data vector (eq 23)
+
+typedef struct
+{
+  // ---------------------------------------------------------------------------
+  // CACHE KEYS
+  // ---------------------------------------------------------------------------
+  // uint64 counters drawn from RandomNumber (generic_interface.hpp) by the
+  // cluster setters, and only when a value actually changed (fdiff). A table
+  // stores the keys it was built with and refills when any differs.
+  uint64_t random_model;     // model choices and richness binning
+  uint64_t random_zdist;     // selection kernels <phi_i|z> and bin edges
+  uint64_t random_mor;       // mass-observable relation parameters
+  uint64_t random_selection; // selection-bias parameters
+  uint64_t random_pairs;     // cs / cg / cc pair lists
+
+  // ---------------------------------------------------------------------------
+  // MODEL CHOICES
+  // ---------------------------------------------------------------------------
+  int mor_model;             // CLUSTER_MOR_*
+  int kernel_mode;           // CLUSTER_KERNEL_*
+  int selection_model;       // CLUSTER_SELECTION_*
+  int ytransform;            // 1: cluster lensing is Sigma = Y gamma_t
+                             //    (eq 15, Park+2021); 0: gamma_t (Y1)
+  int include_ia;            // 1: intrinsic alignments of the sources in
+                             //    the 2-halo cluster-lensing term
+  double magnification;      // cluster magnification coefficient C_c
+                             //    (eq 28: -2); 0 switches it off
+  double mor_pivot_mass;     // M_piv of eq (19), Msun/h
+  double mor_pivot_1pz;      // (1 + z_piv) of eq (19)
+
+  // ---------------------------------------------------------------------------
+  // PROBES IN THE DATA VECTOR
+  // ---------------------------------------------------------------------------
+  int probe_N;               // cluster counts
+  int probe_cs;              // cluster lensing (gamma_t or Sigma)
+  int probe_cc;              // cluster-cluster clustering w_cc
+  int probe_cg;              // cluster-galaxy clustering w_cg
+
+  // ---------------------------------------------------------------------------
+  // OBSERVED-RICHNESS BINS
+  // ---------------------------------------------------------------------------
+  int richness_nbin;
+  double richness_min[MAX_SIZE_ARRAYS];  // lower lambda_obs edge of bin nl
+  double richness_max[MAX_SIZE_ARRAYS];  // upper lambda_obs edge of bin nl
+
+  // ---------------------------------------------------------------------------
+  // CLUSTER REDSHIFT BINS: SELECTION KERNELS <phi_i|z_true>
+  // ---------------------------------------------------------------------------
+  // <phi_i|z> = probability that a cluster at true redshift z has its
+  // photometric redshift z_lambda inside bin i (Y1 eq 6). Passed as a table
+  // from Python (top-hat, erf of a Gaussian photo-z, or from randoms), laid
+  // out like redshift.clustering_zdist_table: rows 0 .. zdist_nbin - 1 hold
+  // the bins, row zdist_nbin holds z.
+  int zdist_nbin;
+  int zdist_nz;                          // number of z rows of the input
+  double** zdist_table;                  // [zdist_nbin + 1][zdist_nz]
+  double zdist_zmin_all;
+  double zdist_zmax_all;
+  double zdist_zmin[MAX_SIZE_ARRAYS];    // support of <phi_i|z>
+  double zdist_zmax[MAX_SIZE_ARRAYS];
+  // nominal z_lambda edges of each bin: the selection-bias zbar and the
+  // physical scale cuts read these; a kernel table never overwrites them
+  double zbin_min[MAX_SIZE_ARRAYS];
+  double zbin_max[MAX_SIZE_ARRAYS];
+
+  // ---------------------------------------------------------------------------
+  // TOMOGRAPHIC PAIRS
+  // ---------------------------------------------------------------------------
+  int cs_npowerspectra;                  // (cluster bin, source bin) pairs
+  int cg_npowerspectra;                  // (cluster bin, lens bin) pairs
+  int cg_lens_bin[MAX_SIZE_ARRAYS];      // lens bin paired with cluster bin
+                                         // ni in w_cg (-1: none)
+  int cc_npowerspectra;                  // cluster bins in w_cc (auto only)
+
+  // ---------------------------------------------------------------------------
+  // NUISANCE PARAMETERS
+  // ---------------------------------------------------------------------------
+  // mass-observable relation (lighthouse order):
+  //   mor[0] = ln lambda_0, mor[1] = A_lambda (slope in ln M),
+  //   mor[2] = sigma_int,   mor[3] = B_lambda (slope in ln (1+z))
+  double mor[MAX_SIZE_ARRAYS];
+  // selection bias:
+  //   CLUSTER_SELECTION_Y6: [0] = b_s1, [1] = b_s2, [2] = r_0 (comoving
+  //                         Mpc/h), [3] = power of (1+zbar)/1.45 (0 in the
+  //                         paper; lighthouse s3)
+  //   CLUSTER_SELECTION_Y1: [0] = b_s0, [1] = b_s1 (mass slope),
+  //                         [2] = b_s2 (power of (1+z)/1.45; Y1 eq 31)
+  double selection[MAX_SIZE_ARRAYS];
+
+  // ---------------------------------------------------------------------------
+  // INTEGRATION LIMITS
+  // ---------------------------------------------------------------------------
+  double m_min;                          // cluster mass integrals, Msun/h
+  double m_max;
+} clusterparams;
+
+extern clusterparams cluster;
+
+void reset_cluster_struct(void);
+
+#ifdef __cplusplus
+}
+#endif
+#endif // HEADER GUARD
