@@ -92,7 +92,10 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       k      = wavenumbers in h/Mpc (the x axis).
       resp   = 4D response array (n_k, n_slice, n_bin, n_bin), as
                the notebook response functions return it; only the
-               diagonal bins (i, i) are plotted.
+               diagonal bins (i, i) are plotted. A 3D array
+               (n_k, n_slice, n_bin) plots bin i directly — the
+               single-bin-index probes (CMB lensing x shear) have no
+               tomographic pair to take a diagonal of.
       labels = one LaTeX legend label per plotted slice.
       ylabel = y-axis label (LaTeX string).
       idx    = position of each label's slice on the array's second
@@ -132,6 +135,10 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
     if ncolors is None:
         ncolors = len(labels)
     colors = plt.get_cmap(cmap)(np.linspace(0, 1, ncolors))
+    resp = np.asarray(resp)
+    # never plot more bins than the array holds: the default ntomo is a
+    # ceiling, and each project's bin count comes from the array itself
+    ntomo = min(ntomo, resp.shape[2])
     plt.figure(figsize=figsize)
     for i in range(0, ntomo):
         ls = _LINESTYLES[i % len(_LINESTYLES)]
@@ -141,7 +148,9 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
                 sel = j
             else:
                 sel = idx[j]
-            y = resp[:, sel, i, i]
+            # 4D: tomographic-pair probes, diagonal (i, i);
+            # 3D: single-bin-index probes, bin i directly
+            y = resp[:, sel, i, i] if resp.ndim == 4 else resp[:, sel, i]
             if normalize:
                 y = y / np.max(y)
             lw = 0.9 + 1.2*_luminance(c)*_style_factor(ls)

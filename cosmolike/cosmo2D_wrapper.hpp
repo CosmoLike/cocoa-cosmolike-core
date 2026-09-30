@@ -16,6 +16,23 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Stack a field of equally shaped cubes into a 4d numpy array:
+//
+//   cubes -> py::list of carma-converted arrays -> np.stack(axis = 0)
+//     -> np.asfortranarray (the declared f_style return type)
+//
+// The 4d analogue of to_np3d (cosmo2D_scuts_wrapper.cpp), used by the
+// batch wrappers whose per-k output is a (rows, cols, slices) cube.
+//
+// Parameters:
+//   f - field of equally shaped (rows, cols, slices) cubes; a shape
+//       mismatch aborts (spdlog::critical + exit)
+//
+// Returns:
+//   Fortran-ordered numpy array of shape (n_elem, rows, cols,
+//   slices); an empty field gives a (0, 0, 0, 0) array
+// ---------------------------------------------------------------------------
 inline py::array_t<double,py::array::f_style> to_np4d(
     const arma::field<arma::Cube<double>>& f
   )
@@ -53,7 +70,7 @@ inline py::array_t<double,py::array::f_style> to_np4d(
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Bin centers and real-space (theta-binned) projections
 // ---------------------------------------------------------------------------
 
 arma::Col<double> get_binning_real_space();
@@ -66,16 +83,10 @@ arma::Cube<double> w_gammat_tomo_cpp();
 
 arma::Cube<double> w_gg_tomo_cpp();
 
-/*
-arma::Col<double> w_gg_tomo_cpp();
-
-arma::Col<double> w_gk_tomo_cpp();
-
-arma::Col<double> w_ks_tomo_cpp();
-*/
+arma::Mat<double> w_ks_tomo_cpp();
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Fourier-space C_l: shear-shear (EE, BB tuple)
 // ---------------------------------------------------------------------------
 
 py::tuple C_ss_tomo_limber_cpp(
@@ -88,20 +99,8 @@ py::tuple C_ss_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-py::tuple int_for_C_ss_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  );
-
-py::tuple int_for_C_ss_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Fourier-space C_l: galaxy-galaxy lensing
 // ---------------------------------------------------------------------------
 
 arma::Mat<double> gs_bins();
@@ -116,29 +115,19 @@ arma::Cube<double> C_gs_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-double int_for_C_gs_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nl, 
-    const int ns
-  );
-
-arma::Cube<double> int_for_C_gs_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 
 // ---------------------------------------------------------------------------
+// Fourier-space C_l: galaxy clustering (auto pairs)
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+
+double C_gg_tomo_limber_cpp(const double l, const int ni);
 
 arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l);
 
 arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l);
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Fourier-space C_l: galaxy x CMB lensing
 // ---------------------------------------------------------------------------
 
 double C_gk_tomo_limber_cpp(
@@ -150,19 +139,8 @@ arma::Mat<double> C_gk_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-double int_for_C_gk_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  );
-
-arma::Cube<double> int_for_C_gk_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Fourier-space C_l: CMB lensing x shear
 // ---------------------------------------------------------------------------
 
 double C_ks_tomo_limber_cpp(
@@ -174,19 +152,8 @@ arma::Mat<double> C_ks_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
-double int_for_C_ks_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  );
-
-arma::Cube<double> int_for_C_ks_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  );
-
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Fourier-space C_l: CMB lensing auto
 // ---------------------------------------------------------------------------
 
 double C_kk_limber_cpp(
@@ -194,16 +161,6 @@ double C_kk_limber_cpp(
   );
 
 arma::Col<double> C_kk_limber_cpp(
-    const arma::Col<double> l
-  );
-
-double int_for_C_kk_limber_cpp(
-    const double a, 
-    const double l
-  );
-
-arma::Mat<double> int_for_C_kk_limber_cpp(
-    const arma::Col<double> a, 
     const arma::Col<double> l
   );
 

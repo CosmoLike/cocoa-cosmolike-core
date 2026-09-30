@@ -42,30 +42,53 @@ using vector = arma::Col<double>;
 using matrix = arma::Mat<double>;
 using cube = arma::Cube<double>;
 
+// ---------------------------------------------------------------------------
+// Pybind-facing batch evaluators of the 2D projections: the Python
+// side asks for whole data products, not per-point C calls.
+//
+//   Python -> *_cpp overload (scalar diagnostic or array batch)
+//     -> *_nointerp_ells / w_*_tomo batch engines (cosmo2D.c)
+//     -> numpy arrays (ell-or-theta, bin_i, bin_j), carma-converted
+//
+// Layout conventions: rows = angular bin or multipole; the trailing
+// axes are tomographic bins, and only the enumerated pairs are filled
+// (Z1 <= Z2 for ss, (ZL, ZS) for gs, the diagonal for gg) - all other
+// entries stay zero. The scalar overloads are point diagnostics and
+// pay the full batch cost per call (see each header).
+// ---------------------------------------------------------------------------
 namespace cosmolike_interface
 {
 
-static int has_b2_galaxies()
-{
-  int res = 0;
-  for (int i=0; i<redshift.clustering_nbin; i++) 
-    if (nuisance.gb[1][i])
-      res = 1;
-  return res;
-}
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Area-weighted bin-center angles (arcmin) of the Ntheta angular bins.
+// Bin edges are log-spaced between Ntable.vt[RANGE_MIN] and Ntable.vt[RANGE_MAX]
+// (radians); each center is the area-weighted mean angle over its
+// annulus,
+//
+//   theta_i = (2/3) (tmax^3 - tmin^3) / (tmax^2 - tmin^2),
+//
+// divided by 2.90888208665721580e-4 = pi/10800 (one arcmin in radians)
+// to convert radians -> arcmin. Same edges as the bin-averaged
+// real-space kernels in cosmo2D.c.
+//
+// Parameters:
+//   none (reads Ntable.Ntheta, Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX])
+//
+// Returns:
+//   arma::Col of length Ntable.Ntheta: the bin-center angles in arcmin
+// ---------------------------------------------------------------------------
 arma::Col<double> get_binning_real_space()
 {  
   arma::Col<double> result(Ntable.Ntheta, arma::fill::none);
-  const double logdt=(std::log(Ntable.vtmax)-std::log(Ntable.vtmin))/Ntable.Ntheta;
+  const double logdt=(std::log(Ntable.vt[RANGE_MAX])-std::log(Ntable.vt[RANGE_MIN]))/Ntable.Ntheta;
   for (int i = 0; i < Ntable.Ntheta; i++) {  
-    const double thetamin = std::exp(log(Ntable.vtmin) + (i + 0.0) * logdt);
-    const double thetamax = std::exp(log(Ntable.vtmin) + (i + 1.0) * logdt);
+    const double thetamin = std::exp(log(Ntable.vt[RANGE_MIN]) + (i + 0.0) * logdt);
+    const double thetamax = std::exp(log(Ntable.vt[RANGE_MIN]) + (i + 1.0) * logdt);
     const double theta = (2./ 3.) * (std::pow(thetamax,3) - std::pow(thetamin,3)) /
                                     (thetamax*thetamax    - thetamin*thetamin);
     result(i) = theta / 2.90888208665721580e-4; 
@@ -77,6 +100,19 @@ arma::Col<double> get_binning_real_space()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Log-spaced bin-center multipoles of the Ncl fourier-space bins:
+//
+//   ell_i = exp(ln(like.lmin) + (i + 1/2) dlnl), dlnl = ln(lmax/lmin)/Ncl,
+//
+// the log-space midpoint (geometric center) of each bin.
+//
+// Parameters:
+//   none (reads like.Ncl, like.lmin, like.lmax)
+//
+// Returns:
+//   arma::Col of length like.Ncl: the bin-center multipoles
+// ---------------------------------------------------------------------------
 arma::Col<double> get_binning_fourier_space()
 {  
   arma::Col<double> result(like.Ncl, arma::fill::none);
@@ -90,12 +126,25 @@ arma::Col<double> get_binning_fourier_space()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cosmic shear xi+ and xi- at every angular and tomographic bin, with
+// both bin orderings filled (xi is symmetric in ni <-> nj).
+//
+// Engine: xi_pm_tomo(pm, nt, z1, z2, limber = 1) (full Limber, the only
+// supported option) over the enumerated pairs (Z1(nz), Z2(nz)); the
+// engine tests pm > 0, so the -1 below selects xi-. Serial loop: the
+// first engine call computes and caches the whole (pair, theta) table.
+//
+// Parameters:
+//   none (reads Ntable.Ntheta, redshift.shear_nbin,
+//   tomo.shear_Npowerspectra)
+//
+// Returns:
+//   (xi+, xi-) tuple of numpy arrays of shape
+//   (Ntheta, shear_nbin, shear_nbin): rows = angular bin, the two
+//   trailing axes = source bin pair
+// ---------------------------------------------------------------------------
 py::tuple xi_pm_tomo_cpp()
 { 
   arma::Cube<double> xp(Ntable.Ntheta,
@@ -122,6 +171,24 @@ py::tuple xi_pm_tomo_cpp()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Galaxy-galaxy lensing gamma_t at every angular bin and ggl pair.
+//
+// Engine: w_gammat_tomo with the limber flag = like.adopt_limber[LIMBER_GS]
+// (1 = full Limber; 0 = non-Limber FFTLog + Limber hybrid below
+// limits.LMAX_NOLIMBER), so the wrapper follows the likelihood's gs
+// Limber choice. Serial loop: the first engine call computes and caches
+// the whole (pair, theta) table.
+//
+// Parameters:
+//   none (reads Ntable.Ntheta, tomo.ggl_Npowerspectra, redshift bin
+//   counts, like.adopt_limber[LIMBER_GS])
+//
+// Returns:
+//   arma::Cube (Ntheta, clustering_nbin, shear_nbin): rows = angular
+//   bin, entry (i, ZL(nz), ZS(nz)) filled for the enumerated ggl pairs
+//   only, everything else stays zero
+// ---------------------------------------------------------------------------
 arma::Cube<double> w_gammat_tomo_cpp()
 {  
   arma::Cube<double> result(Ntable.Ntheta,
@@ -130,7 +197,8 @@ arma::Cube<double> w_gammat_tomo_cpp()
                             arma::fill::zeros);
   for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
     for (int i=0; i<Ntable.Ntheta; i++) {
-      result(i,ZL(nz),ZS(nz)) = w_gammat_tomo(i, ZL(nz), ZS(nz), 1);
+      result(i,ZL(nz),ZS(nz)) = w_gammat_tomo(i, ZL(nz), ZS(nz), 
+                                               like.adopt_limber[LIMBER_GS]);
     }
   }
   return result;
@@ -139,6 +207,24 @@ arma::Cube<double> w_gammat_tomo_cpp()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Galaxy clustering w(theta) at every angular bin (auto pairs only).
+//
+// Engine: w_gg_tomo with the limber flag = like.adopt_limber[LIMBER_GG]
+// (1 = full Limber; 0 = non-Limber FFTLog + Limber hybrid below
+// limits.LMAX_NOLIMBER), so the wrapper follows the likelihood's gg
+// Limber choice. Serial loop over the auto enumeration
+// (clustering_Npowerspectra = clustering_nbin).
+//
+// Parameters:
+//   none (reads Ntable.Ntheta, tomo.clustering_Npowerspectra,
+//   redshift.clustering_nbin, like.adopt_limber[LIMBER_GG])
+//
+// Returns:
+//   arma::Cube (Ntheta, clustering_nbin, clustering_nbin): rows =
+//   angular bin, only the diagonal (nz, nz) entries filled, cross
+//   entries stay zero
+// ---------------------------------------------------------------------------
 arma::Cube<double> w_gg_tomo_cpp()
 {
   arma::Cube<double> result(Ntable.Ntheta,
@@ -147,54 +233,104 @@ arma::Cube<double> w_gg_tomo_cpp()
                             arma::fill::zeros);
   for (int nz=0; nz<tomo.clustering_Npowerspectra; nz++) {
     for (int i=0; i<Ntable.Ntheta; i++) {
-      result(i, nz, nz) = w_gg_tomo(i, nz, nz, 0);
+      result(i, nz, nz) = w_gg_tomo(i, nz, nz, like.adopt_limber[LIMBER_GG]);
     }
   }
   return result;
 }
 
-/*
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
-arma::Col<double> w_gk_tomo_cpp()
+// ---------------------------------------------------------------------------
+// CMB lensing x shear w_ks at every angular bin and source bin (the CMB
+// is a single lens plane, so one column per source bin).
+//
+// Engine: w_ks_tomo(nt, nz, limber = 1) (full Limber, the only
+// supported option) over all source bins. Serial loop: the first engine
+// call computes and caches the whole (bin, theta) table.
+//
+// Parameters:
+//   none (reads Ntable.Ntheta, redshift.shear_nbin)
+//
+// Returns:
+//   arma::Mat (Ntheta, shear_nbin): rows = angular bin, columns =
+//   source bin
+// ---------------------------------------------------------------------------
+arma::Mat<double> w_ks_tomo_cpp()
 {
-  arma::Col<double> result(Ntable.Ntheta*redshift.clustering_nbin,arma::fill::none);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    for (int i=0; i<Ntable.Ntheta; i++)
-      result(Ntable.Ntheta*nz+i) = w_gk_tomo(i, nz, 1);
+  arma::Mat<double> result(Ntable.Ntheta,
+                           redshift.shear_nbin,
+                           arma::fill::zeros);
+  for (int nz=0; nz<redshift.shear_nbin; nz++) {
+    for (int i=0; i<Ntable.Ntheta; i++) {
+      result(i, nz) = w_ks_tomo(i, nz, 1);
+    }
+  }
   return result;
 }
 
-arma::Col<double> w_ks_tomo_cpp()
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shared batch engine of the two C_ss_tomo_limber_cpp overloads: a single
+// C_ss_tomo_limber_nointerp_ells call fills every enumerated tomographic
+// pair at every multipole (row nz of the work arrays is the pair
+// (Z1(nz), Z2(nz)) with Z1 <= Z2), and the values are scattered into the
+// (ell, ni, nj) cubes; the reversed (nj, ni) entries stay zero.
+//
+// Parameters:
+//   l  - multipole values
+//   EE - output EE cube (nell, shear_nbin, shear_nbin)
+//   BB - output BB cube (nell, shear_nbin, shear_nbin)
+//
+// Returns:
+//   nothing; the result is written into EE and BB
+// ---------------------------------------------------------------------------
+static void C_ss_tomo_limber_cubes(
+    const arma::Col<double>& l, // multipole values
+    arma::Cube<double>& EE,     // output (nell, shear_nbin, shear_nbin)
+    arma::Cube<double>& BB      // output (nell, shear_nbin, shear_nbin)
+  )
 {
-  arma::Col<double> result(Ntable.Ntheta*redshift.shear_nbin,arma::fill::none);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    for (int i=0; i<Ntable.Ntheta; i++)
-      result(Ntable.Ntheta*nz+i) = w_ks_tomo(i, nz, 1);
-  return result;
-}
-*/
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-py::tuple C_ss_tomo_limber_cpp(const double l, const int ni, const int nj)
-{
-  return py::make_tuple(
-    C_ss_tomo_limber_nointerp(l, ni, nj, 1, 0),
-    C_ss_tomo_limber_nointerp(l, ni, nj, 0, 0) 
-  );
+  const int nell = (int) l.n_elem;
+  const int NSIZE = tomo.shear_Npowerspectra;
+  double** tmp_EE = (double**) malloc2d(NSIZE, nell);
+  double** tmp_BB = (double**) malloc2d(NSIZE, nell);
+  C_ss_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp_EE, tmp_BB);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      EE(i, Z1(nz), Z2(nz)) = tmp_EE[nz][i];
+      BB(i, Z1(nz), Z2(nz)) = tmp_BB[nz][i];
+    }
+  }
+  free(tmp_EE);
+  free(tmp_BB);
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
+// ---------------------------------------------------------------------------
+// Shear-shear Limber C_l at many multipoles, filled by
+// C_ss_tomo_limber_cubes (one batched C_ss_tomo_limber_nointerp_ells
+// call); only the enumerated Z1 <= Z2 ordering is filled, the reversed
+// entries stay zero.
+//
+// Parameters:
+//   l - multipole values (need not be integers); an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   (EE, BB) tuple of numpy arrays of shape
+//   (nell, shear_nbin, shear_nbin): rows = multipole, the two trailing
+//   axes = source bin pair
+// ---------------------------------------------------------------------------
+py::tuple C_ss_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (!(l.n_elem > 0)) {
     spdlog::critical("{}: l array size = {}", "C_ss_tomo_limber_cpp", l.n_elem);
@@ -208,26 +344,75 @@ py::tuple C_ss_tomo_limber_cpp(const arma::Col<double> l)
                         redshift.shear_nbin,
                         redshift.shear_nbin,
                         arma::fill::zeros);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static vars
-    (void) C_ss_tomo_limber_nointerp(l(0), Z1(nz), Z2(nz), 1, 1); // EE
-    (void) C_ss_tomo_limber_nointerp(l(0), Z1(nz), Z2(nz), 0, 1); // BB
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      const int ni = Z1(nz);
-      const int nj = Z2(nz);
-      EE(i, ni, nj) = C_ss_tomo_limber_nointerp(l(i), ni, nj, 1, 0);
-      BB(i, ni, nj) = C_ss_tomo_limber_nointerp(l(i), ni, nj, 0, 0);
-    }
-  }
+  C_ss_tomo_limber_cubes(l, EE, BB);
   return py::make_tuple(carma::cube_to_arr(EE), carma::cube_to_arr(BB));
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Shear-shear Limber C_l at one multipole for the (ni, nj) source pair
+// in either ordering.
+//
+// Point diagnostic: runs the full batch of C_ss_tomo_limber_cubes at a
+// single multipole and reads one entry, so it pays the whole-tomography
+// batch cost per call. Loops over (l, ni, nj) should call the array
+// overload once and index the returned cubes instead.
+//
+// Parameters:
+//   l  - multipole
+//   ni - first source redshift bin; outside [0, shear_nbin) aborts
+//        (spdlog::critical + exit)
+//   nj - second source redshift bin; same validation as ni
+//
+// Returns:
+//   (EE, BB) tuple of doubles
+// ---------------------------------------------------------------------------
+py::tuple C_ss_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni,     // first source redshift bin
+    const int nj      // second source redshift bin
+  )
+{
+  if (ni < 0 || ni > redshift.shear_nbin - 1 ||
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input (ni, nj) = ({}, {})",
+                     "C_ss_tomo_limber_cpp", ni, nj);
+    exit(1);
+  }
+  arma::Col<double> ell(1);
+  ell(0) = l;
+  arma::Cube<double> EE(1,
+                        redshift.shear_nbin,
+                        redshift.shear_nbin,
+                        arma::fill::zeros);
+  arma::Cube<double> BB(1,
+                        redshift.shear_nbin,
+                        redshift.shear_nbin,
+                        arma::fill::zeros);
+  C_ss_tomo_limber_cubes(ell, EE, BB);
+  // C_ss is symmetric in (ni, nj) and the cubes fill only the
+  // enumerated Z1 <= Z2 ordering, so read the ordered entry
+  const int zmin = (ni < nj) ? ni : nj;
+  const int zmax = (ni < nj) ? nj : ni;
+  return py::make_tuple(EE(0, zmin, zmax), BB(0, zmin, zmax));
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The (lens, source) bin indices of every enumerated ggl pair, stored
+// as doubles.
+//
+// Parameters:
+//   none (reads tomo.ggl_Npowerspectra and the ZL/ZS enumeration)
+//
+// Returns:
+//   arma::Mat (ggl_Npowerspectra, 2) with row nz = (ZL(nz), ZS(nz))
+// ---------------------------------------------------------------------------
 arma::Mat<double> gs_bins()
 {
   arma::Mat<double> result(tomo.ggl_Npowerspectra, 2);
@@ -241,50 +426,109 @@ arma::Mat<double> gs_bins()
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_gs_tomo_limber_cpp(const double l, const int ni, const int nj)
-{
-  return C_gs_tomo_limber_nointerp(l, ni, nj, 0);
-}
-
 // ---------------------------------------------------------------------------
+// Galaxy-galaxy lensing Limber C_l at many multipoles: a single batched
+// C_gs_tomo_limber_nointerp_ells call fills every enumerated ggl pair
+// at every multipole (row nz of the work array is the pair
+// (ZL(nz), ZS(nz))); pairs outside the enumeration stay zero, matching
+// the data-vector convention.
+//
+// Parameters:
+//   l - multipole values (need not be integers); an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   arma::Cube (nell, clustering_nbin, shear_nbin): rows = multipole,
+//   entry (i, ZL(nz), ZS(nz)) filled for the enumerated ggl pairs only
 // ---------------------------------------------------------------------------
-
-arma::Cube<double> C_gs_tomo_limber_cpp(const arma::Col<double> l)
+arma::Cube<double> C_gs_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (!(l.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_gs_tomo_limber_cpp", 
+    spdlog::critical("{}: l array size = {}",
+                     "C_gs_tomo_limber_cpp",
                      l.n_elem);
     exit(1);
   }
   arma::Cube<double> result(l.n_elem,
-                            redshift.clustering_nbin, 
+                            redshift.clustering_nbin,
                             redshift.shear_nbin,
                             arma::fill::zeros);
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static vars
-    (void) C_gs_tomo_limber_nointerp(l(0), ZL(nz), ZS(nz), 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i,ZL(nz),ZS(nz))=C_gs_tomo_limber_nointerp(l(i),ZL(nz),ZS(nz),0);
+  const int nell = (int) l.n_elem;
+  const int NSIZE = tomo.ggl_Npowerspectra;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_gs_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, ZL(nz), ZS(nz)) = tmp[nz][i];
     }
   }
+  free(tmp);
   return result;
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
-double C_gg_tomo_limber_cpp(const double l, const int nz)
+// ---------------------------------------------------------------------------
+// Galaxy-galaxy lensing Limber C_l at one multipole for the (lens ni,
+// source nj) pair.
+//
+// Point diagnostic: runs the full batch of the array overload above at
+// a single multipole and reads one entry, so it pays the
+// whole-tomography batch cost per call. Loops over (l, ni, nj) should
+// call the array overload once and index the returned cube instead.
+//
+// Parameters:
+//   l  - multipole
+//   ni - lens redshift bin; outside [0, clustering_nbin) aborts
+//        (spdlog::critical + exit)
+//   nj - source redshift bin; outside [0, shear_nbin) aborts
+//
+// Returns:
+//   C_l^gs of the (ni, nj) pair; 0 for a pair outside the enumerated
+//   ggl list
+// ---------------------------------------------------------------------------
+double C_gs_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni,     // lens redshift bin
+    const int nj      // source redshift bin
+  )
 {
-  return C_gg_tomo_limber_nointerp(l, nz, nz, 0);
+  if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
+      nj < 0 || nj > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input (ni, nj) = ({}, {})",
+                     "C_gs_tomo_limber_cpp", ni, nj);
+    exit(1);
+  }
+  arma::Col<double> ell(1);
+  ell(0) = l;
+  const arma::Cube<double> res = C_gs_tomo_limber_cpp(ell);
+  return res(0, ni, nj);
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 
-arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
+// ---------------------------------------------------------------------------
+// Galaxy-clustering Limber C_l at every auto pair and many multipoles:
+// a single batched C_gg_tomo_limber_nointerp_ells call fills every lens
+// bin at every multipole (the likelihood's auto-only gg enumeration).
+//
+// Parameters:
+//   l - multipole values (need not be integers); an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   arma::Cube (nell, clustering_nbin, clustering_nbin): rows =
+//   multipole, only the diagonal (nz, nz) entries filled, cross entries
+//   stay zero
+// ---------------------------------------------------------------------------
+arma::Cube<double> C_gg_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -296,22 +540,77 @@ arma::Cube<double> C_gg_tomo_limber_cpp(const arma::Col<double> l)
                             redshift.clustering_nbin,
                             redshift.clustering_nbin,
                             arma::fill::zeros);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
-    (void) C_gg_tomo_limber_nointerp(l(0), 0, 0, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz, nz) = C_gg_tomo_limber_nointerp(l(i), nz, nz, 0);
+  const int nell = static_cast<int>(l.n_elem);
+  const int NSIZE = redshift.clustering_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_gg_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, nz, nz) = tmp[nz][i];
     }
   }
+  free(tmp);
   return result;
+}
+
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Galaxy-clustering Limber C_l at one multipole and one auto pair
+// (nz, nz).
+//
+// Point diagnostic: runs the batch of the array overload above at a
+// single multipole (every lens bin) and reads one entry, so it pays
+// the whole-tomography batch cost per call. Loops over (l, nz) should
+// call the array overload once and index the returned cube instead.
+//
+// Parameters:
+//   l  - multipole
+//   nz - lens redshift bin (auto pair nz-nz); outside
+//        [0, clustering_nbin) aborts (spdlog::critical + exit)
+//
+// Returns:
+//   C_l^gg of the (nz, nz) auto pair
+// ---------------------------------------------------------------------------
+double C_gg_tomo_limber_cpp(
+    const double l,   // multipole
+    const int nz      // lens redshift bin (auto pair nz-nz)
+  )
+{
+  if (nz < 0 || nz > redshift.clustering_nbin - 1) {
+    spdlog::critical("{}: invalid bin input nz = {}",
+                     "C_gg_tomo_limber_cpp", nz);
+    exit(1);
+  }
+  arma::Col<double> ell(1);
+  ell(0) = l;
+  const arma::Cube<double> res = C_gg_tomo_limber_cpp(ell);
+  return res(0, nz, nz);
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
+// ---------------------------------------------------------------------------
+// Galaxy-clustering C_l with the non-limber low multipoles the
+// likelihood uses (limber above limits.LMAX_NOLIMBER): starts from
+// C_gg_tomo_limber_cpp (same cube layout, diagonal only) and overwrites
+// every requested l < LMAX_NOLIMBER with the non-Limber C_cl_tomo value
+// (Limber-convergence tolerance 0.01) read at the integer multipole
+// (int)(l + 1e-13) - the requested low multipoles are expected to be
+// integer-valued.
+//
+// Parameters:
+//   l - multipole values; an empty array aborts (spdlog::critical +
+//       exit)
+//
+// Returns:
+//   arma::Cube (nell, clustering_nbin, clustering_nbin): rows =
+//   multipole, only the diagonal (nz, nz) entries filled
+// ---------------------------------------------------------------------------
+arma::Cube<double> C_gg_tomo_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -344,12 +643,49 @@ arma::Cube<double> C_gg_tomo_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_gk_tomo_limber_cpp(const double l, const int ni)
+// ---------------------------------------------------------------------------
+// Galaxy x CMB-lensing Limber C_l at one multipole and lens bin: a
+// direct C_gk_tomo_limber_nointerp call.
+//
+// Point diagnostic: the engine runs the full batch of
+// C_gk_tomo_limber_nointerp_ells at a single multipole and reads one
+// entry, so it pays the whole-tomography batch cost per call. Loops
+// over (l, ni) should call the array overload once and index the
+// returned matrix instead.
+//
+// Parameters:
+//   l  - multipole
+//   ni - lens redshift bin; validated by the engine (log_fatal + exit
+//        outside [0, clustering_nbin))
+//
+// Returns:
+//   C_l^gk of lens bin ni
+// ---------------------------------------------------------------------------
+double C_gk_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni      // lens redshift bin
+  )
 {
-  return C_gk_tomo_limber_nointerp(l, ni, 0);
+  return C_gk_tomo_limber_nointerp(l, ni);
 }
 
-arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
+// ---------------------------------------------------------------------------
+// Galaxy x CMB-lensing Limber C_l at every lens bin and many
+// multipoles: a single batched C_gk_tomo_limber_nointerp_ells call
+// fills every lens bin at every multipole (the CMB is a single source
+// plane, so one spectrum per lens bin).
+//
+// Parameters:
+//   l - multipole values (need not be integers); an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   arma::Mat (nell, clustering_nbin): rows = multipole, columns =
+//   lens bin
+// ---------------------------------------------------------------------------
+arma::Mat<double> C_gk_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -358,15 +694,16 @@ arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
     exit(1);
   }
   arma::Mat<double> result(l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
-    (void) C_gk_tomo_limber_nointerp(l(0), nz, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz) = C_gk_tomo_limber_nointerp(l(i), nz, 0);
+  const int nell = (int) l.n_elem;
+  const int NSIZE = redshift.clustering_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_gk_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, nz) = tmp[nz][i];
     }
   }
+  free(tmp);
   return result;
 }
 
@@ -374,32 +711,80 @@ arma::Mat<double> C_gk_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double C_ks_tomo_limber_cpp(const double l, const int ni)
+// ---------------------------------------------------------------------------
+// CMB-lensing x shear Limber C_l at one multipole and source bin.
+//
+// Point diagnostic: runs the full batch of
+// C_ks_tomo_limber_nointerp_ells at a single multipole and reads one
+// entry, so it pays the whole-tomography batch cost per call. Loops
+// over (l, ni) should call the array overload once and index the
+// returned matrix instead.
+//
+// Parameters:
+//   l  - multipole
+//   ni - source redshift bin; outside [0, shear_nbin) aborts
+//        (spdlog::critical + exit)
+//
+// Returns:
+//   C_l^ks of source bin ni
+// ---------------------------------------------------------------------------
+double C_ks_tomo_limber_cpp(
+    const double l,   // multipole
+    const int ni      // source redshift bin
+  )
 {
-  return C_ks_tomo_limber_nointerp(l, ni, 0);
+  if (ni < 0 || ni > redshift.shear_nbin - 1) {
+    spdlog::critical("{}: invalid bin input ni = {}",
+                     "C_ks_tomo_limber_cpp", ni);
+    exit(1);
+  }
+  const int NSIZE = redshift.shear_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, 1);
+  double ell[1] = {l};
+  C_ks_tomo_limber_nointerp_ells(ell, 1, NSIZE, tmp);
+  const double res = tmp[ni][0];
+  free(tmp);
+  return res;
 }
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
+// ---------------------------------------------------------------------------
+// CMB-lensing x shear Limber C_l at every source bin and many
+// multipoles: a single batched C_ks_tomo_limber_nointerp_ells call
+// fills every source bin at every multipole (the CMB is a single lens
+// plane, so one spectrum per source bin).
+//
+// Parameters:
+//   l - multipole values (need not be integers); an empty array aborts
+//       (spdlog::critical + exit)
+//
+// Returns:
+//   arma::Mat (nell, shear_nbin): rows = multipole, columns = source
+//   bin
+// ---------------------------------------------------------------------------
+arma::Mat<double> C_ks_tomo_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ks_tomo_limber_cpp", 
+  if (!(l.n_elem > 0)) {
+    spdlog::critical("{}: l array size = {}",
+                     "C_ks_tomo_limber_cpp",
                      l.n_elem);
     exit(1);
   }
   arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static vars
-    (void) C_ks_tomo_limber_nointerp(l(0), nz, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.shear_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz) = C_ks_tomo_limber_nointerp(l(i), nz, 0);
+  const int nell = (int) l.n_elem;
+  const int NSIZE = redshift.shear_nbin;
+  double** tmp = (double**) malloc2d(NSIZE, nell);
+  C_ks_tomo_limber_nointerp_ells(l.memptr(), nell, NSIZE, tmp);
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<nell; i++) {
+      result(i, nz) = tmp[nz][i];
     }
   }
+  free(tmp);
   return result;
 }
 
@@ -407,69 +792,19 @@ arma::Mat<double> C_ks_tomo_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-/*
-double C_gy_tomo_limber_cpp(const double l, const int ni)
-{
-  return C_gy_tomo_limber_nointerp(l, ni, 0, 0);
-}
-
-arma::Mat<double> C_gy_tomo_limber_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_gy_tomo_limber_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Mat<double> result(l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
-    double tmp = C_gy_tomo_limber_nointerp(l(0), nz, 0, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      result(i, nz) = C_gy_tomo_limber_nointerp(l(i), nz, 0, 0);
-    }
-  }
-  return result;
-}
-
 // ---------------------------------------------------------------------------
+// CMB-lensing auto Limber C_l at one multipole: a direct
+// C_kk_limber_nointerp(l, init = 0) call (init = 0 computes).
+//
+// Parameters:
+//   l - multipole
+//
+// Returns:
+//   C_l^kk at multipole l
 // ---------------------------------------------------------------------------
-
-double C_ys_tomo_limber_cpp(const double l, const int ni)
-{
-  return C_ys_tomo_limber_nointerp(l, ni, 0, 0);
-}
-
-arma::Mat<double> C_ys_tomo_limber_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0)
-  {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ys_tomo_limber_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Mat<double> result(l.n_elem, redshift.shear_nbin);
-  for (int nz=0; nz<redshift.shear_nbin; nz++) { // init static variables
-    (void) C_ys_tomo_limber_nointerp(l(0), nz, 0, 1);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int nz=0; nz<redshift.shear_nbin; nz++) {
-    for (int i=0; i<l.n_elem; i++) {
-      result(i, nz) = C_ys_tomo_limber_nointerp(l(i), nz, 0, 0);
-    }
-  }
-  return result;
-}
-*/
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double C_kk_limber_cpp(const double l)
+double C_kk_limber_cpp(
+    const double l    // multipole
+  )
 {
   return C_kk_limber_nointerp(l, 0);
 }
@@ -477,7 +812,21 @@ double C_kk_limber_cpp(const double l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
+// ---------------------------------------------------------------------------
+// CMB-lensing auto Limber C_l at many multipoles. The serial init = 1
+// warmup call populates lazily initialized statics down the call chain
+// so the OpenMP (omp parallel for) loop of init = 0 calls is race-free.
+//
+// Parameters:
+//   l - multipole values; an empty array aborts (spdlog::critical +
+//       exit)
+//
+// Returns:
+//   arma::Col of length nell: entry i = C_l^kk at l(i)
+// ---------------------------------------------------------------------------
+arma::Col<double> C_kk_limber_cpp(
+    const arma::Col<double> l    // multipoles
+  )
 {
   if (l.n_elem == 0) {
     spdlog::critical("{}: l array size = {}", 
@@ -498,695 +847,8 @@ arma::Col<double> C_kk_limber_cpp(const arma::Col<double> l)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-/*
-double C_ky_limber_cpp(const double l)
-{
-  return C_ky_limber_nointerp(l, 0, 0);
-}
-
-arma::Col<double> C_ky_limber_nointerp_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_ky_limber_nointerp_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Col<double> result(l.n_elem);
-  { // init static variables
-    (void) C_ky_limber_nointerp(l(0), 0, 1);
-  }
-  #pragma omp parallel for
-  for (int i=0; i<l.n_elem; i++)
-    result(i) = C_ky_limber_nointerp(l(i), 0, 0);
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double C_yy_limber_cpp(double l)
-{
-  return C_yy_limber_nointerp(l, 0, 0);
-}
-
-arma::Col<double> C_yy_limber_nointerp_cpp(const arma::Col<double> l)
-{
-  if (l.n_elem == 0) {
-    spdlog::critical("{}: l array size = {}", 
-                     "C_yy_limber_nointerp_cpp", 
-                     l.n_elem);
-    exit(1);
-  }
-  arma::Col<double> result(l.n_elem);
-  { // init static variables
-    (void) C_yy_limber_nointerp(l(0), 0, 1);
-  }
-  #pragma omp parallel for
-  for (int i=0; i<l.n_elem; i++)
-    result(i) = C_yy_limber_nointerp(l(i), 0, 0);
-  return result;
-}
-*/
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ss_EE_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  double ar[5] = {(double) ni, (double) nj, l, 1, 0};
-  return int_for_C_ss_tomo_limber(a, (void*) ar); 
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-arma::Cube<double> int_for_C_ss_EE_tomo_limber_cpp(
-    arma::Col<double> a, 
-    arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ss_EE_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
-    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j,i,nz) = int_for_C_ss_EE_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-      }
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ss_BB_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  double ar[5] = {(double) ni, (double) nj, l, 0, 0};
-  return int_for_C_ss_tomo_limber(a, (void*) ar); 
-}
-
-arma::Cube<double> int_for_C_ss_BB_tomo_limber_cpp(
-    arma::Col<double> a, 
-    arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ss_BB_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static variables
-    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j,i,nz) = int_for_C_ss_BB_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-      }
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-py::tuple int_for_C_ss_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  return py::make_tuple(
-    int_for_C_ss_EE_tomo_limber_cpp(a, l, ni, nj),
-    int_for_C_ss_BB_tomo_limber_cpp(a, l, ni, nj)
-  );
-}
-
-py::tuple int_for_C_ss_tomo_limber_cpp(
-  const arma::Col<double> a, const arma::Col<double> l)
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ss_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> EE(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  arma::Cube<double> BB(a.n_elem, l.n_elem, tomo.shear_Npowerspectra);
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) { // init static vars
-    (void) int_for_C_ss_EE_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-    (void) int_for_C_ss_BB_tomo_limber_cpp(a(0), l(0), Z1(nz), Z2(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.shear_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        EE(j,i,nz) = int_for_C_ss_EE_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-        BB(j,i,nz) = int_for_C_ss_BB_tomo_limber_cpp(a(j),l(i),Z1(nz),Z2(nz));
-      }
-    }
-  }
-  return py::make_tuple(carma::cube_to_arr(EE), carma::cube_to_arr(BB));
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_gs_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nl, 
-    const int ns
-  )
-{
-  double ar[4] = {(double) nl, (double) ns, l, (double) has_b2_galaxies()};
-  return int_for_C_gs_tomo_limber(a, (void*) ar);
-}
-
-arma::Cube<double> int_for_C_gs_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gs_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, tomo.ggl_Npowerspectra);
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) { // init static vars
-    (void) int_for_C_gs_tomo_limber_cpp(a(0),l(0),ZL(nz),ZS(nz));
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<tomo.ggl_Npowerspectra; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j,i,nz) = int_for_C_gs_tomo_limber_cpp(a(j),l(i),ZL(nz),ZS(nz));
-      }
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_gg_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int ni, 
-    const int nj
-  )
-{
-  double ar[5] = {(double) ni, (double) nj, l, 0, (double) has_b2_galaxies()};
-  return int_for_C_gg_tomo_limber(a, (void*) ar);
-}
-
-arma::Cube<double> int_for_C_gg_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gg_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static vars
-    (void) int_for_C_gg_tomo_limber_cpp(a(0), l(0), nz, nz);
-  }
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-    for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-      for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-        result(j, i, nz) = int_for_C_gg_tomo_limber_cpp(a(j), l(i), nz, nz);
-      }
-    }
-  }
-  return result;
-}
-
-/*
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_gk_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-
-  double res = 0.0;
-
-  if (has_b2_galaxies())
-    res = int_for_C_gk_tomo_limber_withb2(a, (void*) ar);
-  else
-    res = int_for_C_gk_tomo_limber(a, (void*) ar);
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_gk_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gk_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-  for (int nz=0; nz<redshift.clustering_nbin; nz++) { // init static variables
-    (void) int_for_C_gk_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  if (has_b2_galaxies()) {
-    #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++) {
-      for (int i=0; i<l.n_elem; i++) {
-        for (int j=0; j<a.n_elem; j++)
-        {
-          double ar[3] = {(double) nz, l(i), (double) 0.0};
-          result(j, i, nz) = int_for_C_gk_tomo_limber_withb2(a(j), (void*) ar);
-        }
-      }
-    }
-  }
-  else
-  {
-    #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    {
-      for (int i=0; i<l.n_elem; i++)
-      {
-        for (int j=0; j<a.n_elem; j++)
-        {
-          double ar[3] = {(double) nz, l(i), (double) 0.0};
-          result(j, i, nz) = int_for_C_gk_tomo_limber(a(j), (void*) ar);
-        }
-      }
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-/*
-double int_for_C_gy_tomo_limber_cpp(
-    const double a, 
-    const double l,
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-  
-  double res;
-
-  if (has_b2_galaxies())
-  {
-    spdlog::critical("b2 not supported in C_gy_nointerp");
-    exit(1);
-  }
-  else
-  {
-    res = int_for_C_gy_tomo_limber(a, (void*) ar);
-  }
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_gy_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0))
-  {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_gy_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.clustering_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.clustering_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_gy_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  #pragma GCC diagnostic pop
-
-  if (has_b2_galaxies())
-  {
-    spdlog::critical("b2 not supported in C_gy_nointerp");
-    exit(1);
-  }
-  else
-  {
-    #pragma omp parallel for collapse(3)
-    for (int nz=0; nz<redshift.clustering_nbin; nz++)
-    {
-      for (int i=0; i<l.n_elem; i++)
-      {
-        for (int j=0; j<a.n_elem; j++)
-        {
-          double ar[3] = {(double) nz, l(i), (double) 0.0};
-          result(j, i, nz) = int_for_C_gy_tomo_limber(a(j), (void*) ar);
-        }
-      }
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ks_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-
-  double res = 0.0;
-
-  switch(nuisance.IA_MODEL)
-  {
-    case IA_MODEL_NLA:
-    {
-      res = int_for_C_ks_tomo_limber(a, (void*) ar);
-    }
-    default:
-    {
-      spdlog::critical("nuisance.IA_MODEL = {} not supported", nuisance.IA_MODEL);
-      exit(1);
-    }
-  }
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_ks_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ks_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.shear_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_ks_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  #pragma GCC diagnostic pop
-
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  {
-    for (int i=0; i<l.n_elem; i++)
-    {
-      for (int j=0; j<a.n_elem; j++)
-      {
-        result(j, i, nz) = int_for_C_ks_tomo_limber_cpp(a(j), l(i), nz);
-      }
-    }
-  }
-
-  return result;
-}
-
-/*
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_ys_tomo_limber_cpp(
-    const double a, 
-    const double l, 
-    const int nz
-  )
-{
-  double ar[3] = {(double) nz, l, (double) 0.0};
-
-  double res = 0.0;
-
-  switch(nuisance.IA_MODEL)
-  {
-    case IA_MODEL_NLA:
-    {
-      res = int_for_C_ys_tomo_limber(a, (void*) ar); 
-    }
-    default:
-    {
-      spdlog::critical("nuisance.IA_MODEL = {} not supported", nuisance.IA_MODEL);
-      exit(1);
-    }
-  }
-
-  return res;
-}
-
-arma::Cube<double> int_for_C_ys_tomo_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ys_tomo_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  arma::Cube<double> result(a.n_elem, l.n_elem, redshift.shear_nbin);
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  { // init static variables
-    double tmp = int_for_C_ys_tomo_limber_cpp(a(0), l(0), nz);
-  }
-  #pragma GCC diagnostic pop
-
-  #pragma omp parallel for collapse(3)
-  for (int nz=0; nz<redshift.shear_nbin; nz++)
-  {
-    for (int i=0; i<l.n_elem; i++)
-    {
-      for (int j=0; j<a.n_elem; j++)
-      {
-        result(j, i, nz) = int_for_C_ys_tomo_limber_cpp(a(j), l(i), nz);
-      }
-    }
-  }
-
-  return result;
-}
-*/
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_kk_limber_cpp(const double a, const double l)
-{
-  double ar[2] = {l, (double) 0.0}; 
-  return int_for_C_kk_limber(a, (void*) ar);
-}
-
-arma::Mat<double> int_for_C_kk_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_kk_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-  arma::Mat<double> result(a.n_elem, l.n_elem);
-  { // init static variables
-    (void) int_for_C_kk_limber_cpp(a(0), l(0));
-  }
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<static_cast<int>(l.n_elem); i++) {
-    for (int j=0; j<static_cast<int>(a.n_elem); j++) {
-      result(j, i) = int_for_C_kk_limber_cpp(a(j), l(i));
-    }
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-/*
-double int_for_C_ky_limber_cpp(const double a, const double l)
-{
-  double ar[2] = {l, (double) 0.0}; 
-  return int_for_C_ky_limber(a, (void*) ar);
-}
-
-arma::Mat<double> int_for_C_ky_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_ky_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  { // init static variables
-    double tmp = int_for_C_ky_limber_cpp(a(0), l(0));
-  }
-  #pragma GCC diagnostic pop
-
-  arma::Mat<double> result(a.n_elem, l.n_elem);
-
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<l.n_elem; i++)
-  {
-    for (int j=0; j<a.n_elem; j++)
-    {
-      result(j, i) = int_for_C_ky_limber_cpp(a(j), l(i));
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-double int_for_C_yy_limber_cpp(const double a, const double l)
-{
-  double ar[2] = {l, (double) 0.0}; 
-  return int_for_C_yy_limber(a, (void*) ar);
-}
-
-arma::Mat<double> int_for_C_yy_limber_cpp(
-    const arma::Col<double> a, 
-    const arma::Col<double> l
-  )
-{
-  if (!(l.n_elem > 0 && a.n_elem > 0)) {
-    spdlog::critical("{}: l array size = {} and scale factor array size = {}", 
-                      "int_for_C_yy_limber_cpp", 
-                      l.n_elem,
-                      a.n_elem);
-    exit(1);
-  }
-
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wunused-variable"
-  { // init static variables
-    double tmp = int_for_C_yy_limber_cpp(a(0), l(0));
-  }
-  #pragma GCC diagnostic pop
-
-  arma::Mat<double> result(a.n_elem, l.n_elem);
-
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<l.n_elem; i++)
-  {
-    for (int j=0; j<a.n_elem; j++)
-    {
-      result(j, i) = int_for_C_yy_limber_cpp(a(j), l(i));
-    }
-  }
-
-  return result;
-}
-
-*/
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
 } // end namespace cosmolike_interface
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

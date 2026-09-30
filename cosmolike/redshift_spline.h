@@ -10,6 +10,10 @@ extern "C" {
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
+// upper edge (in z) of the shifted source support and of the shifted and
+// stretched lens support: the start of every line-of-sight integral
+double zmax_source_photoz(void);
+double zmax_lens_photoz(void);
 double amin_source(int i);
 
 double amax_source(int i);
@@ -71,8 +75,13 @@ double zmean_source(int ni);
 
 double nz_lens_photoz(double zz, int j); 
 
-// mean true redshift of (clustering/lens) galaxies within redshift bin ni
+// fiducial mean true redshift of lens bin ni (no photo-z shift or
+// stretch), stored by set_lens_sample: a fixed reference redshift
 double zmean(int ni);
+
+// mean true redshift of every lens bin at the current photo-z nuisance
+// (uncached); set_lens_sample fills the fiducial means with it
+void zmean_all(double* out);
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------

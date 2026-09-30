@@ -53,6 +53,13 @@ void set_run_mode(int ps_mode);
 
 double p_lin(const double k, const double a);
 
+// linear cold dark matter + baryon spectrum (cosmology.lnPL_cb)
+double p_lin_cb(const double k, const double a);
+
+// Omega of the halo field of like.halo_model[4]: Omega_m or
+// Omega_m - Omega_nu
+double omega_halo_field(void);
+
 double p_nonlin(const double k, const double a);
 
 double Pdelta(double k_NL, double a); // k in coverH0 units

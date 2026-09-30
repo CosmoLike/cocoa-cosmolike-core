@@ -1,2405 +1,2906 @@
-#include <assert.h>
-#include <gsl/gsl_math.h>
-#include <gsl/gsl_sf.h>
-#include <gsl/gsl_spline.h>
+// ============================================================================
+// cosmo2D_cluster.c: ANGULAR STATISTICS AND NUMBER COUNTS OF GALAXY CLUSTERS
+// ============================================================================
+//
+// The cluster part of the DES 4x2pt + N analysis, written on the cosmo2D.c
+// design. Model: DES Y6 methods paper, arXiv 2503.13631 (the equation
+// numbers below are that paper's); the Y1 switches of structs_cluster.h
+// recover arXiv 2008.10757. cosmo2D_cluster.h is the contract.
+//
+// What this file computes:
+//
+//   C_cs, C_cc, C_cg   Limber angular spectra (eq 10) of cluster lensing,
+//                      cluster clustering and cluster-galaxy clustering
+//   w_gammat_cluster_tomo, w_cc_tomo, w_cg_tomo
+//                      full-sky, angular-bin-averaged real-space statistics
+//                      (eqs 11 and 12)
+//   N_cluster_tomo     expected number counts (eq 16)
+//
+// ARCHITECTURE MAP (the same chain as cosmo2D.c):
+//
+//   w_*_tomo                      one cached real-space block per statistic
+//     -> l = 1 .. LMIN_tab - 1:   C_xx_tomo_limber_batch_rows, the exact
+//                                 Limber quadrature at every integer l
+//     -> l = LMIN_tab .. LMAX-1:  C_xx_tomo_limber_table (exact quadrature
+//                                 on a log-l grid, cubic spline onto a
+//                                 denser log-l grid) read by
+//                                 limber_fill_interp (cosmo2D.c, AVX2
+//                                 gathers)
+//     -> Legendre sum against the bin-averaged kernels
+//
+//   C_xx_tomo_limber_batch_rows
+//     -> create_cosmo_nodes_cluster  Gauss-Legendre nodes per cluster bin
+//                                    in TWO panels: the bin's support and
+//                                    its foreground (magnification)
+//     -> C_xx_tomo_limber_work       weights per node, spectra per (node,
+//                                    l), one vectorized sum per (row, l)
+//
+// Units (the library's): chi and f_K in c/H0, k in (c/H0)^-1, P(k) in
+// (c/H0)^3, cluster number densities in (c/H0)^-3, survey area in deg^2.
+//
+// Determinism: every lazily built table is refilled outside parallel
+// regions, every output number is one serial sum inside one thread, and no
+// reduction crosses threads, so no result depends on OMP_NUM_THREADS.
+//
+// SIMD: the loops whose loads are not contiguous carry explicit SIMDe
+// code (AVX2 on x86-64, NEON on arm64, from one source): the spline onto
+// the dense l grid (limber_table_cluster_upsample), the P1h read at the
+// Limber nodes (pcm_1h_richness_fill of halo_cluster.c) and the table
+// read at every integer l (limber_fill_interp of cosmo2D.c). The first
+// two perform the scalar operations in the scalar order on every
+// element, so they are bitwise the scalar loops, which
+// COSMO2D_NOT_USE_SIMD (the DEBUG build) selects as the reference. The
+// Limber sums and the Legendre sums read contiguous rows: they stay
+// `omp simd` reductions over local restrict pointers, the cosmo2D.c
+// rule.
+// ============================================================================
+
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "../cfftlog/cfftlog.h"
+#include <gsl/gsl_integration.h>
 
-#include "bias.h"
 #include "basics.h"
+#include "bias.h"
 #include "cosmo3D.h"
-#include "cluster_util.h"
 #include "cosmo2D.h"
-#include "cosmo2D_cluster.h"
+#include "IA.h"
 #include "radial_weights.h"
-#include "recompute.h"
 #include "redshift_spline.h"
 #include "structs.h"
 
+#include "structs_cluster.h"
+#include "redshift_spline_cluster.h"
+#include "radial_weights_cluster.h"
+#include "halo_cluster.h"
+#include "cosmo2D_cluster.h"
+
 #include "log.c/src/log.h"
 
-static int GSL_WORKSPACE_SIZE = 250;
-static int use_linear_ps_limber = 0; /* 0 or 1 */
-static int INCLUDE_MAG_IN_C_CC_NONLIMBER = 0; /* 0 or 1 */
-static int INCLUDE_MAG_IN_C_CG_NONLIMBER = 0; /* 0 or 1 */
 
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// Correlation Functions (real Space) - Full Sky - bin average
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
 
-double w_gammat_cluster_tomo(const int nt, const int nl, const int ni, const int nj, 
-const int limber)
-{ // nt = theta bin, nl = lambda_obs bin, ni = cluster redshift bin, nj = source redshift bin
-  if (like.Ntheta == 0)
-  {
-    log_fatal("like.Ntheta not initialized");
-    exit(1);
-  }
-  static cosmopara C;
-  static nuisancepara N;
-  static galpara G;
-  static double** Pl = 0;
-  static double* w_vec = 0;
+// ============================================================================
+// [SECTION] CONSTANTS AND SMALL HELPERS
+// ============================================================================
 
-  const int nell = limits.LMAX;
-  const int ntheta = like.Ntheta;
-  const int nlsize = Cluster.N200_Nbin;
-  const int ngammat_size = tomo.cgl_Npowerspectra;
-  const int NSIZE = nlsize*ngammat_size;
+// Lowest redshift of the foreground (magnification) panel. It is the floor
+// the core puts under every line-of-sight integral that reaches the
+// observer (amax_source and amax_lens in redshift_spline.c): it keeps
+// a < 1, where the lensing kernels are defined.
+static const double CLUSTER_FOREGROUND_ZMIN = 0.001;
 
-  if (Pl == 0)
-  {    
-    Pl = (double**) malloc(sizeof(double*)*ntheta);
-    for (int i=0; i<ntheta; i++)
-    {
-      Pl[i] = (double*) malloc(sizeof(double)*nell);
-    }
-    w_vec = (double*) malloc(sizeof(double)*NSIZE*ntheta); 
-    double xmin[ntheta];
-    double xmax[ntheta];
-    // Cocoa: dont thread (init of static variables inside set_bin_average)
-    for (int i=0; i<ntheta; i++)
-    {
-      bin_avg r = set_bin_average(i,0);
-      xmin[i] = r.xmin;
-      xmax[i] = r.xmax;
-    }
-    #pragma omp parallel for
-    for (int i=0; i<ntheta; i++)
-    {
-      double* Pmin = (double*) malloc(sizeof(double)*(nell + 1));
-      double* Pmax = (double*) malloc(sizeof(double)*(nell + 1));
-      for (int l=0; l<nell; l++)
-      {
-        bin_avg r = set_bin_average(i,l);
-        Pmin[l] = r.Pmin;
-        Pmax[l] = r.Pmax;
-      }
-      for (int l=1; l<nell; l++)
-      {
-        Pl[i][l] = (2.*l+1)/(4.*M_PI*l*(l+1)*(xmin[i]-xmax[i]))
-          *((l+2./(2*l+1.))*(Pmin[l-1]-Pmax[l-1])
-          +(2-l)*(xmin[i]*Pmin[l]-xmax[i]*Pmax[l])
-          -2./(2*l+1.)*(Pmin[l+1]-Pmax[l+1]));
-      }
-      free(Pmin);
-      free(Pmax);
-    }
-  }
-  if (recompute_cs(C, G, N))
-  {
-    double** Cl = malloc(NSIZE*sizeof(double*));
-    for (int i=0; i<NSIZE; i++)
-    {
-      Cl[i] = calloc(nell, sizeof(double));
-    }
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      const int ZC = ZCL(0);
-      const int ZSC = ZCS(0);
-      double init_static_vars_only = C_cs_tomo_limber(limits.LMIN_tab + 1, 0, ZC, ZSC);
-    }
-    #pragma GCC diagnostic pop
-    #pragma GCC diagnostic pop
-    if (limber == 1)
-    { 
-      #pragma omp parallel for collapse(3) 
-      for (int i=0; i<nlsize; i++)
-      {  
-        for (int j=0; j<ngammat_size; j++)
-        { 
-          for (int l=2; l<nell; l++)
-          {
-            const int ZC = ZCL(j);
-            const int ZSC = ZCS(j);
-            const int q = i*ngammat_size + j;
-            Cl[q][l] = (l > limits.LMIN_tab) ? C_cs_tomo_limber(l, i, ZC, ZSC) :
-              C_cs_tomo_limber_nointerp(l, i, ZC, ZSC, use_linear_ps_limber, 0);
-          }
-        }    
-      } 
-    }
-    else
-    { 
-      log_fatal("NonLimber not implemented");
-      exit(1);     
-    }
-    #pragma omp parallel for collapse(3)
-    for (int i=0; i<nlsize; i++)
-    {
-      for (int j=0; j<ngammat_size; j++)
-      { 
-        for (int p=0; p<ntheta; p++)
-        {
-          const int nz = i*ngammat_size + j;
-          const int q  = nz*ntheta + p;
-          w_vec[q] = 0;
-          for (int l=1; l<nell; l++)
-          {
-            w_vec[q] += Pl[p][l]*Cl[nz][l];
-          }
-        }
-      }
-    }
-    for (int i=0; i<NSIZE; i++)
-    {
-      free(Cl[i]);
-    }
-    free(Cl);
+// Capacity of every cache-key array of this file (each statistic uses
+// fewer keys; see the CACHE KEYS section).
+#define CLUSTER_NKEYS_MAX 24
 
-    update_cosmopara(&C);
-    update_galpara(&G);
-    update_nuisance(&N);
-  }
-  if (nt < 0 || nt > like.Ntheta - 1)
-  {
-    log_fatal("error in selecting bin number nt = %d (max %d)", nt, like.Ntheta);
-    exit(1); 
-  }
-  if (nl < 0 || nl > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.shear_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.shear_nbin);
-    exit(1); 
-  }
-  const int ntomo = N_cgl(ni, nj);
-  if (!(ntomo>0))
-  {
-    return 0.0;
-  }
-  {
-    const int q = (nl*ngammat_size + ntomo)*ntheta + nt;
-    if (q > NSIZE*ntheta - 1)
-    {
-      log_fatal("internal logic error in selecting bin number");
-      exit(1);
+
+// ---------------------------------------------------------------------------
+// The bits of a double as a uint64 cache key. Two keys are equal exactly
+// when the two doubles are identical, so a switch stored as a double (the
+// magnification coefficient C_c, the survey area) refills a table the
+// moment it changes, even if no setter drew a new random key.
+// ---------------------------------------------------------------------------
+static uint64_t double_bits_key(const double x)
+{
+  uint64_t bits;
+  memcpy(&bits, &x, sizeof(bits));
+  return bits;
+}
+
+
+// ---------------------------------------------------------------------------
+// 1 when any key differs from the key the table was built with (fdiff2,
+// the core's comparison of uint64 cache keys), 0 otherwise.
+// ---------------------------------------------------------------------------
+static int keys_changed(
+    const uint64_t* cache,  // keys the table was built with
+    const uint64_t* keys,   // current keys
+    const int nkeys
+  )
+{
+  int changed = 0;
+  for (int k = 0; k < nkeys; k++) {
+    if (fdiff2(cache[k], keys[k])) {
+      changed = 1;
     }
-    return w_vec[q];
+  }
+  return changed;
+}
+
+
+// ---------------------------------------------------------------------------
+// Record the keys a table was just built with.
+// ---------------------------------------------------------------------------
+static void keys_stamp(
+    uint64_t* cache,       // output: keys the table is now built with
+    const uint64_t* keys,  // current keys
+    const int nkeys
+  )
+{
+  for (int k = 0; k < nkeys; k++) {
+    cache[k] = keys[k];
   }
 }
 
 
-double w_cc_tomo(const int nt, const int nl1, const int nl2, const int ni, const int nj, 
-const int limber)
-{ // nt = theta bin , nl{1,2} = lambda_obs bins, n{i,j} = cluster redshift bins
-  if (like.Ntheta == 0)
-  {
-    log_fatal("like.Ntheta not initialized");
+// ---------------------------------------------------------------------------
+// Curved-sky (extended Limber) multipole prefactors (1812.05995 eqs
+// 74-79), the formulas of cosmo2D.c. The Limber kernel is evaluated at
+// k = (l + 1/2)/f_K, and each projected field carries the exact factor of
+// its spin:
+//
+//   magnification  l (l+1)/(l+1/2)^2: the angular Laplacian eigenvalue
+//                  l(l+1) over its flat-sky value (l+1/2)^2
+//   shear          sqrt((l-1) l (l+1) (l+2))/(l+1/2)^2: two covariant
+//                  derivatives of the lensing potential (spin 2); exactly
+//                  0 at l = 1, where a spin-2 field has no multipole
+//
+// Both tend to 1 for l >> 1 (the flat-sky limit).
+// ---------------------------------------------------------------------------
+static double ell_prefactor_magnification(const double l)
+{
+  const double ell = l + 0.5;
+  return l*(l + 1.0)/(ell*ell);
+}
+
+
+static double ell_prefactor_shear(const double l)
+{
+  const double ell = l + 0.5;
+  const double spin2_product = (l - 1.0)*l*(l + 1.0)*(l + 2.0);
+  // the guard keeps sqrt away from a negative rounding of 0 at l = 1
+  if (spin2_product > 0.0) {
+    return sqrt(spin2_product)/(ell*ell);
+  }
+  return 0.0;
+}
+
+
+// ---------------------------------------------------------------------------
+// Gauss-Legendre table shared by every quadrature of this file (both
+// Limber panels and the counts). Its size is always one GSL has
+// precomputed (the house rule); Ntable.high_def_integration climbs the
+// ladder. The smallest rung must resolve the erf edges of the selection
+// kernels <phi_i|z> (width sigma_z ~ 0.006 (1+z)) on a cluster bin.
+//
+// Cache invalidation: rebuilt when Ntable.random changes.
+// ---------------------------------------------------------------------------
+static const gsl_integration_glfixed_table* limber_gl_table_cluster(void)
+{
+  static gsl_integration_glfixed_table* w = NULL;
+  static uint64_t cache_ntable = 0;
+
+  if (NULL == w || fdiff2(cache_ntable, Ntable.random)) {
+    const int hdi = abs(Ntable.high_def_integration);
+
+    // predefined GSL tables only
+    int nodes_per_panel = 1024;
+    if (0 == hdi) {
+      nodes_per_panel = 128;
+    }
+    else if (1 == hdi) {
+      nodes_per_panel = 256;
+    }
+    else if (2 == hdi) {
+      nodes_per_panel = 512;
+    }
+
+    if (w != NULL) {
+      gsl_integration_glfixed_table_free(w);
+    }
+    w = malloc_gslint_glfixed(nodes_per_panel);
+    cache_ntable = Ntable.random;
+  }
+  return w;
+}
+
+
+
+#ifndef COSMO2D_NOT_USE_SIMD
+// ============================================================================
+// [SECTION] SIMDe VECTORS AND FUSED MULTIPLY-ADDS (private copies of halo.c's)
+// ============================================================================
+//
+// The explicit vector code of this file goes through SIMDe
+// (simde/x86/avx2.h and fma.h): AVX2 on x86-64, NEON on arm64, from one
+// source. basics.h includes SIMDe only when COSMO2D_NOT_USE_SIMD is not
+// defined (the DEBUG build defines it), so every SIMDe type and call sits
+// inside #ifndef COSMO2D_NOT_USE_SIMD, with the scalar loop, the
+// reference, in the other branch.
+//
+// A v4d holds four doubles side by side, its "lanes" 0, 1, 2, 3 (one AVX2
+// register on x86-64, two NEON registers on arm64); a v2d holds two: one
+// half of a v4d. Vector variables carry a v prefix.
+//
+// halo.c keeps its fused multiply-add helpers (nfw_fmadd4) static, so
+// this file holds its own copy (as halo_cluster.c does). Both helpers are
+// always inlined: on arm64 a v4d is a union of two NEON registers and a
+// real call would pass it through memory.
+typedef simde__m256d v4d;   // 4 doubles
+typedef simde__m128d v2d;   // 2 doubles: one half of a v4d
+
+
+// ---------------------------------------------------------------------------
+// limber_fmadd4: a*b + c on four lanes with one rounding.
+//
+// A fused multiply-add keeps the product a*b exact and rounds only the
+// final sum; a separate multiply and add rounds twice, and the two results
+// can differ in the last bit. The compiler fuses the scalar a*b + c of
+// the reference loops, so a vector path must fuse the same products at
+// the same places to stay bitwise equal to them.
+//
+// With native x86 FMA, simde_mm256_fmadd_pd is one AVX2 instruction.
+// Without it (arm64) SIMDe writes that call as a multiply and then an
+// add, two roundings, while the two-lane simde_mm_fmadd_pd is a real
+// fused NEON instruction: the v4d is split into its two v2d halves (lanes
+// 0,1 low, lanes 2,3 high), each half is fused, and the halves are joined
+// again. Lane l of the result is a[l]*b[l] + c[l] either way.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d limber_fmadd4(
+    const v4d va,   // a on four lanes
+    const v4d vb,   // b on four lanes
+    const v4d vc    // c on four lanes
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  // a*b + c on all four lanes, one fused instruction
+  return simde_mm256_fmadd_pd(va, vb, vc);
+#else
+  // the low half of each input (castpd256_pd128 keeps the lower two
+  // doubles; it moves no data)
+  const v2d va_low = simde_mm256_castpd256_pd128(va);  // a, lanes 0,1
+  const v2d vb_low = simde_mm256_castpd256_pd128(vb);  // b, lanes 0,1
+  const v2d vc_low = simde_mm256_castpd256_pd128(vc);  // c, lanes 0,1
+
+  // the high half of each input (extractf128_pd(v, 1) takes the upper
+  // two doubles)
+  const v2d va_high = simde_mm256_extractf128_pd(va, 1);  // a, lanes 2,3
+  const v2d vb_high = simde_mm256_extractf128_pd(vb, 1);  // b, lanes 2,3
+  const v2d vc_high = simde_mm256_extractf128_pd(vc, 1);  // c, lanes 2,3
+
+  // a*b + c fused on lanes 0,1
+  const v2d vlow  = simde_mm_fmadd_pd(va_low, vb_low, vc_low);
+
+  // a*b + c fused on lanes 2,3
+  const v2d vhigh = simde_mm_fmadd_pd(va_high, vb_high, vc_high);
+
+  // join the halves: set_m128d(high, low) puts vlow in lanes 0,1 and
+  // vhigh in lanes 2,3
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
+// limber_fmsub4: a*b - c on four lanes with one rounding, the vector form
+// of the scalar a*b - c that the compiler fuses.
+//
+// Written as a*b + (-c) through limber_fmadd4: IEEE 754 defines x - y as
+// x + (-y), so the two are the same double, signed zeros included. -c is
+// exact: xor with -0.0 (only the sign bit set) flips the sign bit of each
+// lane and touches nothing else. SIMDe's own simde_mm256_fmsub_pd is not
+// used because without native x86 FMA it is a multiply and then a
+// subtraction (two roundings), in its two-lane form as well.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d limber_fmsub4(
+    const v4d va,   // a on four lanes
+    const v4d vb,   // b on four lanes
+    const v4d vc    // c on four lanes
+  )
+{
+  // -0.0 in all four lanes: the sign bit alone
+  const v4d vsign_bit = simde_mm256_set1_pd(-0.0);
+
+  // -c on each lane
+  const v4d vminus_c = simde_mm256_xor_pd(vc, vsign_bit);
+
+  // a*b + (-c), one rounding
+  return limber_fmadd4(va, vb, vminus_c);
+}
+
+
+// ---------------------------------------------------------------------------
+// limber_load_pairs4: the two neighbours row[j], row[j+1] of four lanes,
+// each lane with its own index j, regrouped into a v4d of left values
+// and a v4d of right values.
+//
+// An interpolation between two table nodes needs both, and they sit side
+// by side in memory: one 16-byte load per lane fetches the pair. The four
+// pairs are then regrouped (unpacklo takes the first double of each pair,
+// unpackhi the second). The memory access of halo.c's nfw_read4.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) void limber_load_pairs4(
+    const double* restrict row,  // table row
+    const int* index,            // [4] left index j of each lane
+    v4d* vleft,                  // output: row[j] on each lane
+    v4d* vright                  // output: row[j+1] on each lane
+  )
+{
+  // the pair (row[j], row[j+1]) of each lane, one two-double load each
+  // (loadu reads two consecutive doubles from memory into a v2d)
+  const v2d vpair0 = simde_mm_loadu_pd(row + index[0]);  // lane 0's pair
+  const v2d vpair1 = simde_mm_loadu_pd(row + index[1]);  // lane 1's pair
+  const v2d vpair2 = simde_mm_loadu_pd(row + index[2]);  // lane 2's pair
+  const v2d vpair3 = simde_mm_loadu_pd(row + index[3]);  // lane 3's pair
+
+  // the left values row[j] of lanes 0,1
+  const v2d vleft_low = simde_mm_unpacklo_pd(vpair0, vpair1);
+
+  // the left values of lanes 2,3
+  const v2d vleft_high = simde_mm_unpacklo_pd(vpair2, vpair3);
+
+  // the right values row[j+1] of lanes 0,1
+  const v2d vright_low = simde_mm_unpackhi_pd(vpair0, vpair1);
+
+  // the right values of lanes 2,3
+  const v2d vright_high = simde_mm_unpackhi_pd(vpair2, vpair3);
+
+  // row[j] on all four lanes (set_m128d joins the halves, low first)
+  *vleft = simde_mm256_set_m128d(vleft_high, vleft_low);
+
+  // row[j+1] on all four lanes
+  *vright = simde_mm256_set_m128d(vright_high, vright_low);
+}
+#endif
+
+
+
+// ============================================================================
+// [SECTION] QUADRATURE NODES (PRIVATE COPY OF cosmo2D.c's cosmo_nodes)
+// ============================================================================
+//
+// The Limber integrals run over Gauss-Legendre nodes in the scale factor.
+// Everything that depends on the node alone (a, weight, f_K, D, H/H0,
+// dchi/da) is computed once per node and reused for every (row, l). This
+// is cosmo2D.c's cosmo_nodes, copied here so the core exports nothing for
+// clusters.
+//
+// Two panels per cluster bin ni, concatenated into one node list:
+//
+//   support    [amin_cluster(ni), amax_cluster(ni)]: where <phi_ni|z> is
+//              nonzero; the density terms (b W_c, W_c) live here
+//   foreground [amax_cluster(ni), a(z = CLUSTER_FOREGROUND_ZMIN)]: the
+//              cluster magnification kernel W_mag,c extends over the whole
+//              foreground, down to the observer, not only over the bin
+//
+// Nodes 0 .. nsupport-1 are the support panel, the rest the foreground.
+// Each panel is a full Gauss-Legendre rule on its own interval, so the
+// support panel (and every density term) is the same whether or not the
+// foreground is present: switching magnification off drops the foreground
+// panel without moving a single support node, so C_c -> 0 is a smooth
+// limit (the lens-bin range of the core, amax_lens in redshift_spline.c,
+// instead jumps when b_mag crosses 0). Without magnification the
+// foreground carries no signal: the density kernels vanish there and every
+// integrand has a cluster leg.
+
+typedef struct {
+  int npts;       // number of nodes (support + foreground)
+  int nsupport;   // nodes 0 .. nsupport-1 lie on the cluster-bin support
+  double** data;  // data[CN_*][p]: node quantities (malloc2d)
+} cosmo_nodes;
+
+enum {
+  CN_A = 0,     // scale factor a
+  CN_WT,        // Gauss-Legendre weight of the node's panel
+  CN_FK,        // comoving distance chi(a) (= f_K, flat cosmology)
+  CN_GROWFAC,   // linear growth factor D(a)
+  CN_HOVERH0,   // H(a)/H0
+  CN_DCHIDA,    // dchi/da (the Limber measure dchi/da / f_K^2)
+  CN_NPARAMS    // number of columns
+};
+
+
+// ---------------------------------------------------------------------------
+// Fill the nodes of one Gauss-Legendre panel [amin, amax] into cn, starting
+// at node index offset. Single-threaded: it performs the first (lazy)
+// initialization of the chi_all, growfac and hoverh0v2 tables.
+// ---------------------------------------------------------------------------
+static void fill_cosmo_nodes_panel(
+    cosmo_nodes* cn,                         // nodes being filled
+    const int offset,                        // index of the panel's first node
+    const double amin,                       // panel lower bound in a
+    const double amax,                       // panel upper bound in a
+    const gsl_integration_glfixed_table* w   // Gauss-Legendre rule
+  )
+{
+  const int nodes = (int) w->n;
+
+  for (int q = 0; q < nodes; q++) {
+    const int p = offset + q;
+
+    gsl_integration_glfixed_point(amin,
+                                  amax,
+                                  q,
+                                  &cn->data[CN_A][p],
+                                  &cn->data[CN_WT][p],
+                                  w);
+
+    const double a         = cn->data[CN_A][p];
+    const struct chis cdca = chi_all(a);
+
+    cn->data[CN_FK][p]      = cdca.chi;
+    cn->data[CN_GROWFAC][p] = growfac(a);
+    cn->data[CN_HOVERH0][p] = hoverh0v2(a, cdca.dchida);
+    cn->data[CN_DCHIDA][p]  = cdca.dchida;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Nodes of cluster bin ni: the support panel, then (with_foreground = 1)
+// the foreground panel. If the support already reaches the foreground floor
+// the support is clipped there and the foreground panel is dropped.
+//
+// Returns: the nodes; the caller releases them (free_cosmo_nodes_cluster_all)
+// ---------------------------------------------------------------------------
+static cosmo_nodes create_cosmo_nodes_cluster(
+    const int ni,                            // cluster redshift bin
+    const int with_foreground,               // 1: add the foreground panel
+    const gsl_integration_glfixed_table* w   // Gauss-Legendre rule per panel
+  )
+{
+  const double a_foreground_max = 1.0/(1.0 + CLUSTER_FOREGROUND_ZMIN);
+
+  // support of <phi_ni|z> in scale factor: far edge, near edge
+  const double a_far = amin_cluster(ni);
+  double a_near      = amax_cluster(ni);
+
+  int use_foreground = with_foreground;
+  if (a_near >= a_foreground_max) {
+    a_near = a_foreground_max;
+    use_foreground = 0;
+  }
+
+  if (!(a_far > 0.0) || !(a_far < a_near)) {
+    log_fatal("invalid support of cluster bin %d: a = [%e, %e]",
+      ni, a_far, a_near);
     exit(1);
   }
-  static cosmopara C;
-  static nuisancepara N;
-  static double** Pl = 0;
-  static double* w_vec = 0;
 
-  const int nlsize = Cluster.N200_Nbin;
-  const int nccl_size = redshift.clustering_nbin; // cross redshift bin not supported so not using
-                                           // tomo.cc_clustering_Npowerspectra
+  const int nodes_per_panel = (int) w->n;
 
-  const int nell = limits.LMAX;
-  const int ntheta = like.Ntheta;
-  const int NSIZE = nlsize*nlsize*nccl_size;
+  cosmo_nodes cn;
+  cn.nsupport = nodes_per_panel;
+  cn.npts     = nodes_per_panel;
+  if (1 == use_foreground) {
+    cn.npts = 2*nodes_per_panel;
+  }
+  cn.data = (double**) malloc2d(CN_NPARAMS, cn.npts);
 
-  if (Pl == 0)
-  {
-    Pl = (double**) malloc(sizeof(double*)*ntheta);
-    for (int i=0; i<ntheta; i++)
-    {
-      Pl[i] = (double*) malloc(sizeof(double)*nell);
+  fill_cosmo_nodes_panel(&cn, 0, a_far, a_near, w);
+
+  if (1 == use_foreground) {
+    fill_cosmo_nodes_panel(&cn, cn.nsupport, a_near, a_foreground_max, w);
+  }
+  return cn;
+}
+
+
+// ---------------------------------------------------------------------------
+// Nodes of every cluster bin, cn_all[0 .. zdist_nbin-1].
+//
+// Returns: the largest node count over the bins (the padded size of every
+// per-node array of the work functions)
+// ---------------------------------------------------------------------------
+static int create_cosmo_nodes_cluster_all(
+    cosmo_nodes* cn_all,        // output [cluster.zdist_nbin]
+    const int with_foreground   // 1: add the foreground (magnification) panel
+  )
+{
+  const gsl_integration_glfixed_table* w = limber_gl_table_cluster();
+
+  int npts_max = 0;
+  for (int ni = 0; ni < cluster.zdist_nbin; ni++) {
+    cn_all[ni] = create_cosmo_nodes_cluster(ni, with_foreground, w);
+    if (cn_all[ni].npts > npts_max) {
+      npts_max = cn_all[ni].npts;
     }
-    w_vec = (double*) malloc(sizeof(double)*NSIZE*ntheta);
+  }
+  return npts_max;
+}
+
+
+static void free_cosmo_nodes_cluster_all(cosmo_nodes* cn_all)
+{
+  for (int ni = 0; ni < cluster.zdist_nbin; ni++) {
+    free(cn_all[ni].data);
+  }
+}
+
+
+
+// ============================================================================
+// [SECTION] CACHE KEYS
+// ============================================================================
+//
+// A table stores the keys it was built with and refills when any differs
+// (the core's two-tier pattern: Ntable.random reallocates, the physics keys
+// refill). Each statistic keys on exactly what its integrand reads.
+
+// ---------------------------------------------------------------------------
+// Keys every cluster statistic shares: cluster model, selection kernels,
+// MOR, pair lists, and the switches themselves (the include_HOD_GX pattern
+// of cosmo2D.c: a switch flipped without a key bump still refills).
+//
+// Selection bias: the Y1 model sits inside the bias mass integral
+// (halo_cluster.c), so its parameters change the spectra; the Y6 model acts
+// on the data vector only (the interface), and keying on it would refill
+// every cluster table at every MCMC step for nothing.
+//
+// Returns: the new number of keys (the position count stays fixed)
+// ---------------------------------------------------------------------------
+static int append_cluster_keys(
+    uint64_t* keys,  // key array (CLUSTER_NKEYS_MAX)
+    int nkeys        // keys already written
+  )
+{
+  keys[nkeys++] = cluster.random_model;
+  keys[nkeys++] = cluster.random_zdist;
+  keys[nkeys++] = cluster.random_mor;
+  keys[nkeys++] = cluster.random_pairs;
+  keys[nkeys++] = (uint64_t) cluster.selection_model;
+  if (CLUSTER_SELECTION_Y1 == cluster.selection_model) {
+    keys[nkeys++] = cluster.random_selection;
+  }
+  else {
+    keys[nkeys++] = 0;
+  }
+  keys[nkeys++] = (uint64_t) cluster.kernel_mode;
+  keys[nkeys++] = (uint64_t) cluster.include_ia;
+  keys[nkeys++] = double_bits_key(cluster.magnification);
+  return nkeys;
+}
+
+
+// cluster lensing: cosmology, source n(z) and its photo-z shifts, NLA
+// amplitudes, plus the cluster keys
+static int cluster_keys_cs(uint64_t* keys)
+{
+  int nkeys = 0;
+  keys[nkeys++] = Ntable.random;
+  keys[nkeys++] = cosmology.random;
+  keys[nkeys++] = nuisance.random_photoz_shear;
+  keys[nkeys++] = nuisance.random_ia;
+  keys[nkeys++] = redshift.random_shear;
+  return append_cluster_keys(keys, nkeys);
+}
+
+
+// cluster clustering: cosmology plus the cluster keys
+static int cluster_keys_cc(uint64_t* keys)
+{
+  int nkeys = 0;
+  keys[nkeys++] = Ntable.random;
+  keys[nkeys++] = cosmology.random;
+  return append_cluster_keys(keys, nkeys);
+}
+
+
+// cluster-galaxy clustering: cosmology, lens n(z) and its photo-z
+// parameters, galaxy bias and magnification, plus the cluster keys
+static int cluster_keys_cg(uint64_t* keys)
+{
+  int nkeys = 0;
+  keys[nkeys++] = Ntable.random;
+  keys[nkeys++] = cosmology.random;
+  keys[nkeys++] = nuisance.random_photoz_clustering;
+  keys[nkeys++] = nuisance.random_galaxy_bias;
+  keys[nkeys++] = redshift.random_clustering;
+  return append_cluster_keys(keys, nkeys);
+}
+
+
+
+// ============================================================================
+// [SECTION] CACHED LOG-ELL TABLES (shared by the three statistics)
+// ============================================================================
+//
+// One table per statistic: rows = the statistic's block (e.g. cs: (pair,
+// richness)), columns = log-spaced multipoles over [LMIN_tab, LMAX + 1]
+// (the range of cosmo2D.c). Two uniform grids in ln l share those ends:
+//
+//   exact grid  the Limber quadrature runs here:
+//                 C_cs        Ntable.N_ell[NODES_COARSE] nodes (pattern P1b, as
+//                             cosmo2D.c's C_gs: smooth in ln l with one
+//                             broad lensing kernel; the 1-halo/2-halo
+//                             transition spans about an e-fold in l)
+//                 C_cc, C_cg  Ntable.N_ell[NODES_DENSE] nodes (two narrow density kernels
+//                             leave BAO wiggles in l: the node count of
+//                             cosmo2D.c's exact C_gg)
+//   dense grid  CLUSTER_ELL_REFINEMENT (N_ell - 1) + 1 nodes, filled by the
+//               house natural cubic spline in ln l (spline_coeffs_uniform +
+//               Horner) through the exact nodes. The N_ell exact nodes of
+//               cc and cg sit exactly on dense nodes (the x (N - 1) + 1
+//               alignment rule).
+//
+// The real-space sums read the dense grid at every integer l through
+// limber_fill_interp (linear in ln l); the scalar readers through
+// interpol1d. Why the refinement: a linear read leaves an error
+// (d ln l)^2/8 x (d^2 C/d ln l^2) inside every cell, and the Y transform
+// of cluster lensing (eq 15) takes differences of gamma_t across
+// neighbouring angular bins, which amplifies any error that is not smooth.
+// Refining cuts that error by CLUSTER_ELL_REFINEMENT^2 at one Horner
+// evaluation per dense node and refill; the integer-l reads cost the same
+// at any table size.
+
+// dense nodes per exact N_ell interval (see above)
+static const int CLUSTER_ELL_REFINEMENT = 8;
+
+// A statistic's exact Limber batch: C_l of every row of its block at nell
+// multipoles, rows[row][i] (the *_batch_rows functions below).
+typedef void (*limber_batch_rows)(const double* ells, const int nell,
+  double** rows);
+
+typedef struct
+{
+  // --- dense grid: what the readers see ---
+  double** tab;         // [nrows][nell]: C_l at l_i = exp(lim[0] + i lim[2])
+  int nrows;            // rows of the statistic's block
+  int nell;             // dense nodes
+  double lim[3];        // ln l_min, ln l_max, uniform spacing in ln l
+
+  // --- exact grid: where the Limber quadrature runs ---
+  int smooth_in_ln_ell; // the statistic's choice when allocated (1: cs)
+  int nexact;           // exact nodes
+  double dlnx;          // exact spacing in ln l
+  double* lxe;          // the nexact multipoles of the exact grid
+  double** tabe;        // [nrows][nexact]: exact C_l
+  double** cspl;        // [nrows][nexact]: spline c coefficients
+  int* qidx;            // dense node -> exact interval (left node)
+  double* qdel;         // dense node -> ln l offset inside that interval
+
+  // --- cache ---
+  uint64_t cache_ntable;               // Ntable.random of the allocation
+  uint64_t cache[CLUSTER_NKEYS_MAX];   // keys of the values
+} limber_table_cluster;
+
+// how the real-space functions reach a statistic's table
+typedef const limber_table_cluster* (*limber_table_getter)(void);
+
+
+// ---------------------------------------------------------------------------
+// Release every array of a table (the struct itself is static storage).
+// ---------------------------------------------------------------------------
+static void limber_table_cluster_free(limber_table_cluster* T)
+{
+  if (T->tab != NULL) {
+    free(T->tab);
+    T->tab = NULL;
+  }
+  if (T->lxe != NULL) {
+    free(T->lxe);
+    T->lxe = NULL;
+  }
+  if (T->tabe != NULL) {
+    free(T->tabe);
+    T->tabe = NULL;
+  }
+  if (T->cspl != NULL) {
+    free(T->cspl);
+    T->cspl = NULL;
+  }
+  if (T->qidx != NULL) {
+    free(T->qidx);
+    T->qidx = NULL;
+  }
+  if (T->qdel != NULL) {
+    free(T->qdel);
+    T->qdel = NULL;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Fill the dense grid from the exact rows with the house natural cubic
+// spline in ln l.
+//
+// On interval [x_j, x_j + h] the spline is
+//
+//   S(x_j + dx) = y_j + b dx + c_j dx^2 + d dx^3
+//
+// with c from spline_coeffs_uniform (S''/2, natural ends c = 0) and
+//
+//   d = (c_{j+1} - c_j)/(3 h)                        (S'' linear in the cell)
+//   b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3    (S hits y_{j+1})
+//
+// evaluated in Horner form at each dense node's precomputed (j, dx).
+// ---------------------------------------------------------------------------
+static void limber_table_cluster_upsample(limber_table_cluster* T)
+{
+  const double h     = T->dlnx;
+  const double inv_h = 1.0/T->dlnx;
+
+  #pragma omp parallel for schedule(static)
+  for (int row = 0; row < T->nrows; row++) {
+    spline_coeffs_uniform(T->tabe[row], T->nexact, h, T->cspl[row]);
+  }
+
+#ifndef COSMO2D_NOT_USE_SIMD
+  // The reference loop (the #else branch below), four dense nodes i, i+1,
+  // i+2, i+3 per step, one per lane of a v4d.
+  //
+  // Why explicit SIMDe: every dense node reads its exact interval through
+  // an index (y[j], y[j+1], c[j], c[j+1] with j = qidx[i]), so the loads
+  // are not contiguous and the compiler leaves the loop scalar (the
+  // blocker of cosmo2D.c's limber_fill_interp). Here the two neighbours
+  // of a lane sit side by side, so one 16-byte load per lane fetches
+  // both and the four pairs are regrouped into a v4d of left values and a
+  // v4d of right values (limber_load_pairs4; halo.c's nfw_read4 idiom:
+  // a gather instruction is slow on several x86 cores and is lane-by-lane
+  // loads on NEON anyway).
+  //
+  // Bitwise the reference: the same operations in the same order on
+  // every node, with the multiply-adds fused where the compiler fuses the
+  // scalar expressions: the product (y[j+1] - y[j])*inv_h into the
+  // subtraction that forms b (limber_fmsub4) and the three t*(..) + ..
+  // of the Horner form (limber_fmadd4). c[j+1] + 2.0*c[j] is the same
+  // double fused or not (2 c[j] is exact), and the divisions stay
+  // divisions.
+  //
+  // One row per task (the reference collapses rows and nodes): a row is
+  // the unit the vector loop walks contiguously. Each dense node is
+  // computed on its own, so no value depends on the thread count.
+  #pragma omp parallel for schedule(static)
+  for (int row = 0; row < T->nrows; row++) {
+    // Local restrict pointers: the rows are reached through
+    // pointer-to-pointer indirection inside the parallel region, and
+    // without them the compiler cannot prove that a store to the dense
+    // row leaves the exact rows and the node map unchanged, and reloads
+    // them at every step (the cosmo2D.c idiom)
+    const double* restrict y    = T->tabe[row];  // exact C_l
+    const double* restrict c    = T->cspl[row];  // spline c coefficients
+    const int* restrict qidx    = T->qidx;       // dense node -> interval j
+    const double* restrict qdel = T->qdel;       // dense node -> offset dx
+    double* restrict dense      = T->tab[row];   // output: dense C_l
+    const int nell              = T->nell;
+
+    // h, 1/h, 2, 3 and 3 h in all four lanes (set1 copies one scalar into
+    // every lane; 3.0*h is the reference's product, computed once)
+    const v4d vh     = simde_mm256_set1_pd(h);
+    const v4d vinv_h = simde_mm256_set1_pd(inv_h);
+    const v4d vtwo   = simde_mm256_set1_pd(2.0);
+    const v4d vthree = simde_mm256_set1_pd(3.0);
+    const v4d v3h    = simde_mm256_set1_pd(3.0*h);
+
+    int i = 0;
+    for (; i <= nell - 4; i += 4) {
+      v4d vy0;  // y[j]   of dense nodes i..i+3
+      v4d vy1;  // y[j+1]
+      v4d vc0;  // c[j]
+      v4d vc1;  // c[j+1]
+
+      // the exact nodes that bracket each dense node: j = qidx[i + lane]
+      limber_load_pairs4(y, qidx + i, &vy0, &vy1);
+      limber_load_pairs4(c, qidx + i, &vc0, &vc1);
+
+      // dx = qdel[i..i+3] (loadu reads four consecutive doubles from
+      // memory into the lanes)
+      const v4d vdx = simde_mm256_loadu_pd(qdel + i);
+
+      // scalar: b = (y[j+1] - y[j])*inv_h - h*(c[j+1] + 2.0*c[j])/3.0
+
+      // y[j+1] - y[j]
+      const v4d vdy = simde_mm256_sub_pd(vy1, vy0);
+
+      // 2 c[j]
+      const v4d vtwo_c0 = simde_mm256_mul_pd(vtwo, vc0);
+
+      // c[j+1] + 2 c[j]
+      const v4d vcsum = simde_mm256_add_pd(vc1, vtwo_c0);
+
+      // h (c[j+1] + 2 c[j])
+      const v4d vh_csum = simde_mm256_mul_pd(vh, vcsum);
+
+      // h (c[j+1] + 2 c[j])/3
+      const v4d vcurv_term = simde_mm256_div_pd(vh_csum, vthree);
+
+      // b = (y[j+1] - y[j]) inv_h - h (c[j+1] + 2 c[j])/3, the product
+      // fused into the subtraction
+      const v4d vb = limber_fmsub4(vdy, vinv_h, vcurv_term);
+
+      // scalar: d = (c[j+1] - c[j])/(3.0*h)
+
+      // c[j+1] - c[j]
+      const v4d vdc = simde_mm256_sub_pd(vc1, vc0);
+
+      // d
+      const v4d vd = simde_mm256_div_pd(vdc, v3h);
+
+      // scalar: y[j] + dx*(b + dx*(c[j] + dx*d)), innermost bracket
+      // first, each dx*(..) + .. fused
+
+      // c[j] + dx d
+      const v4d vinner = limber_fmadd4(vdx, vd, vc0);
+
+      // b + dx (c[j] + dx d)
+      const v4d vouter = limber_fmadd4(vdx, vinner, vb);
+
+      // y[j] + dx (b + dx (c[j] + dx d))
+      const v4d vdense = limber_fmadd4(vdx, vouter, vy0);
+
+      // to dense[i..i+3] (storeu writes the four lanes to memory)
+      simde_mm256_storeu_pd(dense + i, vdense);
+    }
+
+    // scalar tail: the last nell % 4 dense nodes, the statements of the
+    // reference loop
+    for (; i < nell; i++) {
+      const int j     = qidx[i];
+      const double dx = qdel[i];
+
+      const double b = (y[j+1] - y[j])*inv_h - h*(c[j+1] + 2.0*c[j])/3.0;
+      const double d = (c[j+1] - c[j])/(3.0*h);
+
+      dense[i] = y[j] + dx*(b + dx*(c[j] + dx*d));
+    }
+  }
+#else
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < T->nrows; row++) {
+    for (int i = 0; i < T->nell; i++) {
+      const double* restrict y = T->tabe[row];
+      const double* restrict c = T->cspl[row];
+
+      const int j     = T->qidx[i];
+      const double dx = T->qdel[i];
+
+      const double b = (y[j+1] - y[j])*inv_h - h*(c[j+1] + 2.0*c[j])/3.0;
+      const double d = (c[j+1] - c[j])/(3.0*h);
+
+      T->tab[row][i] = y[j] + dx*(b + dx*(c[j] + dx*d));
+    }
+  }
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
+// Bring a statistic's table up to date.
+//
+//   1. GEOMETRY (Ntable.random, block size): both grids, the dense-node map
+//      onto the exact grid, every array. Every allocation lives here; a
+//      refill only fills.
+//   2. VALUES (the statistic's keys): exact Limber batch on the exact grid,
+//      spline onto the dense grid.
+//
+// Thread safety: call outside parallel regions (the batch runs its own).
+// ---------------------------------------------------------------------------
+static void limber_table_cluster_update(
+    limber_table_cluster* T,        // the statistic's static table
+    const int nrows,                // rows of the statistic's block
+    const int smooth_in_ln_ell,     // 1: exact grid N_ell_internal (P1b)
+    const uint64_t* keys,           // the statistic's current keys
+    const int nkeys,                // number of keys
+    limber_batch_rows batch_rows    // the statistic's exact Limber batch
+  )
+{
+  int refill = 0;
+
+  // --- 1. GEOMETRY ---
+  if (NULL == T->tab ||
+      fdiff2(T->cache_ntable, Ntable.random) ||
+      nrows != T->nrows ||
+      smooth_in_ln_ell != T->smooth_in_ln_ell)
+  {
+    limber_table_cluster_free(T);
+
+    // the spline needs at least four nodes
+    const int nell_house = Ntable.N_ell[NODES_DENSE];
+    if (nell_house < 4) {
+      log_fatal("Ntable.N_ell[NODES_DENSE] = %d < 4", nell_house);
+      exit(1);
+    }
+
+    int nexact = nell_house;
+    if (1 == smooth_in_ln_ell &&
+        Ntable.N_ell[NODES_COARSE] > 3 &&
+        Ntable.N_ell[NODES_COARSE] < nell_house)
+    {
+      nexact = Ntable.N_ell[NODES_COARSE];
+    }
+    const int nell = CLUSTER_ELL_REFINEMENT*(nell_house - 1) + 1;
+
+    T->nrows            = nrows;
+    T->nell             = nell;
+    T->nexact           = nexact;
+    T->smooth_in_ln_ell = smooth_in_ln_ell;
+
+    // same l range as cosmo2D.c: from the first multipole the real-space
+    // sums read from the table to one past the last one they need
+    T->lim[0] = log(fmax(limits.LMIN_tab, 1.0));
+    T->lim[1] = log(Ntable.LMAX + 1.0);
+    T->lim[2] = (T->lim[1] - T->lim[0])/((double) nell - 1.0);
+
+    T->dlnx = (T->lim[1] - T->lim[0])/((double) nexact - 1.0);
+
+    T->lxe = (double*) malloc1d(nexact);
+    for (int i = 0; i < nexact; i++) {
+      T->lxe[i] = exp(T->lim[0] + i*T->dlnx);
+    }
+
+    // Where does dense node i sit on the exact grid? Both grids span the
+    // same [lim[0], lim[1]] in ln l, so the map is arithmetic:
+    //   r = i lim[2]/dlnx (exact spacings from the left end),
+    //   j = (int) r (left node), qdel = (r - j) dlnx (offset in ln l).
+    // The clamp: at the shared top end r can round one ulp above
+    // nexact - 1; the last legal interval starts at nexact - 2.
+    T->qidx = (int*) malloc1d_int(nell);
+    T->qdel = (double*) malloc1d(nell);
+    for (int i = 0; i < nell; i++) {
+      const double r = (double) i*T->lim[2]/T->dlnx;
+      int j = (int) r;
+      if (j > nexact - 2) {
+        j = nexact - 2;
+      }
+      T->qidx[i] = j;
+      T->qdel[i] = (r - j)*T->dlnx;
+    }
+
+    T->tab  = (double**) malloc2d(nrows, nell);
+    T->tabe = (double**) malloc2d(nrows, nexact);
+    T->cspl = (double**) malloc2d(nrows, nexact);
+    zero2d(T->tab, nrows, nell);
+    zero2d(T->tabe, nrows, nexact);
+    zero2d(T->cspl, nrows, nexact);
+
+    T->cache_ntable = Ntable.random;
+    refill = 1;
+  }
+
+  // --- 2. VALUES ---
+  if (1 == refill || keys_changed(T->cache, keys, nkeys)) {
+    batch_rows(T->lxe, T->nexact, T->tabe);
+    limber_table_cluster_upsample(T);
+    keys_stamp(T->cache, keys, nkeys);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Read row `row` of a table at multipole l (linear in ln l, the core's
+// interpol1d; outside the grid it warns and extrapolates, as cosmo2D.c).
+// ---------------------------------------------------------------------------
+static double limber_table_cluster_read(
+    const limber_table_cluster* T,
+    const int row,
+    const double l
+  )
+{
+  const double lnl = log(l);
+
+  if (lnl < T->lim[0]) {
+    log_warn("l = %e < lmin = %e. Extrapolation adopted", l, exp(T->lim[0]));
+  }
+  if (lnl > T->lim[1]) {
+    log_warn("l = %e > lmax = %e. Extrapolation adopted", l, exp(T->lim[1]));
+  }
+  return interpol1d(T->tab[row], T->nell, T->lim[0], T->lim[1], T->lim[2],
+    lnl);
+}
+
+
+
+// ============================================================================
+// [SECTION] CLUSTER LEG AT THE NODES (shared by C_cs, C_cc, C_cg)
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Node quantities of the cluster field, per (cluster bin, richness bin,
+// node):
+//
+//   limber_weight          w_p (dchi/da) / f_K^2    (the Limber measure)
+//   cluster_kernel         W_c = n_c(z) H/H0        (W_cluster; may be NULL)
+//   cluster_density        b_nl(a) W_c              (eq 21 bias x kernel)
+//   cluster_magnification  C_c W_mag,c              (eqs 27-28)
+//
+// The density terms are evaluated on the support panel only (they vanish
+// in the foreground), the magnification on both panels. The caller zeroes
+// the arrays, so padding nodes (p >= cn->npts) and switched-off terms stay 0.
+// ---------------------------------------------------------------------------
+static void cluster_leg_at_nodes(
+    const cosmo_nodes* cn_all,       // nodes per cluster bin
+    const int nbin_cluster,          // cluster bins 0 .. nbin_cluster-1
+    const int npts_max,              // padded node count
+    double** limber_weight,          // out [nbin_cluster][npts_max]
+    double*** cluster_kernel,        // out [nbin_cluster][richness][npts_max]
+    double*** cluster_density,       // out [nbin_cluster][richness][npts_max]
+    double*** cluster_magnification  // out [nbin_cluster][richness][npts_max]
+  )
+{
+  const int nbin_richness = cluster.richness_nbin;
+  const double C_c        = cluster.magnification;  // eq 28: -2
+
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int p = 0; p < npts_max; p++) {
+      const cosmo_nodes* cn = &cn_all[ni];
+      if (p >= cn->npts) {
+        continue; // padding node: every array stays 0 there
+      }
+
+      const double a       = cn->data[CN_A][p];
+      const double wt      = cn->data[CN_WT][p];
+      const double fK      = cn->data[CN_FK][p];
+      const double hoverh0 = cn->data[CN_HOVERH0][p];
+      const double dchida  = cn->data[CN_DCHIDA][p];
+
+      limber_weight[ni][p] = wt*dchida/(fK*fK);
+
+      const int on_support = (p < cn->nsupport);
+
+      // The volume-only kernel (Y1 eq 15, the default) does not depend on
+      // the richness bin: W_c and W_mag,c are evaluated once per node and
+      // shared by every richness bin (the same calls with the same
+      // arguments, so the values are bitwise those of a per-bin call).
+      // The abundance-weighted kernel differs per bin and is evaluated
+      // inside the loop.
+      const int kernel_per_richness =
+        (CLUSTER_KERNEL_ABUNDANCE == cluster.kernel_mode);
+      double W_c_shared   = 0.0;
+      double W_mag_shared = 0.0;
+      if (0 == kernel_per_richness) {
+        if (1 == on_support) {
+          W_c_shared = W_cluster(a, ni, 0, hoverh0);
+        }
+        if (0.0 != C_c) {
+          W_mag_shared = W_mag_cluster(a, fK, ni, 0);
+        }
+      }
+
+      for (int nl = 0; nl < nbin_richness; nl++) {
+        if (1 == on_support) {
+          double W_c = W_c_shared;
+          if (1 == kernel_per_richness) {
+            W_c = W_cluster(a, ni, nl, hoverh0);
+          }
+          const double b_c = bcl_richness(a, nl);
+
+          if (cluster_kernel != NULL) {
+            cluster_kernel[ni][nl][p] = W_c;
+          }
+          cluster_density[ni][nl][p] = b_c*W_c;
+        }
+        if (0.0 != C_c) {
+          double W_mag = W_mag_shared;
+          if (1 == kernel_per_richness) {
+            W_mag = W_mag_cluster(a, fK, ni, nl);
+          }
+          cluster_magnification[ni][nl][p] = C_c*W_mag;
+        }
+      }
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Nonlinear matter power at every (cluster bin, multipole, node), at the
+// Limber wavenumber k = (l + 1/2)/f_K: the P_delta accessor the galaxy
+// spectra of cosmo2D.c read.
+// ---------------------------------------------------------------------------
+static void nonlinear_power_at_nodes(
+    const cosmo_nodes* cn_all,   // nodes per cluster bin
+    const int nbin_cluster,      // cluster bins 0 .. nbin_cluster-1
+    const int npts_max,          // padded node count
+    const double* lx,            // multipoles (length nell)
+    const int nell,              // number of multipoles
+    double*** p_nonlinear        // out [nbin_cluster][nell][npts_max]
+  )
+{
+  #pragma omp parallel for collapse(3) schedule(static)
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int i = 0; i < nell; i++) {
+      for (int p = 0; p < npts_max; p++) {
+        const cosmo_nodes* cn = &cn_all[ni];
+        if (p >= cn->npts) {
+          continue; // padding node
+        }
+        const double a  = cn->data[CN_A][p];
+        const double fK = cn->data[CN_FK][p];
+        const double k  = (lx[i] + 0.5)/fK;
+
+        p_nonlinear[ni][i][p] = Pdelta(k, a);
+      }
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Warm the lazily built tables every cluster Limber integrand reads, single
+// threaded, before any parallel region: every cluster table
+// (cluster_warmup, the contract of halo_cluster.h), then one call of each
+// reader at a support node.
+// ---------------------------------------------------------------------------
+static void warmup_cluster_leg(
+    const cosmo_nodes* cn_all,  // nodes per cluster bin
+    const double* lx            // multipoles (at least one)
+  )
+{
+  const cosmo_nodes* cn = &cn_all[0];
+
+  const double a       = cn->data[CN_A][0];
+  const double fK      = cn->data[CN_FK][0];
+  const double hoverh0 = cn->data[CN_HOVERH0][0];
+  const double k       = (lx[0] + 0.5)/fK;
+
+  (void) W_cluster(a, 0, 0, hoverh0);
+  (void) W_mag_cluster(a, fK, 0, 0);
+  (void) bcl_richness(a, 0);
+  (void) Pdelta(k, a);
+}
+
+
+// basic checks shared by every cluster statistic
+static void check_cluster_setup(void)
+{
+  if (cluster.zdist_nbin <= 0) {
+    log_fatal("cluster.zdist_nbin = %d: cluster redshift bins not set",
+      cluster.zdist_nbin);
+    exit(1);
+  }
+  if (cluster.richness_nbin <= 0) {
+    log_fatal("cluster.richness_nbin = %d: richness bins not set",
+      cluster.richness_nbin);
+    exit(1);
+  }
+}
+
+
+
+// ============================================================================
+// [SECTION] CLUSTER LENSING: C_cs
+// ============================================================================
+//
+// PHYSICAL DERIVATION & LOGIC FLOW (2503.13631 eqs 4, 10, 20-22, 27-28)
+//   1. Limber (eq 10) at k = (l + 1/2)/f_K(chi):
+//        C_cs(l) = ep_shear(l) int da (dchi/da)/f_K^2 [two-halo + one-halo]
+//   2. two-halo (eqs 20-21, 27-28): the cluster field is b_nl delta_m plus
+//      its magnification C_c kappa_c; the source field is kappa minus the
+//      NLA alignment term (eq 4; the A_1 part only, IA_A1_Z1, as the gs
+//      engine of cosmo2D.c builds it):
+//        [W_kappa - W_source A_1] [b_nl W_c + C_c ep_mag W_mag,c] P_NL
+//   3. one-halo (eq 22): the clusters' own halo profile; no bias, no
+//      magnification, no alignment:
+//        W_kappa W_c P1h_nl
+//   4. The magnification enters with a PLUS sign and the coefficient C_c,
+//      exactly as cosmo2D.c's galaxy term W_mag ep b_mag: C_c = -2 gives
+//      b W_c - 2 W_mag,c, the geometric dilution of a flux-free sample.
+
+static void check_cluster_setup_cs(void)
+{
+  check_cluster_setup();
+  if (cluster.cs_npowerspectra <= 0) {
+    log_fatal("cluster lensing requested but cs_npowerspectra = %d",
+      cluster.cs_npowerspectra);
+    exit(1);
+  }
+  if (redshift.shear_nbin <= 0) {
+    log_fatal("cluster lensing requested but shear_nbin = %d",
+      redshift.shear_nbin);
+    exit(1);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Core of every cluster-lensing C_l (the C_gs_tomo_limber_work design):
+// node quantities once per (bin, node), spectra once per (bin, l, node),
+// then one vectorized sum over the nodes per (row, l).
+//
+// Memory layout (padded to npts_max; unused entries are 0):
+//   limber_weight          [cluster bin][node]
+//   cluster_kernel         [cluster bin][richness][node]   W_c
+//   cluster_density        [cluster bin][richness][node]   b W_c
+//   cluster_magnification  [cluster bin][richness][node]   C_c W_mag,c
+//   source_kappa           [cluster bin][source bin][node] W_kappa
+//   source_alignment       [cluster bin][source bin][node] W_source A_1
+//   p_nonlinear            [cluster bin][l][node]          P_NL(k, a)
+//   p_one_halo             [cluster bin][richness][l][node] P1h_nl(k, a)
+//
+// Output: table[n*richness_nbin + nl][i] for cs pair n = (ZC_cs(n),
+// ZS_cs(n)), richness bin nl, multipole lx[i].
+// ---------------------------------------------------------------------------
+static void C_cs_tomo_limber_work(
+    const cosmo_nodes* cn_all,   // nodes per cluster bin [zdist_nbin]
+    const int npts_max,          // largest node count over the bins
+    const double* lx,            // multipoles (length nell)
+    const double* ep_mag,        // l(l+1)/(l+1/2)^2 per multipole
+    const double* ep_shear,      // sqrt((l-1)l(l+1)(l+2))/(l+1/2)^2
+    const int nell,              // number of multipoles
+    double** table               // out [cs_npowerspectra*richness_nbin][nell]
+  )
+{
+  const int nbin_cluster  = cluster.zdist_nbin;
+  const int nbin_richness = cluster.richness_nbin;
+  const int nbin_source   = redshift.shear_nbin;
+  const int npairs        = cluster.cs_npowerspectra;
+  const int nrows         = npairs*nbin_richness;
+  const int include_ia    = cluster.include_ia;
+
+  // --- 1. WARM-UP (single-threaded, before any parallel region) ---
+  warmup_cluster_leg(cn_all, lx);
+  {
+    const cosmo_nodes* cn = &cn_all[0];
+
+    const double a         = cn->data[CN_A][0];
+    const double fK        = cn->data[CN_FK][0];
+    const double hoverh0   = cn->data[CN_HOVERH0][0];
+    const double growfac_a = cn->data[CN_GROWFAC][0];
+    const double k         = (lx[0] + 0.5)/fK;
+
+    (void) pcm_1h_richness(k, a, 0);
+    (void) W_kappa(a, fK, 0);
+    (void) W_source(a, 0, hoverh0);
+    (void) IA_A1_Z1(a, growfac_a, 0);
+  }
+
+  // --- 2. PAIR LIST, read once outside the parallel regions ---
+  int cluster_bin_of_pair[npairs];
+  int source_bin_of_pair[npairs];
+  for (int n = 0; n < npairs; n++) {
+    cluster_bin_of_pair[n] = ZC_cs(n);
+    source_bin_of_pair[n]  = ZS_cs(n);
+
+    if (cluster_bin_of_pair[n] < 0 ||
+        cluster_bin_of_pair[n] > nbin_cluster - 1 ||
+        source_bin_of_pair[n] < 0 ||
+        source_bin_of_pair[n] > nbin_source - 1)
+    {
+      log_fatal("invalid cs pair %d: (cluster, source) = (%d, %d)",
+        n, cluster_bin_of_pair[n], source_bin_of_pair[n]);
+      exit(1);
+    }
+  }
+
+  // --- 3. ALLOCATION ---
+  double** limber_weight = (double**) malloc2d(nbin_cluster, npts_max);
+
+  // The three cluster-leg kernels share one shape, so they live in one
+  // block (one allocation, one zero, one free), each named by an alias:
+  //   [0] W_c, [1] b_nl W_c, [2] C_c W_mag,c  (cluster bin, richness, node)
+  const int ncluster_leg = 3;
+  double**** cluster_leg = (double****) malloc4d(ncluster_leg,
+    nbin_cluster, nbin_richness, npts_max);
+  double*** cluster_kernel        = cluster_leg[0];
+  double*** cluster_density       = cluster_leg[1];
+  double*** cluster_magnification = cluster_leg[2];
+
+  // Same for the source leg:
+  //   [0] W_kappa, [1] W_source x IA amplitude  (cluster bin, source, node)
+  const int nsource_leg = 2;
+  double**** source_leg = (double****) malloc4d(nsource_leg,
+    nbin_cluster, nbin_source, npts_max);
+  double*** source_kappa     = source_leg[0];
+  double*** source_alignment = source_leg[1];
+
+  double*** p_nonlinear =
+    (double***) malloc3d(nbin_cluster, nell, npts_max);
+  double**** p_one_halo =
+    (double****) malloc4d(nbin_cluster, nbin_richness, nell, npts_max);
+
+  zero2d(limber_weight, nbin_cluster, npts_max);
+  zero4d(cluster_leg, ncluster_leg, nbin_cluster, nbin_richness, npts_max);
+  zero4d(source_leg, nsource_leg, nbin_cluster, nbin_source, npts_max);
+  zero3d(p_nonlinear, nbin_cluster, nell, npts_max);
+  zero4d(p_one_halo, nbin_cluster, nbin_richness, nell, npts_max);
+
+  // --- 4. NODE QUANTITIES: cluster leg, source leg ---
+  cluster_leg_at_nodes(cn_all, nbin_cluster, npts_max, limber_weight,
+    cluster_kernel, cluster_density, cluster_magnification);
+
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int p = 0; p < npts_max; p++) {
+      const cosmo_nodes* cn = &cn_all[ni];
+      if (p >= cn->npts) {
+        continue; // padding node
+      }
+
+      const double a         = cn->data[CN_A][p];
+      const double fK        = cn->data[CN_FK][p];
+      const double hoverh0   = cn->data[CN_HOVERH0][p];
+      const double growfac_a = cn->data[CN_GROWFAC][p];
+
+      for (int ns = 0; ns < nbin_source; ns++) {
+        source_kappa[ni][ns][p] = W_kappa(a, fK, ns);
+
+        // NLA contamination of the source shapes (eq 4): W_source A_1,
+        // the C1 term of the cosmo2D.c gs engine
+        if (1 == include_ia) {
+          source_alignment[ni][ns][p] =
+            W_source(a, ns, hoverh0)*IA_A1_Z1(a, growfac_a, ns);
+        }
+      }
+    }
+  }
+
+  // --- 5. SPECTRA AT (NODE, l): P_NL everywhere, P1h on the support ---
+  nonlinear_power_at_nodes(cn_all, nbin_cluster, npts_max, lx, nell,
+    p_nonlinear);
+
+#ifndef COSMO2D_NOT_USE_SIMD
+  // One (cluster bin, l) row of support nodes per task, read by the batch
+  // reader of halo_cluster.c: pcm_1h_richness_fill takes the row's nodes
+  // four per SIMDe vector and every richness bin at once (a node's place
+  // on the P1h table does not depend on the richness bin). Each value is
+  // bitwise the pcm_1h_richness call of the reference loop in the other
+  // branch, and no value depends on how the threads share the rows.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int i = 0; i < nell; i++) {
+      const cosmo_nodes* cn = &cn_all[ni];
+
+      // the one-halo term lives where W_c does: the support panel
+      const int nsupport = cn->nsupport;
+
+      // Local restrict pointers (the cosmo2D.c idiom): the node rows are
+      // reached through pointer-to-pointer indirection inside a
+      // collapse(2) region, and without them the compiler reloads the
+      // row addresses at every node
+      const double* restrict a_node  = cn->data[CN_A];
+      const double* restrict fK_node = cn->data[CN_FK];
+
+      // Limber wavenumbers of the row, k = (l + 1/2)/f_K (thread-private:
+      // declared inside the task)
+      double k_node[nsupport];
+      for (int p = 0; p < nsupport; p++) {
+        k_node[p] = (lx[i] + 0.5)/fK_node[p];
+      }
+
+      // the output row of each richness bin at this (cluster bin, l)
+      double* p1h_rows[nbin_richness];
+      for (int nl = 0; nl < nbin_richness; nl++) {
+        p1h_rows[nl] = p_one_halo[ni][nl][i];
+      }
+
+      pcm_1h_richness_fill(k_node, a_node, nsupport, p1h_rows);
+    }
+  }
+#else
+  #pragma omp parallel for collapse(3) schedule(static)
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int i = 0; i < nell; i++) {
+      for (int p = 0; p < npts_max; p++) {
+        const cosmo_nodes* cn = &cn_all[ni];
+        if (p >= cn->nsupport) {
+          continue; // the one-halo term lives where W_c does
+        }
+        const double a  = cn->data[CN_A][p];
+        const double fK = cn->data[CN_FK][p];
+        const double k  = (lx[i] + 0.5)/fK;
+
+        for (int nl = 0; nl < nbin_richness; nl++) {
+          p_one_halo[ni][nl][i][p] = pcm_1h_richness(k, a, nl);
+        }
+      }
+    }
+  }
+#endif
+
+  // --- 6. LIMBER SUM: one row (pair, richness) and one l per task ---
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < nrows; row++) {
+    for (int i = 0; i < nell; i++) {
+      const int n  = row/nbin_richness;
+      const int nl = row - n*nbin_richness;
+      const int ni = cluster_bin_of_pair[n];
+      const int ns = source_bin_of_pair[n];
+
+      const int npts  = cn_all[ni].npts;
+      const double ep = ep_mag[i];
+
+      // Local restrict pointers: without them the compiler cannot prove
+      // that rows reached through pointer-to-pointer indirection do not
+      // alias inside the collapse(2) region, and it reloads every operand
+      // (the cosmo2D.c idiom; see SKILL.md)
+      const double* restrict weight        = limber_weight[ni];
+      const double* restrict kernel        = cluster_kernel[ni][nl];
+      const double* restrict density       = cluster_density[ni][nl];
+      const double* restrict magnification = cluster_magnification[ni][nl];
+      const double* restrict kappa         = source_kappa[ni][ns];
+      const double* restrict alignment     = source_alignment[ni][ns];
+      const double* restrict pnl           = p_nonlinear[ni][i];
+      const double* restrict p1h           = p_one_halo[ni][nl][i];
+
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int p = 0; p < npts; p++) {
+        // two-halo: [W_kappa - W_source A_1][b W_c + C_c ep W_mag,c] P_NL
+        const double cluster_leg = density[p] + ep*magnification[p];
+        const double source_leg  = kappa[p] - alignment[p];
+        const double two_halo    = source_leg*cluster_leg*pnl[p];
+
+        // one-halo: W_kappa W_c P1h
+        const double one_halo = kappa[p]*kernel[p]*p1h[p];
+
+        sum += (two_halo + one_halo)*weight[p];
+      }
+      table[row][i] = ep_shear[i]*sum;
+    }
+  }
+
+  // --- 7. RELEASE ---
+  free(limber_weight);
+  free(cluster_leg);
+  free(source_leg);
+  free(p_nonlinear);
+  free(p_one_halo);
+}
+
+
+// ---------------------------------------------------------------------------
+// Exact cluster-lensing C_l of every row (pair n, richness nl) at nell
+// multipoles: nodes, prefactors, work function. rows[n*richness_nbin +
+// nl][i].
+// ---------------------------------------------------------------------------
+static void C_cs_tomo_limber_batch_rows(
+    const double* ells,  // multipoles (length nell; need not be integers)
+    const int nell,      // number of multipoles
+    double** rows        // out [cs_npowerspectra*richness_nbin][nell]
+  )
+{
+  if (nell <= 0) {
+    log_fatal("nell = %d <= 0", nell);
+    exit(1);
+  }
+  check_cluster_setup_cs();
+
+  // every lazily built cluster table, before the nodes read the support
+  cluster_warmup();
+
+  const int with_foreground = (0.0 != cluster.magnification);
+
+  cosmo_nodes cn_all[cluster.zdist_nbin];
+  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+
+  double* ep_mag   = (double*) malloc1d(nell);
+  double* ep_shear = (double*) malloc1d(nell);
+  for (int i = 0; i < nell; i++) {
+    ep_mag[i]   = ell_prefactor_magnification(ells[i]);
+    ep_shear[i] = ell_prefactor_shear(ells[i]);
+  }
+
+  C_cs_tomo_limber_work(cn_all, npts_max, ells, ep_mag, ep_shear, nell, rows);
+
+  free(ep_mag);
+  free(ep_shear);
+  free_cosmo_nodes_cluster_all(cn_all);
+}
+
+
+// ---------------------------------------------------------------------------
+// Public batch: out[n][nl][i] = C_cs(ells[i]) of cs pair n = (ZC_cs(n),
+// ZS_cs(n)) and richness bin nl (out: malloc3d by the caller).
+// ---------------------------------------------------------------------------
+void C_cs_tomo_limber_nointerp_ells(
+    const double* ells,  // multipoles (length nell)
+    const int nell,      // number of multipoles
+    double*** out        // out [cs_npowerspectra][richness_nbin][nell]
+  )
+{
+  check_cluster_setup_cs();
+
+  const int nbin_richness = cluster.richness_nbin;
+  const int npairs        = cluster.cs_npowerspectra;
+  const int nrows         = npairs*nbin_richness;
+
+  double** rows = (double**) malloc2d(nrows, nell);
+
+  C_cs_tomo_limber_batch_rows(ells, nell, rows);
+
+  for (int n = 0; n < npairs; n++) {
+    for (int nl = 0; nl < nbin_richness; nl++) {
+      for (int i = 0; i < nell; i++) {
+        out[n][nl][i] = rows[n*nbin_richness + nl][i];
+      }
+    }
+  }
+  free(rows);
+}
+
+
+// ---------------------------------------------------------------------------
+// The cached cluster-lensing table (exact at N_ell_internal nodes, spline
+// onto the dense grid).
+// ---------------------------------------------------------------------------
+static const limber_table_cluster* C_cs_tomo_limber_table(void)
+{
+  static limber_table_cluster table;
+
+  check_cluster_setup_cs();
+
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  const int nkeys = cluster_keys_cs(keys);
+
+  const int nrows            = cluster.cs_npowerspectra*cluster.richness_nbin;
+  const int smooth_in_ln_ell = 1; // exact grid: N_ell_internal nodes
+
+  limber_table_cluster_update(&table, nrows, smooth_in_ln_ell, keys, nkeys,
+    C_cs_tomo_limber_batch_rows);
+
+  return &table;
+}
+
+
+// ---------------------------------------------------------------------------
+// C_cs at multipole l for richness bin nl, cluster bin ni, source bin ns,
+// read from the cached table. 0 for a (ni, ns) outside the pair list.
+// ---------------------------------------------------------------------------
+double C_cs_tomo_limber(
+    const double l,  // multipole
+    const int nl,    // richness bin
+    const int ni,    // cluster redshift bin
+    const int ns     // source redshift bin
+  )
+{
+  check_cluster_setup_cs();
+
+  if (nl < 0 || nl > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.zdist_nbin - 1 ||
+      ns < 0 || ns > redshift.shear_nbin - 1)
+  {
+    log_fatal("error in selecting bin number (nl, ni, ns) = (%d, %d, %d)",
+      nl, ni, ns);
+    exit(1);
+  }
+
+  const limber_table_cluster* T = C_cs_tomo_limber_table();
+
+  const int n = N_cs(ni, ns);
+  if (n < 0) {
+    return 0.0;
+  }
+  const int row = n*cluster.richness_nbin + nl;
+  return limber_table_cluster_read(T, row, l);
+}
+
+
+
+// ============================================================================
+// [SECTION] CLUSTER CLUSTERING: C_cc
+// ============================================================================
+//
+// PHYSICAL DERIVATION & LOGIC FLOW (2503.13631 eqs 10, 20-21, 27-28)
+//   1. Each cluster field of cluster bin ni and richness bin nl is its
+//      biased density plus its magnification:
+//        W_nl = b_nl W_c + C_c ep_mag W_mag,c
+//   2. Limber (eq 10), auto redshift bin, every richness pair nl1 <= nl2:
+//        C_cc(l) = int da (dchi/da)/f_K^2 W_nl1 W_nl2 P_NL(k, a)
+//   3. The block covers cluster bins 0 .. cluster.cc_npowerspectra - 1
+//      (the w_cc data vector: [z][nl1 <= nl2][theta]).
+
+// number of richness pairs nl1 <= nl2 of a cluster bin
+static int cc_richness_npairs(void)
+{
+  return cluster.richness_nbin*(cluster.richness_nbin + 1)/2;
+}
+
+
+static void check_cluster_setup_cc(void)
+{
+  check_cluster_setup();
+  if (cluster.cc_npowerspectra <= 0 ||
+      cluster.cc_npowerspectra > cluster.zdist_nbin)
+  {
+    log_fatal("cluster clustering requested but cc_npowerspectra = %d "
+      "(zdist_nbin = %d)", cluster.cc_npowerspectra, cluster.zdist_nbin);
+    exit(1);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Core of every cluster-clustering C_l (the C_gg_tomo_limber_work design).
+//
+// Memory layout (padded to npts_max; unused entries are 0):
+//   limber_weight          [cluster bin][node]
+//   cluster_density        [cluster bin][richness][node]   b W_c
+//   cluster_magnification  [cluster bin][richness][node]   C_c W_mag,c
+//   p_nonlinear            [cluster bin][l][node]          P_NL(k, a)
+//
+// Output: table[ni*npairs_richness + n][i] for cluster bin ni, richness
+// pair n = (NL1_cc(n), NL2_cc(n)), multipole lx[i].
+// ---------------------------------------------------------------------------
+static void C_cc_tomo_limber_work(
+    const cosmo_nodes* cn_all,   // nodes per cluster bin [zdist_nbin]
+    const int npts_max,          // largest node count over the bins
+    const double* lx,            // multipoles (length nell)
+    const double* ep_mag,        // l(l+1)/(l+1/2)^2 per multipole
+    const int nell,              // number of multipoles
+    double** table               // out [cc_npowerspectra*npairs][nell]
+  )
+{
+  const int nbin_cluster     = cluster.cc_npowerspectra;
+  const int nbin_richness    = cluster.richness_nbin;
+  const int npairs_richness  = cc_richness_npairs();
+  const int nrows            = nbin_cluster*npairs_richness;
+
+  // --- 1. WARM-UP (single-threaded) ---
+  warmup_cluster_leg(cn_all, lx);
+
+  // --- 2. RICHNESS PAIR LIST, read once outside the parallel regions ---
+  int richness1_of_pair[npairs_richness];
+  int richness2_of_pair[npairs_richness];
+  for (int n = 0; n < npairs_richness; n++) {
+    richness1_of_pair[n] = NL1_cc(n);
+    richness2_of_pair[n] = NL2_cc(n);
+
+    if (richness1_of_pair[n] < 0 ||
+        richness1_of_pair[n] > nbin_richness - 1 ||
+        richness2_of_pair[n] < 0 ||
+        richness2_of_pair[n] > nbin_richness - 1)
+    {
+      log_fatal("invalid cc richness pair %d: (%d, %d)",
+        n, richness1_of_pair[n], richness2_of_pair[n]);
+      exit(1);
+    }
+  }
+
+  // --- 3. ALLOCATION ---
+  double** limber_weight = (double**) malloc2d(nbin_cluster, npts_max);
+
+  // One block for both cluster-leg kernels (see C_cs_tomo_limber_work):
+  //   [0] b_nl W_c, [1] C_c W_mag,c  (cluster bin, richness, node)
+  const int ncluster_leg = 2;
+  double**** cluster_leg = (double****) malloc4d(ncluster_leg,
+    nbin_cluster, nbin_richness, npts_max);
+  double*** cluster_density       = cluster_leg[0];
+  double*** cluster_magnification = cluster_leg[1];
+
+  double*** p_nonlinear =
+    (double***) malloc3d(nbin_cluster, nell, npts_max);
+
+  zero2d(limber_weight, nbin_cluster, npts_max);
+  zero4d(cluster_leg, ncluster_leg, nbin_cluster, nbin_richness, npts_max);
+  zero3d(p_nonlinear, nbin_cluster, nell, npts_max);
+
+  // --- 4. NODE QUANTITIES AND SPECTRA ---
+  cluster_leg_at_nodes(cn_all, nbin_cluster, npts_max, limber_weight,
+    NULL, cluster_density, cluster_magnification);
+
+  nonlinear_power_at_nodes(cn_all, nbin_cluster, npts_max, lx, nell,
+    p_nonlinear);
+
+  // --- 5. LIMBER SUM: one row (cluster bin, richness pair) and one l ---
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < nrows; row++) {
+    for (int i = 0; i < nell; i++) {
+      const int ni  = row/npairs_richness;
+      const int n   = row - ni*npairs_richness;
+      const int nl1 = richness1_of_pair[n];
+      const int nl2 = richness2_of_pair[n];
+
+      const int npts  = cn_all[ni].npts;
+      const double ep = ep_mag[i];
+
+      // local restrict pointers (the cosmo2D.c idiom); for nl1 = nl2 two
+      // of them read the same row, which restrict allows (no writes)
+      const double* restrict weight         = limber_weight[ni];
+      const double* restrict density1       = cluster_density[ni][nl1];
+      const double* restrict density2       = cluster_density[ni][nl2];
+      const double* restrict magnification1 = cluster_magnification[ni][nl1];
+      const double* restrict magnification2 = cluster_magnification[ni][nl2];
+      const double* restrict pnl            = p_nonlinear[ni][i];
+
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int p = 0; p < npts; p++) {
+        const double cluster_leg1 = density1[p] + ep*magnification1[p];
+        const double cluster_leg2 = density2[p] + ep*magnification2[p];
+
+        sum += cluster_leg1*cluster_leg2*pnl[p]*weight[p];
+      }
+      table[row][i] = sum;
+    }
+  }
+
+  // --- 6. RELEASE ---
+  free(limber_weight);
+  free(cluster_leg);
+  free(p_nonlinear);
+}
+
+
+// ---------------------------------------------------------------------------
+// Exact cluster-clustering C_l of every row (cluster bin ni, richness pair
+// n) at nell multipoles: rows[ni*npairs_richness + n][i].
+// ---------------------------------------------------------------------------
+static void C_cc_tomo_limber_batch_rows(
+    const double* ells,  // multipoles (length nell; need not be integers)
+    const int nell,      // number of multipoles
+    double** rows        // out [cc_npowerspectra*npairs_richness][nell]
+  )
+{
+  if (nell <= 0) {
+    log_fatal("nell = %d <= 0", nell);
+    exit(1);
+  }
+  check_cluster_setup_cc();
+
+  cluster_warmup();
+
+  const int with_foreground = (0.0 != cluster.magnification);
+
+  cosmo_nodes cn_all[cluster.zdist_nbin];
+  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+
+  double* ep_mag = (double*) malloc1d(nell);
+  for (int i = 0; i < nell; i++) {
+    ep_mag[i] = ell_prefactor_magnification(ells[i]);
+  }
+
+  C_cc_tomo_limber_work(cn_all, npts_max, ells, ep_mag, nell, rows);
+
+  free(ep_mag);
+  free_cosmo_nodes_cluster_all(cn_all);
+}
+
+
+// ---------------------------------------------------------------------------
+// Public batch: out[ni][n][i] = C_cc(ells[i]) of cluster bin ni and
+// richness pair n = (NL1_cc(n), NL2_cc(n)) (out: malloc3d by the caller).
+// ---------------------------------------------------------------------------
+void C_cc_tomo_limber_nointerp_ells(
+    const double* ells,  // multipoles (length nell)
+    const int nell,      // number of multipoles
+    double*** out        // out [cc_npowerspectra][npairs_richness][nell]
+  )
+{
+  check_cluster_setup_cc();
+
+  const int nbin_cluster    = cluster.cc_npowerspectra;
+  const int npairs_richness = cc_richness_npairs();
+  const int nrows           = nbin_cluster*npairs_richness;
+
+  double** rows = (double**) malloc2d(nrows, nell);
+
+  C_cc_tomo_limber_batch_rows(ells, nell, rows);
+
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int n = 0; n < npairs_richness; n++) {
+      for (int i = 0; i < nell; i++) {
+        out[ni][n][i] = rows[ni*npairs_richness + n][i];
+      }
+    }
+  }
+  free(rows);
+}
+
+
+// ---------------------------------------------------------------------------
+// The cached cluster-clustering table (exact at N_ell nodes for the BAO
+// wiggles, spline onto the dense grid).
+// ---------------------------------------------------------------------------
+static const limber_table_cluster* C_cc_tomo_limber_table(void)
+{
+  static limber_table_cluster table;
+
+  check_cluster_setup_cc();
+
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  const int nkeys = cluster_keys_cc(keys);
+
+  const int nrows            = cluster.cc_npowerspectra*cc_richness_npairs();
+  const int smooth_in_ln_ell = 0; // BAO wiggles: exact grid N_ell nodes
+
+  limber_table_cluster_update(&table, nrows, smooth_in_ln_ell, keys, nkeys,
+    C_cc_tomo_limber_batch_rows);
+
+  return &table;
+}
+
+
+// ---------------------------------------------------------------------------
+// Row of (cluster bin ni, richness pair nl1, nl2) in the cc block; the
+// spectrum is symmetric in the richness pair, so the order is free.
+// ---------------------------------------------------------------------------
+static int cc_row(const int nl1, const int nl2, const int ni)
+{
+  int nl_low  = nl1;
+  int nl_high = nl2;
+  if (nl1 > nl2) {
+    nl_low  = nl2;
+    nl_high = nl1;
+  }
+
+  const int n = N_cc_richness(nl_low, nl_high);
+  if (n < 0 || n > cc_richness_npairs() - 1) {
+    log_fatal("(nl1, nl2) = (%d, %d) is not a cc richness pair", nl1, nl2);
+    exit(1);
+  }
+  return ni*cc_richness_npairs() + n;
+}
+
+
+// ---------------------------------------------------------------------------
+// C_cc at multipole l for richness bins (nl1, nl2) in cluster bin ni, read
+// from the cached table.
+// ---------------------------------------------------------------------------
+double C_cc_tomo_limber(
+    const double l,  // multipole
+    const int nl1,   // first richness bin
+    const int nl2,   // second richness bin
+    const int ni     // cluster redshift bin (0 .. cc_npowerspectra-1)
+  )
+{
+  check_cluster_setup_cc();
+
+  if (nl1 < 0 || nl1 > cluster.richness_nbin - 1 ||
+      nl2 < 0 || nl2 > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.cc_npowerspectra - 1)
+  {
+    log_fatal("error in selecting bin number (nl1, nl2, ni) = (%d, %d, %d)",
+      nl1, nl2, ni);
+    exit(1);
+  }
+
+  const limber_table_cluster* T = C_cc_tomo_limber_table();
+
+  return limber_table_cluster_read(T, cc_row(nl1, nl2, ni), l);
+}
+
+
+
+// ============================================================================
+// [SECTION] CLUSTER-GALAXY CLUSTERING: C_cg
+// ============================================================================
+//
+// PHYSICAL DERIVATION & LOGIC FLOW (2503.13631 eqs 7, 9, 10, 20-21, 27-28)
+//   1. cluster leg (bin ni, richness nl): b_nl W_c + C_c ep_mag W_mag,c
+//   2. galaxy leg (lens bin ng = ZG_cg(n)), exactly cosmo2D.c's lens side:
+//        b_1 W_gal + ep_mag b_mag W_mag     (gb1, gbmag, W_gal, W_mag)
+//   3. Limber (eq 10):
+//        C_cg(l) = int da (dchi/da)/f_K^2 [cluster leg] [galaxy leg] P_NL
+//   4. Range: the cluster leg vanishes behind the cluster bin (both W_c and
+//      the lensing efficiency g_c), so the cluster panels (support +
+//      foreground) cover every nonzero integrand, the galaxy tails and the
+//      galaxy magnification included.
+
+static void check_cluster_setup_cg(void)
+{
+  check_cluster_setup();
+  if (cluster.cg_npowerspectra <= 0) {
+    log_fatal("cluster-galaxy clustering requested but cg_npowerspectra = %d",
+      cluster.cg_npowerspectra);
+    exit(1);
+  }
+  if (redshift.clustering_nbin <= 0) {
+    log_fatal("cluster-galaxy clustering requested but clustering_nbin = %d",
+      redshift.clustering_nbin);
+    exit(1);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Core of every cluster-galaxy C_l.
+//
+// Memory layout (padded to npts_max; unused entries are 0):
+//   limber_weight          [cluster bin][node]
+//   cluster_density        [cluster bin][richness][node]   b W_c
+//   cluster_magnification  [cluster bin][richness][node]   C_c W_mag,c
+//   galaxy_density         [cg pair][node]   b_1 W_gal     (on the nodes of
+//   galaxy_magnification   [cg pair][node]   b_mag W_mag    the pair's
+//                                                            cluster bin)
+//   p_nonlinear            [cluster bin][l][node]          P_NL(k, a)
+//
+// Output: table[n*richness_nbin + nl][i] for cg pair n = (ZC_cg(n),
+// ZG_cg(n)), richness bin nl, multipole lx[i].
+// ---------------------------------------------------------------------------
+static void C_cg_tomo_limber_work(
+    const cosmo_nodes* cn_all,   // nodes per cluster bin [zdist_nbin]
+    const int npts_max,          // largest node count over the bins
+    const double* lx,            // multipoles (length nell)
+    const double* ep_mag,        // l(l+1)/(l+1/2)^2 per multipole
+    const int nell,              // number of multipoles
+    double** table               // out [cg_npowerspectra*richness_nbin][nell]
+  )
+{
+  const int nbin_cluster  = cluster.zdist_nbin;
+  const int nbin_richness = cluster.richness_nbin;
+  const int nbin_lens     = redshift.clustering_nbin;
+  const int npairs        = cluster.cg_npowerspectra;
+  const int nrows         = npairs*nbin_richness;
+
+  // --- 1. WARM-UP (single-threaded) ---
+  warmup_cluster_leg(cn_all, lx);
+  {
+    const cosmo_nodes* cn = &cn_all[0];
+
+    const double a       = cn->data[CN_A][0];
+    const double fK      = cn->data[CN_FK][0];
+    const double hoverh0 = cn->data[CN_HOVERH0][0];
+
+    (void) W_gal(a, 0, hoverh0);
+    (void) W_mag(a, fK, 0);
+    (void) gb1(0.1, 0);
+    (void) gbmag(0.1, 0);
+  }
+
+  // --- 2. PAIR LIST, read once outside the parallel regions ---
+  int cluster_bin_of_pair[npairs];
+  int lens_bin_of_pair[npairs];
+  for (int n = 0; n < npairs; n++) {
+    cluster_bin_of_pair[n] = ZC_cg(n);
+    lens_bin_of_pair[n]    = ZG_cg(n);
+
+    if (cluster_bin_of_pair[n] < 0 ||
+        cluster_bin_of_pair[n] > nbin_cluster - 1 ||
+        lens_bin_of_pair[n] < 0 ||
+        lens_bin_of_pair[n] > nbin_lens - 1)
+    {
+      log_fatal("invalid cg pair %d: (cluster, lens) = (%d, %d)",
+        n, cluster_bin_of_pair[n], lens_bin_of_pair[n]);
+      exit(1);
+    }
+  }
+
+  // --- 3. ALLOCATION ---
+  double** limber_weight = (double**) malloc2d(nbin_cluster, npts_max);
+
+  // One block for both cluster-leg kernels (see C_cs_tomo_limber_work):
+  //   [0] b_nl W_c, [1] C_c W_mag,c  (cluster bin, richness, node)
+  const int ncluster_leg = 2;
+  double**** cluster_leg = (double****) malloc4d(ncluster_leg,
+    nbin_cluster, nbin_richness, npts_max);
+  double*** cluster_density       = cluster_leg[0];
+  double*** cluster_magnification = cluster_leg[1];
+
+  // and one for the galaxy leg:
+  //   [0] b1 W_gal, [1] b_mag W_mag  (cg pair, node)
+  const int ngalaxy_leg = 2;
+  double*** galaxy_leg =
+    (double***) malloc3d(ngalaxy_leg, npairs, npts_max);
+  double** galaxy_density       = galaxy_leg[0];
+  double** galaxy_magnification = galaxy_leg[1];
+
+  double*** p_nonlinear =
+    (double***) malloc3d(nbin_cluster, nell, npts_max);
+
+  zero2d(limber_weight, nbin_cluster, npts_max);
+  zero4d(cluster_leg, ncluster_leg, nbin_cluster, nbin_richness, npts_max);
+  zero3d(galaxy_leg, ngalaxy_leg, npairs, npts_max);
+  zero3d(p_nonlinear, nbin_cluster, nell, npts_max);
+
+  // --- 4. NODE QUANTITIES: cluster leg, galaxy leg ---
+  cluster_leg_at_nodes(cn_all, nbin_cluster, npts_max, limber_weight,
+    NULL, cluster_density, cluster_magnification);
+
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int n = 0; n < npairs; n++) {
+    for (int p = 0; p < npts_max; p++) {
+      const int ni = cluster_bin_of_pair[n];
+      const int ng = lens_bin_of_pair[n];
+
+      const cosmo_nodes* cn = &cn_all[ni];
+      if (p >= cn->npts) {
+        continue; // padding node
+      }
+
+      const double a       = cn->data[CN_A][p];
+      const double z       = 1.0/a - 1.0;
+      const double fK      = cn->data[CN_FK][p];
+      const double hoverh0 = cn->data[CN_HOVERH0][p];
+
+      galaxy_density[n][p]       = W_gal(a, ng, hoverh0)*gb1(z, ng);
+      galaxy_magnification[n][p] = W_mag(a, fK, ng)*gbmag(z, ng);
+    }
+  }
+
+  nonlinear_power_at_nodes(cn_all, nbin_cluster, npts_max, lx, nell,
+    p_nonlinear);
+
+  // --- 5. LIMBER SUM: one row (pair, richness) and one l per task ---
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < nrows; row++) {
+    for (int i = 0; i < nell; i++) {
+      const int n  = row/nbin_richness;
+      const int nl = row - n*nbin_richness;
+      const int ni = cluster_bin_of_pair[n];
+
+      const int npts  = cn_all[ni].npts;
+      const double ep = ep_mag[i];
+
+      // local restrict pointers (the cosmo2D.c idiom)
+      const double* restrict weight        = limber_weight[ni];
+      const double* restrict density       = cluster_density[ni][nl];
+      const double* restrict magnification = cluster_magnification[ni][nl];
+      const double* restrict gal_density   = galaxy_density[n];
+      const double* restrict gal_magnif    = galaxy_magnification[n];
+      const double* restrict pnl           = p_nonlinear[ni][i];
+
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int p = 0; p < npts; p++) {
+        const double cluster_leg = density[p] + ep*magnification[p];
+        const double galaxy_leg  = gal_density[p] + ep*gal_magnif[p];
+
+        sum += cluster_leg*galaxy_leg*pnl[p]*weight[p];
+      }
+      table[row][i] = sum;
+    }
+  }
+
+  // --- 6. RELEASE ---
+  free(limber_weight);
+  free(cluster_leg);
+  free(galaxy_leg);
+  free(p_nonlinear);
+}
+
+
+// ---------------------------------------------------------------------------
+// Exact cluster-galaxy C_l of every row (cg pair n, richness nl) at nell
+// multipoles: rows[n*richness_nbin + nl][i].
+// ---------------------------------------------------------------------------
+static void C_cg_tomo_limber_batch_rows(
+    const double* ells,  // multipoles (length nell; need not be integers)
+    const int nell,      // number of multipoles
+    double** rows        // out [cg_npowerspectra*richness_nbin][nell]
+  )
+{
+  if (nell <= 0) {
+    log_fatal("nell = %d <= 0", nell);
+    exit(1);
+  }
+  check_cluster_setup_cg();
+
+  cluster_warmup();
+
+  const int with_foreground = (0.0 != cluster.magnification);
+
+  cosmo_nodes cn_all[cluster.zdist_nbin];
+  const int npts_max = create_cosmo_nodes_cluster_all(cn_all, with_foreground);
+
+  double* ep_mag = (double*) malloc1d(nell);
+  for (int i = 0; i < nell; i++) {
+    ep_mag[i] = ell_prefactor_magnification(ells[i]);
+  }
+
+  C_cg_tomo_limber_work(cn_all, npts_max, ells, ep_mag, nell, rows);
+
+  free(ep_mag);
+  free_cosmo_nodes_cluster_all(cn_all);
+}
+
+
+// ---------------------------------------------------------------------------
+// Public batch: out[n][nl][i] = C_cg(ells[i]) of cg pair n = (ZC_cg(n),
+// ZG_cg(n)) and richness bin nl (out: malloc3d by the caller).
+// ---------------------------------------------------------------------------
+void C_cg_tomo_limber_nointerp_ells(
+    const double* ells,  // multipoles (length nell)
+    const int nell,      // number of multipoles
+    double*** out        // out [cg_npowerspectra][richness_nbin][nell]
+  )
+{
+  check_cluster_setup_cg();
+
+  const int nbin_richness = cluster.richness_nbin;
+  const int npairs        = cluster.cg_npowerspectra;
+  const int nrows         = npairs*nbin_richness;
+
+  double** rows = (double**) malloc2d(nrows, nell);
+
+  C_cg_tomo_limber_batch_rows(ells, nell, rows);
+
+  for (int n = 0; n < npairs; n++) {
+    for (int nl = 0; nl < nbin_richness; nl++) {
+      for (int i = 0; i < nell; i++) {
+        out[n][nl][i] = rows[n*nbin_richness + nl][i];
+      }
+    }
+  }
+  free(rows);
+}
+
+
+// ---------------------------------------------------------------------------
+// The cached cluster-galaxy table (exact at N_ell nodes for the BAO
+// wiggles, spline onto the dense grid).
+// ---------------------------------------------------------------------------
+static const limber_table_cluster* C_cg_tomo_limber_table(void)
+{
+  static limber_table_cluster table;
+
+  check_cluster_setup_cg();
+
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  const int nkeys = cluster_keys_cg(keys);
+
+  const int nrows            = cluster.cg_npowerspectra*cluster.richness_nbin;
+  const int smooth_in_ln_ell = 0; // BAO wiggles: exact grid N_ell nodes
+
+  limber_table_cluster_update(&table, nrows, smooth_in_ln_ell, keys, nkeys,
+    C_cg_tomo_limber_batch_rows);
+
+  return &table;
+}
+
+
+// ---------------------------------------------------------------------------
+// C_cg at multipole l for richness bin nl, cluster bin ni, lens bin ng,
+// read from the cached table. 0 for a (ni, ng) outside the pair list.
+// ---------------------------------------------------------------------------
+double C_cg_tomo_limber(
+    const double l,  // multipole
+    const int nl,    // richness bin
+    const int ni,    // cluster redshift bin
+    const int ng     // lens (galaxy) redshift bin
+  )
+{
+  check_cluster_setup_cg();
+
+  if (nl < 0 || nl > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.zdist_nbin - 1 ||
+      ng < 0 || ng > redshift.clustering_nbin - 1)
+  {
+    log_fatal("error in selecting bin number (nl, ni, ng) = (%d, %d, %d)",
+      nl, ni, ng);
+    exit(1);
+  }
+
+  const limber_table_cluster* T = C_cg_tomo_limber_table();
+
+  const int n = N_cg(ni, ng);
+  if (n < 0) {
+    return 0.0;
+  }
+  const int row = n*cluster.richness_nbin + nl;
+  return limber_table_cluster_read(T, row, l);
+}
+
+
+
+// ============================================================================
+// [SECTION] BIN-AVERAGED LEGENDRE KERNELS (private copies of cosmo2D.c's)
+// ============================================================================
+//
+// The real-space statistics are full-sky Legendre sums, averaged over each
+// angular bin (the theta binning of the galaxy statistics: Ntable.Ntheta
+// log bins in [Ntable.vt[RANGE_MIN], Ntable.vt[RANGE_MAX]], set_bin_average of basics.c):
+//
+//   spin 0 (w_cc, w_cg; eq 11, the w_gg_tomo kernel):
+//     w(theta_i) = sum_l Pl0[i][l] C_l
+//     Pl0[i][l]  = [P_{l+1}(xmin) - P_{l+1}(xmax) - P_{l-1}(xmin)
+//                   + P_{l-1}(xmax)] / (4 pi (xmin - xmax))
+//     from int P_l dx = [P_{l+1} - P_{l-1}]/(2l+1): the (2l+1) of the
+//     antiderivative cancels the (2l+1)/(4 pi) of the Legendre series.
+//
+//   spin 2 (gamma_t of clusters; eq 12, the w_gammat_tomo kernel):
+//     gamma_t(theta_i) = sum_l Pl2[i][l] C_l
+//     Pl2[i][l] = (2l+1)/(4 pi l(l+1)(xmin - xmax))
+//                 [ (l + 2/(2l+1)) (P_{l-1}(xmin) - P_{l-1}(xmax))
+//                 + (2 - l) (xmin P_l(xmin) - xmax P_l(xmax))
+//                 - 2/(2l+1) (P_{l+1}(xmin) - P_{l+1}(xmax)) ]
+//     the bin average of P_l^2(x) = 2x P_l'(x) - l(l+1) P_l(x) (derivation
+//     in cosmo2D.c's w_gammat_tomo).
+//
+// xmin = cos(theta_min) > xmax = cos(theta_max) (names track theta). The
+// Legendre edge values are needed at l + 1 for l up to LMAX - 1, so the
+// edge arrays hold LMAX + 1 entries (l = 0 .. LMAX).
+
+// ---------------------------------------------------------------------------
+// Pl[Ntheta][LMAX] of the given spin (0 or 2), l = 0 set to 0.
+//
+// Cache invalidation: rebuilt when Ntable.random, Ntable.Ntheta or
+// Ntable.LMAX change. Call outside parallel regions.
+// ---------------------------------------------------------------------------
+static double** legendre_kernel_cluster(const int spin)
+{
+  static double** Pl[2]            = {NULL, NULL};  // [0]: spin 0, [1]: spin 2
+  static uint64_t cache_ntable[2]  = {0, 0};
+  static int ntheta_built[2]       = {0, 0};
+  static int lmax_built[2]         = {0, 0};
+
+  int kind = 0;
+  if (2 == spin) {
+    kind = 1;
+  }
+  else if (0 != spin) {
+    log_fatal("spin = %d not supported (0 or 2)", spin);
+    exit(1);
+  }
+
+  if (NULL == Pl[kind] ||
+      fdiff2(cache_ntable[kind], Ntable.random) ||
+      ntheta_built[kind] != Ntable.Ntheta ||
+      lmax_built[kind] != Ntable.LMAX)
+  {
+    const int ntheta = Ntable.Ntheta;
+    const int lmax   = Ntable.LMAX;
+    const int lmin   = 1;
+
+    if (Pl[kind] != NULL) {
+      free(Pl[kind]);
+    }
+    Pl[kind] = (double**) malloc2d(ntheta, lmax);
+    double** kernel = Pl[kind];
+
+    // Legendre polynomials at the bin edges, l = 0 .. LMAX
+    double*** P = (double***) malloc3d(2, ntheta, lmax + 1);
+    double** Pmin = P[0];
+    double** Pmax = P[1];
+
     double xmin[ntheta];
     double xmax[ntheta];
-    // Cocoa: dont thread (init of static variables inside set_bin_average)
-    for (int i=0; i<ntheta; i ++)
-    {
-      bin_avg r = set_bin_average(i,0);
+    for (int i = 0; i < ntheta; i++) {
+      // serial: the first call initializes set_bin_average's statics
+      const bin_avg r = set_bin_average(i, 0);
       xmin[i] = r.xmin;
       xmax[i] = r.xmax;
     }
-    double** Pmin = (double**) malloc(sizeof(double)*ntheta);
-    double** Pmax = (double**) malloc(sizeof(double)*ntheta);
-    for (int i=0; i<ntheta; i ++)
-    {
-      Pmin[i] = (double*) malloc(sizeof(double)*(nell + 1));
-      Pmax[i] = (double*) malloc(sizeof(double)*(nell + 1));
-    }
-    #pragma omp parallel for
-    for (int i=0; i<ntheta; i ++)
-    {
-      for (int l=0; l<nell; l++)
-      {
-        bin_avg r = set_bin_average(i,l);
+
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int i = 0; i < ntheta; i++) {
+      for (int l = 0; l < lmax + 1; l++) {
+        const bin_avg r = set_bin_average(i, l);
         Pmin[i][l] = r.Pmin;
         Pmax[i][l] = r.Pmax;
       }
-      Pl[i][0] = 1.0;
-      const double tmp = (1.0 / (xmin[i] - xmax[i]))*(1.0 / (4.0 * M_PI));
-      for (int l=1; l<nell; l++)
-      {
-        Pl[i][l] = tmp*(Pmin[i][l + 1] - Pmax[i][l + 1] - Pmin[i][l - 1] + Pmax[i][l - 1]);
-      }
     }
-    for (int i=0; i<ntheta; i ++)
-    {
-      free(Pmin[i]);
-      free(Pmax[i]);
+
+    // no monopole in the sums
+    for (int i = 0; i < ntheta; i++) {
+      kernel[i][0] = 0.0;
     }
-    free(Pmin);
-    free(Pmax);
-  }
-  if (recompute_cc(C, N))
-  {
-    double** Cl = malloc(NSIZE*sizeof(double*));
-    for (int i=0; i<NSIZE; i++)
-    {
-      Cl[i] = calloc(nell, sizeof(double));  
-    }
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      const int i = 0;
-      const int j = 0;
-      const int ZCCL1 = 0;
-      const int ZCCL2 = 0;
-      double init_static_vars_only = C_cc_tomo_limber(limits.LMIN_tab + 1, i, j, ZCCL1, ZCCL2);
-    }
-    #pragma GCC diagnostic pop
-    #pragma GCC diagnostic pop
-    if (limber == 1)
-    { 
-      #pragma omp parallel for collapse(3)
-      for (int i=0; i<nlsize; i++) 
-      {
-        for (int k=0; k<nccl_size; k++)
-        {
-          for (int l=1; l<nell; l++)
-          {
-            for (int j=i; j<nlsize; j++)
-            {
-              const int q     = i*nlsize*nccl_size + j*nccl_size + k;
-              const int qstar = j*nlsize*nccl_size + i*nccl_size + k;
-              const int ZCCL1 = k; // cross redshift bin not supported so not using ZCCL1(k)
-              const int ZCCL2 = k; // cross redshift bin not supported so not using ZCCL2(k)
-              Cl[q][l] = (l > limits.LMIN_tab) ? C_cc_tomo_limber(l, i, j, ZCCL1, ZCCL2) :
-                C_cc_tomo_limber_nointerp(l, i, j, ZCCL1, ZCCL2, use_linear_ps_limber, 0);
-              Cl[qstar][l] = Cl[q][l];
-            }
-          } 
+
+    if (0 == kind) {
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int i = 0; i < ntheta; i++) {
+        for (int l = lmin; l < lmax; l++) {
+          const double norm = (1.0/(xmin[i] - xmax[i]))*(1.0/(4.0*M_PI));
+          kernel[i][l] = norm*(Pmin[i][l + 1] - Pmax[i][l + 1]
+                               - Pmin[i][l - 1] + Pmax[i][l - 1]);
         }
       }
     }
-    else
-    {
-      for (int i=0; i<nlsize; i++)  // NON LIMBER PART
-      { 
-        for (int j=i; j<nlsize; j++)  
-        {
-          for (int k=0; k<nccl_size; k++) // can't openmp - C_cc_tomo - FFTW calls
-          {
-            const int L = 1;
-            const double tol = 0.01;      // required fractional accuracy in C(l)
-            const double dev = 10.0 * tol;// will be diff exact vs Limber init to large value in
-                                          // order to start while loop
-            const int ZCCL1 = k;          // cross redshift bin not supported so not using ZCCL1(k)
-            const int ZCCL2 = k;          // cross redshift bin not supported so not using ZCCL2(k)
-            const int q = i*nlsize*nccl_size + j*nccl_size + k;
-            C_cc_tomo(L, i, j, ZCCL1, ZCCL2, Cl[q], dev, tol); // can't openmp
-          }
-        }
-      }
-      #pragma omp parallel for collapse(3)
-      for (int i=0; i<nlsize; i++) // LIMBER PART
-      {
-        for (int k=0; k<nccl_size; k++)
-        {
-          for (int l=limits.LMAX_NOLIMBER+1; l<nell; l++)
-          {
-            for (int j=i; j<nlsize; j++)
-            {
-              const int q = i*nlsize*nccl_size + j*nccl_size + k;
-              const int ZCCL1 = k; // cross redshift bin not supported so not using ZCCL1(k)
-              const int ZCCL2 = k; // cross redshift bin not supported so not using ZCCL2(k)
-              Cl[q][l] = C_cc_tomo_limber(l, i, j, ZCCL1, ZCCL2);
-            }
-          }
-        }
-      }
-      #pragma omp parallel for collapse(3)
-      for (int i=0; i<nlsize; i++)
-      {
-        for (int k=0; k<nccl_size; k++)
-        {
-          for (int l=1; l<nell; l++)
-          {
-            for (int j=i; j<nlsize; j++)
-            {
-              const int q     = i*nlsize*nccl_size + j*nccl_size + k;
-              const int qstar = j*nlsize*nccl_size + i*nccl_size + k;
-              Cl[qstar][l] = Cl[q][l];
-            }
-          }
-        }
-      } 
-    }
-    #pragma omp parallel for collapse(4)
-    for (int i=0; i<nlsize; i++)
-    { 
-      for (int j=0; j<nlsize; j++)  
-      {
-        for (int k=0; k<nccl_size; k++)  
-        {
-          for (int p=0; p<ntheta; p++)
-          {
-            const int nz = i*nlsize*nccl_size + j*nccl_size + k;
-            const int q = nz*ntheta + p;
-            w_vec[q] = 0;
-            for (int l=1; l<nell; l++)
-            {
-              w_vec[q] += Pl[p][l]*Cl[nz][l];
-            }
-          }
+    else {
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int i = 0; i < ntheta; i++) {
+        for (int l = lmin; l < lmax; l++) {
+          const double ll = (double) l;
+
+          // (2l+1)/(4 pi l (l+1)): Legendre norm x single spin-2 field
+          const double prefactor =
+            (2.0*ll + 1.0)/(4.0*M_PI*ll*(ll + 1.0)*(xmin[i] - xmax[i]));
+
+          const double term_lm1 =
+            (ll + 2.0/(2.0*ll + 1.0))*(Pmin[i][l - 1] - Pmax[i][l - 1]);
+          const double term_l =
+            (2.0 - ll)*(xmin[i]*Pmin[i][l] - xmax[i]*Pmax[i][l]);
+          const double term_lp1 =
+            2.0/(2.0*ll + 1.0)*(Pmin[i][l + 1] - Pmax[i][l + 1]);
+
+          kernel[i][l] = prefactor*(term_lm1 + term_l - term_lp1);
         }
       }
     }
-    for (int i=0; i<NSIZE; i++)
-    {
-      free(Cl[i]);
-    }
-    free(Cl);
-    update_cosmopara(&C);
-    update_nuisance(&N);
+
+    free(P);
+
+    cache_ntable[kind] = Ntable.random;
+    ntheta_built[kind] = ntheta;
+    lmax_built[kind]   = lmax;
   }
-  if (ni != nj)
-  {
-    log_fatal("ni != nj cross tomography not supported");
-    exit(1);
-  } 
-  if (nt < 0 || nt > like.Ntheta - 1)
-  {
-    log_fatal("error in selecting bin number nt = %d (max %d)", nt, like.Ntheta);
-    exit(1); 
-  }
-  if (nl1 < 0 || nl1 > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl1 = %d (max %d)", nl1, nlsize);
-    exit(1); 
-  } 
-  if (nl2 < 0 || nl2 > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl2 = %d (max %d)", nl2, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.clustering_nbin);
-    exit(1); 
-  }
-  const int q = (nl1*nlsize*nccl_size + nl2*nccl_size + ni)*ntheta + nt; // cross redshift bin not 
-                                                                         // supported so not using 
-                                                                         // N_CCL(ni, nj)
-  if (q > NSIZE*ntheta - 1)
-  {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
-  }
-  return w_vec[q];
+  return Pl[kind];
 }
 
-double w_cg_tomo(const int nt, const int nl, const int ni, const int nj, const int limber)
+
+
+// ============================================================================
+// [SECTION] REAL SPACE: gamma_t OF CLUSTERS, w_cc, w_cg
+// ============================================================================
+//
+// One cached block per statistic: w_vec[row][theta] for every row of the
+// statistic's Limber block. The C_l of a row at every integer l < LMAX:
+//
+//   l = 0                      : 0 (no monopole)
+//   l = 1 .. LMIN_tab - 1      : exact Limber batch at each integer l
+//   l = LMIN_tab .. LMAX - 1   : the cached log-l table, read with
+//                                limber_fill_interp (cosmo2D.c)
+//
+// then one Legendre sum per (row, theta bin). The table's first node sits
+// exactly at LMIN_tab, so the two C_l pieces join without a step.
+
+typedef struct
 {
-  if (like.Ntheta == 0)
-  {
-    log_fatal("like.Ntheta not initialized");
-    exit(1);
-  }
-  static cosmopara C;
-  static galpara G;
-  static nuisancepara N;
-  static double** Pl = 0;
-  static double* w_vec = 0;
+  double** Cl;       // [nrows][LMAX]: C_l at every integer l
+  double* w_vec;     // [nrows][Ntheta]: the real-space block
+  double* lnell;     // [LMAX + 1]: ln l, read by limber_fill_interp
+  int nrows;
+  int ntheta;
+  int lmax;
+  uint64_t cache_ntable;              // Ntable.random of the allocation
+  uint64_t cache[CLUSTER_NKEYS_MAX];  // keys of the values
+} real_space_cluster;
 
-  const int ntheta = like.Ntheta;
-  const int nlsize = Cluster.N200_Nbin;
-  const int ncg_size = tomo.cg_clustering_Npowerspectra;
-  const int nell = limits.LMAX;
-  const int NSIZE = nlsize*ncg_size;
 
-  if (Pl == 0)
-  {
-    Pl = (double**) malloc(sizeof(double*)*ntheta);
-    for (int i=0; i<ntheta; i++)
-    {
-      Pl[i] = (double*) malloc(sizeof(double)*nell);
-    }
-    w_vec = (double*) malloc(sizeof(double)*NSIZE*ntheta);
-    double xmin[ntheta];
-    double xmax[ntheta];
-    // Cocoa: dont thread (init of static variables inside set_bin_average)
-    for (int i=0; i<ntheta; i ++)
-    {
-      bin_avg r = set_bin_average(i,0);
-      xmin[i] = r.xmin;
-      xmax[i] = r.xmax;
-    }
-    double** Pmin = (double**) malloc(sizeof(double)*ntheta);
-    double** Pmax = (double**) malloc(sizeof(double)*ntheta);
-    for (int i=0; i<ntheta; i ++)
-    {
-      Pmin[i] = (double*) malloc(sizeof(double)*(nell + 1));
-      Pmax[i] = (double*) malloc(sizeof(double)*(nell + 1));
-    }
-    #pragma omp parallel for
-    for (int i=0; i<ntheta; i ++)
-    {
-      for (int l=0; l<nell; l++)
-      {
-        bin_avg r = set_bin_average(i,l);
-        Pmin[i][l] = r.Pmin;
-        Pmax[i][l] = r.Pmax;
+// ---------------------------------------------------------------------------
+// Legendre sums w[row][i] = sum_{l=1}^{lmax-1} Pl[i][l] Cl[row][l].
+//
+// The only sum is over l: every (row, theta bin) has its own.
+//
+// Why the reference loop (COSMO2D_NOT_USE_SIMD) is slow: at LMAX = 75000
+// a C_l row and a kernel row are 600 kB each, far more than the L1 cache
+// holds. The reference loop makes one full pass over l per (row, theta
+// bin), so it reads the whole of Cl[row] again for every theta bin and
+// the whole of Pl[i] again for every row: two values fetched from memory
+// per multiply-add, and the loop waits on memory, not on arithmetic (the
+// des_cluster blocks hold 90 rows x 20 theta bins).
+//
+// The default loop takes 4 rows and 4 theta bins in one pass over l: 8
+// values fetched per 16 multiply-adds, each C_l row read Ntheta/4 times
+// and each kernel row nrows/4 times. Each of the 16 sums adds the same
+// products in the same order as the reference loop does for that (row,
+// theta bin), so the results are bitwise those of the reference. Measured
+// on the 6x2pt + N data vector: 22% less cosmolike time at 4 and at 8
+// threads (cluster lensing alone 27-35%).
+//
+// Why 4 x 4: the 16 sums and the 8 fetched values must stay in the CPU's
+// vector registers (32 on arm64); a larger group spills them to memory.
+//
+// Thread safety: call outside parallel regions.
+// ---------------------------------------------------------------------------
+static void legendre_sums_cluster(
+    const int nrows,        // C_l rows
+    const int ntheta,       // theta bins
+    const int lmax,         // sums run over l = 1 .. lmax - 1
+    double** Pl,            // [ntheta][lmax] bin-averaged kernel
+    double** Cl,            // [nrows][lmax] C_l at every integer l
+    double* w_vec           // output: [nrows][ntheta]
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < nrows; row++) {
+    for (int i = 0; i < ntheta; i++) {
+      // Local restrict pointers: without them the compiler cannot prove
+      // that Pl[i] and Cl[row] do not alias (pointer-to-pointer
+      // indirection inside a collapse(2) region) and emits
+      // reload-checking code; the body is a single multiply-add with
+      // nothing to hide that overhead behind (SKILL.md, pitfall 1)
+      const double* restrict pl = Pl[i];
+      const double* restrict cl = Cl[row];
+
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int l = 1; l < lmax; l++) {
+        sum += pl[l]*cl[l];
       }
-      Pl[i][0] = 1.0;
-      const double tmp = (1.0/(xmin[i] - xmax[i]))*(1. / (4. * M_PI));
-      for (int l=1; l<nell; l++)
-      {
-        Pl[i][l] = tmp*(Pmin[i][l + 1] - Pmax[i][l + 1] - Pmin[i][l - 1] + Pmax[i][l - 1]);
-      }
+      w_vec[row*ntheta + i] = sum;
     }
-    for (int i=0; i<ntheta; i ++)
-    {
-      free(Pmin[i]);
-      free(Pmax[i]);
-    }
-    free(Pmin);
-    free(Pmax);
   }
-  if (recompute_cg(C, G, N))
-  {
-    double** Cl = malloc(NSIZE*sizeof(double*));
-    for (int i=0; i<NSIZE; i++)
-    {
-      Cl[i] = calloc(nell, sizeof(double));
-    }
-    if (limber == 1)
-    {
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wunused-variable"
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-      {
-        const double Z1 = ZCGCL1(0);
-        const double Z2 = ZCGCL2(0);
-        double init_static_vars_only = C_cg_tomo_limber(limits.LMIN_tab + 1, 0, Z1, Z2);
+#else
+  // Same sums as the reference loop above, 4 rows x 4 theta bins per
+  // pass over l: `row` and `i` are the first row and the first theta bin
+  // of the group, which covers rows row .. row+3 and bins i .. i+3.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < nrows; row += 4) {
+    for (int i = 0; i < ntheta; i += 4) {
+      // Past the end of the block (nrows or ntheta not a multiple of 4)
+      // the extra slots point at the last valid row / theta bin: the loop
+      // below always reads valid memory, and those repeats are computed
+      // but never stored
+      const int row1 = (row + 1 < nrows) ? row + 1 : nrows - 1;
+      const int row2 = (row + 2 < nrows) ? row + 2 : nrows - 1;
+      const int row3 = (row + 3 < nrows) ? row + 3 : nrows - 1;
+      const int i1   = (i + 1 < ntheta) ? i + 1 : ntheta - 1;
+      const int i2   = (i + 2 < ntheta) ? i + 2 : ntheta - 1;
+      const int i3   = (i + 3 < ntheta) ? i + 3 : ntheta - 1;
+
+      // restrict: as in the reference loop, the compiler cannot otherwise
+      // prove the eight arrays do not alias and reloads them every step
+      const double* restrict cl0 = Cl[row];   // C_l of rows row .. row+3
+      const double* restrict cl1 = Cl[row1];
+      const double* restrict cl2 = Cl[row2];
+      const double* restrict cl3 = Cl[row3];
+      const double* restrict pl0 = Pl[i];     // kernel of bins i .. i+3
+      const double* restrict pl1 = Pl[i1];
+      const double* restrict pl2 = Pl[i2];
+      const double* restrict pl3 = Pl[i3];
+
+      // sum<a><b>: the sum of row + a and theta bin i + b. Sixteen
+      // separate sums over l; nothing is added across rows or bins, they
+      // only share the reads of cl and pl
+      double sum00 = 0.0, sum01 = 0.0, sum02 = 0.0, sum03 = 0.0;
+      double sum10 = 0.0, sum11 = 0.0, sum12 = 0.0, sum13 = 0.0;
+      double sum20 = 0.0, sum21 = 0.0, sum22 = 0.0, sum23 = 0.0;
+      double sum30 = 0.0, sum31 = 0.0, sum32 = 0.0, sum33 = 0.0;
+
+      #pragma omp simd reduction(+:sum00,sum01,sum02,sum03,\
+                                   sum10,sum11,sum12,sum13,\
+                                   sum20,sum21,sum22,sum23,\
+                                   sum30,sum31,sum32,sum33)
+      for (int l = 1; l < lmax; l++) {
+        sum00 += pl0[l]*cl0[l];
+        sum01 += pl1[l]*cl0[l];
+        sum02 += pl2[l]*cl0[l];
+        sum03 += pl3[l]*cl0[l];
+
+        sum10 += pl0[l]*cl1[l];
+        sum11 += pl1[l]*cl1[l];
+        sum12 += pl2[l]*cl1[l];
+        sum13 += pl3[l]*cl1[l];
+
+        sum20 += pl0[l]*cl2[l];
+        sum21 += pl1[l]*cl2[l];
+        sum22 += pl2[l]*cl2[l];
+        sum23 += pl3[l]*cl2[l];
+
+        sum30 += pl0[l]*cl3[l];
+        sum31 += pl1[l]*cl3[l];
+        sum32 += pl2[l]*cl3[l];
+        sum33 += pl3[l]*cl3[l];
       }
-      #pragma GCC diagnostic pop
-      #pragma GCC diagnostic pop
-      #pragma omp parallel for collapse(3)
-      for (int i=0; i<nlsize; i++)
-      {
-        for (int j=0; j<ncg_size; j++)
-        {
-          for (int l=1; l<nell; l++)
-          {
-            const int q = i*ncg_size+ j;
-            const double Z1 = ZCGCL1(j);
-            const double Z2 = ZCGCL2(j);
-            Cl[q][l] = (l > limits.LMIN_tab) ? C_cg_tomo_limber(l, i, Z1, Z2) :
-              C_cg_tomo_limber_nointerp(l, i, Z1, Z2, use_linear_ps_limber, 0);
+
+      // store the sums of the rows and bins that exist
+      const double sum[4][4] = {{sum00, sum01, sum02, sum03},
+                                {sum10, sum11, sum12, sum13},
+                                {sum20, sum21, sum22, sum23},
+                                {sum30, sum31, sum32, sum33}};
+      for (int a = 0; a < 4; a++) {
+        for (int b = 0; b < 4; b++) {
+          if (row + a < nrows && i + b < ntheta) {
+            w_vec[(row + a)*ntheta + (i + b)] = sum[a][b];
           }
         }
       }
     }
-    else
-    {
-      log_fatal("NonLimber not implemented");
+  }
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
+// Bring a real-space block up to date.
+//
+//   1. GEOMETRY (Ntable.random, Ntheta, LMAX, block size): allocate.
+//   2. VALUES (the statistic's keys): C_l at every integer l (exact batch
+//      below the table, table fill above), then the Legendre sums,
+//      collapse(2) over (row, theta) with a vectorized sum over l.
+//
+// Thread safety: call outside parallel regions.
+// ---------------------------------------------------------------------------
+static void real_space_cluster_update(
+    real_space_cluster* R,          // the statistic's static block
+    const int nrows,                // rows of the statistic's block
+    const int spin,                 // 0 (w) or 2 (gamma_t)
+    const uint64_t* keys,           // the statistic's current keys
+    const int nkeys,                // number of keys
+    limber_table_getter get_table,  // the statistic's cached l table
+    limber_batch_rows batch_rows    // the statistic's exact Limber batch
+  )
+{
+  int refill = 0;
+
+  // --- 1. GEOMETRY ---
+  if (NULL == R->Cl ||
+      fdiff2(R->cache_ntable, Ntable.random) ||
+      nrows != R->nrows ||
+      Ntable.Ntheta != R->ntheta ||
+      Ntable.LMAX != R->lmax)
+  {
+    if (Ntable.LMAX <= limits.LMIN_tab) {
+      log_fatal("Ntable.LMAX = %d <= limits.LMIN_tab = %d",
+        Ntable.LMAX, limits.LMIN_tab);
       exit(1);
     }
-    #pragma omp parallel for collapse(3)
-    for (int i=0; i<nlsize; i++)
-    {
-      for (int j=0; j<ncg_size; j++)
-      {
-        for (int p=0; p<ntheta; p++)
-        {
-          const int nz = i*ncg_size + j;
-          const int q  = nz*ntheta + p;
-          w_vec[q] = 0;
-          for (int l=1; l<nell; l++)
-          {
-            w_vec[q] += Pl[p][l]*Cl[nz][l];
-          }
+    if (R->Cl != NULL) {
+      free(R->Cl);
+    }
+    if (R->w_vec != NULL) {
+      free(R->w_vec);
+    }
+    if (R->lnell != NULL) {
+      free(R->lnell);
+    }
+
+    R->nrows  = nrows;
+    R->ntheta = Ntable.Ntheta;
+    R->lmax   = Ntable.LMAX;
+
+    R->lnell = (double*) malloc1d(Ntable.LMAX + 1);
+    R->lnell[0] = 0.0; // never read (the fill starts at l >= 1)
+    for (int l = 1; l <= Ntable.LMAX; l++) {
+      R->lnell[l] = log((double) l);
+    }
+
+    R->Cl = (double**) malloc2d(nrows, Ntable.LMAX);
+    zero2d(R->Cl, nrows, Ntable.LMAX);
+
+    R->w_vec = (double*) calloc1d(nrows*Ntable.Ntheta);
+
+    R->cache_ntable = Ntable.random;
+    refill = 1;
+  }
+
+  // --- 2. VALUES ---
+  if (1 == refill || keys_changed(R->cache, keys, nkeys)) {
+    double** Pl = legendre_kernel_cluster(spin);
+    const limber_table_cluster* T = get_table();
+
+    const int lmax = Ntable.LMAX;
+
+    // first multipole read from the table
+    int l_table_min = limits.LMIN_tab;
+    if (l_table_min < 1) {
+      l_table_min = 1;
+    }
+
+    // l = 0: no monopole
+    for (int row = 0; row < nrows; row++) {
+      R->Cl[row][0] = 0.0;
+    }
+
+    // l = 1 .. l_table_min - 1: exact Limber quadrature at each integer l
+    const int nexact = l_table_min - 1;
+    if (nexact > 0) {
+      double* ells = (double*) malloc1d(nexact);
+      for (int i = 0; i < nexact; i++) {
+        ells[i] = (double) (i + 1);
+      }
+      double** exact = (double**) malloc2d(nrows, nexact);
+
+      batch_rows(ells, nexact, exact);
+
+      for (int row = 0; row < nrows; row++) {
+        for (int i = 0; i < nexact; i++) {
+          R->Cl[row][i + 1] = exact[row][i];
         }
       }
+      free(exact);
+      free(ells);
     }
-    for (int i=0; i<NSIZE; i++)
-    {
-      free(Cl[i]);
+
+    // l = l_table_min .. LMAX - 1: the log-l table, read at every integer
+    #pragma omp parallel for schedule(static)
+    for (int row = 0; row < nrows; row++) {
+      const double* tab[1] = { T->tab[row] };
+      double* dst[1]       = { R->Cl[row] };
+      limber_fill_interp(1, tab, dst, l_table_min, lmax, R->lnell,
+        T->lim[0], 1.0/T->lim[2], T->nell);
     }
-    free(Cl);
-    update_cosmopara(&C);
-    update_galpara(&G);
-    update_nuisance(&N);
-  } 
-  if (nt < 0 || nt > like.Ntheta - 1)
-  {
-    log_fatal("error in selecting bin number nt = %d (max %d)", nt, like.Ntheta);
-    exit(1); 
+
+    legendre_sums_cluster(nrows, Ntable.Ntheta, lmax, Pl, R->Cl, R->w_vec);
+
+    keys_stamp(R->cache, keys, nkeys);
   }
-  if (nl < 0 || nl > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > tomo.clustering_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, tomo.clustering_Nbin);
-    exit(1); 
+}
+
+
+// basic checks of a real-space request
+static void check_real_space_setup(const int nt)
+{
+  if (0 == Ntable.Ntheta) {
+    log_fatal("Ntable.Ntheta not initialized");
+    exit(1);
   }
-  const int ntomo = N_CGCL(ni, nj);
-  if (!(ntomo>0))
+  if (nt < 0 || nt > Ntable.Ntheta - 1) {
+    log_fatal("error in selecting bin number nt = %d (max %d)",
+      nt, Ntable.Ntheta);
+    exit(1);
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Cluster tangential shear gamma_t(theta_nt) of richness bin nl, cluster
+// bin ni and source bin ns: full-sky, bin-averaged spin-2 Legendre sum of
+// C_cs (eq 12). This is gamma_t BEFORE the Y transform (eq 15), the
+// selection bias (eq 23) and the shear calibration (1 + m): the interface
+// applies all three on the data vector. It is computed at every theta bin
+// regardless of the mask, because the Y transform mixes neighbouring bins.
+//
+// Returns: gamma_t; 0 for a (ni, ns) outside the cs pair list.
+// ---------------------------------------------------------------------------
+double w_gammat_cluster_tomo(
+    const int nt,  // theta bin
+    const int nl,  // richness bin
+    const int ni,  // cluster redshift bin
+    const int ns   // source redshift bin
+  )
+{
+  static real_space_cluster block;
+
+  check_cluster_setup_cs();
+  check_real_space_setup(nt);
+
+  if (nl < 0 || nl > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.zdist_nbin - 1 ||
+      ns < 0 || ns > redshift.shear_nbin - 1)
   {
+    log_fatal("error in selecting bin number (nl, ni, ns) = (%d, %d, %d)",
+      nl, ni, ns);
+    exit(1);
+  }
+
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  const int nkeys = cluster_keys_cs(keys);
+
+  const int nrows = cluster.cs_npowerspectra*cluster.richness_nbin;
+  const int spin  = 2;
+
+  real_space_cluster_update(&block, nrows, spin, keys, nkeys,
+    C_cs_tomo_limber_table, C_cs_tomo_limber_batch_rows);
+
+  const int n = N_cs(ni, ns);
+  if (n < 0) {
     return 0.0;
   }
-  else
-  {
-    const int q = nl*ncg_size + ntomo;
-    if (q > NSIZE-1)
-    {
-      log_fatal("internal logic error in selecting bin number");
-      exit(1);
-    }
-    return w_vec[q];
-  }
+  const int row = n*cluster.richness_nbin + nl;
+  return block.w_vec[row*Ntable.Ntheta + nt];
 }
 
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// Correlation Functions (real space) - flat sky
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
 
-double w_gammat_cluster_tomo_flatsky(const double theta, const int nl, const int ni, const int nj,
-const int limber)
-{ // nl = lambda_obs bin, ni = cluster redshift bin, nj = source redshift bin
-  static cosmopara C;
-  static nuisancepara N;
-  static galpara G;
-  static double** table;
- 
-  const int ntheta = Ntable.N_thetaH;
-  const int nlsize = Cluster.N200_Nbin;
-  const int ngammat_size = tomo.cgl_Npowerspectra;
-  const int NSIZE = nlsize*ngammat_size;
-  const double l_min = limits.LMIN_hankel;
-  const double l_max = limits.LMAX_hankel;
-  const double lnlmax = log(l_max);
-  const double lnlmin = log(l_min);
-  const double dlnl = (lnlmax - lnlmin)/((double) ntheta - 1.0);
-  const double lnrc = 0.5*(lnlmax + lnlmin);
-  const double nc = ntheta/2 + 1;
-  const double lnthetamin = (nc - ntheta + 1)*dlnl - lnrc;
-  const double lnthetamax = nc*dlnl - lnrc;
-  const double dlntheta = (lnthetamax - lnthetamin)/((double) ntheta);
+// ---------------------------------------------------------------------------
+// Cluster-cluster angular correlation w_cc(theta_nt) of richness bins
+// (nl1, nl2) in cluster bin ni: full-sky, bin-averaged spin-0 Legendre sum
+// of C_cc (eq 11), before the selection bias (the interface multiplies by
+// its square, eq 23). limber = 0 (the FKEM non-Limber split) is Phase 4.
+// ---------------------------------------------------------------------------
+double w_cc_tomo(
+    const int nt,     // theta bin
+    const int nl1,    // first richness bin
+    const int nl2,    // second richness bin
+    const int ni,     // cluster redshift bin (0 .. cc_npowerspectra-1)
+    const int limber  // 1: Limber; 0: non-Limber (not implemented yet)
+  )
+{
+  static real_space_cluster block;
 
-  if (table == 0)
-  {
-    table = (double**) malloc(sizeof(double*)*NSIZE);
-    for (int i=0; i<NSIZE; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*ntheta);
-    }
-  }
-  if (recompute_cs(C, G, N))
-  {
-    typedef fftw_complex fftwZ;
-    // go to log-Fourier-space
-    fftwZ** flP = (fftwZ**) malloc(sizeof(fftwZ*)*NSIZE);
-    for (int j=0; j<NSIZE; j++)
-    {
-      flP[j] = fftw_malloc((ntheta/2 + 1)*sizeof(fftwZ));
-    }
-    { 
-      double** lP = (double**) malloc(sizeof(double*)*NSIZE);
-      fftw_plan* plan = (fftw_plan*) malloc(sizeof(fftw_plan)*NSIZE);
-      for (int j=0; j<NSIZE; j++)
-      {
-        lP[j] = (double*) malloc(ntheta*sizeof(double));
-        plan[j] = fftw_plan_dft_r2c_1d(ntheta, lP[j], flP[j], FFTW_ESTIMATE);
-      }
-
-      // ------------------------------------------------------------------------
-      // Power spectrum on logarithmic bins begins
-      // ------------------------------------------------------------------------
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wunused-variable"
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-      {
-        const int i = 0;
-        const int j = 0;
-        const int ZC = ZCL(j);
-        const int ZSC = ZCS(j);
-        double init_static_vars_only = C_cs_tomo_limber(limits.LMIN_tab + 1, i, ZC, ZSC);
-      }
-      #pragma GCC diagnostic pop
-      #pragma GCC diagnostic pop
-      if (limber == 1)
-      { 
-        #pragma omp parallel for collapse (3)
-        for (int i=0; i<nlsize; i++)
-        {
-          for (int j=0; j<ngammat_size; j++)
-          { 
-            for (int p=0; p<ntheta; p++)
-            {
-              const int ZC = ZCL(j);
-              const int ZSC = ZCS(j);
-              const int q = i*ngammat_size + j;
-              const double l = exp(lnrc + (p - nc)*dlnl);
-              lP[q][p] = (l > limits.LMIN_tab) ? l*C_cs_tomo_limber(l, i, ZC, ZSC) :
-                  l*C_cs_tomo_limber_nointerp(l, i, ZC, ZSC, use_linear_ps_limber, 0);
-            }
-          } 
-        }
-      }
-      else
-      {
-        log_fatal("NonLimber not implemented");
-        exit(1);
-      }
-      // ------------------------------------------------------------------------
-      // Power spectrum on logarithmic ends
-      // ------------------------------------------------------------------------
-      
-      #pragma omp parallel for
-      for (int j=0; j<NSIZE; j++)
-      { // Execute FFTW in parallel (thread-safe)
-        fftw_execute(plan[j]); 
-      }
-      for (int j=0; j<NSIZE; j++)
-      {
-        fftw_free(lP[j]);
-        fftw_destroy_plan(plan[j]);
-      }
-      free(lP);
-      free(plan);
-    }
-
-    double** lP = (double**) malloc(sizeof(double*)*NSIZE);
-    fftwZ** kernel = (fftwZ**) fftw_malloc(sizeof(fftwZ*)*NSIZE);
-    fftwZ** conv = (fftwZ**) fftw_malloc(sizeof(fftwZ*)*NSIZE);
-    fftw_plan* plan = (fftw_plan*) malloc(sizeof(fftw_plan)*NSIZE);
-    double*** tab = (double***) malloc(sizeof(double**)*NSIZE);
-    for (int j=0; j<NSIZE; j++)
-    {
-      lP[j] = (double*) malloc(ntheta*sizeof(double));
-      kernel[j] = (fftwZ*) fftw_malloc(sizeof(fftwZ));
-      conv[j] = (fftwZ*) fftw_malloc((ntheta/2+1)*sizeof(fftwZ));
-      plan[j] = fftw_plan_dft_c2r_1d(ntheta, conv[j], lP[j], FFTW_ESTIMATE);
-      tab[j] = (double**) malloc(sizeof(double*)*1);
-      for (int i=0; i<1; i++)
-      {
-        tab[j][i] = (double*) malloc(sizeof(double)*ntheta);
-      }
-    }
-    #pragma omp parallel for
-    for (int j=0; j<NSIZE; j++)
-    { 
-      double arg[2];
-      arg[0] = 0; // bias
-      arg[1] = 2; // order of Bessel function - J2
-
-      for (int i=0; i<(ntheta/2+1); i++)
-      {
-        const double kk = 2*M_PI*i/(dlnl*ntheta);
-        hankel_kernel_FT(kk, kernel[j], arg, 2);
-        conv[j][i][0] = flP[j][i][0]*kernel[j][0][0] - flP[j][i][1]*kernel[j][0][1];
-        conv[j][i][1] = flP[j][i][1]*kernel[j][0][0] + flP[j][i][0]*kernel[j][0][1];
-      }
-
-      // force Nyquist- and 0-frequency-components to be double
-      conv[j][0][1] = 0;
-      conv[j][ntheta/2][1] = 0;
-
-      fftw_execute(plan[j]); // Execute FFTW in parallel (thread-safe)
-
-      for (int k=0; k<ntheta; k++)
-      {
-        const double t = exp((nc-k)*dlnl-lnrc); 
-        tab[j][0][ntheta-k-1] = lP[j][k]/(t*2*M_PI*ntheta);
-      }
-      for (int k=0; k<ntheta; k++)
-      {
-        table[j][k] = tab[j][0][k];
-      }
-    }
-    for (int j=0; j<NSIZE; j++)
-    {
-      fftw_free(flP[j]);
-      fftw_free(lP[j]);
-      fftw_free(conv[j]);
-      fftw_free(kernel[j]);
-      fftw_destroy_plan(plan[j]);
-      free(tab[j]);
-    }
-    free(flP);
-    free(lP);
-    free(conv);
-    free(kernel);
-    free(plan);
-    free(tab);
-    update_galpara(&G);
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  } 
-  if (nl < 0 || nl > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.shear_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.shear_nbin);
-    exit(1); 
-  }
-  const double lntheta = log(theta);
-  if (lntheta < lnthetamin || lntheta > lnthetamax)
-  {
-    const double theta = exp(lntheta);
-    const double theta_min = exp(lnthetamin);
-    const double theta_max = exp(lnthetamax);
-    log_fatal("theta = %e outside look-up table range [%e,%e]", theta, theta_min, theta_max);
+  if (1 != limber) {
+    log_fatal("w_cc_tomo: non-Limber not implemented yet (limber = %d)",
+      limber);
     exit(1);
   }
-  const int ntomo = N_cgl(ni, nj);
-  if (!(ntomo>0))
+
+  check_cluster_setup_cc();
+  check_real_space_setup(nt);
+
+  if (nl1 < 0 || nl1 > cluster.richness_nbin - 1 ||
+      nl2 < 0 || nl2 > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.cc_npowerspectra - 1)
   {
+    log_fatal("error in selecting bin number (nl1, nl2, ni) = (%d, %d, %d)",
+      nl1, nl2, ni);
+    exit(1);
+  }
+
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  const int nkeys = cluster_keys_cc(keys);
+
+  const int nrows = cluster.cc_npowerspectra*cc_richness_npairs();
+  const int spin  = 0;
+
+  real_space_cluster_update(&block, nrows, spin, keys, nkeys,
+    C_cc_tomo_limber_table, C_cc_tomo_limber_batch_rows);
+
+  const int row = cc_row(nl1, nl2, ni);
+  return block.w_vec[row*Ntable.Ntheta + nt];
+}
+
+
+// ---------------------------------------------------------------------------
+// Cluster-galaxy angular correlation w_cg(theta_nt) of richness bin nl,
+// cluster bin ni and lens bin ng: full-sky, bin-averaged spin-0 Legendre
+// sum of C_cg (eq 11), before the selection bias (the interface, eq 23).
+// limber = 0 (the non-Limber option) is Phase 4.
+//
+// Returns: w_cg; 0 for a (ni, ng) outside the cg pair list.
+// ---------------------------------------------------------------------------
+double w_cg_tomo(
+    const int nt,     // theta bin
+    const int nl,     // richness bin
+    const int ni,     // cluster redshift bin
+    const int ng,     // lens (galaxy) redshift bin
+    const int limber  // 1: Limber; 0: non-Limber (not implemented yet)
+  )
+{
+  static real_space_cluster block;
+
+  if (1 != limber) {
+    log_fatal("w_cg_tomo: non-Limber not implemented yet (limber = %d)",
+      limber);
+    exit(1);
+  }
+
+  check_cluster_setup_cg();
+  check_real_space_setup(nt);
+
+  if (nl < 0 || nl > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.zdist_nbin - 1 ||
+      ng < 0 || ng > redshift.clustering_nbin - 1)
+  {
+    log_fatal("error in selecting bin number (nl, ni, ng) = (%d, %d, %d)",
+      nl, ni, ng);
+    exit(1);
+  }
+
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  const int nkeys = cluster_keys_cg(keys);
+
+  const int nrows = cluster.cg_npowerspectra*cluster.richness_nbin;
+  const int spin  = 0;
+
+  real_space_cluster_update(&block, nrows, spin, keys, nkeys,
+    C_cg_tomo_limber_table, C_cg_tomo_limber_batch_rows);
+
+  const int n = N_cg(ni, ng);
+  if (n < 0) {
     return 0.0;
   }
-  else
-  {
-    const int q = nl*ngammat_size + ntomo;
-    if (q > NSIZE - 1)
-    {
-      log_fatal("internal logic error in selecting bin number");
+  const int row = n*cluster.richness_nbin + nl;
+  return block.w_vec[row*Ntable.Ntheta + nt];
+}
+
+
+
+// ============================================================================
+// [SECTION] CLUSTER NUMBER COUNTS
+// ============================================================================
+//
+// PHYSICAL DERIVATION & LOGIC FLOW (2503.13631 eq 16)
+//   1. Comoving volume per unit redshift and solid angle (flat):
+//        dV/dz dOmega = f_K(chi)^2 / (H/H0)            [(c/H0)^3 / sr]
+//   2. Clusters of richness bin nl per unit volume at true redshift z:
+//        n_nl(z) = int dlnM (dn/dlnM) P(nl|M, z)       (ncl_richness)
+//   3. Probability that such a cluster lands in redshift bin ni:
+//        <phi_ni|z>                                     (phi_cluster)
+//   4. N_{ni, nl} = Omega_s int dz [dV/dz dOmega] <phi_ni|z> n_nl(z)
+//      over the support of <phi_ni|z>, with Omega_s = survey.area (deg^2)
+//      times (pi/180)^2 sr per deg^2. The conversion is a local constant:
+//      survey.area_conversion_factor is set only by reset_survey_struct,
+//      which the interface never calls, so it is 0 at run time.
+//   5. Gauss-Legendre in z on the support: the same tabulated-size rule
+//      (hdi ladder) as the Limber support panel; a top-hat kernel is
+//      smooth inside its support, an erf kernel has its edges resolved.
+
+// ---------------------------------------------------------------------------
+// Fill counts[ni][nl] for every cluster bin and richness bin (eq 16),
+// serially: a few hundred node evaluations per bin, and no thread can
+// change the summation order.
+// ---------------------------------------------------------------------------
+static void cluster_counts_fill(
+    double** counts  // out [zdist_nbin][richness_nbin]
+  )
+{
+  const int nbin_cluster  = cluster.zdist_nbin;
+  const int nbin_richness = cluster.richness_nbin;
+
+  const gsl_integration_glfixed_table* w = limber_gl_table_cluster();
+  const int nodes = (int) w->n;
+
+  // survey solid angle in steradians
+  const double deg2_to_sr = (M_PI/180.0)*(M_PI/180.0);
+  const double omega_s = survey.area*deg2_to_sr;
+
+  zero2d(counts, nbin_cluster, nbin_richness);
+
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    // support of <phi_ni|z> in redshift (the far edge in a is amin_cluster)
+    double z_min       = 1.0/amax_cluster(ni) - 1.0;
+    const double z_max = 1.0/amin_cluster(ni) - 1.0;
+    if (z_min < 0.0) {
+      z_min = 0.0; // a rounding of a = 1 must not reach negative z
+    }
+    if (!(z_min < z_max)) {
+      log_fatal("invalid support of cluster bin %d: z = [%e, %e]",
+        ni, z_min, z_max);
       exit(1);
     }
-    return interpol(table[q], ntheta, lnthetamin, lnthetamax, dlntheta, lntheta, 0, 0);
+
+    for (int q = 0; q < nodes; q++) {
+      double z;
+      double wq;
+      gsl_integration_glfixed_point(z_min, z_max, q, &z, &wq, w);
+
+      const double a         = 1.0/(1.0 + z);
+      const struct chis cdca = chi_all(a);
+      const double fK        = cdca.chi;
+      const double hoverh0   = hoverh0v2(a, cdca.dchida);
+
+      // dV/dz dOmega = f_K^2 / (H/H0), and the bin's selection kernel
+      const double dVdz = fK*fK/hoverh0;
+      const double phi  = phi_cluster(z, ni);
+
+      for (int nl = 0; nl < nbin_richness; nl++) {
+        counts[ni][nl] += wq*dVdz*phi*ncl_richness(a, nl);
+      }
+    }
+
+    for (int nl = 0; nl < nbin_richness; nl++) {
+      counts[ni][nl] *= omega_s;
+    }
   }
 }
 
-double w_cc_tomo_flatsky(const double theta, const int nl1, const int nl2, const int ni, 
-const int nj, const int limber)
-{ // nl{1,2} = lambda_obs bins, n{i,j} = cluster redshift bins
-  static cosmopara C;
-  static nuisancepara N;
-  static double** table;
 
-  const int nlsize = Cluster.N200_Nbin;
-  const int nccl_size = redshift.clustering_nbin; // cross redshift bin not supported so not using
-                                           // tomo.cc_clustering_Npowerspectra
-  const int NSIZE = nlsize*nlsize*nccl_size;
-  const int ntheta = Ntable.N_thetaH;
-  const double l_min = limits.LMIN_hankel;
-  const double l_max = limits.LMAX_hankel;
-  const double lnlmax = log(l_max);
-  const double lnlmin = log(l_min);
-  const double dlnl = (lnlmax - lnlmin)/((double) ntheta - 1.0);
-  const double lnrc = 0.5*(lnlmax + lnlmin);
-  const double nc = ntheta/2 + 1;
-  const double lnthetamin = (nc - ntheta + 1)*dlnl - lnrc;
-  const double lnthetamax = nc*dlnl - lnrc;
-  const double dlntheta = (lnthetamax - lnthetamin)/((double) ntheta);
-
-  if (table == 0)
-  {
-    table = (double**) malloc(sizeof(double*)*NSIZE);
-    for (int i=0; i<NSIZE; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*ntheta);
-    }
-  } 
-  if (recompute_cc(C, N))
-  {
-    typedef fftw_complex fftwZ;
-
-    // go to log-Fourier-space
-    fftwZ** flP = (fftwZ**) malloc(sizeof(fftwZ*)*NSIZE);
-    for (int j=0; j<NSIZE; j++)
-    {
-      flP[j] = fftw_malloc((ntheta/2+1)*sizeof(fftwZ));
-    }
-    { 
-      double** lP = (double**) malloc(sizeof(double*)*NSIZE);
-      fftw_plan* plan = (fftw_plan*) malloc(sizeof(fftw_plan)*NSIZE);
-      for (int j=0; j<NSIZE; j++)
-      {
-        lP[j] = (double*) malloc(ntheta*sizeof(double));
-        plan[j] = fftw_plan_dft_r2c_1d(ntheta, lP[j], flP[j], FFTW_ESTIMATE);
-      }
-
-      // ------------------------------------------------------------------------
-      // Power spectrum on logarithmic bins begins
-      // ------------------------------------------------------------------------
-      double* ll = (limber == 1) ? NULL : calloc(limits.LMAX_NOLIMBER, sizeof(double));
-      if (limber != 1)
-      { 
-        for (int i=0; i<limits.LMAX_NOLIMBER; i++)
-        {
-          ll[i] = i;
-        }
-      }
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wunused-variable"
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-      {
-        const int i = 0;
-        const int j = 0;
-        double init_static_vars_only = C_cc_tomo_limber(limits.LMIN_tab + 1, i, j, 0, 0);
-      }
-      #pragma GCC diagnostic pop
-      #pragma GCC diagnostic pop
-      for (int i=0; i<nlsize; i++) 
-      { 
-        gsl_spline*** fCL_NL = 
-          (limber == 1) ? NULL : (gsl_spline***) malloc(sizeof(gsl_spline**)*nlsize);
-        double*** Cl_NL = (double***) malloc(sizeof(double**)*nlsize);
-        if (limber != 1)
-        { 
-          for (int j=i; j<nlsize; j++)  
-          { 
-            fCL_NL[j] = (gsl_spline**) malloc(sizeof(gsl_spline*)*nccl_size);
-            Cl_NL[j] = (double**) malloc(sizeof(double*)*nccl_size);
-            for (int k=0; k<nccl_size; k++)
-            {
-              Cl_NL[j][k] = calloc(limits.LMAX_NOLIMBER, sizeof(double));
-            }
-            const int L = 1;
-            const double tol = 0.0075;        // required fractional accuracy in C(l)
-            const double dev = 10. * tol;     // will be diff exact vs Limber init to large
-                                              // value in order to start while loop
-            for (int k=0; k<nccl_size; k++)
-            {
-              const int ZCCL1 = k; // cross redshift bin not supported so not using ZCCL1(k)
-              const int ZCCL2 = k; // cross redshift bin not supported so not using ZCCL1(k)
-              C_cc_tomo(L, i, j, ZCCL1, ZCCL2, Cl_NL[j][k], dev, tol);
-              
-              const gsl_interp_type* T = gsl_interp_linear;
-              fCL_NL[j][k] = gsl_spline_alloc(T, limits.LMAX_NOLIMBER);
-              if (fCL_NL[j][k] == NULL)
-              {
-                log_fatal("fail allocation");
-                exit(1);
-              }
-            }
-          }
-          #pragma omp parallel for collapse(2)
-          for (int j=i; j<nlsize; j++)  
-          {
-            for (int k=0; k<nccl_size; k++)
-            {
-              int status = gsl_spline_init(fCL_NL[j][k], ll, Cl_NL[j][k], limits.LMAX_NOLIMBER);
-              if (status) 
-              {
-                log_fatal(gsl_strerror(status));
-                exit(1);
-              }
-            }
-          }
-        }    
-        #pragma omp parallel for collapse(3)
-        for (int j=i; j<nlsize; j++)  
-        {
-          for (int k=0; k<nccl_size; k++)  
-          {
-            for (int p=0; p<ntheta; p++)
-            {
-              const int q     = i*nlsize*nccl_size + j*nccl_size + k;
-              const int qstar = j*nlsize*nccl_size + i*nccl_size + k;
-              const int ZCCL1 = k; // cross redshift bin not supported so not using ZCCL1(k)
-              const int ZCCL2 = k; // cross redshift bin not supported so not using ZCCL2(k)
-              const double l = exp(lnrc + (p - nc)*dlnl);
-              if (limber == 1 || (limber != 1 && l > limits.LMAX_NOLIMBER - 1))
-              {
-                lP[q][p] = (l > limits.LMIN_tab) ? l*C_cc_tomo_limber(l, i, j, ZCCL1, ZCCL2) :
-                  l*C_cc_tomo_limber_nointerp(l, i, j, ZCCL1, ZCCL2, use_linear_ps_limber, 0); 
-              }
-              else
-              {
-                double CLNL;
-                int status = gsl_spline_eval_e(fCL_NL[j][k], l, NULL, &CLNL);
-                if (status) 
-                {
-                  log_fatal(gsl_strerror(status));
-                  exit(1);
-                }
-                lP[q][p] = l*CLNL;
-              }
-              lP[qstar][p] = lP[q][p];
-            }
-          }
-        }
-        if (limber != 1)
-        {
-          for (int j=i; j<nlsize; j++) 
-          {
-            for (int k=0; k<nccl_size; k++)
-            {
-              free(Cl_NL[j][k]);
-              gsl_spline_free(fCL_NL[j][k]);
-            }
-          }
-          for (int j=i; j<nlsize; j++)
-          {
-            free(Cl_NL[j]);
-            free(fCL_NL[j]);
-          }
-          free(Cl_NL);
-          free(fCL_NL);
-        }
-      } 
-      if (limber != 1)
-      { 
-        free(ll);
-      }
-      // ------------------------------------------------------------------------
-      // Power spectrum on logarithmic bins ends
-      // ------------------------------------------------------------------------
-      #pragma omp parallel for
-      for (int j=0; j<NSIZE; j++)
-      {
-        fftw_execute(plan[j]); // Execute FFTW in parallel (thread-safe)
-      }
-
-      for (int j=0; j<NSIZE; j++)
-      {
-        fftw_free(lP[j]);
-        fftw_destroy_plan(plan[j]);
-      }
-      free(lP);
-      free(plan);
-    }
-    double** lP = (double**) malloc(sizeof(double*)*NSIZE);
-    fftwZ** kernel = (fftwZ**) fftw_malloc(sizeof(fftwZ*)*NSIZE);
-    fftwZ** conv = (fftwZ**) fftw_malloc(sizeof(fftwZ*)*NSIZE);
-    fftw_plan* plan = (fftw_plan*) malloc(sizeof(fftw_plan)*NSIZE);
-    double*** tab = (double***) malloc(sizeof(double**)*NSIZE);
-    for (int j=0; j<NSIZE; j++)
-    {
-      lP[j] = (double*) malloc(ntheta*sizeof(double));
-      kernel[j] = (fftwZ*) fftw_malloc(sizeof(fftwZ));
-      conv[j] = (fftwZ*) fftw_malloc((ntheta/2+1)*sizeof(fftwZ));
-      plan[j] = fftw_plan_dft_c2r_1d(ntheta, conv[j], lP[j], FFTW_ESTIMATE);
-      tab[j] = (double**) malloc(sizeof(double*)*1);
-      for (int i=0; i<1; i++)
-      {
-        tab[j][i] = (double*) malloc(sizeof(double)*ntheta);
-      }
-    }
-    #pragma omp parallel for
-    for (int j=0; j<NSIZE; j++)
-    {
-      double arg[2];
-      arg[0] = 0; // bias
-      arg[1] = 0; // order of Bessel function - J0
-
-      for (int i=0; i<(ntheta/2+1); i++)
-      {
-        const double kk = 2*M_PI*i/(dlnl*ntheta);
-        hankel_kernel_FT(kk, kernel[j], arg, 2);
-        conv[j][i][0] = flP[j][i][0]*kernel[j][0][0] - flP[j][i][1]*kernel[j][0][1];
-        conv[j][i][1] = flP[j][i][1]*kernel[j][0][0] + flP[j][i][0]*kernel[j][0][1];
-      }
-
-      // force Nyquist- and 0-frequency-components to be double
-      conv[j][0][1] = 0;
-      conv[j][ntheta/2][1] = 0;
-
-      fftw_execute(plan[j]); // Execute FFTW in parallel (thread-safe)
-
-      for (int k=0; k<ntheta; k++)
-      {
-        const double t = exp((nc - k)*dlnl - lnrc); 
-        tab[j][0][ntheta-k-1] = lP[j][k]/(t*2*M_PI*ntheta);
-      }
-      for (int k=0; k<ntheta; k++)
-      {
-        table[j][k] = tab[j][0][k];
-      }
-    }
-    for (int j=0; j<NSIZE; j++)
-    {
-      fftw_free(flP[j]);
-      fftw_free(lP[j]);
-      fftw_free(conv[j]);
-      fftw_free(kernel[j]);
-      fftw_destroy_plan(plan[j]);
-      free(tab[j]);
-    }
-    free(flP);
-    free(lP);
-    free(conv);
-    free(kernel);
-    free(plan);
-    free(tab);
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  }
-  if (ni != nj) 
-  {
-    log_fatal("cross-tomography not supported");
-    exit(1);
-  }
-  if (nl1 < 0 || nl1 > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl1 = %d (max %d)", nl1, nlsize);
-    exit(1); 
-  } 
-  if (nl2 < 0 || nl2 > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl2 = %d (max %d)", nl2, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.clustering_nbin);
-    exit(1); 
-  }
-  const double lntheta = log(theta);
-  if (lntheta < lnthetamin || lntheta > lnthetamax)
-  {
-    const double theta = exp(lntheta);
-    const double theta_min = exp(lnthetamin);
-    const double theta_max = exp(lnthetamax);
-    log_fatal("theta = %e outside look-up table range [%e,%e]", theta, theta_min, theta_max);
-    exit(1);
-  }
-  const int q = nl1*nlsize*nccl_size + nl2*nccl_size + ni; // cross redshift bin not supported so
-                                                           // not using N_CCL(ni, nj) instead of ni
-  if (q > NSIZE - 1)
-  {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
-  }
-  return interpol(table[q], ntheta, lnthetamin, lnthetamax, dlntheta, lntheta, 0, 0);
-}
-
-double w_cg_tomo_flatsky(double theta, int nl, int ni, int nj, int limber)
-{ // nl = lambda_obs bin, ni = cluster bin, nj = galaxy bin
-  static cosmopara C;
-  static galpara G;
-  static nuisancepara N;
-  static double** table;
-
-  const int nlsize = Cluster.N200_Nbin;
-  const int ncg_size = tomo.cg_clustering_Npowerspectra;
-  const int NSIZE = nlsize*ncg_size;
-  const int ntheta = Ntable.N_thetaH;
-  const double l_min = limits.LMIN_hankel;
-  const double l_max = limits.LMAX_hankel;
-  const double lnlmax = log(l_max);
-  const double lnlmin = log(l_min);
-  const double dlnl = (lnlmax - lnlmin)/((double) ntheta - 1.0);
-  const double lnrc = 0.5*(lnlmax + lnlmin);
-  const double nc = ntheta/2 + 1;
-  const double lnthetamin = (nc - ntheta + 1)*dlnl - lnrc;
-  const double lnthetamax = nc*dlnl - lnrc;
-  const double dlntheta = (lnthetamax - lnthetamin)/((double) ntheta);
-
-  if (table == 0)
-  {
-    table = (double**) malloc(sizeof(double*)*NSIZE);
-    for (int i=0; i<NSIZE; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*ntheta);
-    }
-  } 
-  if (recompute_cg(C, G, N))
-  {
-    if (limber == 1)
-    {
-      typedef fftw_complex fftwZ;
-
-      // go to log-Fourier-space
-      fftwZ** flP = (fftwZ**) malloc(sizeof(fftwZ*)*NSIZE);
-      for (int j=0; j<NSIZE; j++)
-      {
-        flP[j] = fftw_malloc((ntheta/2+1)*sizeof(fftwZ));
-      }
-      { 
-        double** lP = (double**) malloc(sizeof(double*)*NSIZE);
-        fftw_plan* plan = (fftw_plan*) malloc(sizeof(fftw_plan)*NSIZE);
-        for (int j=0; j<NSIZE; j++)
-        {
-          lP[j] = (double*) malloc(ntheta*sizeof(double));
-          plan[j] = fftw_plan_dft_r2c_1d(ntheta, lP[j], flP[j], FFTW_ESTIMATE);
-        }
-        // ----------------------------------------------------------------------------------
-        // Power spectrum on logarithmic bins (begins)
-        // ----------------------------------------------------------------------------------
-        #pragma GCC diagnostic push
-        #pragma GCC diagnostic ignored "-Wunused-variable"
-        {
-          const double Z1 = ZCGCL1(0);
-          const double Z2 = ZCGCL2(0);
-          double init_static_vars_only = C_cg_tomo_limber(limits.LMIN_tab + 1, 0, Z1, Z2);
-        }
-        #pragma GCC diagnostic pop
-        #pragma omp parallel for collapse(3)
-        for (int i=0; i<nlsize; i++)  
-        {
-          for (int j=0; j<ncg_size; j++)
-          {
-            for (int p=0; p<ntheta; p++)
-            {
-              const int q = i*ncg_size+ j;
-              const double Z1 = ZCGCL1(j);
-              const double Z2 = ZCGCL2(j);
-              const double l = exp(lnrc + (p - nc)*dlnl);
-              lP[q][p] = (l > limits.LMIN_tab) ? l*C_cg_tomo_limber(l, i, Z1, Z2) :
-                l*C_cg_tomo_limber_nointerp(l, i, Z1, Z2, use_linear_ps_limber, 0);
-            }
-          }
-        }
-        // ----------------------------------------------------------------------------------
-        // Power spectrum on logarithmic bins (ends)
-        // ----------------------------------------------------------------------------------
-        #pragma omp parallel for
-        for (int j=0; j<NSIZE; j++)
-        {
-          fftw_execute(plan[j]); // Execute FFTW in parallel (thread-safe)
-        }
-        for (int j=0; j<NSIZE; j++)
-        {
-          fftw_free(lP[j]);
-          fftw_destroy_plan(plan[j]);
-        }
-        free(lP);
-        free(plan);
-      }
-      double** lP = (double**) malloc(sizeof(double*)*NSIZE);
-      fftwZ** kernel = (fftwZ**) fftw_malloc(sizeof(fftwZ*)*NSIZE);
-      fftwZ** conv = (fftwZ**) fftw_malloc(sizeof(fftwZ*)*NSIZE);
-      fftw_plan* plan = (fftw_plan*) malloc(sizeof(fftw_plan)*NSIZE);
-      double*** tab = (double***) malloc(sizeof(double**)*NSIZE);
-      for (int j=0; j<NSIZE; j++)
-      {
-        lP[j] = (double*) malloc(ntheta*sizeof(double));
-        kernel[j] = (fftwZ*) fftw_malloc(sizeof(fftwZ));
-        conv[j] = (fftwZ*) fftw_malloc((ntheta/2+1)*sizeof(fftwZ));
-        plan[j] = fftw_plan_dft_c2r_1d(ntheta, conv[j], lP[j], FFTW_ESTIMATE);
-        tab[j] = (double**) malloc(sizeof(double*)*1);
-        for (int i=0; i<1; i++)
-        {
-          tab[j][i] = (double*) malloc(sizeof(double)*ntheta);
-        }
-      }
-      #pragma omp parallel for
-      for (int j=0; j<NSIZE; j++)
-      {
-        double arg[2];
-        arg[0] = 0; // bias
-        arg[1] = 0; // order of Bessel function
-
-        for (int i=0; i<(ntheta/2+1); i++)
-        {
-          const double kk = 2*M_PI*i/(dlnl*ntheta);
-          hankel_kernel_FT(kk, kernel[j], arg, 2);
-          conv[j][i][0] = flP[j][i][0]*kernel[j][0][0] - flP[j][i][1]*kernel[j][0][1];
-          conv[j][i][1] = flP[j][i][1]*kernel[j][0][0] + flP[j][i][0]*kernel[j][0][1];
-        }
-
-        // force Nyquist- and 0-frequency-components to be double
-        conv[j][0][1] = 0;
-        conv[j][ntheta/2][1] = 0;
-
-        fftw_execute(plan[j]); // Execute FFTW in parallel (thread-safe)
-
-        for (int k=0; k<ntheta; k++)
-        {
-          const double t = exp((nc-k)*dlnl-lnrc); 
-          tab[j][0][ntheta-k-1] = lP[j][k]/(t*2*M_PI*ntheta);
-        }
-        for (int k=0; k<ntheta; k++)
-        {
-          table[j][k] = tab[j][0][k];
-        }
-      }
-      for (int j=0; j<NSIZE; j++)
-      {
-        fftw_free(flP[j]);
-        fftw_free(lP[j]);
-        fftw_free(conv[j]);
-        fftw_free(kernel[j]);
-        fftw_destroy_plan(plan[j]);
-        free(tab[j]);
-      }
-      free(flP);
-      free(lP);
-      free(conv);
-      free(kernel);
-      free(plan);
-      free(tab);
-    }
-    else
-    {
-      log_fatal("NonLimber not implemented");
-      exit(1);
-    }
-    update_galpara(&G);
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  }
-  if (nl < 0 || nl > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > tomo.clustering_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, tomo.clustering_Nbin);
-    exit(1); 
-  }
-  const double lntheta = log(theta);
-  if (lntheta < lnthetamin || lntheta > lnthetamax)
-  {
-    const double theta = exp(lntheta);
-    const double theta_min = exp(lnthetamin);
-    const double theta_max = exp(lnthetamax);
-    log_fatal("theta = %e outside look-up table range [%e,%e]", theta, theta_min, theta_max);
-    exit(1);
-  }
-  const int ntomo = N_CGCL(ni, nj);
-  if (!(ntomo>0))
-  {
-    return 0.0;
-  }
-  else
-  {
-    const int q = nl*ncg_size + ntomo;
-    if (q > NSIZE-1)
-    {
-      log_fatal("internal logic error in selecting bin number");
-      exit(1);
-    }
-    return interpol(table[q], ntheta, lnthetamin, lnthetamax, dlntheta, lntheta, 0, 0);
-  }
-}
-
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// Limber Approximation (Angular Power Spectrum)
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-
-// ----------------------------------------------------------------------------
-// cluster lensing 
-// ----------------------------------------------------------------------------
-// nl = lambda_obs bin, ni = cluster redshift bin, nj = source redshift bin
-
-double int_for_C_cs_tomo_limber(double a, void* params)
-{ 
-  if (!(a>0) || !(a<1))
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
-  double* ar = (double *) params;
-
-  const int nl = (int) ar[0];
-  const int ni = (int) ar[1];
-  const int nj = (int) ar[2];
-  const double ell = ar[3] + 0.5;
-  const int use_linear_ps = (int) ar[4];
-  const int include_1h_term = 1;
-
-  struct chis chidchi = chi_all(a);
-  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
-  const double k = ell/fK;  
-  const double PCM = binned_p_cm(k, a, nl, ni, include_1h_term, use_linear_ps);
-
-  const double WCL = W_cluster(ni, a, hoverh0);
-  const double WK = W_kappa(a, fK, nj);
-  
-  return WCL*WK*PCM*chidchi.dchida/(fK*fK);
-}
-
-double C_cs_tomo_limber_nointerp(const double l, const int nl, const int ni, const int nj, 
-const int use_linear_ps, const int init_static_vars_only)
+// ---------------------------------------------------------------------------
+// Expected number of clusters in redshift bin ni and richness bin nl
+// (eq 16), read from a table of every (ni, nl).
+//
+// Cache invalidation: Ntable.random, cosmology.random, cluster.random_model,
+// cluster.random_zdist, cluster.random_mor and the survey area.
+// ---------------------------------------------------------------------------
+double N_cluster_tomo(
+    const int nl,  // richness bin
+    const int ni   // cluster redshift bin
+  )
 {
-  if (nl < 0 || nl > Cluster.N200_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, Cluster.N200_Nbin);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.shear_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.shear_nbin);
-    exit(1); 
-  }
-  double ar[5] = {(double) nl, (double) ni, (double) nj, l, (double) use_linear_ps};
-  const double zmin = tomo.cluster_zmin[ni];
-  const double zmax = tomo.cluster_zmax[ni];
-  if ((zmin > zmax) || !(zmin>0) || !(zmax>0))
-  {
-    log_fatal("error in selecting redshift range (zmin,zmax) = [%e,%e]", zmin, zmax);
-    exit(1); 
-  } 
-  const double amin = 1./(1. + zmax);
-  const double amax = 1./(1. + zmin);
-  return (init_static_vars_only == 1) ? int_for_C_cs_tomo_limber(amin, (void*) ar) :
-    int_gsl_integrate_low_precision(int_for_C_cs_tomo_limber, (void*) ar, amin, amax, NULL, 
-      GSL_WORKSPACE_SIZE);
-}
+  static double** counts = NULL;      // [zdist_nbin][richness_nbin]
+  static int nbin_cluster_built  = 0;
+  static int nbin_richness_built = 0;
+  static uint64_t cache[CLUSTER_NKEYS_MAX];
 
-double C_cs_tomo_limber(const double l, const int nl, const int ni, const int nj)
-{
-  static cosmopara C;
-  static galpara G;
-  static nuisancepara N;
-  static double** table = 0;
+  check_cluster_setup();
 
-  const int nlsize = Cluster.N200_Nbin;
-  const int ngammat_size = tomo.cgl_Npowerspectra;
-  const int NSIZE = nlsize*ngammat_size;
-  const int nell = Ntable.N_ell;
-  const double lnlmin = log(fmax(limits.LMIN_tab, 1.0));
-  const double lnlmax = log(limits.LMAX);
-  const double dlnl = (lnlmax - lnlmin)/((double) nell - 1.0);
-
-  if (table == 0)
+  if (nl < 0 || nl > cluster.richness_nbin - 1 ||
+      ni < 0 || ni > cluster.zdist_nbin - 1)
   {
-    table = (double**) malloc(sizeof(double*)*NSIZE);
-    for (int i=0; i<NSIZE; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*nell);
-    }
-  }
-  if (recompute_cs(C, G, N))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    {
-      const int ZC = ZCL(0);
-      const int ZS = ZCS(0);
-      const double ll = exp(lnlmin);
-      double init_static_vars_only = 
-        C_cs_tomo_limber_nointerp(ll, 0, ZC, ZS, use_linear_ps_limber, 1);
-    }
-    #pragma GCC diagnostic pop
-    #pragma omp parallel for collapse(3)
-    for (int i=0; i<nlsize; i++)
-    { 
-      for (int j=0; j<ngammat_size; j++)
-      {
-        for (int p=0; p<nell; p++)
-        {
-          const int ZC = ZCL(j);
-          const int ZS = ZCS(j);
-          const int q = i*ngammat_size + j;
-          const double lnl = lnlmin + p*dlnl;
-          const double ll = exp(lnl);
-          table[q][p] = log(C_cs_tomo_limber_nointerp(ll, i, ZC, ZS, use_linear_ps_limber, 0));
-        }
-      }
-    }
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  }
-  if (nl < 0 || nl > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.shear_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.shear_nbin);
-    exit(1); 
-  }
-  const double lnl = log(l);
-  if (lnl < lnlmin)
-  {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lnlmin));
-  }
-  const int ntomo = N_cgl(ni, nj);
-  if (!(ntomo>0)) 
-  {
-    return 0.0;
-  }
-  else
-  {
-    const int q = nl*ngammat_size + ntomo;
-    if (q > NSIZE - 1)
-    {
-      log_fatal("internal logic error in selecting bin number");
-      exit(1);
-    }
-    const double f1 = exp(interpol(table[q], nell, lnlmin, lnlmax, dlnl, lnl, 1, 1));
-    return isnan(f1) ? 0.0 : f1;
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Cluster clustering 
-// ---------------------------------------------------------------------------------------------
-
-double int_for_C_cc_tomo_limber(double a, void* params)
-{ // nl{1,2} = lambda_obs bins, n{i,j} = cluster redshift bins
-  if (!(a>0) || !(a<1))
-  {
-    log_fatal("a>0 and a<1 not true");
+    log_fatal("error in selecting bin number (nl, ni) = (%d, %d)", nl, ni);
     exit(1);
   }
-  double* ar = (double*) params;
-   
-  const int nl1 = (int) ar[0];
-  const int nl2 = (int) ar[1];
-  const int ni = (int) ar[2];
-  const int nj = (int) ar[3];
-  const double ell = ar[4] + 0.5;
-  const int use_linear_ps = (int) ar[5];
-  
-  struct chis chidchi = chi_all(a);
-  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const double fK = f_K(chidchi.chi);
-  const double k  = ell/fK;
-
-  const double res = W_cluster(ni, a, hoverh0)*W_cluster(nj, a, hoverh0);
-  const double PCC = binned_p_cc(k, a, nl1, nl2, use_linear_ps);
-  return (res == 0.0) ? 0.0 : res*PCC*chidchi.dchida/(fK*fK);
-}
-
-double C_cc_tomo_limber_nointerp(const double l, const int nl1, const int nl2, const int ni, 
-const int nj, const int use_linear_ps, const int init_static_vars_only)
-{ // nl{1,2} = lambda_obs bins, n{i,j} = cluster redshift bins
-  if (nl1 < 0 || nl1 > Cluster.N200_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nl1 = %d (max %d)", nl1, Cluster.N200_Nbin);
-    exit(1); 
-  } 
-  if (nl2 < 0 || nl2 > Cluster.N200_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nl2 = %d (max %d)", nl2, Cluster.N200_Nbin);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  double ar[6] = {(double) nl1, (double) nl2, (double) ni, (double) nj, l, (double) use_linear_ps};  
-  const double zmin = fmax(tomo.cluster_zmin[ni], tomo.cluster_zmin[nj]);
-  const double zmax = fmin(tomo.cluster_zmax[ni], tomo.cluster_zmax[nj]);
-  if ((zmin > zmax) || !(zmin>0) || !(zmax>0))
-  {
-    log_fatal("error in selecting redshift range (zmin,zmax) = [%e,%e]", zmin, zmax);
-    exit(1); 
-  } 
-  const double amin = 1.0/(1.0 + zmax);
-  const double amax = 1.0/(1.0 + zmin);
-  return (init_static_vars_only == 1) ? int_for_C_cc_tomo_limber(amin, (void*) ar) :
-    int_gsl_integrate_low_precision(int_for_C_cc_tomo_limber, (void*) ar, amin, amax, NULL,
-      GSL_WORKSPACE_SIZE);
-}
-
-double C_cc_tomo_limber(const double l, const int nl1, const int nl2, const int ni, 
-const int nj) 
-{ // nl{1,2} = lambda_obs bins, n{i,j} = cluster redshift bins
-  static cosmopara C;
-  static nuisancepara N;
-  static double** table = 0;
-
-  const int nlsize = Cluster.N200_Nbin;
-  const int nccl_size = tomo.cc_clustering_Npowerspectra; 
-  const int NSIZE = nlsize*nlsize*nccl_size;
-  const int nell = Ntable.N_ell;
-  const double lnlmin = log(fmax(limits.LMIN_tab, 1.0));
-  const double lnlmax = log(limits.LMAX);
-  const double dlnl = (lnlmax - lnlmin)/((double) nell - 1.0); 
-
-  if (table == 0)
-  { 
-    table = (double**) malloc(sizeof(double*)*NSIZE);
-    for (int i=0; i<NSIZE; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*nell);
-    }   
-  }
-  if (recompute_cc(C, N))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      double init_static_vars_only =
-        C_cc_tomo_limber_nointerp(exp(lnlmin), 0, 0, 0, 0, use_linear_ps_limber, 1);
-    }
-    #pragma GCC diagnostic pop
-    #pragma GCC diagnostic pop
-    #pragma omp parallel for collapse(3)
-    for (int i=0; i<nlsize; i++)
-    {
-      for (int k=0; k<nccl_size; k++)
-      {
-        for (int p=0; p<nell; ++p)
-        {
-          for (int j=i; j<nlsize; j++)
-          {
-            const int ZCCL1  = k; // cross redshift bin not supported so not using ZCCL1(k)
-            const int ZCCL2  = k; // cross redshift bin not supported so not using ZCCL2(k)
-            const int q      = i*nlsize*nccl_size + j*nccl_size + k;
-            const int qstar  = j*nlsize*nccl_size + i*nccl_size + k;
-            const double lnl = lnlmin + p*dlnl;
-            table[q][p] = 
-              log(C_cc_tomo_limber_nointerp(exp(lnl), i, j, ZCCL1, ZCCL2, use_linear_ps_limber, 0));
-            table[qstar][p] = table[q][p];
-          }
-        }
-      }
-    }
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  }
-  if (ni != nj)
-  {
-    log_fatal("ni != nj tomography not supported");
-    exit(1);
-  } 
-  if (nl1 < 0 || nl1 > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl1 = %d (max %d)", nl1, nlsize);
-    exit(1); 
-  } 
-  if (nl2 < 0 || nl2 > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl2 = %d (max %d)", nl2, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  const double lnl = log(l);
-  if (lnl < lnlmin)
-  {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lnlmin));
-  }
-  const int q = nl1*nlsize*nccl_size + nl2*nccl_size + ni; // cross redshift bin not supported so 
-                                                           // not using N_CCL(ni, nj)
-  if (q > NSIZE - 1)
-  {
-    log_fatal("internal logic error in selecting bin number");
-    exit(1);
-  }
-  const double f1 = exp(interpol(table[q], nell, lnlmin, lnlmax, dlnl, lnl, 1, 1));
-  return isnan(f1) ? 0.0 : f1;
-}
-
-
-// ---------------------------------------------------------------------------------------------
-// cluster x galaxy clustering
-// ---------------------------------------------------------------------------------------------
-
-double int_for_C_cg_tomo_limber(double a, void* params)
-{ // nl = lambda_obs bin, ni = cluster redshift bin, nj = galaxy redshift bin
-  if (!(a>0) || !(a<1))
-  {
-    log_fatal("a>0 and a<1 not true");
-    exit(1);
-  }
-  double* ar = (double*) params;
-
-  const int nl = (int) ar[0];
-  const int ni = (int) ar[1];
-  const int nj = (int) ar[2];
-  const double ell = ar[3] + 0.5;
-  const int use_linear_ps = (int) ar[4];
-
-  struct chis chidchi = chi_all(a);
-  const double hoverh0 = hoverh0v2(a, chidchi.dchida);
-  const  double fK  = f_K(chidchi.chi);
-  const double k = ell/fK;
-  const double PCG = binned_p_cg(k, a, nl, nj, use_linear_ps);
-  const double tmp = W_cluster(ni, a, hoverh0)*W_HOD(a, nj, hoverh0);
-  return tmp*PCG*chidchi.dchida/(fK*fK);
-}
-
-double C_cg_tomo_limber_nointerp(const double l, const int nl, const int ni, const int nj, 
-const int use_linear_ps, const int init_static_vars_only)
-{ // nl = lambda_obs bin, ni = cluster redshift bin, nj = galaxy redshift bin
-  if (nl > Cluster.N200_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, Cluster.N200_Nbin);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > tomo.clustering_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, tomo.clustering_Nbin);
-    exit(1); 
-  }
-  double ar[5] = {(double) nl, (double) ni, (double) nj, l, (double) use_linear_ps};
-  const double zmin = fmax(tomo.cluster_zmin[ni], tomo.clustering_zmin[nj]);
-  const double zmax = fmin(tomo.cluster_zmax[ni], tomo.clustering_zmax[nj]);
-  if ((zmin > zmax) || !(zmin>0) || !(zmax>0))
-  {
-    log_fatal("error in selecting redshift range (zmin,zmax) = [%e,%e]", zmin, zmax);
-    exit(1); 
-  } 
-  const double amin = 1.0/(1.0 + zmax);
-  const double amax = 1.0/(1.0 + zmin);
-  if (init_static_vars_only == 1)
-  {
-    return int_for_C_cg_tomo_limber(amin, (void*) ar);
-  }
-  else
-  {
-    return int_gsl_integrate_low_precision(int_for_C_cg_tomo_limber, (void*) ar, amin, amax,
-      NULL, GSL_WORKSPACE_SIZE);
-  }
-}
-
-double C_cg_tomo_limber(const double l, const int nl, const int ni, const int nj)
-{ // nl = lambda_obs bin, ni = cluster redshift bin, nj = galaxy redshift bin
-  static cosmopara C;
-  static galpara G;
-  static nuisancepara N;
-  static double** table = 0;
-
-  const int nlsize = Cluster.N200_Nbin;
-  const int ncg_size = tomo.cg_clustering_Npowerspectra;
-  const int NSIZE = nlsize*ncg_size;
-  const int nell = Ntable.N_ell;
-  const double lnlmin = log(fmax(limits.LMIN_tab, 1.0));
-  const double lnlmax = log(limits.LMAX);
-  const double dlnl = (lnlmax - lnlmin)/((double) nell - 1.0);
-
-  if (table == 0)
-  { 
-    table = (double**) malloc(sizeof(double*)*NSIZE);
-    for (int i=0; i<NSIZE; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*nell);
-    }      
-  }
-  if (recompute_cg(C, G, N))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      const double Z1 = ZCGCL1(0);
-      const double Z2 = ZCGCL2(0);
-      const double ll = exp(lnlmin);
-      double init_static_vars_only = 
-        C_cg_tomo_limber_nointerp(ll, 0, Z1, Z2, use_linear_ps_limber, 1);
-    }
-    #pragma GCC diagnostic pop
-    #pragma omp parallel for collapse(3)
-    for (int i=0; i<nlsize; i++) 
-    {
-      for (int j=0; j<ncg_size; j++)
-      {
-        for (int p=0; p<nell; ++p)
-        {
-          const double Z1 = ZCGCL1(j);
-          const double Z2 = ZCGCL2(j);
-          const int q = i*ncg_size + j;
-          const double lnl = lnlmin + p*dlnl;
-          const double ll = exp(lnl);
-          table[q][p] = log(C_cg_tomo_limber_nointerp(ll, i, Z1, Z2, use_linear_ps_limber, 0));
-        }
-      }
-    }
-    update_galpara(&G);
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  }
-  if (nl < 0 || nl > nlsize - 1)
-  {
-    log_fatal("error in selecting bin number nl = %d (max %d)", nl, nlsize);
-    exit(1); 
-  } 
-  if (ni < 0 || ni > redshift.clustering_nbin - 1)
-  {
-    log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
-    exit(1); 
-  } 
-  if (nj < 0 || nj > tomo.clustering_Nbin - 1)
-  {
-    log_fatal("error in selecting bin number nj = %d (max %d)", nj, tomo.clustering_Nbin);
-    exit(1); 
-  }
-  const double lnl = log(l);
-  if (lnl < lnlmin)
-  {
-    log_warn("l = %e < l_min = %e. Extrapolation adopted", l, exp(lnlmin));
-  }
-  const int ntomo = N_CGCL(ni, nj);
-  if (!(ntomo>0))
-  {
-    return 0.0;
-  }
-  else
-  {
-    const int q = nl*ncg_size + ntomo;
-    if (q > NSIZE-1)
-    {
-      log_fatal("internal logic error in selecting bin number");
-      exit(1);
-    }
-    const double f1 = exp(interpol(table[q], nell, lnlmin, lnlmax, dlnl, lnl, 1, 1));
-    return isnan(f1) ? 0.0 : f1;
-  }
-}
-
-// ------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------
-// Non Limber (Angular Power Spectrum)
-// ------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------
-// ------------------------------------------------------------------------------------
-
-void f_chi_for_Psi_cluster_cl(double *const chi, const int Nchi, double *const fchi, const int ni,
-const int nl, const double zmin, const double zmax)
-{
-  const double real_coverH0 = cosmology.coverH0 / cosmology.h0; // unit Mpc
-  {
-    const int i = 0;
-    const double a = a_chi(chi[i]/real_coverH0 /* convert unit to c/H0 */);
-    const double z = 1./a - 1.;
-    const double hoh0 = hoverh0(a);
-    const double tmp1 = zdistr_cluster(z, ni);
-    const double pf = (tmp1 < 0.) ? 0 : tmp1; ; // get rid of unphysical negatives
-    fchi[i] = chi[i]*pf*growfac(a)*weighted_B1(nl, z)*hoh0/real_coverH0;
-    if ((z < zmin) || (z > zmax))
-    {
-      fchi[i] = 0.0;
-    }
-  }
-  #pragma omp parallel for
-  for (int i=1; i<Nchi; i++) 
-  {
-    const double a = a_chi(chi[i]/real_coverH0 /* convert unit to c/H0 */);
-    const double z = 1./a - 1.;
-    const double hoh0 = hoverh0(a);
-    const double tmp1 = zdistr_cluster(z, ni);
-    const double pf = (tmp1 < 0.) ? 0 : tmp1; // get rid of unphysical negatives
-    fchi[i] = chi[i]*pf*growfac(a)*weighted_B1(nl, z)*hoh0/real_coverH0;
-    if ((z < zmin) || (z > zmax))
-    {
-      fchi[i] = 0.0;
-    }
-  }
-}
-
-void f_chi_for_Psi_cluster_cl_RSD(double *const chi, const int Nchi, double *const fchi,
-const int ni, const int nl __attribute__((unused)), const double zmin, const double zmax)
-{
-  const double real_coverH0 = cosmology.coverH0 / cosmology.h0;
-  {
-    const int i = 0;
-    const double a = a_chi(chi[i]/real_coverH0 /* convert unit to c/H0 */);
-    const double z = 1./a - 1.;
-    const double hoh0 = hoverh0(a);
-    const double tmp1 = zdistr_cluster(z, ni);
-    const double pf = (tmp1 < 0.) ? 0 : tmp1; // get rid of unphysical negatives
-    struct growths tmp2 = growfac_all(a);
-    fchi[i] = -chi[i]*pf*tmp2.D*tmp2.f*hoh0/real_coverH0;
-    if ((z < zmin) || (z > zmax))
-    {
-      fchi[i] = 0.;
-    }
-  }
-  #pragma omp parallel for
-  for (int i=1; i<Nchi; i++)
-  {
-    const double a = a_chi(chi[i]/real_coverH0 /* convert unit to c/H0 */);
-    const double z = 1./a - 1.;
-    const double hoh0 = hoverh0(a);
-    const double tmp1 = zdistr_cluster(z, ni);
-    const double pf = (tmp1 < 0.) ? 0 : tmp1; // get rid of unphysical negatives
-    struct growths tmp2 = growfac_all(a);
-    fchi[i] = -chi[i]*pf*tmp2.D*tmp2.f*hoh0/real_coverH0;
-    if ((z < zmin) || (z > zmax))
-    {
-      fchi[i] = 0.;
-    }
-  }
-}
-
-void f_chi_for_Psi_cluster_cl_Mag(double *const chi, const int Nchi, double *const fchi,
-const int ni, const int nl, const double zmax)
-{
-  const double real_coverH0 = cosmology.coverH0 / cosmology.h0;
-  {
-    const int i = 0;
-    const double a = a_chi(chi[i]/real_coverH0 /* convert unit to c/H0 */);
-    const double z = 1.0/a - 1.0;
-    const double fK = f_K(chi[i]/real_coverH0);
-    const double wmag = W_mag_cluster(a, fK, ni, nl);
-    const double window_M = wmag/fK/(real_coverH0*real_coverH0);
-    fchi[i] = window_M*growfac(a); // unit [Mpc^-2]    
-    if (z > zmax)
-    {
-      fchi[i] = 0.;
-    }
-  }
-  #pragma omp parallel for
-  for (int i=1; i<Nchi; i++)
-  {
-    const double a = a_chi(chi[i]/real_coverH0 /* convert unit to c/H0 */);
-    const double z = 1.0/a - 1.0;
-    const double fK = f_K(chi[i]/real_coverH0);
-    const double wmag = W_mag_cluster(a, fK, ni, nl);
-    const double window_M = wmag/fK/(real_coverH0*real_coverH0);
-    fchi[i] = window_M*growfac(a); // unit [Mpc^-2]    
-    if (z > zmax)
-    {
-      fchi[i] = 0.;
-    }
-  }
-}
-
-void C_cc_tomo(int L, const int nl1, const int nl2, const int ni, const int nj, double *const Cl,
-double dev, const double tol)
-{ // nl{1,2} = lambda_obs bins, n{i,j} = cluster redshift bins
-  if (ni != nj)
-  {
-    log_fatal("cross-spectrum not supported");
+  if (!(survey.area > 0.0)) {
+    log_fatal("survey.area = %e deg^2 not set", survey.area);
     exit(1);
   }
 
-  static double** k1;
-  static double** k2;
-  static double** Fk1;
-  static double** Fk2;
-  static double** Fk1_Mag;
-  static double** Fk2_Mag;
-  static double* chi_ar;
+  uint64_t keys[CLUSTER_NKEYS_MAX];
+  int nkeys = 0;
+  keys[nkeys++] = Ntable.random;
+  keys[nkeys++] = cosmology.random;
+  keys[nkeys++] = cluster.random_model;
+  keys[nkeys++] = cluster.random_zdist;
+  keys[nkeys++] = cluster.random_mor;
+  keys[nkeys++] = double_bits_key(survey.area);
 
-  const int Nell_block = Ntable.NL_Nell_block;
-  const int Nchi = Ntable.NL_Nchi;  
-  int ell_ar[Nell_block];
-  double f1_chi[Nchi];
-  double f2_chi[Nchi];
-  double f1_chi_RSD[Nchi];
-  double f2_chi_RSD[Nchi];
-  double f1_chi_Mag[Nchi];
-  double f2_chi_Mag[Nchi];
-  const double real_coverH0 = cosmology.coverH0 / cosmology.h0;
-  const double chi_min = chi(1.0/(1.0 + 0.002))*real_coverH0; // DIMENSIONELESS
-  const double chi_max = chi(1.0/(1.0 + 4.0))*real_coverH0;    // DIMENSIONELESS
-  const double dlnchi = log(chi_max / chi_min) / ((double) Nchi - 1.0);
-  const double dlnk = dlnchi;
+  int refill = 0;
 
-  if (k1 == 0)
-  { 
-    k1 = (double**) malloc(Nell_block * sizeof(double*));
-    k2 = (double**) malloc(Nell_block * sizeof(double*));
-    Fk1 = (double**) malloc(Nell_block * sizeof(double*));
-    Fk2 = (double**) malloc(Nell_block * sizeof(double*));
-    Fk1_Mag = (double**) malloc(Nell_block * sizeof(double*));
-    Fk2_Mag = (double**) malloc(Nell_block * sizeof(double*));
-    for (int i=0; i<Nell_block; i++)
-    {
-      k1[i] = (double*) malloc(Nchi * sizeof(double));
-      k2[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk1[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk2[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk1_Mag[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk2_Mag[i] = (double*) malloc(Nchi * sizeof(double));
-    }
-    chi_ar = (double*) malloc(Nchi * sizeof(double));
-  }
-  for (int i=0; i<Nchi; i++)
-  { // chi_min and chi_max may be cosmology dependent
-    chi_ar[i] = chi_min * exp(dlnchi * i);
-  }
-  #pragma omp parallel for collapse(2)
-  for (int i=0; i<Nell_block; i++)
+  // --- 1. GEOMETRY ---
+  if (NULL == counts ||
+      cluster.zdist_nbin != nbin_cluster_built ||
+      cluster.richness_nbin != nbin_richness_built)
   {
-    for (int j=0; j<Nchi; j++)
-    {
-      k1[i][j] = 0.0;
-      k2[i][j] = 0.0;
-      Fk1[i][j] = 0.0;
-      Fk2[i][j] = 0.0;
-      Fk1_Mag[i][j] = 0.0;
-      Fk2_Mag[i][j] = 0.0;
+    if (counts != NULL) {
+      free(counts);
     }
+    counts = (double**) malloc2d(cluster.zdist_nbin, cluster.richness_nbin);
+    nbin_cluster_built  = cluster.zdist_nbin;
+    nbin_richness_built = cluster.richness_nbin;
+    refill = 1;
   }
 
-  const double zmin = tomo.cluster_zmin[ni];
-  const double zmax = tomo.cluster_zmax[ni];
-  f_chi_for_Psi_cluster_cl(chi_ar, Nchi, f1_chi, ni, nl1, zmin, zmax);
-  f_chi_for_Psi_cluster_cl_RSD(chi_ar, Nchi, f1_chi_RSD, ni, nl1, zmin, zmax);
-  if (INCLUDE_MAG_IN_C_CC_NONLIMBER == 1)
-  {
-    f_chi_for_Psi_cluster_cl_Mag(chi_ar, Nchi, f1_chi_Mag, ni, nl1, zmax);
-  }
-  if (nl1 != nl2) 
-  {
-    f_chi_for_Psi_cluster_cl(chi_ar, Nchi, f2_chi, ni, nl2, zmin, zmax);
-    f_chi_for_Psi_cluster_cl_RSD(chi_ar, Nchi, f1_chi_RSD, ni, nl2, zmin, zmax);
-    if (INCLUDE_MAG_IN_C_CC_NONLIMBER == 1)
-    {
-      f_chi_for_Psi_cluster_cl_Mag(chi_ar, Nchi, f1_chi_Mag, ni, nl2, zmax);
-    }
-  }
-  
-  config cfg;
-  cfg.nu = 1.;
-  cfg.c_window_width = 0.25;
-  cfg.derivative = 0;
-  cfg.N_pad = 200;
-  cfg.N_extrap_low = 0;
-  cfg.N_extrap_high = 0;
-
-  config cfg_RSD;
-  cfg_RSD.nu = 1.01;
-  cfg_RSD.c_window_width = 0.25;
-  cfg_RSD.derivative = 2;
-  cfg_RSD.N_pad = 500;
-  cfg_RSD.N_extrap_low = 0;
-  cfg_RSD.N_extrap_high = 0;
-
-  config cfg_Mag;
-  cfg_Mag.nu = 1.;
-  cfg_Mag.c_window_width = 0.25;
-  cfg_Mag.derivative = 0;
-  cfg_Mag.N_pad = 500;
-  cfg_Mag.N_extrap_low = 0;
-  cfg_Mag.N_extrap_high = 0;
-
-  int i_block = 0;
-    
-  while ((fabs(dev) > tol) & (L < limits.LMAX_NOLIMBER))
-  { 
-    for (int i=0; i<Nell_block; i++)
-    {
-      ell_ar[i]=i+i_block*Nell_block;
-    }
-    i_block++;
-    if (L >= limits.LMAX_NOLIMBER - Nell_block)
-    { //Xiao: break before memory leak in next iteration
-      break;
-    }
-    L = i_block*Nell_block - 1;
-
-    cfftlog_ells(chi_ar, f1_chi, Nchi, &cfg, ell_ar, Nell_block, k1, Fk1);
-    cfftlog_ells_increment(chi_ar, f1_chi_RSD, Nchi, &cfg_RSD, ell_ar, Nell_block, k1, Fk1);
-    if (nl1 != nl2)
-    {
-      cfftlog_ells(chi_ar, f2_chi, Nchi, &cfg, ell_ar, Nell_block, k2, Fk2);
-      cfftlog_ells_increment(chi_ar, f2_chi_RSD, Nchi, &cfg_RSD, ell_ar, Nell_block, k2, Fk2);
-    }
-    if (INCLUDE_MAG_IN_C_CC_NONLIMBER == 1)
-    {
-      cfftlog_ells(chi_ar, f1_chi_Mag, Nchi, &cfg_Mag, ell_ar, Nell_block, k1, Fk1_Mag);
-      if (nl1 != nl2) 
-      {
-        cfftlog_ells(chi_ar, f2_chi_Mag, Nchi, &cfg_Mag, ell_ar, Nell_block, k2, Fk2_Mag);
-      }
-    }
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      double init_static_vars_only = p_lin(k1[0][0]*real_coverH0, 1.0);
-      init_static_vars_only = C_cc_tomo_limber_nointerp((double) ell_ar[0], nl1, nl2, ni, ni, 0, 1);
-    }
-    #pragma GCC diagnostic pop
-    #pragma GCC diagnostic pop
-    #pragma omp parallel for
-    for (int i=0; i<Nell_block; i++)
-    {
-      double cl_temp = 0.0;
-      for (int j=0; j<Nchi; j++)
-      {
-        if (INCLUDE_MAG_IN_C_CC_NONLIMBER == 1)
-        {
-          const double ell_prefactor = ell_ar[i]*(ell_ar[i]+1.);
-          Fk1[i][j] += ell_prefactor*Fk1_Mag[i][j]/(k1[i][j]*k1[i][j]); 
-          if (nl1 != nl2) 
-          {
-            Fk2[i][j] += ell_prefactor*Fk2_Mag[i][j]/(k2[i][j]*k2[i][j]) ;
-          }
-        }      
-        // ------------------------------------------------------------------------------------
-        const double k1_cH0 = k1[i][j] * real_coverH0;
-        const double PK = p_lin(k1_cH0, 1.0);
-        const double k1_cH03 = k1_cH0*k1_cH0*k1_cH0;
-        cl_temp += (nl1 == nl2) ? Fk1[i][j]*Fk1[i][j]*k1_cH03*PK : Fk1[i][j]*Fk2[i][j]*k1_cH03*PK;
-      }
-      Cl[ell_ar[i]] = cl_temp * dlnk * 2./M_PI + 
-        C_cc_tomo_limber_nointerp((double) ell_ar[i], nl1, nl2, ni, ni, 0, 0) 
-       -C_cc_tomo_limber_nointerp((double) ell_ar[i], nl1, nl2, ni, ni, 1, 0);
-    }
-    dev = Cl[L]/C_cc_tomo_limber_nointerp((double) L, nl1, nl2, ni, ni, 0, 0) - 1;
-  }   
-  L++;
-  
-  Cl[limits.LMAX_NOLIMBER] = C_cc_tomo_limber((double) limits.LMAX_NOLIMBER, nl1, nl2, ni, ni);
-  #pragma omp parallel for
-  for (int l=L; l<limits.LMAX_NOLIMBER; l++)
-  {
-    Cl[l] = (l > limits.LMIN_tab) ? C_cc_tomo_limber((double) l, nl1, nl2, ni, ni) :
-      C_cc_tomo_limber_nointerp((double) l, nl1, nl2, ni, ni, use_linear_ps_limber, 0);
-  }
-}
-
-// ------------------------------------------------------------------------------------
-
-void C_cg_tomo(int L, const int nl, const int ni, const int nj, double *const Cl, double dev,
-const double tol)
-{ // nl = lambda_obs bin, ni = cluster redshift bin, nj = galaxy redshift bin
-  if (ni != nj)
-  {
-    log_fatal("cross-spectrum not supported");
-    exit(1);
+  // --- 2. VALUES ---
+  if (1 == refill || keys_changed(cache, keys, nkeys)) {
+    cluster_warmup();
+    cluster_counts_fill(counts);
+    keys_stamp(cache, keys, nkeys);
   }
 
-  static double** k1;
-  static double** k2;
-  static double** Fk1;
-  static double** Fk2;
-  static double** Fk1_Mag;
-  static double** Fk2_Mag;
-  static double* chi_ar;
-
-  const int Nell_block = Ntable.NL_Nell_block;
-  const int Nchi = Ntable.NL_Nchi;  
-  int ell_ar[Nell_block];
-  double f1_chi[Nchi];
-  double f2_chi[Nchi];
-  double f1_chi_RSD[Nchi];
-  double f2_chi_RSD[Nchi];
-  double f1_chi_Mag[Nchi];
-  double f2_chi_Mag[Nchi];
-  const double real_coverH0 = cosmology.coverH0 / cosmology.h0;
-  const double chi_min = chi(1./(1.0 + 0.002))*real_coverH0; // DIMENSIONELESS
-  const double chi_max = chi(1./(1.0 + 4.0))*real_coverH0;    // DIMENSIONELESS
-  const double dlnchi = log(chi_max/chi_min) / ((double) Nchi - 1.0);
-  const double dlnk = dlnchi;
-
-  if (k1 == 0)
-  { // COCOA: no need to create/destroy arrays with same size at every call
-    k1 = (double**) malloc(Nell_block * sizeof(double*));
-    k2 = (double**) malloc(Nell_block * sizeof(double*));
-    Fk1 = (double**) malloc(Nell_block * sizeof(double*));
-    Fk2 = (double**) malloc(Nell_block * sizeof(double*));
-    Fk1_Mag = (double**) malloc(Nell_block * sizeof(double*));
-    Fk2_Mag = (double**) malloc(Nell_block * sizeof(double*));
-    for (int i=0; i<Nell_block; i++)
-    {
-      k1[i] = (double*) malloc(Nchi * sizeof(double));
-      k2[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk1[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk2[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk1_Mag[i] = (double*) malloc(Nchi * sizeof(double));
-      Fk2_Mag[i] = (double*) malloc(Nchi * sizeof(double));
-    }
-    chi_ar = (double*) malloc(Nchi * sizeof(double));
-  }
-  for (int i=0; i<Nchi; i++)
-  {
-    // chi_min and chi_max may be cosmology dependent
-    chi_ar[i] = chi_min * exp(dlnchi * i);
-  }
-  #pragma omp parallel for
-  for (int i=0; i<Nell_block; i++)
-  {
-    for (int j=0; j<Nchi; j++)
-    {
-      k1[i][j] = 0.0;
-      k2[i][j] = 0.0;
-      Fk1[i][j] = 0.0;
-      Fk2[i][j] = 0.0;
-      Fk1_Mag[i][j] = 0.0;
-      Fk2_Mag[i][j] = 0.0;
-    }
-  }
-
-  const double zmin = fmax(tomo.cluster_zmin[ni], tomo.clustering_zmin[nj]);
-  const double zmax = fmin(tomo.cluster_zmax[ni], tomo.clustering_zmax[nj]);
-
-  f_chi_for_Psi_cluster_cl(chi_ar, Nchi, f1_chi, ni, nl, zmin, zmax);
-  f_chi_for_Psi_cluster_cl_RSD(chi_ar, Nchi, f1_chi_RSD, ni, nl, zmin, zmax);
-  if (INCLUDE_MAG_IN_C_CG_NONLIMBER)
-  {
-    f_chi_for_Psi_cluster_cl_Mag(chi_ar, Nchi, f1_chi_Mag, ni, nl, zmax);
-  }
-  
-  f_chi_for_Psi_cl(chi_ar, Nchi, f2_chi, nj, zmin, zmax);
-  f_chi_for_Psi_cl_RSD(chi_ar, Nchi, f2_chi_RSD, nj, zmin, zmax);
-  if (INCLUDE_MAG_IN_C_CG_NONLIMBER)
-  {
-    f_chi_for_Psi_cl_Mag(chi_ar, Nchi, f2_chi_Mag, nj, zmax);
-  }
-
-  config cfg;
-  cfg.nu = 1.;
-  cfg.c_window_width = 0.25;
-  cfg.derivative = 0;
-  cfg.N_pad = 200;
-  cfg.N_extrap_low = 0;
-  cfg.N_extrap_high = 0;
-
-  config cfg_RSD;
-  cfg_RSD.nu = 1.01;
-  cfg_RSD.c_window_width = 0.25;
-  cfg_RSD.derivative = 2;
-  cfg_RSD.N_pad = 500;
-  cfg_RSD.N_extrap_low = 0;
-  cfg_RSD.N_extrap_high = 0;
-
-  config cfg_Mag;
-  cfg_Mag.nu = 1.;
-  cfg_Mag.c_window_width = 0.25;
-  cfg_Mag.derivative = 0;
-  cfg_Mag.N_pad = 500;
-  cfg_Mag.N_extrap_low = 0;
-  cfg_Mag.N_extrap_high = 0;
-
-  int i_block = 0;
-    
-  while ((fabs(dev) > tol) & (L < limits.LMAX_NOLIMBER))
-  { 
-    for (int i=0; i<Nell_block; i++)
-    {
-      ell_ar[i]=i+i_block*Nell_block;
-    } 
-    i_block++;  
-    if (L >= limits.LMAX_NOLIMBER - Nell_block)
-    { //Xiao: break before memory leak in next iteration
-      break;
-    }
-    L = i_block*Nell_block - 1;
-
-    cfftlog_ells(chi_ar, f1_chi, Nchi, &cfg, ell_ar, Nell_block, k1, Fk1);
-    cfftlog_ells_increment(chi_ar, f1_chi_RSD, Nchi, &cfg_RSD, ell_ar, Nell_block, k1, Fk1);
-    cfftlog_ells(chi_ar, f2_chi, Nchi, &cfg, ell_ar, Nell_block, k2, Fk2);
-    cfftlog_ells_increment(chi_ar, f2_chi_RSD, Nchi, &cfg_RSD, ell_ar, Nell_block, k2, Fk2);
-    if (INCLUDE_MAG_IN_C_CG_NONLIMBER)
-    {
-      cfftlog_ells(chi_ar, f1_chi_Mag, Nchi, &cfg_Mag, ell_ar, Nell_block, k1, Fk1_Mag);
-      cfftlog_ells(chi_ar, f2_chi_Mag, Nchi, &cfg_Mag, ell_ar, Nell_block, k2, Fk2_Mag);
-    }
-
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      double init_static_vars_only = p_lin(k1[0][0]*real_coverH0, 1.0);
-      init_static_vars_only = C_cg_tomo_limber_nointerp((double) ell_ar[0], nl, ni, nj, 0, 1);
-    }
-    #pragma GCC diagnostic pop
-    #pragma GCC diagnostic pop
-    #pragma omp parallel for
-    for (int i=0; i<Nell_block; i++)
-    {
-      double cl_temp = 0.;
-      for (int j=0; j<Nchi; j++)
-      {
-        if (INCLUDE_MAG_IN_C_CG_NONLIMBER)
-        {
-          const double ell_prefactor = ell_ar[i]*(ell_ar[i]+1.);
-          Fk1[i][j] += (ell_prefactor/(k1[i][j]*k1[i][j])*Fk1_Mag[i][j]);
-          Fk2[i][j] += gbias.b_mag[nj]*(ell_prefactor/(k2[i][j]*k2[i][j])*Fk2_Mag[i][j]);
-        }
-        // ------------------------------------------------------------------------------------
-        const double k1_cH0 = k1[i][j] * real_coverH0;
-        cl_temp += Fk1[i][j]*Fk2[i][j]*k1_cH0*k1_cH0*k1_cH0 *p_lin(k1_cH0, 1.0);
-      }
-      Cl[ell_ar[i]] = cl_temp * dlnk * 2./M_PI + 
-        C_cg_tomo_limber_nointerp((double) ell_ar[i], nl, ni, nj, 0, 0) 
-       -C_cg_tomo_limber_nointerp((double) ell_ar[i], nl, ni, nj, 1, 0);
-    }
-    dev = Cl[L]/C_cg_tomo_limber_nointerp((double) L, nl, ni, nj, 0, 0) - 1;
-  }   
-  L++;
-
-  Cl[limits.LMAX_NOLIMBER] = C_cg_tomo_limber((double) limits.LMAX_NOLIMBER, nl, ni, nj);
-  #pragma omp parallel for
-  for (int l=L; l<limits.LMAX_NOLIMBER; l++)
-  {
-    Cl[l] = (l > limits.LMIN_tab) ? C_cg_tomo_limber((double) l, nl, ni, nj) :
-      C_cg_tomo_limber_nointerp((double) l, nl, ni, nj, use_linear_ps_limber, 0);
-  }
-}
-
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// cluster number counts
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// nl = lambda_obs bin, ni = cluster redshift bin
-
-double int_for_binned_N(double a, void* params)
-{
-  if (!(a>0))
-  {
-    log_fatal("a > 0 not true");
-    exit(1);
-  }
-  double* ar = (double*) params;   
-  const int nl = (int) ar[0];
-  const int nz = (int) ar[1];
-  const int interpolate_survey_area = (int) ar[2];
-  const double z = 1.0/a - 1.0 ;
-  const double dzda = 1.0/(a*a); 
-  const double norm = get_area(z, interpolate_survey_area);  
-
-  double tmp_param[1] = {(double) nz};
-  return dV_cluster(z, (void*) tmp_param)*dzda*binned_Ndensity(nl, z)*norm;
-}
-
-double binned_N_nointerp(const int nl, const int nz, const int interpolate_survey_area, 
-const int init_static_vars_only)
-{
-  double params[3] = {(double) nl, (double) nz, interpolate_survey_area};
-  const double tmp = 4.0*M_PI/41253.0;
-  const double amin = 1.0/(1.0 + tomo.cluster_zmax[nz]);
-  const double amax = 1.0/(1.0 + tomo.cluster_zmin[nz]);
-  return (init_static_vars_only == 1) ? int_for_binned_N(amin, (void*) params) :
-    tmp*int_gsl_integrate_low_precision(int_for_binned_N, (void*) params, amin, amax, NULL, 
-      GSL_WORKSPACE_SIZE);
-}
-
-double binned_N(const int nl, const int nz)
-{
-  static cosmopara C;
-  static nuisancepara N;
-  static double** table;
-
-  const int N_l = Cluster.N200_Nbin;
-  const int N_z = redshift.clustering_nbin;
-
-  if (table == 0)
-  {
-    table = (double**) malloc(sizeof(double*)*N_l);
-    for (int i=0; i<N_l; i++)
-    {
-      table[i] = (double*) malloc(sizeof(double)*N_z);
-    }
-  }
-  if (recompute_clusters(C, N))
-  {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-variable"
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
-    {
-      double init_static_vars_only = binned_N_nointerp(0, 0, Cluster.interpolate_survey_area, 1);
-    }
-    #pragma GCC diagnostic pop
-    #pragma GCC diagnostic pop
-    #pragma omp parallel for collapse(2)
-    for (int i=0; i<N_l; i++)
-    {
-      for (int j=0; j<N_z; j++)
-      {
-        table[i][j] = binned_N_nointerp(i, j, Cluster.interpolate_survey_area, 0);
-      }
-    }
-    update_cosmopara(&C);
-    update_nuisance(&N);
-  }
-  if (nl < 0 || nl > N_l - 1)
-  {
-    log_fatal("error in selecting bin number");
-    exit(1);
-  }
-  if (nz < 0 || nz > N_z - 1)
-  {
-    log_fatal("error in selecting bin number");
-    exit(1);
-  }
-  return table[nl][nz];
+  return counts[ni][nl];
 }

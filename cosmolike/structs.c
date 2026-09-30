@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "basics.h"
 #include "structs.h"
+#include "halo.h"
 
 #include "log.c/src/log.h"
 
@@ -13,7 +14,6 @@ redshiftparams redshift;
 nuisanceparams nuisance;
 likepara like;
 sur survey;
-//clusterparams Cluster;
 
 pdeltapara pdeltaparams =
 {
@@ -26,12 +26,10 @@ CMBparams cmb =
   .fwhm = 0.0,
   .healpixwin_ncls = 0,
   .healpixwin = NULL,
-  .lmink_wxk = 0,
-  .lmaxk_wxk = 0,
+  .lk_wxk = {0, 0},
   .alpha_Hartlap_cov_kkkk = 1.0,
   .nbp_kk = 0,
-  .lminbp_kk = 0,
-  .lmaxbp_kk = 0,
+  .lbp_kk = {0, 0},
   .binning_matrix_kk = NULL,
   .theory_offset_kk = NULL
 };
@@ -39,32 +37,12 @@ CMBparams cmb =
 lim limits = 
 {
   .a_min = 1.0/(1.0 + 40.0),    // a_min (z = 40, needed for CMB lensing)
-  .k_min_cH0 = 2.e-2,           // k_min_cH0
-  .k_max_cH0 = 3.e+6,           // k_max_cH0
+  .k_cH0 = {2.e-2, 3.e+6},     // k range in units of H0/c
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
-/*
-  .cluster_util_log_M_min = 12.0,
-  .cluster_util_log_M_max = 15.9,
-  .binned_P_lambda_obs_given_M_zmin_table = 0.20,
-  .binned_P_lambda_obs_given_M_zmax_table = 0.80,
-  .SDSS_P_lambda_obs_given_M_true_lambda_min = 3.0,
-  .SDSS_P_lambda_obs_given_M_true_lambda_max = 160.0,
-  .halo_exclusion_k_min = 1E-2,
-  .halo_exclusion_k_max = 3E6,
-  .halo_exclusion_k_min_hankel = 5.0E-4,
-  .halo_exclusion_k_max_hankel = 1.0E8,
-  .halo_exclusion_R_min = 0.0,
-  .halo_exclusion_R_max = 15.0/2997.,
-*/
-  .sigma2_m_min = 1.0e+6,
-  .sigma2_m_max = 1.0e+17,
-  .halo_m_min = 1.0e+6,     // halo.c M_min
-  .halo_m_max = 1.0e+17,     // halo.c M_max
-  .halo_uks_cmin = 0.1,     // halo.c u_KS(double c, double k, double rv)
-  .halo_uks_cmax = 50.0,    // halo.c u_KS(double c, double k, double rv)
-  .halo_uks_xmin = 1e-10,   // halo.c u_KS(double c, double k, double rv)
-  .halo_uks_xmax = 5e3      // halo.c u_KS(double c, double k, double rv)
+  .halo_m = {1.0e+6, 1.0e+17},  // halo.c mass range (M_sun/h)
+  .halo_uks_c = {0.05, 100.0}   // halo.c u_KS concentration range (queries
+                                //   outside are clamped to it)
 };
 
 Ntab Ntable;
@@ -96,26 +74,24 @@ void reset_like_struct(void)
   like.lmax_shear = 0;
   
   like.bias = 0;
-  like.clusterN = 0;
-  like.clusterWL = 0;
-  like.clusterCG = 0;
-  like.clusterCC = 0;
-  like.shear_shear = 0;
-  like.shear_pos = 0;
-  like.pos_pos = 0;
-  like.gk = 0;
-  like.kk = 0;
-  like.ks = 0;
-  like.gy = 0;
-  like.sy = 0;
-  like.ky = 0;
-  like.yy = 0;
-  like.adopt_limber_gg = 0;
+  for (int i=0; i<NPROBES; i++) {
+    like.probe[i] = 0;
+  }
+  like.adopt_limber[LIMBER_GG] = 0;
+  like.adopt_limber[LIMBER_GS] = 1;
+  // halo.c model choices (halo.h macros, all 0): HMF_TINKER_2010,
+  // HALO_BIAS_TINKER_2010, CONCENTRATION_BHATTACHARYA_2013,
+  // HALO_PROFILE_NFW, HALO_FIELD_MATTER - set explicitly so the
+  // defaults are deliberate
+  like.halo_model[0] = 0;
+  like.halo_model[1] = 0;
+  like.halo_model[2] = 0;
+  like.halo_model[3] = 0;
+  like.halo_model[4] = 0;
 }
 
 void reset_cosmology_struct(void)
 {
-  cosmology.Omega_nu = 0.;
   cosmology.coverH0 = 2997.92458;
   cosmology.rho_crit = 7.4775e+21;
   cosmology.MGSigma = 0.0;
@@ -133,6 +109,11 @@ void reset_cosmology_struct(void)
   cosmology.lnPL_nk = 0;
   cosmology.lnPL_nz = 0;
   cosmology.lnPL = NULL;
+  // the P_cb table belongs to the lnPL table it was installed with
+  // (structs.h), so it goes with it; free(NULL) is a no-op on the
+  // first call (the global struct starts zeroed)
+  free(cosmology.lnPL_cb);
+  cosmology.lnPL_cb = NULL;
   cosmology.chi_nz = 0;
   cosmology.chi = NULL;
   cosmology.G_nz = 0;
@@ -149,6 +130,7 @@ void reset_tomo_struct(void)
     tomo.ggl_exclude = NULL;
   }
   tomo.N_ggl_exclude = 0;
+  tomo.random_ggl = 0;
 }
 
 void reset_redshift_struct(void)
@@ -163,8 +145,8 @@ void reset_redshift_struct(void)
     redshift.shear_zdist_table = NULL;
   }
   redshift.shear_nzbins = 0;
-  redshift.shear_zdist_zmin_all = 0.0;
-  redshift.shear_zdist_zmax_all = 0.0;
+  redshift.shear_zdist_zall[RANGE_MIN] = 0.0;
+  redshift.shear_zdist_zall[RANGE_MAX] = 0.0;
 
   redshift.clustering_nbin = 0;
   redshift.clustering_nzbins = 0;
@@ -173,15 +155,15 @@ void reset_redshift_struct(void)
     redshift.clustering_zdist_table = NULL;
   }
   redshift.clustering_photoz = 0;
-  redshift.clustering_zdist_zmin_all = 0.0;
-  redshift.clustering_zdist_zmax_all = 0.0;
+  redshift.clustering_zdist_zall[RANGE_MIN] = 0.0;
+  redshift.clustering_zdist_zall[RANGE_MAX] = 0.0;
 
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
-    redshift.shear_zdist_zmin[i] = 0.0;
-    redshift.shear_zdist_zmax[i] = 0.0; 
-    redshift.clustering_zdist_zmin[i] = 0.0;
-    redshift.clustering_zdist_zmax[i] = 0.0;
-    redshift.clustering_zdist_zmean[i] = 0.0;
+    redshift.shear_zdist_z[RANGE_MIN][i] = 0.0;
+    redshift.shear_zdist_z[RANGE_MAX][i] = 0.0; 
+    redshift.clustering_zdist_z[RANGE_MIN][i] = 0.0;
+    redshift.clustering_zdist_z[RANGE_MAX][i] = 0.0;
+    redshift.clustering_zdist_z[ZDIST_MEAN][i] = 0.0;
   }
 }
 
@@ -207,12 +189,16 @@ void reset_pdeltaparams_struct(void)
 void reset_nuisance_struct(void)
 {
   nuisance.random_ia = 0.0;
+  nuisance.random_ia_halo = 0.0;
   nuisance.random_photoz_shear = 0.0;
   nuisance.random_photoz_clustering = 0.0;
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
     nuisance.shear_calibration_m[i] = 0.0;
     nuisance.gc[i] = 0.0;
     nuisance.gas[i] = 0.0;
+    nuisance.ia_halo[i] = 0.0;
+    nuisance.ia_red[i] = 0.0;
+    nuisance.ia_hod[i] = 0.0;
     for (int j=0; j<MAX_SIZE_ARRAYS; j++) {
       nuisance.ia[i][j] = 0.0;
       nuisance.ia[i][j] = 0.0;
@@ -247,8 +233,8 @@ void reset_cmb_struct(void)
   }
   cmb.alpha_Hartlap_cov_kkkk = 1.0;
   cmb.nbp_kk = 0;
-  cmb.lminbp_kk = 0;
-  cmb.lmaxbp_kk = 0;
+  cmb.lbp_kk[RANGE_MIN] = 0;
+  cmb.lbp_kk[RANGE_MAX] = 0;
   if (cmb.theory_offset_kk != NULL) {
     free(cmb.theory_offset_kk);
     cmb.theory_offset_kk = NULL;
@@ -266,32 +252,46 @@ void reset_Ntable_struct(void)
   Ntable.N_a      = 256;   // N_a       
   Ntable.N_k_lin  = 512;   // N_k_lin
   Ntable.N_k_nlin = 512;   // N_k_nlin
-  Ntable.N_ell    = 512;   // N_ell      
+  Ntable.N_ell[NODES_DENSE]    = 512;   // N_ell
+  Ntable.N_ell[NODES_COARSE] = 192; // ss/gs table coarse grid; 0 = exact N_ell      
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
-  Ntable.N_M      = 1024;  // N_M, M = mass (Halo Model)
+  Ntable.N_M[NODES_DENSE]      = 1024;  // N_M, M = mass (Halo Model)
+  Ntable.N_M[NODES_COARSE] = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
+  Ntable.halo_uks_n[UKS_N_LNC] = 40;       // u_KS coarse ln c nodes (upsampled; halo.c)
+  Ntable.halo_uks_n[UKS_N_LNZ] = 64;       // u_KS coarse ln z nodes (upsampled; halo.c)
+  Ntable.halo_nfw_n = 131072; // u_nfw_c exact dense ln t nodes (halo.c)
+  Ntable.halo_spline_pad = 6; // halo.c coarse spline padding nodes
+  Ntable.halo_uks_m[UKS_M_LNC2D] = 12;     // u_KS dense refinement: ln c (2D)
+  Ntable.halo_uks_m[UKS_M_W] = 32;         // u_KS dense refinement: w
+  Ntable.halo_uks_m[UKS_M_LNZ] = 16;       // u_KS dense refinement: ln z
+  Ntable.halo_uks_m[UKS_M_LNY] = 115;      // u_KS dense refinement: ln y
+  Ntable.halo_uks_m[UKS_M_LNC1D] = 70;     // u_KS dense refinement: ln c (1D)
+  Ntable.halo_hmf_n[NODES_COARSE][HMF_TINKER_2010] = 128;  // tinker_alpha exact aa
+  Ntable.halo_hmf_n[NODES_DENSE][HMF_TINKER_2010] = 4096; // tinker_alpha dense aa
+  Ntable.halo_nm = 64;       // spectra mass nodes at hdi 0: chi2 ladder in
+                             // the skill file (floor: 64)
+  Ntable.halo_nk_step = 4;   // p_gm/p_gg coarse ln k step at hdi 0
+  Ntable.halo_na_lens = 51;  // p_gm/p_gg a nodes per lens bin
+  Ntable.halo_ia_lmax = 6;   // halo IA multipoles: F21's l <= 6
+  Ntable.halo_ia_na = 51;    // halo IA a nodes over the source range
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
-  Ntable.dCX_dlnk_nlnk = 256;
-  Ntable.dCX_dlnk_kmin = 1.e-5;
-  Ntable.dCX_dlnk_kmax = 1.e2; 
+  Ntable.dCX_dlnk_nlnk[NODES_DENSE] = 256;
+  Ntable.dCX_dlnk_k[RANGE_MIN] = 1.e-5;
+  Ntable.dCX_dlnk_k[RANGE_MAX] = 1.e2;
+  Ntable.dCX_dlnk_nlnk[NODES_COARSE] = 128; // half the dCX grid: measured
+  // response error <= what the retired fixed quadrature imposed
+  // (max |dRF| 5.9e-3, medians ~1e-6) at 2x the refill; 0 = exact 
   Ntable.nz_fine_sampling_factor = 5; // nz fine-sampling (to ensure uniform points)
+  Ntable.photoz_interpolation_type = 0; // 0: cspline, 1: linear, 2+: steffen
+  Ntable.photoz_zmid_convention = 0;    // 0: z column = Z_LOW (left edges); 1: Z_MID (points)
+  // C-FAST-PT convolution grid / output grid. 0.5 is converged: the
+  // 2026-09-25 lsst_y1 scan measured delta^T C^-1 delta <= 1e-9 vs the
+  // single-grid path down to 0.27, and 1.0 recovers that path exactly
+  Ntable.FPT_internal_accuracy_boost = 0.5;
 }
 
-/*
-void reset_cluster_struct(void)
-{
-  Cluster.N200_min = 0.0;
-  Cluster.N200_max = 0.0;
-  Cluster.N200_Nbin = 0;
-  for(int i=0; i<MAX_SIZE_ARRAYS; i++)
-  {
-    Cluster.N_min[i] = 0.0;
-    Cluster.N_max[i] = 0.0;
-  }
-  sprintf(Cluster.model, "%s", "default");
-}
-*/
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
