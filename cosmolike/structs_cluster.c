@@ -14,8 +14,9 @@ clusterparams cluster =
 // MOR with M_piv = 5e14 Msun/h and 1 + z_piv = 1.45 (eq 19; M_piv is not
 // printed in the paper, it is the value of the lighthouse code the DES
 // analyses ran), volume-only cluster kernel (what DES ran), scale-dependent
-// selection bias, Y transform on, NLA-type IA in the 2-halo lensing term,
-// C_c = -2 magnification. The mass range [1e12, 1e16] Msun/h brackets every
+// selection bias, the Tinker 2010 mass function at the fixed amplitude
+// alpha = 0.368 (what DES ran), Y transform on, NLA-type IA in the 2-halo
+// lensing term, C_c = -2 magnification. The mass range [1e12, 1e16] Msun/h brackets every
 // halo that can reach lambda_obs >= 20.
 void reset_cluster_struct(void)
 {
@@ -28,6 +29,7 @@ void reset_cluster_struct(void)
   cluster.mor_model = CLUSTER_MOR_LOGNORMAL;
   cluster.kernel_mode = CLUSTER_KERNEL_VOLUME;
   cluster.selection_model = CLUSTER_SELECTION_Y6;
+  cluster.hmf_alpha_mode = CLUSTER_HMF_ALPHA_FIXED;
   cluster.ytransform = 1;
   cluster.include_ia = 1;
   cluster.magnification = -2.0;

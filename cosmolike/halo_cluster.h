@@ -8,9 +8,11 @@ extern "C" {
 // [SECTION] HALO-MODEL CLUSTER QUANTITIES (the halo.c design)
 // ============================================================================
 //
-// Built on halo.c's Tinker 2010 multiplicity fnu and bias hb1nu (M200m,
+// Built on the Tinker 2010 multiplicity and halo.c's bias hb1nu (M200m,
 // Delta = 200 mean), sigma2 (cosmo3D.c), dlognudlogm, conc (Bhattacharya
-// 2013) and the NFW profile. Units: M in Msun/h, k in (c/H0)^-1, number
+// 2013) and the NFW profile. The multiplicity amplitude follows
+// cluster.hmf_alpha_mode: alpha = 0.368 at every z (DES; default) or
+// halo.c's fnu, alpha(a) from int b f dnu = 1. Units: M in Msun/h, k in (c/H0)^-1, number
 // densities in (c/H0)^-3, P(k) in (c/H0)^3.
 //
 // The tables below come out of ONE deep-unrolled fill over (richness bin,

@@ -45,7 +45,7 @@
 // with the ingredients of halo.c, used exactly as its mass integrals use
 // them (hod_tables, p_gm):
 //
-//   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M    mass function (fnu,
+//   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M    mass function (f(nu),
 //                                                dlognudlogm)
 //   nu      = delta_c/(sigma(M) D(a))            peak height (sigma2 of
 //                                                cosmo3D.c, D = growfac)
@@ -64,6 +64,15 @@
 // with b_s0, b_s1, b_s2 = cluster.selection[0], [1], [2] and the MOR
 // pivots M_piv, 1 + z_piv (Y1 uses the same 5e14 Msun/h and 1.45).
 //
+// One ingredient departs from halo.c: the amplitude alpha of the Tinker
+// 2010 multiplicity f(nu) follows cluster.hmf_alpha_mode
+// (structs_cluster.h). The DES analyses fix alpha = 0.368 (1001.3162
+// Table 4) at every z: the default, CLUSTER_HMF_ALPHA_FIXED, evaluates a
+// private copy of halo.c's f(nu) shape at that amplitude (TINKER 2010
+// MULTIPLICITY section). CLUSTER_HMF_ALPHA_NORMALIZED calls halo.c's fnu,
+// whose alpha(a) satisfies int b f dnu = 1 (Eq. 7) at every z. The shape
+// is the same in both modes, so only n_nl (and the counts) depend on it.
+//
 // Units (the library's): M in Msun/h, k in (c/H0)^-1, n in (c/H0)^-3,
 // P(k) in (c/H0)^3.
 //
@@ -74,6 +83,8 @@
 //   bcl_richness   = b_nl(a), the richness-weighted linear bias
 //   pcm_1h_richness = P1h_nl(k, a), the one-halo cluster-matter spectrum
 //                    ("p" power, "cm" cluster-matter, "1h" one halo)
+//   cluster_tinker_* = a private copy of halo.c's Tinker 2010 f(nu) shape,
+//                    at the fixed amplitude 0.368 (CLUSTER_HMF_ALPHA_FIXED)
 //   cluster_mass_tables = THE fill: one deep-unrolled loop nest over
 //                    (richness bin, a node) with the Gauss-Legendre mass
 //                    nodes innermost; it fills n_nl, b_nl and the 1-halo
@@ -125,6 +136,16 @@ static const double CLUSTER_DELTA_HALO = 200.0;  // M200m: 200 x mean density
 // Highest scale factor of the tables: halo.c's fnu requires a < 1 (the
 // bias_norm convention of halo.c).
 static const double CLUSTER_A_TOP = 0.9999999;
+
+// Amplitude of the Tinker 2010 multiplicity f(nu) under
+// CLUSTER_HMF_ALPHA_FIXED: 1001.3162 Table 4 at Delta = 200 (mean), the
+// value of the DES cluster analyses, held at every z.
+static const double CLUSTER_TINKER_ALPHA_FIXED = 0.368;
+
+// Lowest scale factor of the Tinker 2010 parameter evolution: beyond z = 3
+// the paper recommends the z = 3 parameters (text after its Eq. 12), as
+// halo.c's fnu does.
+static const double CLUSTER_TINKER_A_FLOOR = 0.25;
 
 // Floor on the richness-bin density n_nl in (c/H0)^-3: 1e-10 clusters per
 // Hubble volume (c/H0)^3 = 2.7e10 (Mpc/h)^3, i.e. no cluster in any
@@ -298,6 +319,108 @@ double prob_richness_bin_given_m(
   const double x_max = (log(cluster.richness_max[nl]) - mu)*inv_sqrt2_sigma;
 
   return richness_bin_probability(x_min, x_max);
+}
+
+
+
+// ============================================================================
+// [SECTION] TINKER 2010 MULTIPLICITY AT FIXED AMPLITUDE (private copy of
+//           halo.c's fnu_shape and fnu_core)
+// ============================================================================
+//
+// The halo multiplicity of Tinker et al. 2010 (1001.3162 Eq. 8), the mass
+// function per unit peak height nu (full derivation: halo.c, fnu header):
+//
+//   f(nu) = alpha [1 + (beta nu)^(-2 phi)] nu^(2 eta) exp(-gamma nu^2/2)
+//
+// with the Table 4 parameters at Delta = 200 (mean) evolved by Eqs. 9-12,
+// 1 + z = 1/aa, aa = max(a, 0.25) (the fit is frozen at z = 3):
+//
+//   beta  = 0.589 aa^-0.20,  gamma = 0.864 aa^0.01,
+//   phi   = -0.729 aa^0.08,  eta   = -0.243 aa^-0.27
+//
+// halo.c's fnu takes alpha(a) from the peak-background relation
+// int b f dnu = 1 (Eq. 7): 0.3684 at z = 0, falling with z. The DES
+// cluster analyses hold alpha = 0.368, the Table 4 value, at every z
+// (CLUSTER_HMF_ALPHA_FIXED), and halo.c keeps its shape functions static,
+// so this file holds a copy of them at that fixed amplitude. The
+// parameters depend on a only: the fill evaluates them once per a row.
+// cluster_tinker_check verifies the copy against halo.c's fnu at every
+// refill of the mass tables.
+
+// Tinker 2010 parameters at one a (the four shape parameters and alpha)
+typedef struct {
+  double alpha;  // amplitude: CLUSTER_TINKER_ALPHA_FIXED
+  double beta;   // the four shape parameters, Eqs. 9-12 + Table 4 of
+  double gamma;  //   1001.3162 at Delta = 200
+  double phi;
+  double eta;
+} cluster_tinker_params;
+
+
+// Eqs. 9-12 + Table 4 at aa = max(a, 0.25), alpha = 0.368
+static inline cluster_tinker_params cluster_tinker_params_fixed(
+    const double a  // scale factor, 0 < a < 1
+  )
+{
+  const double aa = fmax(CLUSTER_TINKER_A_FLOOR, a);
+
+  cluster_tinker_params p;
+  p.alpha = CLUSTER_TINKER_ALPHA_FIXED;
+  p.beta  = 0.589*pow(aa, -0.2);    // Eq. 9:  beta_0  (1+z)^0.20
+  p.gamma = 0.864*pow(aa, 0.01);    // Eq. 12: gamma_0 (1+z)^-0.01
+  p.phi   = -0.729*pow(aa, .08);    // Eq. 10: phi_0   (1+z)^-0.08
+  p.eta   = -0.243*pow(aa, -0.27);  // Eq. 11: eta_0   (1+z)^0.27
+  return p;
+}
+
+
+// Eq. 8 itself, in halo.c's operation order (fnu_core)
+static inline double cluster_tinker_fnu(
+    const double nu,                   // peak height delta_c/(sigma D)
+    const cluster_tinker_params* p     // from cluster_tinker_params_fixed
+  )
+{
+  return p->alpha*(1. + pow(p->beta*nu,-2*p->phi))*pow(nu,2*p->eta)*
+         exp(-p->gamma*nu*nu/2.);
+}
+
+
+// The private shape against halo.c's fnu at two scale factors (one inside
+// the fit range, one below its z = 3 floor) and four peak heights: the
+// ratio fnu/cluster_tinker_fnu = alpha(a)/0.368 must not depend on nu.
+// Aborts on a mismatch (halo.c's Tinker parameters changed). Builds
+// halo.c's lazy tinker_alpha table: call it serially.
+static void cluster_tinker_check(void)
+{
+  const double TEST_A[2]  = {0.7, 0.2};
+  const double TEST_NU[4] = {0.3, 1.0, 2.5, 5.0};
+  const double TOLERANCE  = 1.0e-12;  // a few roundings of the product
+
+  if (like.halo_model[0] != HMF_TINKER_2010) {
+    log_fatal("like.halo_model[0] = %d: the cluster mass function is "
+              "Tinker 2010 only (HMF_TINKER_2010)", like.halo_model[0]);
+    exit(1);
+  }
+
+  for (int i=0; i<2; i++) {
+    const cluster_tinker_params p = cluster_tinker_params_fixed(TEST_A[i]);
+    const double ratio0 = fnu(TEST_NU[0], TEST_A[i])/
+                          cluster_tinker_fnu(TEST_NU[0], &p);
+
+    for (int j=1; j<4; j++) {
+      const double ratio = fnu(TEST_NU[j], TEST_A[i])/
+                           cluster_tinker_fnu(TEST_NU[j], &p);
+
+      if (!(fabs(ratio/ratio0 - 1.0) < TOLERANCE)) {
+        log_fatal("private Tinker 2010 shape differs from halo.c fnu at "
+                  "a = %g, nu = %g (ratio %.17g vs %.17g at nu = %g): "
+                  "resync halo_cluster.c with halo.c", TEST_A[i],
+                  TEST_NU[j], ratio, ratio0, TEST_NU[0]);
+        exit(1);
+      }
+    }
+  }
 }
 
 
@@ -494,7 +617,9 @@ static void cluster_nfw_check(void)
 //   W_nl(a, q) = dn_q(a) P_q (M_q/rho_m) / (m(c_q) n_nl(a))
 //
 //   dn_q(a) = w_q (rho_m/M_q) nu f(nu) dln nu/dln M,  nu = nu0_q/D(a):
-//             the quadrature weight times dn/dlnM (halo.c's product order)
+//             the quadrature weight times dn/dlnM (halo.c's product order);
+//             f(nu) = cluster_tinker_fnu (alpha = 0.368) or halo.c's fnu
+//             (alpha(a) of Eq. 7), per cluster.hmf_alpha_mode
 //   P_q     = P(nl|M_q, z(a))
 //   b_q(a)  = b_h(nu) (x the Y1 selection factor S)
 //   m(c)    = ln(1 + c) - c/(1 + c), c = conc(M_q, D(a))
@@ -510,7 +635,8 @@ static void cluster_nfw_check(void)
 //     (mass_node)          nu0_q = delta_c/sigma(M_q), the mass part of
 //                          <ln lambda>, r_Delta(M_q), the mass part of S
 //   per a row              a, z, D(a), the redshift parts of <ln lambda>
-//     (a_row)              and of S
+//     (a_row)              and of S; the Tinker 2010 parameters (fixed
+//                          amplitude mode; inside the threaded row loop)
 //   per (a row, q)         dn_q(a), b_q(a), <ln lambda>, 1/(sqrt 2 sigma),
 //     (a_node)             c, ln(1 + c), r_s, ln r_s, dn_q (M_q/rho_m)/m(c)
 //   per (nl, a row), sum   P_q (two erf), n_nl, b_nl, W_nl
@@ -695,8 +821,8 @@ static inline double spline_horner(
 //     cluster.random_model (richness bin count)
 //   refill: the keys of cluster_keys_differ. The inputs each key stands
 //     for (the setters' contract, structs_cluster.h): random_model the
-//     richness edges, mass range, MOR and selection models and pivots;
-//     random_zdist the supports zdist_zmin/zmax (the a grid);
+//     richness edges, mass range, MOR and selection models and pivots,
+//     the mass-function amplitude mode (hmf_alpha_mode); random_zdist the supports zdist_zmin/zmax (the a grid);
 //     random_mor mor[]; random_selection selection[] (Y1 only)
 // ---------------------------------------------------------------------------
 static void cluster_mass_tables(void)
@@ -769,10 +895,19 @@ static void cluster_mass_tables(void)
 
     const int selection_y1 = (CLUSTER_SELECTION_Y1 == cluster.selection_model);
 
+    // 1: f(nu) at alpha = 0.368 (the private copy); 0: halo.c's fnu
+    const int alpha_fixed = (CLUSTER_HMF_ALPHA_FIXED == cluster.hmf_alpha_mode);
+
     // --- 2a. INPUT CHECKS ---
     if (cluster.zdist_nbin < 1) {
       log_fatal("cluster redshift bins not set (cluster.zdist_nbin = %d)",
                 cluster.zdist_nbin);
+      exit(1);
+    }
+    if (cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_FIXED &&
+        cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_NORMALIZED) {
+      log_fatal("cluster.hmf_alpha_mode = %d not supported",
+                cluster.hmf_alpha_mode);
       exit(1);
     }
     // inside the ln M range of halo.c's sigma2 and dlognudlogm tables,
@@ -832,15 +967,17 @@ static void cluster_mass_tables(void)
 
     // --- 2c. WARM-UP: THE LAZY TABLES OF halo.c AND cosmo3D.c READ BELOW ---
     // sigma2 and dlognudlogm (ln M tables; conc reads sigma2 too) and
-    // tinker_alpha (inside fnu) build here, before the threads start
+    // tinker_alpha (inside fnu, which cluster_tinker_check calls while it
+    // checks the private Tinker copy) build here, before the threads start
     (void) sigma2(cluster.m_min);
     (void) dlognudlogm(cluster.m_min);
-    (void) fnu(1.0, cl_.a_first);
+    cluster_tinker_check();
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (the section header)
        1. per mass node q: M_q, the a-free factor of dn/dlnM, nu0_q, the
           mass parts of <ln lambda> and S, r_Delta
-       2. per a row: a, z, D(a), the redshift parts of <ln lambda> and S
+       2. per a row: a, z, D(a), the redshift parts of <ln lambda> and S,
+          the Tinker 2010 parameters at alpha = 0.368 (fixed mode)
        3. per (a row, q): nu = nu0_q/D, dn_q = w (rho_m/M) dlnnu/dlnM
           f(nu) nu, b_q = b_h(nu) S, <ln lambda>, sigma, c(M, D), r_s
        4. per (nl, a row): P_q = [erf(x_max) - erf(x_min)]/2,
@@ -905,6 +1042,10 @@ static void cluster_mass_tables(void)
       const double mu_z        = cl_.a_row[AR_MU_Z][r];
       const double selection_z = cl_.a_row[AR_SEL_Z][r];
 
+      // Tinker 2010 parameters of this a row at alpha = 0.368 (read only
+      // when alpha_fixed; halo.c's fnu builds its own from a)
+      const cluster_tinker_params tinker = cluster_tinker_params_fixed(a);
+
       // per-node rows of this a row (restrict: distinct rows)
       double* restrict dn_q      = cl_.a_node[r][AN_DN];
       double* restrict bias_q    = cl_.a_node[r][AN_BIAS];
@@ -920,9 +1061,14 @@ static void cluster_mass_tables(void)
         const double m  = cl_.mass_node[MN_M][q];
         const double nu = cl_.mass_node[MN_NU0][q]/D;  // nu0_q/D(a)
 
+        // Tinker 2010 f(nu): alpha = 0.368 (the DES convention) or
+        // halo.c's alpha(a) of Eq. 7 (cluster.hmf_alpha_mode)
+        const double f_nu = alpha_fixed ? cluster_tinker_fnu(nu, &tinker)
+                                        : fnu(nu, a);
+
         // quadrature weight x dn/dlnM, in halo.c's order: the a-free
         // factor, then f(nu), then nu
-        const double dn = cl_.mass_node[MN_WEIGHT][q]*fnu(nu, a)*nu;
+        const double dn = cl_.mass_node[MN_WEIGHT][q]*f_nu*nu;
 
         // halo bias, times the Y1 selection factor S (1 otherwise)
         const double bias = hb1nu(nu, a)*cl_.mass_node[MN_SEL_MASS][q]

@@ -247,6 +247,11 @@ void init_cluster_model(
     const double magnification   // cluster magnification C_c (eq 28: -2)
   );
 
+// amplitude of the Tinker 2010 cluster mass function: CLUSTER_HMF_ALPHA_FIXED
+// (0.368 at every z, DES; default) or CLUSTER_HMF_ALPHA_NORMALIZED (halo.c's
+// alpha(a), int b f dnu = 1); draws cluster.random_model on a change
+void init_cluster_hmf_alpha_mode(const int hmf_alpha_mode);
+
 // Limber (1) or non-Limber (0) w_cc and w_cg (default: Limber, the paper's
 // choice for w_cg and the first milestone's for w_cc)
 void init_cluster_adopt_limber(

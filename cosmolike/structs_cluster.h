@@ -40,6 +40,24 @@ extern "C" {
 #define CLUSTER_SELECTION_Y6 2     // b_s1 + b_s2 exp(-theta chi(zbar)/r0)
                                    // on the data vector (eq 23)
 
+// amplitude alpha of the Tinker et al. 2010 multiplicity f(nu) in the
+// cluster mass function (cluster.hmf_alpha_mode). Both modes use the same
+// shape, 1001.3162 Eqs. 8-12 with the Table 4 parameters at Delta = 200
+// (mean), evolved in z and frozen at z = 3 (a floored at 0.25):
+//   beta = 0.589 a^-0.2, gamma = 0.864 a^0.01, phi = -0.729 a^0.08,
+//   eta = -0.243 a^-0.27
+// They differ in alpha only, so n_nl and the counts scale with it while
+// b_nl and P1h_nl (ratios over the mass function) do not.
+#define CLUSTER_HMF_ALPHA_FIXED 0  // alpha = 0.368 at every z, Table 4 at
+                                   // Delta = 200: the convention of the DES
+                                   // cluster analyses (lighthouse code)
+#define CLUSTER_HMF_ALPHA_NORMALIZED 1 // alpha(a) from int b(nu) f(nu) dnu
+                                   // = 1 (1001.3162 Eq. 7), halo.c's fnu:
+                                   // 0.3684 at z = 0, falling with z;
+                                   // alpha/0.368 = 0.967, 0.951, 0.936,
+                                   // 0.923, 0.909 at z = 0.2, 0.3, 0.4,
+                                   // 0.5, 0.6 (counts 3-9% below mode 0)
+
 typedef struct
 {
   // ---------------------------------------------------------------------------
@@ -60,7 +78,8 @@ typedef struct
   int mor_model;             // CLUSTER_MOR_*
   int kernel_mode;           // CLUSTER_KERNEL_*
   int selection_model;       // CLUSTER_SELECTION_*
-  int ytransform;            // 1: cluster lensing is Sigma = Y gamma_t
+  int hmf_alpha_mode;        // CLUSTER_HMF_ALPHA_*
+  int ytransform;          // 1: cluster lensing is Sigma = Y gamma_t
                              //    (eq 15, Park+2021); 0: gamma_t (Y1)
   int include_ia;            // 1: intrinsic alignments of the sources in
                              //    the 2-halo cluster-lensing term

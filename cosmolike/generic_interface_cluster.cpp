@@ -330,6 +330,39 @@ void init_cluster_model(
 
 
 // ---------------------------------------------------------------------------
+// Amplitude alpha of the Tinker 2010 multiplicity in the cluster mass
+// function (structs_cluster.h): CLUSTER_HMF_ALPHA_FIXED (0.368 at every z,
+// 1001.3162 Table 4; the DES convention and the default) or
+// CLUSTER_HMF_ALPHA_NORMALIZED (halo.c's alpha(a) from int b f dnu = 1).
+//
+// Cache invalidation: draws cluster.random_model when the mode changed, so
+// the n_nl, b_nl and P1h tables (halo_cluster.c) and everything built on
+// them refill; the same mode leaves the key alone.
+//
+// Validation: one of the two modes, else critical() + exit(1).
+// ---------------------------------------------------------------------------
+void init_cluster_hmf_alpha_mode(const int hmf_alpha_mode)
+{
+  static constexpr std::string_view fname = "init_cluster_hmf_alpha_mode"sv;
+  debug("{}: {}", fname, errbegins);
+
+  if (hmf_alpha_mode != CLUSTER_HMF_ALPHA_FIXED &&
+      hmf_alpha_mode != CLUSTER_HMF_ALPHA_NORMALIZED) [[unlikely]] {
+    critical(errorns2, fname, "hmf_alpha_mode", hmf_alpha_mode);
+    exit(1);
+  }
+
+  if (cluster.hmf_alpha_mode != hmf_alpha_mode) {
+    cluster.hmf_alpha_mode = hmf_alpha_mode;
+    cluster.random_model = RandomNumber::get_instance().get();
+  }
+
+  debug(debugsel, fname, "hmf_alpha_mode", hmf_alpha_mode);
+  debug("{}: {}", fname, errends);
+}
+
+
+// ---------------------------------------------------------------------------
 // Limber (1) or non-Limber (0) for the w_cc and w_cg blocks.
 // ---------------------------------------------------------------------------
 void init_cluster_adopt_limber(
