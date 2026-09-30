@@ -1551,7 +1551,18 @@ double w_gg_tomo(
       }
     }
     else {
-      const double tolerance = 0.01;
+      // Switch-to-Limber tolerance of the non-Limber gg path. The
+      // per-bin early exit of C_cl_tomo hands the multipoles above its
+      // switch point l_s to the Limber table while the exact C_l still
+      // differs from Limber by up to the tolerance. That difference is
+      // real beyond-Limber and RSD power (it scales as the extended-
+      // Limber correction (chi0/sigma_chi)^2/(l + 0.5)^2 of each lens
+      // kernel), so the tolerance bounds a physical modeling step at
+      // l_s, not a numerical one: at 0.01 the step reaches 0.25-0.96%
+      // of C_l at l_s = 32-80 (lsst_y1) and l_s = 32-112 (des_y3).
+      // 0.002 keeps the step at the size of the residual the split
+      // itself leaves at l = 149, at roughly twice the FFTLog cost.
+      const double tolerance = 0.002;
       C_cl_tomo(Cl, tolerance);
       #pragma omp parallel for schedule(static)
       for (int nz=0; nz<NSIZE; nz++) { // LIMBER PART
