@@ -3188,7 +3188,8 @@ double u_y_ejc(
 static struct {
   uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable, [2] HOD,
                                    //   [3] clustering n(z), [4] lens
-                                   //   photo-z (the a grid) tags
+                                   //   photo-z, [5] source n(z) (the a
+                                   //   grid) tags
   int nbin;                 // lens bins of the allocation
   int n_nodes;              // Gauss-Legendre mass nodes per lens bin
   double lim[3];            // a grid: min, max, step
@@ -3255,7 +3256,9 @@ static struct {
 //   rebuild (sizes, GL nodes, every allocation): Ntable.random
 //     or redshift.random_clustering
 //   refill (and the a grid): those two, cosmology.random,
-//     nuisance.random_galaxy_bias or nuisance.random_photoz_clustering
+//     nuisance.random_galaxy_bias, nuisance.random_photoz_clustering or
+//     redshift.random_shear (amax_lens reads the source n(z)'s lower
+//     edge when magnification bias is on)
 // ---------------------------------------------------------------------------
 static void hod_tables(void)
 {
@@ -3312,13 +3315,19 @@ static void hod_tables(void)
     gsl_integration_glfixed_table_free(gauss_table);
   }
 
-  // Refill: cosmology, Ntable, the HOD, the clustering n(z) or the lens
-  // photo-z changed.
+  // Refill: cosmology, Ntable, the HOD, the clustering n(z), the lens
+  // photo-z or the source n(z) changed. The source n(z) enters through
+  // the a grid only: with magnification bias on, amax_lens
+  // (redshift_spline.c) is the source edge 1/(1 + max(shear zmin_all,
+  // 0.001)), so a new source n(z) moves the range p_gm and p_gg read
+  // ngal and bgal on. The source photo-z shifts do not enter (amin_lens
+  // and amax_lens never read them).
   if (fdiff2(hod_.cache[0], cosmology.random) ||
       fdiff2(hod_.cache[1], Ntable.random) ||
       fdiff2(hod_.cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(hod_.cache[3], redshift.random_clustering) ||
-      fdiff2(hod_.cache[4], nuisance.random_photoz_clustering))
+      fdiff2(hod_.cache[4], nuisance.random_photoz_clustering) ||
+      fdiff2(hod_.cache[5], redshift.random_shear))
   {
     // The a grid: min, max, step. It must cover every a at which p_gm and
     // p_gg read ngal and bgal, i.e. every lens bin's [amin_lens, amax_lens]
@@ -3445,6 +3454,7 @@ static void hod_tables(void)
     hod_.cache[2] = nuisance.random_galaxy_bias;
     hod_.cache[3] = redshift.random_clustering;
     hod_.cache[4] = nuisance.random_photoz_clustering;
+    hod_.cache[5] = redshift.random_shear;
   }
 }
 
@@ -4820,7 +4830,8 @@ static void ln_k_spline_upsample(
 //     or redshift.random_clustering (bin count: clustering n(z))
 //   refill: cosmology.random, Ntable.random, nuisance.random_galaxy_bias
 //     (HOD, gc, and the magnification bias that widens amax_lens),
-//     redshift.random_clustering or nuisance.random_photoz_clustering;
+//     redshift.random_clustering, nuisance.random_photoz_clustering or
+//     redshift.random_shear (the source n(z) edge amax_lens widens to);
 //     the per-bin a ranges (amin_lens, amax_lens: they move with the
 //     lens photo-z shift and stretch) are set at every refill
 //
@@ -4950,17 +4961,19 @@ double p_gm(
 
   // --- 2. REFILL: THE HOD-WEIGHTED ln P TABLE ---
 
-  // any of the five tags differs from the table's
+  // any of the six tags differs from the table's
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random)    ||
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering)  ||
-      fdiff2(cache[4], nuisance.random_photoz_clustering))
+      fdiff2(cache[4], nuisance.random_photoz_clustering) ||
+      fdiff2(cache[5], redshift.random_shear))
   {
     // a grid of bin l over its lens range, node i at lim[l][0] + i
     // lim[l][2], both ends included. Set at every refill, not in the
     // rebuild block: the range moves with the lens photo-z shift and
-    // stretch, and amax_lens widens when magnification bias is on
+    // stretch, and amax_lens widens to the source n(z)'s lower edge
+    // when magnification bias is on (the redshift.random_shear tag)
     for (int l=0; l<nbin; l++) {
       lim[l][0] = amin_lens(l);
       lim[l][1] = amax_lens(l);
@@ -5293,6 +5306,7 @@ double p_gm(
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
     cache[4] = nuisance.random_photoz_clustering;
+    cache[5] = redshift.random_shear;
   }
 
   // --- 3. BILINEAR TABLE READ ---
@@ -5499,17 +5513,19 @@ double p_gg(
 
   // --- 2. REFILL: THE HOD-WEIGHTED ln P TABLE ---
 
-  // any of the five tags differs from the table's
+  // any of the six tags differs from the table's
   if (fdiff2(cache[0], cosmology.random) ||
       fdiff2(cache[1], Ntable.random)    ||
       fdiff2(cache[2], nuisance.random_galaxy_bias) ||
       fdiff2(cache[3], redshift.random_clustering)  ||
-      fdiff2(cache[4], nuisance.random_photoz_clustering))
+      fdiff2(cache[4], nuisance.random_photoz_clustering) ||
+      fdiff2(cache[5], redshift.random_shear))
   {
     // a grid of bin l over its lens range, node i at lim[l][0] + i
     // lim[l][2], both ends included. Set at every refill, not in the
     // rebuild block: the range moves with the lens photo-z shift and
-    // stretch, and amax_lens widens when magnification bias is on
+    // stretch, and amax_lens widens to the source n(z)'s lower edge
+    // when magnification bias is on (the redshift.random_shear tag)
     for (int l=0; l<nbin; l++) {
       lim[l][0] = amin_lens(l);
       lim[l][1] = amax_lens(l);
@@ -5739,6 +5755,7 @@ double p_gg(
     cache[2] = nuisance.random_galaxy_bias;
     cache[3] = redshift.random_clustering;
     cache[4] = nuisance.random_photoz_clustering;
+    cache[5] = redshift.random_shear;
   }
 
   // --- 3. BILINEAR TABLE READ ---
