@@ -45,7 +45,7 @@ namespace py = pybind11;
 // Pybind-facing batch evaluators of the cluster 2D statistics: the
 // Python side asks for whole data products, not per-point C calls.
 //
-//   Python -> *_bins_cpp overload (scalar diagnostic or array batch)
+//   Python -> *_cpp overload (scalar diagnostic or array batch)
 //     -> *_nointerp_ells / w_*_tomo / N_cluster_tomo engines
 //        (cosmo2D_cluster.c)
 //     -> numpy arrays (ell-or-theta, bin, bin, bin), stacked by to_np4d
@@ -66,11 +66,11 @@ namespace py = pybind11;
 // entries stay zero. The scalar overloads are point diagnostics and
 // pay the full batch cost per call (see each header).
 //
-// Cluster lensing comes in two forms. w_gammat_cluster_tomo_bins_cpp is
+// Cluster lensing comes in two forms. w_gammat_cluster_tomo_cpp is
 // the tangential shear gamma_t of the C engine: BEFORE the Y transform
 // (eq 15 of arXiv 2503.13631), the selection bias (eq 23) and the
 // shear calibration (1 + m), which generic_interface_cluster.cpp
-// applies on the data vector. w_sigma_cluster_tomo_bins_cpp applies
+// applies on the data vector. w_sigma_cluster_tomo_cpp applies
 // those three steps with the interface's own matrices, so it is what
 // the cs block of the data vector holds (without the mask). w_cc and
 // w_cg are returned before the selection bias too
@@ -128,10 +128,11 @@ static void check_cluster_bins(const char* fname)
 // thread (private copy of warmup_cluster_pair_maps of
 // generic_interface_cluster.cpp, which is static there).
 //
-// Any accessor runs the builder, which rebuilds on a new
-// cluster.random_pairs or bin count and writes
-// cluster.cs/cg/cc_npowerspectra; every reader of those counts calls
-// this first. The calls respect each accessor's range checks.
+// Any lookup function of the maps (N_cs, N_cc_richness, ZC_cg, ...)
+// runs the builder, which rebuilds on a new cluster.random_pairs or bin
+// count and writes cluster.cs/cg/cc_npowerspectra; every reader of those
+// counts calls this first. The calls respect each lookup function's
+// range checks.
 //
 // Parameters:
 //   none (reads the bin counts of cluster and redshift)
@@ -369,7 +370,7 @@ arma::Mat<double> cc_richness_bins()
 // This is gamma_t BEFORE the Y transform (eq 15 of arXiv 2503.13631),
 // the selection bias (eq 23) and the shear calibration (1 + m): the
 // interface applies the three on the data vector
-// (w_sigma_cluster_tomo_bins_cpp returns that form).
+// (w_sigma_cluster_tomo_cpp returns that form).
 //
 // Engine: w_gammat_cluster_tomo(nt, nl, ni, ns) (full-sky, bin-averaged
 // spin-2 Legendre sum of the Limber C_cs; Limber is the only option).
@@ -385,10 +386,10 @@ arma::Mat<double> cc_richness_bins()
 //   angular bin, entry (i, nl, ZC_cs(n), ZS_cs(n)) for every cs pair n
 //   (every (cluster, source) pair is enumerated)
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> w_gammat_cluster_tomo_bins_cpp()
+py::array_t<double,py::array::f_style> w_gammat_cluster_tomo_cpp()
 {
-  check_binning_real_space("w_gammat_cluster_tomo_bins_cpp");
-  warmup_cluster_state("w_gammat_cluster_tomo_bins_cpp");
+  check_binning_real_space("w_gammat_cluster_tomo_cpp");
+  warmup_cluster_state("w_gammat_cluster_tomo_cpp");
 
   const int ntheta = Ntable.Ntheta;
   const int nrichness = cluster.richness_nbin;
@@ -434,7 +435,7 @@ py::array_t<double,py::array::f_style> w_gammat_cluster_tomo_bins_cpp()
 // aborts below that).
 //
 // Parameters:
-//   none (reads the state of w_gammat_cluster_tomo_bins_cpp,
+//   none (reads the state of w_gammat_cluster_tomo_cpp,
 //   cluster.ytransform, the selection-bias and shear-calibration
 //   parameters)
 //
@@ -442,10 +443,10 @@ py::array_t<double,py::array::f_style> w_gammat_cluster_tomo_bins_cpp()
 //   numpy array (Ntheta, richness_nbin, zdist_nbin, shear_nbin): rows =
 //   angular bin, entry (i, nl, ZC_cs(n), ZS_cs(n)) for every cs pair n
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> w_sigma_cluster_tomo_bins_cpp()
+py::array_t<double,py::array::f_style> w_sigma_cluster_tomo_cpp()
 {
-  check_binning_real_space("w_sigma_cluster_tomo_bins_cpp");
-  warmup_cluster_state("w_sigma_cluster_tomo_bins_cpp");
+  check_binning_real_space("w_sigma_cluster_tomo_cpp");
+  warmup_cluster_state("w_sigma_cluster_tomo_cpp");
 
   const int ntheta = Ntable.Ntheta;
   const int nrichness = cluster.richness_nbin;
@@ -510,13 +511,13 @@ py::array_t<double,py::array::f_style> w_sigma_cluster_tomo_bins_cpp()
 //   numpy array (Ntheta, richness_nbin, richness_nbin, zdist_nbin):
 //   rows = angular bin, entries (i, nl1, nl2, ni) and (i, nl2, nl1, ni)
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> w_cc_tomo_bins_cpp(
+py::array_t<double,py::array::f_style> w_cc_tomo_cpp(
     const int limber   // 1 = Limber; 0 = non-Limber
   )
 {
-  check_limber_flag("w_cc_tomo_bins_cpp", limber);
-  check_binning_real_space("w_cc_tomo_bins_cpp");
-  warmup_cluster_state("w_cc_tomo_bins_cpp");
+  check_limber_flag("w_cc_tomo_cpp", limber);
+  check_binning_real_space("w_cc_tomo_cpp");
+  warmup_cluster_state("w_cc_tomo_cpp");
 
   const int ntheta = Ntable.Ntheta;
   const int nrichness = cluster.richness_nbin;
@@ -561,13 +562,13 @@ py::array_t<double,py::array::f_style> w_cc_tomo_bins_cpp(
 //   rows = angular bin, entry (i, nl, ZC_cg(n), ZG_cg(n)) filled for
 //   the enumerated cg pairs only, everything else stays zero
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> w_cg_tomo_bins_cpp(
+py::array_t<double,py::array::f_style> w_cg_tomo_cpp(
     const int limber   // 1 = Limber; 0 = non-Limber
   )
 {
-  check_limber_flag("w_cg_tomo_bins_cpp", limber);
-  check_binning_real_space("w_cg_tomo_bins_cpp");
-  warmup_cluster_state("w_cg_tomo_bins_cpp");
+  check_limber_flag("w_cg_tomo_cpp", limber);
+  check_binning_real_space("w_cg_tomo_cpp");
+  warmup_cluster_state("w_cg_tomo_cpp");
 
   const int ntheta = Ntable.Ntheta;
   const int nrichness = cluster.richness_nbin;
@@ -607,9 +608,9 @@ py::array_t<double,py::array::f_style> w_cg_tomo_bins_cpp(
 //   = cluster redshift bin (the argument order of the engine; the data
 //   vector stores the transpose, [cluster z bin][richness])
 // ---------------------------------------------------------------------------
-arma::Mat<double> N_cluster_tomo_bins_cpp()
+arma::Mat<double> N_cluster_tomo_cpp()
 {
-  warmup_cluster_state("N_cluster_tomo_bins_cpp");
+  warmup_cluster_state("N_cluster_tomo_cpp");
 
   arma::Mat<double> result(cluster.richness_nbin,
                            cluster.zdist_nbin,
@@ -631,7 +632,7 @@ arma::Mat<double> N_cluster_tomo_bins_cpp()
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Shared batch engine of the two C_cs_tomo_limber_bins_cpp overloads: a
+// Shared batch engine of the two C_cs_tomo_limber_cpp overloads: a
 // single C_cs_tomo_limber_nointerp_ells call fills every cs pair and
 // richness bin at every multipole (out[n][nl][i], pair
 // n = (ZC_cs(n), ZS_cs(n))), and the values are scattered into one
@@ -695,12 +696,12 @@ static arma::field<arma::Cube<double>> C_cs_tomo_limber_cubes(
 //   numpy array (nell, richness_nbin, zdist_nbin, shear_nbin): rows =
 //   multipole, entry (i, nl, ZC_cs(n), ZS_cs(n)) for every cs pair n
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> C_cs_tomo_limber_bins_cpp(
+py::array_t<double,py::array::f_style> C_cs_tomo_limber_cpp(
     const arma::Col<double> l    // multipoles
   )
 {
-  check_multipoles("C_cs_tomo_limber_bins_cpp", l);
-  return to_np4d(C_cs_tomo_limber_cubes("C_cs_tomo_limber_bins_cpp", l));
+  check_multipoles("C_cs_tomo_limber_cpp", l);
+  return to_np4d(C_cs_tomo_limber_cubes("C_cs_tomo_limber_cpp", l));
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +726,7 @@ py::array_t<double,py::array::f_style> C_cs_tomo_limber_bins_cpp(
 // Returns:
 //   C_l^cs of the (nl, ni, ns) entry
 // ---------------------------------------------------------------------------
-double C_cs_tomo_limber_bins_cpp(
+double C_cs_tomo_limber_cpp(
     const double l,   // multipole
     const int nl,     // richness bin
     const int ni,     // cluster redshift bin
@@ -736,13 +737,13 @@ double C_cs_tomo_limber_bins_cpp(
       ni < 0 || ni > cluster.zdist_nbin - 1 ||
       ns < 0 || ns > redshift.shear_nbin - 1) {
     spdlog::critical("{}: invalid bin input (nl, ni, ns) = ({}, {}, {})",
-                     "C_cs_tomo_limber_bins_cpp", nl, ni, ns);
+                     "C_cs_tomo_limber_cpp", nl, ni, ns);
     exit(1);
   }
   arma::Col<double> ell(1);
   ell(0) = l;
   const arma::field<arma::Cube<double>> res =
-    C_cs_tomo_limber_cubes("C_cs_tomo_limber_bins_cpp", ell);
+    C_cs_tomo_limber_cubes("C_cs_tomo_limber_cpp", ell);
   return res(0)(nl, ni, ns);
 }
 
@@ -755,7 +756,7 @@ double C_cs_tomo_limber_bins_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Shared batch engine of the two C_cc_tomo_limber_bins_cpp overloads: a
+// Shared batch engine of the two C_cc_tomo_limber_cpp overloads: a
 // single C_cc_tomo_limber_nointerp_ells call fills every cluster bin
 // and richness pair at every multipole (out[ni][n][i], richness pair
 // n = (NL1_cc(n), NL2_cc(n)) with nl1 <= nl2), and the values are
@@ -820,12 +821,12 @@ static arma::field<arma::Cube<double>> C_cc_tomo_limber_cubes(
 //   numpy array (nell, richness_nbin, richness_nbin, zdist_nbin): rows
 //   = multipole, entries (i, nl1, nl2, ni) and (i, nl2, nl1, ni)
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> C_cc_tomo_limber_bins_cpp(
+py::array_t<double,py::array::f_style> C_cc_tomo_limber_cpp(
     const arma::Col<double> l    // multipoles
   )
 {
-  check_multipoles("C_cc_tomo_limber_bins_cpp", l);
-  return to_np4d(C_cc_tomo_limber_cubes("C_cc_tomo_limber_bins_cpp", l));
+  check_multipoles("C_cc_tomo_limber_cpp", l);
+  return to_np4d(C_cc_tomo_limber_cubes("C_cc_tomo_limber_cpp", l));
 }
 
 // ---------------------------------------------------------------------------
@@ -850,7 +851,7 @@ py::array_t<double,py::array::f_style> C_cc_tomo_limber_bins_cpp(
 // Returns:
 //   C_l^cc of the (nl1, nl2, ni) entry
 // ---------------------------------------------------------------------------
-double C_cc_tomo_limber_bins_cpp(
+double C_cc_tomo_limber_cpp(
     const double l,   // multipole
     const int nl1,    // first richness bin
     const int nl2,    // second richness bin
@@ -861,13 +862,13 @@ double C_cc_tomo_limber_bins_cpp(
       nl2 < 0 || nl2 > cluster.richness_nbin - 1 ||
       ni < 0 || ni > cluster.zdist_nbin - 1) {
     spdlog::critical("{}: invalid bin input (nl1, nl2, ni) = ({}, {}, {})",
-                     "C_cc_tomo_limber_bins_cpp", nl1, nl2, ni);
+                     "C_cc_tomo_limber_cpp", nl1, nl2, ni);
     exit(1);
   }
   arma::Col<double> ell(1);
   ell(0) = l;
   const arma::field<arma::Cube<double>> res =
-    C_cc_tomo_limber_cubes("C_cc_tomo_limber_bins_cpp", ell);
+    C_cc_tomo_limber_cubes("C_cc_tomo_limber_cpp", ell);
   return res(0)(nl1, nl2, ni);
 }
 
@@ -880,7 +881,7 @@ double C_cc_tomo_limber_bins_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Shared batch engine of the two C_cg_tomo_limber_bins_cpp overloads: a
+// Shared batch engine of the two C_cg_tomo_limber_cpp overloads: a
 // single C_cg_tomo_limber_nointerp_ells call fills every cg pair and
 // richness bin at every multipole (out[n][nl][i], pair
 // n = (ZC_cg(n), ZG_cg(n))), and the values are scattered into one
@@ -946,12 +947,12 @@ static arma::field<arma::Cube<double>> C_cg_tomo_limber_cubes(
 //   rows = multipole, entry (i, nl, ZC_cg(n), ZG_cg(n)) filled for the
 //   enumerated cg pairs only
 // ---------------------------------------------------------------------------
-py::array_t<double,py::array::f_style> C_cg_tomo_limber_bins_cpp(
+py::array_t<double,py::array::f_style> C_cg_tomo_limber_cpp(
     const arma::Col<double> l    // multipoles
   )
 {
-  check_multipoles("C_cg_tomo_limber_bins_cpp", l);
-  return to_np4d(C_cg_tomo_limber_cubes("C_cg_tomo_limber_bins_cpp", l));
+  check_multipoles("C_cg_tomo_limber_cpp", l);
+  return to_np4d(C_cg_tomo_limber_cubes("C_cg_tomo_limber_cpp", l));
 }
 
 // ---------------------------------------------------------------------------
@@ -977,7 +978,7 @@ py::array_t<double,py::array::f_style> C_cg_tomo_limber_bins_cpp(
 //   C_l^cg of the (nl, ni, ng) entry; 0 for a (ni, ng) outside the
 //   enumerated cg list
 // ---------------------------------------------------------------------------
-double C_cg_tomo_limber_bins_cpp(
+double C_cg_tomo_limber_cpp(
     const double l,   // multipole
     const int nl,     // richness bin
     const int ni,     // cluster redshift bin
@@ -988,13 +989,13 @@ double C_cg_tomo_limber_bins_cpp(
       ni < 0 || ni > cluster.zdist_nbin - 1 ||
       ng < 0 || ng > redshift.clustering_nbin - 1) {
     spdlog::critical("{}: invalid bin input (nl, ni, ng) = ({}, {}, {})",
-                     "C_cg_tomo_limber_bins_cpp", nl, ni, ng);
+                     "C_cg_tomo_limber_cpp", nl, ni, ng);
     exit(1);
   }
   arma::Col<double> ell(1);
   ell(0) = l;
   const arma::field<arma::Cube<double>> res =
-    C_cg_tomo_limber_cubes("C_cg_tomo_limber_bins_cpp", ell);
+    C_cg_tomo_limber_cubes("C_cg_tomo_limber_cpp", ell);
   return res(0)(nl, ni, ng);
 }
 

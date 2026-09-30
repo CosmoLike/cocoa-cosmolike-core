@@ -22,16 +22,18 @@ namespace cosmolike_interface
 //
 // One Python call travels
 //
-//   ci.w_gammat_cluster_tomo_bins()            (Python)
-//     -> m.def("w_gammat_cluster_tomo_bins")   (project interface.cpp)
-//     -> w_gammat_cluster_tomo_bins_cpp()      (this layer: checks the
+//   ci.w_gammat_cluster_tomo()                 (Python)
+//     -> m.def("w_gammat_cluster_tomo")        (project interface.cpp)
+//     -> w_gammat_cluster_tomo_cpp()           (this layer: checks the
 //                                               state, warms the tables
 //                                               on one thread, loops)
 //     -> w_gammat_cluster_tomo(nt, nl, ni, ns) (cosmo2D_cluster.c: reads
 //                                               a cached block)
 //
-// Names: the C function's name plus _bins_cpp. The suffix _bins says
-// the arrays are indexed by the bins themselves,
+// Names, as in cosmo2D_wrapper.hpp: each function is the C function's
+// name plus _cpp, and its Python name is the C name itself
+// (cosmo2D_cluster.c w_cc_tomo -> w_cc_tomo_cpp -> ci.w_cc_tomo). The
+// arrays are indexed by the bins themselves,
 //
 //   (theta or ell, richness bin, cluster z bin, source or lens bin),
 //
@@ -66,34 +68,34 @@ arma::Mat<double> cc_richness_bins();
 // cluster gamma_t BEFORE the Y transform, the selection bias and the
 // shear calibration: (Ntheta, richness_nbin, zdist_nbin, shear_nbin)
 pybind11::array_t<double,pybind11::array::f_style>
-w_gammat_cluster_tomo_bins_cpp();
+w_gammat_cluster_tomo_cpp();
 
 // cluster lensing as the data vector holds it (unmasked): Sigma = T gamma_t
 // (gamma_t when cluster.ytransform = 0) times the selection bias and
 // (1 + m): (Ntheta, richness_nbin, zdist_nbin, shear_nbin)
 pybind11::array_t<double,pybind11::array::f_style>
-w_sigma_cluster_tomo_bins_cpp();
+w_sigma_cluster_tomo_cpp();
 
 // w_cc before the selection bias:
 // (Ntheta, richness_nbin, richness_nbin, zdist_nbin)
-pybind11::array_t<double,pybind11::array::f_style> w_cc_tomo_bins_cpp(
+pybind11::array_t<double,pybind11::array::f_style> w_cc_tomo_cpp(
     const int limber
   );
 
 // w_cg before the selection bias:
 // (Ntheta, richness_nbin, zdist_nbin, clustering_nbin)
-pybind11::array_t<double,pybind11::array::f_style> w_cg_tomo_bins_cpp(
+pybind11::array_t<double,pybind11::array::f_style> w_cg_tomo_cpp(
     const int limber
   );
 
 // expected counts: (richness_nbin, zdist_nbin)
-arma::Mat<double> N_cluster_tomo_bins_cpp();
+arma::Mat<double> N_cluster_tomo_cpp();
 
 // ---------------------------------------------------------------------------
 // Fourier-space C_l: cluster lensing
 // ---------------------------------------------------------------------------
 
-double C_cs_tomo_limber_bins_cpp(
+double C_cs_tomo_limber_cpp(
     const double l,
     const int nl,
     const int ni,
@@ -101,7 +103,7 @@ double C_cs_tomo_limber_bins_cpp(
   );
 
 // (nell, richness_nbin, zdist_nbin, shear_nbin)
-pybind11::array_t<double,pybind11::array::f_style> C_cs_tomo_limber_bins_cpp(
+pybind11::array_t<double,pybind11::array::f_style> C_cs_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
@@ -109,7 +111,7 @@ pybind11::array_t<double,pybind11::array::f_style> C_cs_tomo_limber_bins_cpp(
 // Fourier-space C_l: cluster clustering (auto z bin, richness pairs)
 // ---------------------------------------------------------------------------
 
-double C_cc_tomo_limber_bins_cpp(
+double C_cc_tomo_limber_cpp(
     const double l,
     const int nl1,
     const int nl2,
@@ -117,7 +119,7 @@ double C_cc_tomo_limber_bins_cpp(
   );
 
 // (nell, richness_nbin, richness_nbin, zdist_nbin)
-pybind11::array_t<double,pybind11::array::f_style> C_cc_tomo_limber_bins_cpp(
+pybind11::array_t<double,pybind11::array::f_style> C_cc_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
@@ -125,7 +127,7 @@ pybind11::array_t<double,pybind11::array::f_style> C_cc_tomo_limber_bins_cpp(
 // Fourier-space C_l: cluster x galaxy clustering
 // ---------------------------------------------------------------------------
 
-double C_cg_tomo_limber_bins_cpp(
+double C_cg_tomo_limber_cpp(
     const double l,
     const int nl,
     const int ni,
@@ -133,7 +135,7 @@ double C_cg_tomo_limber_bins_cpp(
   );
 
 // (nell, richness_nbin, zdist_nbin, clustering_nbin)
-pybind11::array_t<double,pybind11::array::f_style> C_cg_tomo_limber_bins_cpp(
+pybind11::array_t<double,pybind11::array::f_style> C_cg_tomo_limber_cpp(
     const arma::Col<double> l
   );
 
