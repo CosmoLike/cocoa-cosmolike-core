@@ -1,6 +1,6 @@
 ---
 name: cosmolike-dev
-description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c, halo.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, tomographic C_ell, halo model, or HOD appear in a C-code context, even if optimization isn't mentioned explicitly.
+description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c, halo.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, tomographic C_ell, halo model, or HOD appear in a C-code context, even if optimization isn't mentioned explicitly. Use it as well for the Python of the Cosmolike repositories: cosmolike_notebook_utils (the data-vector plotting functions such as plot_datavectors and plot_datavectors_cluster, the CAMB helper, the Fisher helpers), cocoa_testing.py, and each project's likelihood, notebook wrappers, notebooks, tests and scripts.
 ---
 
 # CosmoLike Development
@@ -15,6 +15,12 @@ Before writing any optimization, read `references/patterns.md`.
 
 Before reviewing any patch, read `references/pitfalls.md` — it is the catalog
 of bugs this codebase has actually had, and doubles as the review checklist.
+
+Before writing or reviewing any Python — a plotting function, a notebook
+wrapper, a notebook cell, a likelihood method, a test, a script — read
+`references/python.md`. It is the style contract for Python in these
+repositories and holds the conventions of the data-vector plotting
+functions.
 
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
@@ -617,6 +623,41 @@ the named knobs change.
   N_a = 256: 3.9 ms.
 - `tinker_alpha` build, 4 threads: 0.9 ms, once per process.
 
+## Python code
+
+The full contract is `references/python.md`; read it before touching
+Python. The rules that are broken most often:
+
+- **The reader** is a library user or physics student who reads C-like
+  control flow but may not know advanced Python idioms.
+- **Cold paths** (set-up, validation, file handling, figure layout) use
+  explicit loops, plain `if` blocks, named intermediate variables and
+  named arguments. No walrus operator, nested comprehensions, chained
+  ternaries, or chained calls that mix selection, conversion and mutation.
+- **Hot paths** (vectorized numpy, the per-evaluation body of a
+  likelihood) stay vectorized; they get a comment with the mathematical
+  reason or shape invariant, and a numerical check when they change.
+- **No monkey patches**, in tests included. Pass the replacement as an
+  argument, subclass, or use a separate process configured before import.
+- **Validate before mutating**; a failure message says what failed, the
+  observed value, the required condition and the repair. No silent
+  fallback.
+- **A changed return shape, tuple order or unit is an interface change**:
+  every project's wrappers, notebooks and tests change with it.
+- **Text explains the current code**: reasons, invariants, shapes, units.
+  No names, dates, review history or "now does X".
+- **`cosmolike_notebook_utils` never imports a project's compiled
+  interface**; its plotting modules are pure numpy and matplotlib; cluster
+  code goes in `_cluster` files and is imported explicitly.
+- **A new plotting function copies the conventions of `plot_datavectors`**
+  (signature order, `*_ref` ratio mode, `param` + `colorbarlabel` sweeps,
+  glued panels, `show = None` returning `(fig, axes)`, malformed input
+  printing one message and returning 0), and its figures are rendered and
+  looked at in every mode before it is accepted.
+- Python files keep their own indentation (4 spaces); the 2-space rule is
+  for C.
+
+
 ## No C code only for tests
 
 A C function whose only caller is a Python binding used by tests (a
@@ -665,6 +706,8 @@ Reject or push back unless all of these hold (details in
 - [ ] PR cites `perf stat -r 3` numbers (mean ± stddev), never single-eval
       timings; claims of "no perf change" are backed by counters, not vibes.
 - [ ] Naming and structure of the surrounding code preserved; 2-space indent.
+- [ ] Python in the patch passes the checklist of `references/python.md`
+      (Section 12).
 
 ## Communication norms for reviews
 
