@@ -604,6 +604,8 @@ double compute_sigma2(const double M);
 
 void init_ntable_nm_internal(const int nm_internal);
 
+void init_ntable_halo_ia_lmax(const int halo_ia_lmax);
+
 void init_photoz_conventions(
     const int interpolation_type,
     const int zmid_convention
@@ -623,6 +625,10 @@ void init_adopt_limber_gg(
 
 void init_include_HOD_GX(
     const int include_HOD_GX
+  );
+
+void init_include_halo_IA(
+    const int include_halo_IA
   );
 
 void init_accuracy_boost(

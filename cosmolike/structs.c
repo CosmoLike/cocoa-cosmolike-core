@@ -215,12 +215,16 @@ void reset_pdeltaparams_struct(void)
 void reset_nuisance_struct(void)
 {
   nuisance.random_ia = 0.0;
+  nuisance.random_ia_halo = 0.0;
   nuisance.random_photoz_shear = 0.0;
   nuisance.random_photoz_clustering = 0.0;
   for (int i=0; i<MAX_SIZE_ARRAYS; i++) {
     nuisance.shear_calibration_m[i] = 0.0;
     nuisance.gc[i] = 0.0;
     nuisance.gas[i] = 0.0;
+    nuisance.ia_halo[i] = 0.0;
+    nuisance.ia_red[i] = 0.0;
+    nuisance.ia_hod[i] = 0.0;
     for (int j=0; j<MAX_SIZE_ARRAYS; j++) {
       nuisance.ia[i][j] = 0.0;
       nuisance.ia[i][j] = 0.0;
@@ -294,6 +298,8 @@ void reset_Ntable_struct(void)
                              // the skill file (floor: 64)
   Ntable.halo_nk_step = 4;   // p_gm/p_gg coarse ln k step at hdi 0
   Ntable.halo_na_lens = 51;  // p_gm/p_gg a nodes per lens bin
+  Ntable.halo_ia_lmax = 6;   // halo IA multipoles: F21's l <= 6
+  Ntable.halo_ia_na = 51;    // halo IA a nodes over the source range
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;

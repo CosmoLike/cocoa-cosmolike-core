@@ -46,6 +46,16 @@ double p_yy(const double k, const double a);
 
 void set_HOD(const int ni);
 
+// halo-model intrinsic alignment (Fortuna et al. 2021), one IA
+// population over the source redshift range; k in (c/H0)^-1
+double ia_f_red_central(const double a);
+
+double ia_p1h_dI(const double k, const double a);
+
+double ia_p1h_II(const double k, const double a);
+
+double ia_window_2h(const double k);
+
 #ifdef __cplusplus
 }
 #endif

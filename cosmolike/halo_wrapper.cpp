@@ -144,6 +144,31 @@ static void check_wavenumbers(const char* fname, const arma::Col<double>& k)
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Abort unless a is a scale factor strictly inside (0, 1).
+//
+// The IA readers index their tables at a and evaluate (1 + z) = 1/a, so
+// a <= 0 would divide by zero or read a negative redshift, and a >= 1
+// lies outside every source redshift range.
+//
+// Parameters:
+//   fname - name of the calling wrapper, for the message
+//   a     - scale factor
+//
+// Returns:
+//   nothing; a outside (0, 1) (or NaN) aborts (spdlog::critical + exit)
+// ---------------------------------------------------------------------------
+static void check_scale_factor(const char* fname, const double a)
+{
+  if (!(a > 0 && a < 1)) {
+    spdlog::critical("{}: a = {} outside (0, 1)", fname, a);
+    exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // PEAK-BACKGROUND SPLIT KERNELS (Tinker et al. 2010) AND CONCENTRATION
 //
@@ -1059,6 +1084,337 @@ void set_nuisance_gas_cpp(
   }
   if (1 == cache_update) {
     nuisance.random_gas = RandomNumber::get_instance().get();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// HALO-MODEL INTRINSIC ALIGNMENT (Fortuna et al. 2021, 2003.02700)
+//
+// One IA population, the shape (source) sample. Red central galaxies
+// align with the large-scale tidal field (the NLA 2-halo term, built in
+// cosmo2D.c), and satellite galaxies point radially at the center of
+// their host halo (the 1-halo term, tabulated in halo.c):
+//
+//   P_dI^1h(k, a) = a_1h(a)   f_1h(k) S_dI(k, a)     (signed with a_1h)
+//   P_II^1h(k, a) = a_1h(a)^2 f_1h(k) S_II(k, a)     (>= 0)
+//
+//   a_1h(a) = a_1h [(1 + z)/(1 + z_pivot)]^eta_1h    (nuisance.ia_halo)
+//   f_1h(k) = 1 - exp[-(k/k_1h)^2],   k_1h = 4 h/Mpc
+//   f_2h(k) = exp[-(k/k_2h)^2],       k_2h = 6 h/Mpc
+//
+// S_dI, S_II are the halo-mass integrals of the satellite alignment
+// (halo.c HALO-MODEL INTRINSIC ALIGNMENT banner). The red-central
+// fraction f_rc(a) weights the NLA 2-halo term, and f_2h switches that
+// term off above k_2h.
+//
+// Sign convention: the C_l cores of cosmo2D.c SUBTRACT the dI spectrum,
+//
+//   P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h]
+//
+// (C_1 the NLA amplitude, > 0 for A_IA > 0), so radial alignment,
+// a_1h > 0, returns a positive ia_p1h_dI and gives a negative physical
+// dI correlation - the same sense as A_IA > 0.
+//
+// halo.c tabulates ln S_dI and ln S_II on a uniform (a, ln k) grid -
+// Ntable.halo_ia_na x Ntable.N_k_nlin nodes over the source a range
+// [min_i amin_source(i), max_i amax_source(i)] x [limits.k_min_cH0,
+// limits.k_max_cH0] - and f_rc on the same a nodes. The readers return
+// 0 outside the source a range. The tables are refilled when the
+// cosmology, Ntable, the IA parameters (nuisance.random_ia_halo), the
+// source n(z) or the source photo-z shifts change; the first call pays
+// the build (a mass integral per node), later calls are lookups.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Red-central fraction of the IA (source) sample,
+//
+//   f_rc(a) = int dlnM dn/dlnM f_c N_c(M) f_red,cen(M) / n_g(a)
+//
+// (F21's f_cen^red, the weight of the NLA 2-halo term).
+//
+// Calls halo.c ia_f_red_central: a cached table on Ntable.halo_ia_na
+// nodes in a over the source range, read by linear interpolation.
+//
+// Parameters:
+//   a - scale factor; outside (0, 1) aborts (spdlog::critical + exit)
+//
+// Returns:
+//   f_rc(a), dimensionless, in [0, 1]; 0 outside the source a range
+// ---------------------------------------------------------------------------
+double ia_f_red_central_cpp(
+    const double a   // scale factor
+  )
+{
+  check_scale_factor("ia_f_red_central_cpp", a);
+  return ia_f_red_central(a);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Window of the NLA 2-halo term (F21 Eq. 31),
+//
+//   f_2h(k) = exp[-(k/k_2h)^2],   k_2h = 6 h/Mpc x coverH0
+//
+// Calls halo.c ia_window_2h. A closed form, no table.
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1; k <= 0 aborts (spdlog::critical + exit)
+//
+// Returns:
+//   f_2h(k), dimensionless, in (0, 1]
+// ---------------------------------------------------------------------------
+double ia_window_2h_cpp(
+    const double k   // wavenumber in (c/H0)^-1
+  )
+{
+  check_wavenumber("ia_window_2h_cpp", k);
+  return ia_window_2h(k);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Window of the NLA 2-halo term at many k (serial loop over the scalar
+// call).
+//
+// Parameters:
+//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
+//
+// Returns:
+//   arma::Col of f_2h(k(i)), dimensionless, same length and order as k
+// ---------------------------------------------------------------------------
+arma::Col<double> ia_window_2h_cpp(
+    const arma::Col<double> k   // wavenumbers in (c/H0)^-1
+  )
+{
+  check_wavenumbers("ia_window_2h_cpp", k);
+  arma::Col<double> res(k.n_elem, arma::fill::zeros);
+  for (arma::uword i=0; i<k.n_elem; i++) {
+    res(i) = ia_window_2h(k(i));
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Satellite (1-halo) part of the matter-intrinsic spectrum at one (k, a)
+// (F21 Eq. 17):
+//
+//   P_dI^1h = a_1h(a) f_1h(k) S_dI(k, a)
+//
+// SIGNED with a_1h: the C_l cores of cosmo2D.c subtract it (section
+// banner), so a_1h > 0 returns a positive value.
+//
+// Calls halo.c ia_p1h_dI: ln S_dI read bilinearly in (a, ln k) from the
+// cached table and exponentiated (ln S_dI continued with unit slope
+// outside [ln k_min, ln k_max]).
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1; k <= 0 aborts (spdlog::critical + exit)
+//   a - scale factor; outside (0, 1) aborts
+//
+// Returns:
+//   P_dI^1h(k, a) in (c/H0)^3, signed; 0 outside the source a range or
+//   for a_1h = 0
+// ---------------------------------------------------------------------------
+double ia_p1h_dI_cpp(
+    const double k,   // wavenumber in (c/H0)^-1
+    const double a    // scale factor
+  )
+{
+  check_wavenumber("ia_p1h_dI_cpp", k);
+  check_scale_factor("ia_p1h_dI_cpp", a);
+  return ia_p1h_dI(k, a);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Satellite (1-halo) part of the matter-intrinsic spectrum at many k,
+// one a (serial loop over the scalar call; signed with a_1h, as above).
+//
+// Parameters:
+//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
+//   a - scale factor; outside (0, 1) aborts
+//
+// Returns:
+//   arma::Col of P_dI^1h(k(i), a) in (c/H0)^3, same length and order as k
+// ---------------------------------------------------------------------------
+arma::Col<double> ia_p1h_dI_cpp(
+    const arma::Col<double> k,   // wavenumbers in (c/H0)^-1
+    const double a               // scale factor
+  )
+{
+  check_wavenumbers("ia_p1h_dI_cpp", k);
+  check_scale_factor("ia_p1h_dI_cpp", a);
+  arma::Col<double> res(k.n_elem, arma::fill::zeros);
+  for (arma::uword i=0; i<k.n_elem; i++) {
+    res(i) = ia_p1h_dI(k(i), a);
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Satellite (1-halo) part of the intrinsic-intrinsic E-mode spectrum at
+// one (k, a) (F21 Eq. 18):
+//
+//   P_II^1h = a_1h(a)^2 f_1h(k) S_II(k, a)
+//
+// The B mode of radial alignment vanishes (F21 sec. 4.1).
+//
+// Calls halo.c ia_p1h_II: ln S_II read bilinearly in (a, ln k) from the
+// cached table and exponentiated (ln S_II continued with unit slope
+// outside [ln k_min, ln k_max]).
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1; k <= 0 aborts (spdlog::critical + exit)
+//   a - scale factor; outside (0, 1) aborts
+//
+// Returns:
+//   P_II^1h(k, a) in (c/H0)^3, >= 0; 0 outside the source a range or for
+//   a_1h = 0
+// ---------------------------------------------------------------------------
+double ia_p1h_II_cpp(
+    const double k,   // wavenumber in (c/H0)^-1
+    const double a    // scale factor
+  )
+{
+  check_wavenumber("ia_p1h_II_cpp", k);
+  check_scale_factor("ia_p1h_II_cpp", a);
+  return ia_p1h_II(k, a);
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Satellite (1-halo) part of the intrinsic-intrinsic spectrum at many k,
+// one a (serial loop over the scalar call).
+//
+// Parameters:
+//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
+//   a - scale factor; outside (0, 1) aborts
+//
+// Returns:
+//   arma::Col of P_II^1h(k(i), a) in (c/H0)^3, same length and order as k
+// ---------------------------------------------------------------------------
+arma::Col<double> ia_p1h_II_cpp(
+    const arma::Col<double> k,   // wavenumbers in (c/H0)^-1
+    const double a               // scale factor
+  )
+{
+  check_wavenumbers("ia_p1h_II_cpp", k);
+  check_scale_factor("ia_p1h_II_cpp", a);
+  arma::Col<double> res(k.n_elem, arma::fill::zeros);
+  for (arma::uword i=0; i<k.n_elem; i++) {
+    res(i) = ia_p1h_II(k(i), a);
+  }
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Set the halo-model intrinsic-alignment parameters (Fortuna et al.
+// 2021; halo.c's IA tables, cosmo2D.c's include_halo_IA mode):
+//
+//   ia_halo(0) = a_1h     satellite radial alignment amplitude; |a_1h|
+//                         must stay below 0.3 (the profile saturates
+//                         at the 0.3 cap there - F21 Eq. 20)
+//   ia_halo(1) = eta_1h   a_1h (1+z)^eta_1h/(1+z_pivot)^eta_1h
+//   ia_halo(2) = z_pivot
+//   ia_red(0..3)          red fractions of centrals and satellites,
+//                         sigmoids in log10 M: lg M_c,cen, width_cen,
+//                         lg M_c,sat, width_sat
+//   ia_hod(0..5)          HOD of the IA (source) population, {lg M_min,
+//                         sigma_lgM, lg M_1, lg M_0, alpha, f_c}
+//
+// Cache invalidation:
+// draws new nuisance.random_ia_halo (the halo IA tables) and
+// nuisance.random_ia (every IA consumer downstream) when any value
+// changed (fdiff); unchanged input leaves both keys alone.
+//
+// Parameters:
+//   ia_halo, ia_red, ia_hod - as above; wrong sizes, NaN entries,
+//                             |a_1h| >= 0.3 or a red-fraction width
+//                             <= 0 abort (spdlog::critical + exit)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_nuisance_ia_halo_cpp(
+    const arma::Col<double> ia_halo, // a_1h, eta_1h, z_pivot
+    const arma::Col<double> ia_red,  // the four red-fraction sigmoid params
+    const arma::Col<double> ia_hod   // the six IA-population HOD params
+  )
+{
+  static constexpr const char* fname = "set_nuisance_ia_halo_cpp";
+
+  // --- 1. SIZES AND VALUES ---
+
+  if (ia_halo.n_elem != 3 || ia_red.n_elem != 4 || ia_hod.n_elem != 6) {
+    spdlog::critical("{}: sizes (ia_halo, ia_red, ia_hod) = ({}, {}, {}); "
+                     "expected (3, 4, 6)", fname, ia_halo.n_elem,
+                     ia_red.n_elem, ia_hod.n_elem);
+    exit(1);
+  }
+  if (!(ia_red(1) > 0) || !(ia_red(3) > 0)) {
+    spdlog::critical("{}: red-fraction widths ({}, {}) must be > 0",
+                     fname, ia_red(1), ia_red(3));
+    exit(1);
+  }
+  if (!(std::fabs(ia_halo(0)) < 0.3)) {
+    spdlog::critical("{}: |a_1h| = {} must be < 0.3 (the alignment "
+                     "profile saturates at the cap)", fname, ia_halo(0));
+    exit(1);
+  }
+
+  // --- 2. WRITE, NOTING ANY CHANGE ---
+
+  int cache_update = 0;
+  auto write = [&](const arma::Col<double>& v, double* dst) {
+    for (int j=0; j<static_cast<int>(v.n_elem); j++) {
+      if (std::isnan(v(j))) {
+        spdlog::critical("{}: NaN found on index {}", fname, j);
+        exit(1);
+      }
+      if (fdiff(dst[j], v(j))) {
+        cache_update = 1;
+        dst[j] = v(j);
+      }
+    }
+  };
+  write(ia_halo, nuisance.ia_halo);
+  write(ia_red, nuisance.ia_red);
+  write(ia_hod, nuisance.ia_hod);
+
+  // the halo IA tables key on random_ia_halo; every IA consumer
+  // downstream (C_ss, C_gs, xi_pm, gamma_t) keys on random_ia
+  if (1 == cache_update) {
+    nuisance.random_ia_halo = RandomNumber::get_instance().get();
+    nuisance.random_ia = RandomNumber::get_instance().get();
   }
 }
 

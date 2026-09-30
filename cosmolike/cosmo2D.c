@@ -42,6 +42,14 @@
 //                       from halo.c (Limber-only; no RSD, no one-loop
 //                       bias; gs is NLA-only); the gk batched path
 //                       still aborts. 0 by default.
+//   include_halo_IA   = halo-model intrinsic alignments (Fortuna et al.
+//                       2021; halo.c ia_* readers) in the Limber ss and
+//                       gs engines: NLA 2-halo for red centrals times
+//                       f_rc(a) and the k window, plus the satellite
+//                       1-halo terms. NLA only, perturbative-bias
+//                       galaxies only; ks, non-Limber gs and the
+//                       scale-cut responses abort. Runtime
+//                       (set_include_halo_IA); 0 by default.
 //   include_RSD_GS/GK = add the W_RSD (redshift-space distortion)
 //                       kernel to that probe's Limber integrand
 //   include_RSD_GG    = same gate for gg; defaults to 1 so the Limber
@@ -49,6 +57,7 @@
 //                       C_cl_tomo always includes
 //   include_RSD_GY    = never read (no gy probe in this file)
 static int include_HOD_GX = 0; // 0 or 1
+static int include_halo_IA = 0; // 0 or 1
 static int include_RSD_GS = 0; // 0 or 1 
 static int include_RSD_GG = 1; // 0 or 1 
 static int include_RSD_GK = 0; // 0 or 1
@@ -72,6 +81,35 @@ void set_include_HOD_GX(const int flag)
 int get_include_HOD_GX(void)
 {
   return include_HOD_GX;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime switch of include_halo_IA (generic_interface.cpp
+// init_include_halo_IA; yaml key of the same name). The C_ss and C_gs
+// interpolation tables key their caches on the flag and on
+// nuisance.random_ia_halo.
+// ---------------------------------------------------------------------------
+void set_include_halo_IA(const int flag)
+{
+  if (flag != 0 && flag != 1) {
+    log_fatal("invalid include_halo_IA = %d (0 or 1)", flag);
+    exit(1);
+  }
+  include_halo_IA = flag;
+}
+
+int get_include_halo_IA(void)
+{
+  return include_halo_IA;
+}
+
+// refuse a path that has no halo-model IA implementation
+static void halo_IA_unsupported(const char* where)
+{
+  if (1 == include_halo_IA) {
+    log_fatal("include_halo_IA = 1 is not implemented in %s", where);
+    exit(1);
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -2169,12 +2207,27 @@ static void C_ss_tomo_limber_work(
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
   // -----------------------------------------------------------------------
+  // halo-model IA (include_halo_IA; Fortuna et al. 2021): the IA leg of
+  // each source bin becomes f_rc(a) C1 P_delta f_2h + P_1h,dI and the
+  // IA-IA term f_rc^2 C1 C1' P_delta f_2h + P_1h,II (halo.c readers)
+  const int halo_ia = include_halo_IA;
+  if (1 == halo_ia && nuisance.IA_MODEL == IA_MODEL_TATT) {
+    log_fatal("include_halo_IA supports the NLA model only");
+    exit(1);
+  }
   {
     const double a    = cn->data[CN_A][0];
     const double fK   = cn->data[CN_FK][0];
     const double hoh0 = cn->data[CN_HOVERH0][0];
     const double gf   = cn->data[CN_GROWFAC][0];
     const double ell  = lx[0] + 0.5;
+    if (1 == halo_ia) {
+      // halo.c builds its IA tables in its own OpenMP regions: trigger
+      // them here, before this function's parallel regions
+      (void) ia_f_red_central(a);
+      (void) ia_p1h_dI(ell/fK, a);
+      (void) ia_p1h_II(ell/fK, a);
+    }
     (void) W_kappa(a, fK, 0);
     (void) W_source(a, 0, hoh0);
     (void) IA_A1_Z1(a, gf, 0);
@@ -2194,6 +2247,15 @@ static void C_ss_tomo_limber_work(
   double*** WC = (double***) malloc3d(5, redshift.shear_nbin, cn->npts);
   double*** KIA = (double***) malloc3d(11, nell, cn->npts);
   zero3d(KIA, 11, nell, cn->npts);
+
+  // halo IA at the nodes: KHI[0] = P_delta f_2h, KHI[1] = P_1h,dI,
+  // KHI[2] = P_1h,II; FRC = f_rc(a)
+  double*** KHI = NULL;
+  double* FRC = NULL;
+  if (1 == halo_ia) {
+    KHI = (double***) malloc3d(3, nell, cn->npts);
+    FRC = (double*) malloc1d(cn->npts);
+  }
 
   double limTATT[3];
   if (nuisance.IA_MODEL == IA_MODEL_TATT) {
@@ -2246,6 +2308,30 @@ static void C_ss_tomo_limber_work(
     }
   }
   // -----------------------------------------------------------------------
+  // Precompute (halo-model IA only): its own loop nests, after P_delta is
+  // in place, so the flag is tested once and the table reads thread over
+  // every (node, ell) pair
+  // -----------------------------------------------------------------------
+  if (1 == halo_ia) {
+    #pragma omp parallel for schedule(static)
+    for (int p = 0; p < cn->npts; p++) {
+      FRC[p] = ia_f_red_central(cn->data[CN_A][p]);
+    }
+
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int p = 0; p < cn->npts; p++) {
+      for (int i = 0; i < nell; i++) {
+        const double a = cn->data[CN_A][p];
+        const double k = (lx[i] + 0.5)/cn->data[CN_FK][p];
+
+        KHI[0][i][p] = KIA[10][i][p]*ia_window_2h(k); // P_delta f_2h
+        KHI[1][i][p] = ia_p1h_dI(k, a);               // satellites' dI
+        KHI[2][i][p] = ia_p1h_II(k, a);               // satellites' II
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Main integration loop.
   // Always uses the TATT core function, which reduces identically to NLA
   // when C2 = BTA = 0 (as enforced by the memset initialization of KIA).
@@ -2294,6 +2380,33 @@ static void C_ss_tomo_limber_work(
       const double ell4 = ell*ell*ell*ell;
       const double ell_pf = l*(l-1.)*(l+1.)*(l+2.)/ell4;
       double sEE = 0.0, sBB = 0.0;
+      if (1 == halo_ia) {
+        /* PHYSICAL DERIVATION & LOGIC FLOW (Fortuna et al. 2021)
+           1. IA leg of bin j: f_rc C1_j P f_2h + P_1h,dI  (red centrals'
+              NLA, windowed, plus the satellites' 1-halo term)
+           2. EE = WK1 WK2 P - WS1 WK2 leg_1 - WS2 WK1 leg_2
+                   + WS1 WS2 (f_rc^2 C1_1 C1_2 P f_2h + P_1h,II)
+           3. BB = 0 (neither term sources B modes)                    */
+        const double* restrict PKT  = KHI[0][i];
+        const double* restrict P1DI = KHI[1][i];
+        const double* restrict P1II = KHI[2][i];
+        const double* restrict frc  = FRC;
+        #pragma omp simd reduction(+:sEE)
+        for (int p = 0; p < cn->npts; p++) {
+          const double amp  = (dchida[p]/(fK[p]*fK[p]))*ell_pf;
+          const double leg1 = frc[p]*C11[p]*PKT[p] + P1DI[p];
+          const double leg2 = frc[p]*C12[p]*PKT[p] + P1DI[p];
+          const double ii   = frc[p]*frc[p]*C11[p]*C12[p]*PKT[p] + P1II[p];
+          const double ee   = WK1[p]*WK2[p]*PK[p]
+                              - WS1[p]*WK2[p]*leg1
+                              - WS2[p]*WK1[p]*leg2
+                              + WS1[p]*WS2[p]*ii;
+          sEE += ee*amp*wt[p];
+        }
+        table[0][k][i] = sEE;
+        table[1][k][i] = 0.0;
+        continue;
+      }
       #pragma omp simd reduction(+:sEE, sBB)
       for (int p = 0; p < cn->npts; p++) {
         const double amp = (dchida[p]/(fK[p]*fK[p]))*ell_pf;
@@ -2313,6 +2426,10 @@ static void C_ss_tomo_limber_work(
   }
   free(WC);
   free(KIA);
+  if (KHI != NULL) {
+    free(KHI);
+    free(FRC);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2503,6 +2620,7 @@ void dC_ss_dlnk_tomo_limber_work(
     double**** table     // output [2][NSIZE][nlnk][nell]: EE and BB
   )
 {
+  halo_IA_unsupported("dC_ss_dlnk_tomo_limber_work");
   const double amin = 1./(redshift.shear_zdist_zmax_all + 1.);
   const double amax = 1./(1. + fmax(redshift.shear_zdist_zmin_all, 1e-6));
 
@@ -3014,7 +3132,9 @@ double C_ss_tomo_limber(
       fdiff2(cache[1], nuisance.random_photoz_shear) ||
       fdiff2(cache[2], nuisance.random_ia) ||
       fdiff2(cache[3], redshift.random_shear) ||
-      fdiff2(cache[4], Ntable.random))
+      fdiff2(cache[4], Ntable.random) ||
+      fdiff2(cache[5], (uint64_t) include_halo_IA) ||
+      fdiff2(cache[6], nuisance.random_ia_halo))
   {
     const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
     const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
@@ -3110,6 +3230,8 @@ double C_ss_tomo_limber(
     cache[2] = nuisance.random_ia;
     cache[3] = redshift.random_shear;
     cache[4] = Ntable.random;
+    cache[5] = (uint64_t) include_halo_IA;
+    cache[6] = nuisance.random_ia_halo;
   }
 
   if (ni < 0 || ni > redshift.shear_nbin - 1 || 
@@ -3480,6 +3602,15 @@ static void C_gs_tomo_limber_work(
   // (the FFTLog linear term aborts): run with adopt_limber_gs = 1.
   // -------------------------------------------------------------------------
   const int hod = include_HOD_GX;
+  // halo-model IA (include_halo_IA): the source IA leg becomes f_rc C1
+  // P_delta f_2h + P_1h,dI (see C_ss_tomo_limber_work); Limber, NLA and
+  // perturbative-bias galaxies only in this version
+  const int halo_ia = include_halo_IA;
+  if (1 == halo_ia && (1 == hod || 1 == use_linear_ps)) {
+    log_fatal("include_halo_IA: needs include_HOD_GX = 0 and the "
+              "Limber gs (adopt_limber_gs = 1)");
+    exit(1);
+  }
   if (1 == hod && 1 == use_linear_ps) {
     log_fatal("HOD C_l^gs is Limber-only: set adopt_limber_gs = 1");
     exit(1);
@@ -3521,6 +3652,10 @@ static void C_gs_tomo_limber_work(
       // halo.c builds its (a, ln k) tables inside its own OpenMP
       // regions; trigger them before this function's parallel regions
       (void) p_gm(ell/fK, a, 0);
+    }
+    if (1 == halo_ia) {
+      (void) ia_f_red_central(a);
+      (void) ia_p1h_dI(ell/fK, a);
     }
     if (1 == nonlinear_bias) {
       (void) gb2(0.1, 0);
@@ -3568,9 +3703,22 @@ static void C_gs_tomo_limber_work(
     KH = (double****) malloc4d(1, redshift.clustering_nbin, nell, npts);
   }
 
+  // halo IA at the nodes: KHI[0] = P_delta f_2h, KHI[1] = P_1h,dI;
+  // FRC = f_rc(a) per lens-bin node
+  double**** KHI = NULL;
+  double** FRC = NULL;
+  if (1 == halo_ia) {
+    KHI = (double****) malloc4d(2, redshift.clustering_nbin, nell, npts);
+    FRC = (double**) malloc2d(redshift.clustering_nbin, npts);
+  }
+
   double limTATT[3];
   double limbias[3];
   const int tatt = (nuisance.IA_MODEL == IA_MODEL_TATT && 0 == use_linear_ps);
+  if (1 == halo_ia && 1 == tatt) {
+    log_fatal("include_halo_IA supports the NLA model only");
+    exit(1);
+  }
   if (1 == hod && 1 == tatt) {
     log_fatal("TATT with HOD has no tree-level density leg: "
               "HOD C_l^gs supports NLA only");
@@ -3707,6 +3855,32 @@ static void C_gs_tomo_limber_work(
   }
 
   // -----------------------------------------------------------------------
+  // Precompute (halo-model IA only): its own loop nests over every (lens
+  // bin, ell, node), after P_delta is in place (as in C_ss_tomo_limber_work)
+  // -----------------------------------------------------------------------
+  if (1 == halo_ia) {
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int p = 0; p < npts; p++) {
+        FRC[zl][p] = ia_f_red_central(cn_all[zl].data[CN_A][p]);
+      }
+    }
+
+    #pragma omp parallel for collapse(3) schedule(static)
+    for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+      for (int i = 0; i < nell; i++) {
+        for (int p = 0; p < npts; p++) {
+          const double a = cn_all[zl].data[CN_A][p];
+          const double k = (lx[i] + 0.5)/cn_all[zl].data[CN_FK][p];
+
+          KHI[0][zl][i][p] = KIA[0][zl][i][p]*ia_window_2h(k); // P f_2h
+          KHI[1][zl][i][p] = ia_p1h_dI(k, a);                  // sats' dI
+        }
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Main integration loop.
   // Always calls _tatt_core (reduces to NLA when C2=BTA=0 via memset).
   // restrict pointers hoisted for contiguous AVX2 loads.
@@ -3772,6 +3946,32 @@ static void C_gs_tomo_limber_work(
           sum += ans*amp*wt[p];
         }
       }
+      else if (1 == halo_ia) {
+        /* PHYSICAL DERIVATION & LOGIC FLOW (Fortuna et al. 2021)
+           1. lens leg = WGAL b1 + WMAG ep bmag + WRSD (perturbative)
+           2. source leg = WK P - WS (f_rc C1 P f_2h + P_1h,dI)
+           3. C_l^gs = sum_p [lens x source + WGAL oneloop (WK - WS f_rc
+              C1)] (dchi/da) ep2 w_p / f_K^2 - the one-loop bias meets
+              the tree-level IA only, as in the NLA core               */
+        const double* restrict PKT  = KHI[0][ZLNZ][i];
+        const double* restrict P1DI = KHI[1][ZLNZ][i];
+        const double* restrict frc  = FRC[ZLNZ];
+        #pragma omp simd reduction(+:sum)
+        for (int p = 0; p < npts; p++) {
+          const double g4  = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+          const double k   = ell / fK[p];
+          const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
+          const double b1l =
+              int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
+                b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
+          const double ia     = frc[p]*C1[p]*PKT[p] + P1DI[p];
+          const double lens   = WGAL[p]*b1[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
+          const double source = WK[p]*PK[p] - WS[p]*ia;
+          const double ans    = lens*source
+                                + WGAL[p]*b1l*(WK[p] - WS[p]*frc[p]*C1[p]);
+          sum += ans*amp*wt[p];
+        }
+      }
       else {
         #pragma omp simd reduction(+:sum)
         for (int p = 0; p < npts; p++) {
@@ -3795,6 +3995,10 @@ static void C_gs_tomo_limber_work(
   free(WB); free(WC); free(KIA);
   if (KH != NULL) {
     free(KH);
+  }
+  if (KHI != NULL) {
+    free(KHI);
+    free(FRC);
   }
 }
 
@@ -4203,7 +4407,9 @@ double C_gs_tomo_limber(
       fdiff2(cache[5], redshift.random_clustering) ||
       fdiff2(cache[6], Ntable.random) ||
       fdiff2(cache[7], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[8], (uint64_t) include_HOD_GX))
+      fdiff2(cache[8], (uint64_t) include_HOD_GX) ||
+      fdiff2(cache[9], (uint64_t) include_halo_IA) ||
+      fdiff2(cache[10], nuisance.random_ia_halo))
   {
     cosmo_nodes cn_all[redshift.clustering_nbin];
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
@@ -4306,6 +4512,8 @@ double C_gs_tomo_limber(
     cache[6] = Ntable.random;
     cache[7] = nuisance.random_galaxy_bias;
     cache[8] = (uint64_t) include_HOD_GX;
+    cache[9] = (uint64_t) include_halo_IA;
+    cache[10] = nuisance.random_ia_halo;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 ||
@@ -6066,6 +6274,7 @@ static void C_ks_tomo_limber_work(
     double** table              // output [shear_nbin][nell]
   )
 {
+  halo_IA_unsupported("C_ks_tomo_limber_work");
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -6339,6 +6548,7 @@ void dC_ks_dlnk_tomo_limber_work(
     double*** table      // output [NSIZE][nlnk][nell]
   )
 {
+  halo_IA_unsupported("dC_ks_dlnk_tomo_limber_work");
   if (NSIZE != redshift.shear_nbin) {
     log_fatal("NSIZE = %d != shear_nbin = %d", NSIZE, redshift.shear_nbin);
     exit(1);
@@ -8513,6 +8723,7 @@ void C_gs_tomo(
     double tol
   )
 {
+  halo_IA_unsupported("C_gs_tomo");
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static int* LMAX = NULL;
   static double* x = NULL;

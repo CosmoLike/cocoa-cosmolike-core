@@ -562,6 +562,32 @@ void init_ntable_nm_internal(const int nm_internal) {
 }
 
 // ---------------------------------------------------------------------------
+// Highest multipole of the halo-model IA satellite-alignment profile
+// (halo.c ia_tables; Fortuna et al. 2021 use l <= 6): 2, 4 or 6.
+//
+// Cache invalidation:
+// redraws Ntable.random, so every Ntable-keyed table rebuilds.
+//
+// Parameters:
+//   halo_ia_lmax - 2, 4 or 6 (anything else: critical() + exit(1))
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_ntable_halo_ia_lmax(const int halo_ia_lmax) {
+  static constexpr std::string_view fname = "init_ntable_halo_ia_lmax"sv;
+  debug("{}: {}", fname, errbegins);
+  if (halo_ia_lmax != 2 && halo_ia_lmax != 4 && halo_ia_lmax != 6) {
+    critical("{}: halo_ia_lmax = {} (allowed: 2, 4, 6)", fname, halo_ia_lmax);
+    exit(1);
+  }
+  Ntable.halo_ia_lmax = halo_ia_lmax;
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
 // Diagnostic read of the halo-model mass variance sigma^2(M) at a = 1:
 // the cached table (lobe-summed, and coarse-M upsampled when
 // Ntable.N_M_internal is active). M in M_sun/h.
@@ -751,8 +777,9 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 // p_gg/p_gm of halo.c (HOD occupations set per lens bin with
 // set_nuisance_hod). HOD C_l^gg is Limber-only, so 1 requires
 // adopt_limber_gg = 1; the batched engine aborts otherwise. Likelihood
-// yaml key: include_HOD_GX. The C_l^gg table keys its cache on the
-// flag, so flipping it takes effect on the next data vector.
+// yaml key: include_HOD_GX. A flip redraws nuisance.random_galaxy_bias,
+// the tag every galaxy-bias consumer (C_gg, C_gs, w, gamma_t) keys on,
+// so it takes effect on the next data vector.
 //
 // Validation: the value must be 0 or 1, else critical() + exit(1).
 //
@@ -770,7 +797,51 @@ void init_include_HOD_GX(const int include_HOD_GX)
     critical("{}: invalid include_HOD_GX = {}", fname, include_HOD_GX);
     exit(1);
   }
-  set_include_HOD_GX(include_HOD_GX);
+  // every galaxy-bias consumer (C_gg, C_gs and their projections w,
+  // gamma_t) keys on nuisance.random_galaxy_bias: redraw it on a flip,
+  // so none of them serves a value of the other galaxy model
+  if (get_include_HOD_GX() != include_HOD_GX) {
+    set_include_HOD_GX(include_HOD_GX);
+    nuisance.random_galaxy_bias = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Switch cosmic shear and galaxy-galaxy lensing to the halo-model
+// intrinsic alignments (Fortuna et al. 2021), writing cosmo2D.c's
+// include_halo_IA through set_include_halo_IA: 0 = the IA model of
+// init_IA (the default), 1 = NLA 2-halo for red centrals times the
+// red-central fraction and the k window, plus the satellites' 1-halo
+// terms (parameters: set_nuisance_ia_halo). NLA only; Limber gs only;
+// perturbative-bias galaxies only (include_HOD_GX = 0). Likelihood yaml
+// key: include_halo_IA. A flip redraws nuisance.random_ia, the tag
+// every IA consumer (C_ss, C_gs, xi_pm, gamma_t) keys on.
+//
+// Validation: the value must be 0 or 1, else critical() + exit(1).
+//
+// Parameters:
+//   include_halo_IA - 0 = the init_IA model, 1 = halo-model IA
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_include_halo_IA(const int include_halo_IA)
+{
+  static constexpr std::string_view fname = "init_include_halo_IA"sv;
+  debug("{}: {}", fname, errbegins);
+  if (include_halo_IA != 0 && include_halo_IA != 1) {
+    critical("{}: invalid include_halo_IA = {}", fname, include_halo_IA);
+    exit(1);
+  }
+  // every IA consumer (C_ss, C_gs and their projections xi_pm,
+  // gamma_t) keys on nuisance.random_ia: redraw it on a flip, so none
+  // of them serves a value of the other IA model
+  if (get_include_halo_IA() != include_halo_IA) {
+    set_include_halo_IA(include_halo_IA);
+    nuisance.random_ia = RandomNumber::get_instance().get();
+  }
   debug("{}: {}", fname, errends);
   return;
 }
@@ -800,6 +871,7 @@ void init_include_HOD_GX(const int include_HOD_GX)
 //   Ntable.halo_uks_nz             -> ceil(baseline * boost)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
+//   Ntable.halo_ia_na              -> ceil(baseline * boost)
 //   Ntable.NL_Nchi                 -> ceil(baseline * boost)
 //   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
 //   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
@@ -873,6 +945,9 @@ void init_accuracy_boost(
 
   if (0 == cache[11]) cache[11] = Ntable.halo_na_lens;
   Ntable.halo_na_lens = static_cast<int>(ceil(cache[11]*accuracy_boost));
+
+  if (0 == cache[12]) cache[12] = Ntable.halo_ia_na;
+  Ntable.halo_ia_na = static_cast<int>(ceil(cache[12]*accuracy_boost));
 
   if (0 == fptcache) fptcache = Ntable.FPT_internal_accuracy_boost;
   Ntable.FPT_internal_accuracy_boost = fptcache*accuracy_boost;

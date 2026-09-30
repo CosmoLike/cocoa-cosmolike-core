@@ -134,6 +134,18 @@ typedef simde__m128d v2d;
 //                  nuisance.hod[ni][0..5], sets nuisance.gc[ni] = 1 and
 //                  stores b_g in nuisance.gb[0][ni]
 //
+// Halo-model intrinsic alignment (Fortuna et al. 2021, 2003.02700;
+// HALO-MODEL INTRINSIC ALIGNMENT banner), one IA population over the
+// source redshift range:
+//
+//   ia_f_red_central = f_rc(a), the red-central fraction that scales the
+//                      NLA (2-halo) alignment of the centrals
+//   ia_p1h_dI        = a_1h f_1h(k) S_dI(k, a), the satellites' 1-halo
+//                      matter-intrinsic power (signed with a_1h)
+//   ia_p1h_II        = a_1h^2 f_1h(k) S_II(k, a), their 1-halo
+//                      intrinsic-intrinsic power
+//   ia_window_2h     = f_2h(k), the window on the 2-halo IA power
+//
 // Halo-model integrals, named after the I^beta_mu of Cooray & Hu 2001
 // (astro-ph/0012087 Eq. 12, whose delta_halo(k, M) is (M/rho_m) u(k|M);
 // Cooray & Sheth 2002, astro-ph/0206508 sec. 4.2, write the same
@@ -5712,6 +5724,1605 @@ double p_gg(
                         na, lim[ni][0], lim[ni][1], lim[ni][2], a,
                         Ntable.N_k_nlin, lim[nbin][0], lim[nbin][1],
                         lim[nbin][2], log(k)));
+}
+
+
+
+// ============================================================================
+// [SECTION] HALO-MODEL INTRINSIC ALIGNMENT
+// ============================================================================
+//
+// Halo-model intrinsic alignments of Fortuna et al. 2021 (F21,
+// 2003.02700): red central galaxies align with the large-scale tidal
+// field (the NLA 2-halo term, built in cosmo2D.c from Pdelta and the
+// red-central fraction read here), and satellite galaxies point
+// radially at the center of their host halo (the 1-halo term, tabulated
+// here).
+//
+// One IA population, the shape (source) sample, with an a-free HOD and
+// red fractions per halo mass (nuisance.ia_hod, nuisance.ia_red; their
+// layouts: the guards of ia_tables):
+//
+//   N_tot(M) = f_c N_c(M) + N_s(M)          all galaxies of the sample
+//   N_rc(M)  = f_c N_c(M) f_red,cen(M)      red centrals
+//   N_rs(M)  = N_s(M) f_red,sat(M)          red satellites
+//   n_g(a)   = int dlnM dn/dlnM N_tot       number density
+//   f_rc(a)  = int dlnM dn/dlnM N_rc / n_g  red-central fraction
+//
+// The satellite alignment (F21 Eq. 20 with the 0.3 ceiling of F21
+// sec. 4.2): the shear of a satellite at distance r from the center is
+//
+//   gamma_bar(r) = sign(a_1h) min{ |a_1h| [max(r, r_floor)/r_vir]^-2,
+//                                  gamma_max }
+//
+// with r_vir = r_Delta (Delta = 200 times the mean density: F21's
+// halo definition and this file's), r_floor = 0.06 Mpc/h and
+// gamma_max = 0.3. Both limits are one radius r_e below which
+// gamma_bar is flat:
+//
+//   r_e = max( r_floor, r_vir (|a_1h|/gamma_max)^(1/2) )
+//   gamma_bar(r) = a_1h g(r),   g(r) = [max(r, r_e)/r_vir]^-2
+//
+// The alignment amplitude a_1h(a) = a_1h ((1+z)/(1+z_pivot))^eta_1h
+// (nuisance.ia_halo[0..2]) is global; its sign multiplies the dI
+// spectrum, its square the II spectrum, and |a_1h(a)| moves r_e.
+//
+// The Fourier transform of the density-weighted alignment field, per
+// unit a_1h (F21 sec. 4.1 and App. C, Eqs. 32-40; Schneider & Bridle
+// 2010, 0903.3870, App. B), at theta_k = pi/2 (F21's choice):
+//
+//   gamma_hat(k|M) = sum_{l = 2, 4, 6} P_l K_l(k r_s) / m(c)
+//   K_l(t)         = int_0^c g(x) x (1 + x)^-2 j_l(t x) dx,   x = r/r_s
+//   P_l            = i^l (2l + 1) A_l / (4 pi)
+//   m(c)           = ln(1 + c) - c/(1 + c)
+//
+// j_l the spherical Bessel function and A_l the angular integral of
+// sin^-2(theta) e^(2 i phi) against P_l: F21's alignment depends on the
+// projected radius, (r sin theta/r_vir)^-2 = (r/r_vir)^-2 sin^-2 theta,
+// and e^(2 i phi) is the spin-2 phase of the shear. One angular set
+// serves every radius: A_2 = 3 pi/2, A_4 = -5 pi/6, A_6 = 21 pi/32, so
+// P_2 = P_4 = -15/8 and P_6 = -273/128.
+// Ntable.halo_ia_lmax (2, 4 or 6) truncates the multipole sum; F21 use
+// l <= 6. gamma_hat -> 0 as k^2 at k -> 0 (j_l ~ (tx)^l).
+//
+// The 1-halo spectra (F21 Eqs. 17-18 with f_s <N_s>/n_s = N_rs/n_g, a
+// Poisson satellite count, and F21's |gamma_hat| in the dI term):
+//
+//   P_dI^1h = a_1h(a) f_1h(k) S_dI(k, a)
+//   P_II^1h = a_1h(a)^2 f_1h(k) S_II(k, a)
+//   S_dI    = int dlnM dn/dlnM (M/rho_m) u(k|M) (N_rs/n_g) |gamma_hat|
+//   S_II    = int dlnM dn/dlnM (N_rs/n_g)^2 gamma_hat^2
+//
+// |gamma_hat| is F21's convention (Eq. 17); the signed halo-model
+// product gamma_hat u differs from it only where gamma_hat rings,
+// k r_s >~ 3. u(k|M) is the NFW transform (nfw_um); the F21 windows
+// (Eqs. 30-31)
+// that split the scales between the two terms:
+//
+//   f_1h(k) = 1 - exp[-(k/k_1h)^2],   f_2h(k) = exp[-(k/k_2h)^2]
+//   k_1h = 4 h/Mpc,   k_2h = 6 h/Mpc
+//
+// Sign convention: the readers return P_dI^1h with the sign of a_1h;
+// the C_l cores of cosmo2D.c SUBTRACT it, as they subtract the NLA term
+// (P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h], C_1(a) the NLA
+// amplitude IA_A1_Z1 of cosmo2D.c, > 0 for A_IA > 0). Radial alignment,
+// a_1h > 0, is a negative dI correlation, the same sense as A_IA > 0.
+//
+// Scope: the matter-intrinsic and intrinsic-intrinsic 1-halo terms. The
+// lens-galaxy x satellite 1-halo term S_gI of the HOD galaxy-shear core
+// is not tabulated here (that combination aborts in cosmo2D.c).
+//
+// Glossary of this section:
+//
+//   ia_a1h            = a_1h(a), the satellite alignment amplitude
+//   ia_window_1h,
+//   ia_window_2h      = f_1h(k), f_2h(k)
+//   ia_fg_read        = f(t), g(t) of the nfw_ table, cubic Hermite read
+//   ia_moments        = M_p(x) = int_0^x y^p (1 + y)^-2 dy
+//   ia_edge_setup     = the per-halo constants of one integration edge
+//   ia_gamma_hat_m    = m(c) gamma_hat(k|M), the satellite kernel
+//   ia_tables         = the owner of the S_dI, S_II and f_rc tables
+//   ia_f_red_central  = f_rc(a)
+//   ia_p1h_dI,
+//   ia_p1h_II         = P_dI^1h, P_II^1h
+// ---------------------------------------------------------------------------
+
+// r_floor, gamma_max: the F21 alignment profile (F21 sec. 4.2)
+static const double IA_R_FLOOR_MPCH = 0.06; // Mpc/h, comoving
+static const double IA_GAMMA_MAX    = 0.3;
+
+// k_1h, k_2h of the F21 windows (F21 Eqs. 30-31), h/Mpc
+static const double IA_K1H_HMPC = 4.0;
+static const double IA_K2H_HMPC = 6.0;
+
+// P_l = i^l (2l + 1) A_l/(4 pi) for l = 2, 4, 6 (section banner)
+#define IA_NL 3
+static const double IA_MULTIPOLE_WEIGHT[IA_NL] = {-1.875, -1.875, -2.1328125};
+
+
+// ---------------------------------------------------------------------------
+// The satellite kernel K_l(t) in closed form. With x_e = r_e/r_s,
+// g = (c/x_e)^2 is flat inside x_e and g = c^2 x^-2 outside, so K_l is
+// two radial integrals of one family,
+//
+//   K_l^beta(x0, x1) = int_{x0}^{x1} y^beta (1 + y)^-2 j_l(t y) dy
+//
+//   K_l(t) = (c/x_e)^2 K_l^+1(0, x_in) + c^2 K_l^-1(x_in, c)
+//   x_in   = min(x_e, c)       (the second piece is absent if x_e >= c)
+//
+// Each integral is E(x1) - E(x0), E(x) = int_0^x, evaluated at each
+// edge x by one of two exact formulas:
+//
+// 1. Closed form (large t x). j_l is a finite sum of sin u/u^n and
+//    cos u/u^n (u = t y); partial fractions in y and integration by
+//    parts leave the sine and cosine integrals at u = t x and at
+//    z = t (1 + x), which the auxiliary functions f, g of A&S 5.2.6-7
+//    (the nfw_ table functions) turn into
+//
+//      G(x) = R_s sin u + R_c cos u - S_u [f(u) cos u + g(u) sin u]
+//             - S_z [f(z) cos u + g(z) sin u] + C_z [f(z) sin u - g(z) cos u]
+//      E(x) = G(x) - G(0)
+//
+//    R_s, R_c are polynomials in 1/t whose coefficients are rational
+//    functions of the edge x (per-halo constants: ia_edge_setup);
+//    S_u, S_z, C_z and G(0) (a combination of f(t), g(t) and pi) are
+//    polynomials in 1/t alone. The tables below hold their coefficients,
+//    split by parity in 1/t. G is the antiderivative with
+//    G(infinity) = 0, so E(x) = G(x) - G(0) and
+//    G(0) = -int_0^infinity y^beta (1 + y)^-2 j_l(t y) dy.
+//
+// 2. Taylor series (small t x). The closed form cancels there (its
+//    terms grow like (t x)^-(l+1) while the result is ~ (t x)^l: a
+//    cancellation of (t x)^-(2l+1)), while the power series of j_l,
+//    j_l(u) = sum_k a_k u^(l+2k), a_k = -a_(k-1)/(2k (2l + 2k + 1)),
+//    a_0 = 1/(2l + 1)!!, integrates term by term:
+//
+//      E(x) = t^l sum_{k < K} a_k M_(beta+l+2k)(x) t^(2k),
+//      M_p(x) = int_0^x y^p (1 + y)^-2 dy          (ia_moments)
+//
+//    a_k M_p(x) is a per-halo constant, so per k the series is one
+//    Horner polynomial in t^2.
+//
+// Switch rule, per edge x and multipole l: the series below
+// u = t x < s_l(x), the closed form at and above it, with
+//
+//   s_l(x) = min( max(U_MIN_l, T_MIN_l x), U_MAX ),   K = ceil(K0 + K1 s_l)
+//
+// The closed form is accurate once both u and t are large enough
+// (U_MIN, T_MIN); the series loses digits once its alternating terms
+// (~ e^u) grow past the result (U_MAX), and needs K0 + K1 u terms.
+// ---------------------------------------------------------------------------
+static const double IA_SWITCH_U_MIN[IA_NL] = {3.0, 4.4, 5.0};
+static const double IA_SWITCH_T_MIN[IA_NL] = {0.6, 2.0, 3.2};
+static const double IA_SWITCH_U_MAX        = 24.0;
+static const double IA_SERIES_K0           = 12.0;
+static const double IA_SERIES_K1           = 1.2;
+
+// sizes: terms of the series at s_l = U_MAX, ceil(K0 + K1 U_MAX); the
+// highest moment it reads, M_p with p = 1 + 6 + 2 (IA_KMAX - 1); the
+// coefficients in 1/t of the l = 6 polynomials (up to t^-7), also the
+// number of x-coefficients (x^0 .. x^7) of the r_s,j, r_c,j numerators;
+// and the coefficients of one parity
+#define IA_KMAX 41
+#define IA_PMAX 87
+#define IA_NCOEF 8
+#define IA_NHALF 4
+
+// Coefficient tables, index [l/2 - 1][0: beta = +1, 1: beta = -1]:
+//
+//   S_u, S_z (odd in 1/t)  = (1/t) sum_j IA_S_U[j] t^-2j (same for S_Z)
+//   C_z (even in 1/t)      = sum_j IA_C_Z[j] t^-2j
+//   G(0) = f(t) (1/t) sum_j IA_G0_F[j] t^-2j + g(t) sum_j IA_G0_G[j] t^-2j
+//          + sum_n IA_G0_C[n] t^-n
+//   R_s = (1/t) sum_j r_s,j t^-2j,   R_c = sum_j r_c,j t^-2j, with
+//   r_s,j = [sum_i IA_R_S_NUM[j][i] x^i] / [x^IA_R_S_XPOW[j] (1 + x)]
+//   (same for r_c,j with IA_R_C_NUM, IA_R_C_XPOW)
+static const double IA_S_U[IA_NL][2][IA_NHALF] = {
+  { // l = 2
+    {0.0, -6.0, 0.0, 0.0},  // beta = +1
+    {-1.0, -12.0, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 4
+    {0.0, -15.0, -420.0, 0.0},  // beta = +1
+    {-0.75, -30.0, -630.0, 0.0}  // beta = -1
+  },
+  { // l = 6
+    {0.0, -26.25, -1890.0, -62370.0},  // beta = +1
+    {-0.625, -52.5, -2835.0, -83160.0}  // beta = -1
+  }
+};
+
+static const double IA_S_Z[IA_NL][2][IA_NHALF] = {
+  { // l = 2
+    {-3.0, 6.0, 0.0, 0.0},  // beta = +1
+    {-5.0, 12.0, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 4
+    {10.0, -195.0, 420.0, 0.0},  // beta = +1
+    {12.0, -285.0, 630.0, 0.0}  // beta = -1
+  },
+  { // l = 6
+    {-21.0, 1680.0, -29295.0, 62370.0},  // beta = +1
+    {-23.0, 2100.0, -38745.0, 83160.0}  // beta = -1
+  }
+};
+
+static const double IA_C_Z[IA_NL][2][IA_NHALF] = {
+  { // l = 2
+    {-1.0, 6.0, 0.0, 0.0},  // beta = +1
+    {-1.0, 12.0, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 4
+    {1.0, -55.0, 420.0, 0.0},  // beta = +1
+    {1.0, -75.0, 630.0, 0.0}  // beta = -1
+  },
+  { // l = 6
+    {-1.0, 231.0, -8505.0, 62370.0},  // beta = +1
+    {-1.0, 273.0, -11025.0, 83160.0}  // beta = -1
+  }
+};
+
+static const double IA_G0_F[IA_NL][2][IA_NHALF] = {
+  { // l = 2
+    {3.0, -6.0, 0.0, 0.0},  // beta = +1
+    {5.0, -12.0, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 4
+    {-10.0, 195.0, -420.0, 0.0},  // beta = +1
+    {-12.0, 285.0, -630.0, 0.0}  // beta = -1
+  },
+  { // l = 6
+    {21.0, -1680.0, 29295.0, -62370.0},  // beta = +1
+    {23.0, -2100.0, 38745.0, -83160.0}  // beta = -1
+  }
+};
+
+static const double IA_G0_G[IA_NL][2][IA_NHALF] = {
+  { // l = 2
+    {1.0, -6.0, 0.0, 0.0},  // beta = +1
+    {1.0, -12.0, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 4
+    {-1.0, 55.0, -420.0, 0.0},  // beta = +1
+    {-1.0, 75.0, -630.0, 0.0}  // beta = -1
+  },
+  { // l = 6
+    {1.0, -231.0, 8505.0, -62370.0},  // beta = +1
+    {1.0, -273.0, 11025.0, -83160.0}  // beta = -1
+  }
+};
+
+static const double IA_G0_C[IA_NL][2][IA_NCOEF] = {
+  { // l = 2
+    {0.0, 0.0, -6.0, 9.4247779607693793, 0.0, 0.0, 0.0, 0.0},  // beta = +1
+    {-0.33333333333333331, 1.5707963267948966, -12.0, 18.849555921538759,
+     0.0, 0.0, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 4
+    {0.0, 0.0, 8.3333333333333339, 23.56194490192345, -420.0,
+     659.73445725385659, 0.0, 0.0},  // beta = +1
+    {-0.13333333333333333, 1.1780972450961724, 5.0, 47.1238898038469,
+     -630.0, 989.60168588078488, 0.0, 0.0}  // beta = -1
+  },
+  { // l = 6
+    {0.0, 0.0, -25.199999999999999, 41.233403578366037, 1575.0,
+     2968.8050576423548, -62370.0, 97970.566902197708},  // beta = +1
+    {-0.076190476190476197, 0.98174770424681035, -33.600000000000001,
+     82.466807156732074, 1785.0, 4453.2075864635317, -83160.0,
+     130627.42253626361}  // beta = -1
+  }
+};
+
+static const double IA_R_S_NUM[IA_NL][2][IA_NHALF][IA_NCOEF] = {
+  { // l = 2
+    { // beta = +1
+      {1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-3.0, -6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    },
+    { // beta = -1
+      {1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-1.0, 2.0, -6.0, -12.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    }
+  },
+  { // l = 4
+    { // beta = +1
+      {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {10.0, 55.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-35.0, 70.0, -210.0, -420.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    },
+    { // beta = -1
+      {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {8.0, -10.75, 11.25, 75.0, 0.0, 0.0, 0.0, 0.0},
+      {-21.0, 31.5, -52.5, 105.0, -315.0, -630.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    }
+  },
+  { // l = 6
+    { // beta = +1
+      {1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-21.0, -231.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {882.0, -1244.25, 1653.75, 8505.0, 0.0, 0.0, 0.0, 0.0},
+      {-2079.0, 3118.5, -5197.5, 10395.0, -31185.0, -62370.0, 0.0, 0.0}
+    },
+    { // beta = -1
+      {1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-19.0, 20.375, -23.625, -273.0, 0.0, 0.0, 0.0, 0.0},
+      {648.0, -848.25, 1149.75, -1606.5, 2047.5, 11025.0, 0.0, 0.0},
+      {-1485.0, 1980.0, -2772.0, 4158.0, -6930.0, 13860.0, -41580.0,
+       -83160.0}
+    }
+  }
+};
+
+static const int IA_R_S_XPOW[IA_NL][2][IA_NHALF] = {
+  {{0, 1, 0, 0}, {0, 3, 0, 0}},  // l = 2
+  {{0, 1, 3, 0}, {0, 3, 5, 0}},  // l = 4
+  {{0, 1, 3, 5}, {0, 3, 5, 7}}  // l = 6
+};
+
+static const double IA_R_C_NUM[IA_NL][2][IA_NHALF][IA_NCOEF] = {
+  { // l = 2
+    { // beta = +1
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    },
+    { // beta = -1
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {1.0, -2.0, -6.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    }
+  },
+  { // l = 4
+    { // beta = +1
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {35.0, -70.0, -210.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    },
+    { // beta = -1
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-1.0, 0.25, 11.25, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {21.0, -31.5, 52.5, -105.0, -315.0, 0.0, 0.0, 0.0},
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}
+    }
+  },
+  { // l = 6
+    { // beta = +1
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-21.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-189.0, 204.75, 1653.75, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {2079.0, -3118.5, 5197.5, -10395.0, -31185.0, 0.0, 0.0, 0.0}
+    },
+    { // beta = -1
+      {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {1.0, -1.625, -23.625, 0.0, 0.0, 0.0, 0.0, 0.0},
+      {-153.0, 188.25, -225.75, 220.5, 2047.5, 0.0, 0.0, 0.0},
+      {1485.0, -1980.0, 2772.0, -4158.0, 6930.0, -13860.0, -41580.0, 0.0}
+    }
+  }
+};
+
+static const int IA_R_C_XPOW[IA_NL][2][IA_NHALF] = {
+  {{0, 0, 0, 0}, {0, 2, 0, 0}},  // l = 2
+  {{0, 0, 2, 0}, {0, 2, 4, 0}},  // l = 4
+  {{0, 0, 2, 4}, {0, 2, 4, 6}}  // l = 6
+};
+
+
+
+// ---------------------------------------------------------------------------
+// Per-halo constants of the satellite kernel. One ia_edge per edge x of
+// the radial integrals (x_in, and c when the power-law piece exists);
+// every array is indexed [l/2 - 1][beta: 0 = +1, 1 = -1].
+// ---------------------------------------------------------------------------
+typedef struct {
+  double x;                         // edge radius in units of r_s
+  double lnx;                       // ln x
+  double ln1x;                      // ln(1 + x)
+  double switch_u[IA_NL];           // s_l(x): series below u = t x < s_l
+  int    n_series[IA_NL];           // K: series terms at this edge
+  double series[IA_NL][2][IA_KMAX]; // a_k M_(beta+l+2k)(x)
+  double r_sin[IA_NL][2][IA_NHALF]; // r_s,j(x): R_s = (1/t) sum r_s,j t^-2j
+  double r_cos[IA_NL][2][IA_NHALF]; // r_c,j(x): R_c = sum r_c,j t^-2j
+} ia_edge;
+
+
+typedef struct {
+  double conc;          // c(M, a)
+  double ln1c;          // ln(1 + c)
+  double r_s;           // r_s = r_Delta/c, c/H0
+  double lnrs;          // ln r_s
+  double w_inner;       // (c/x_e)^2: g inside x_e
+  double conc2;         // c^2: g = c^2 x^-2 outside x_e
+  double w_dI;          // dn (M/rho_m) (N_rs/n_g)/m(c)^2
+  double w_II;          // dn (N_rs/n_g)^2/m(c)^2
+  int    has_power;     // 1: x_e < c, the power-law piece exists
+  ia_edge edge[2];      // [0] x_in = min(x_e, c), [1] c
+} ia_halo;
+
+
+// ---------------------------------------------------------------------------
+// Tables of the halo-model IA, built and refilled by ia_tables (its
+// header maps each array to the integrals); zero at program start, so
+// the first call builds everything.
+// ---------------------------------------------------------------------------
+static struct {
+  uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable,
+                                   // [2] nuisance.random_ia_halo,
+                                   // [3] shear n(z), [4] source photo-z
+  int n_a;               // a nodes
+  int n_nodes;           // Gauss-Legendre mass nodes in ln M
+  int n_active;          // mass nodes with red satellites, N_rs > 0
+  int n_l;               // multipoles in the kernel, halo_ia_lmax/2
+  int k_step;            // dense ln k nodes per coarse one
+  int n_coarse;          // coarse ln k nodes, pads included
+  int block_rows;        // a rows per block of the halo scratch
+  double lim[2][3];      // [0] a grid, [1] ln k grid: min, max, step
+  double*** tab;         // [2][n_a][N_k_nlin] ln S_dI (0), ln S_II (1)
+  double* f_red_cen;     // [n_a] f_rc(a_i)
+  double** mass_node;    // [9][n_nodes] per mass node q: M, GL weight,
+                         //   GL weight x (rho_m/M) dlnnu/dlnM, nu0,
+                         //   r_Delta, M/rho_m, N_tot, N_rc, N_rs
+  int* active;           // [n_nodes] mass-node index of each active node
+  double** row;          // [3][n_a] per a row: D(a), a_1h(a), n_g(a)
+  fnu_params* fnu_pars;  // [n_a] Tinker f(nu) parameters per a row
+  double** dn;           // [n_a][n_nodes] GL weight x dn/dlnM
+  ia_halo* halo;         // [block_rows x n_nodes] kernel constants
+  double*** ln_coarse;   // [2][n_a][n_coarse] ln S_dI, ln S_II, coarse
+  double** curv;         // [n_a][n_coarse] spline curvatures (scratch)
+  double* k_mult;        // [n_coarse] Thomas multipliers of the spline
+  double** fg_slope;     // [2][nfw_.n_nodes] Hermite slopes of f, G
+} ia_ = {0};
+
+
+// ---------------------------------------------------------------------------
+// a_1h(a), the satellite alignment amplitude at scale factor a:
+//
+//   a_1h(a) = a_1h [(1 + z)/(1 + z_pivot)]^eta_1h,   1 + z = 1/a
+//
+// nuisance.ia_halo[0] = a_1h, [1] = eta_1h, [2] = z_pivot.
+//
+// Parameters:
+//   a - scale factor
+//
+// Returns:
+//   a_1h(a), dimensionless, with the sign of a_1h
+// ---------------------------------------------------------------------------
+static inline double ia_a1h(
+    const double a  // scale factor
+  )
+{
+  const double a1h     = nuisance.ia_halo[0];
+  const double eta_1h  = nuisance.ia_halo[1];
+  const double z_pivot = nuisance.ia_halo[2];
+
+  if (0.0 == eta_1h) {
+    return a1h;
+  }
+
+  // (1 + z)/(1 + z_pivot), with 1 + z = 1/a
+  const double redshift_ratio = 1.0/(a*(1.0 + z_pivot));
+  return a1h*pow(redshift_ratio, eta_1h);
+}
+
+
+// ---------------------------------------------------------------------------
+// The F21 windows (F21 Eqs. 30-31), k in (c/H0)^-1: the 1-halo term
+// switched on above k_1h and the 2-halo term switched off above k_2h,
+//
+//   f_1h(k) = 1 - exp[-(k/k_1h)^2],   f_2h(k) = exp[-(k/k_2h)^2],
+//
+// k_1h, k_2h in h/Mpc times cosmology.coverH0 (k in (c/H0)^-1 is k in
+// h/Mpc times c/H0 in Mpc/h). f_1h is -expm1: no cancellation at
+// k << k_1h, where f_1h ~ (k/k_1h)^2.
+//
+// Returns:
+//   f_1h(k), f_2h(k), dimensionless, in [0, 1]
+// ---------------------------------------------------------------------------
+static inline double ia_window_1h(
+    const double k  // wavenumber in (c/H0)^-1
+  )
+{
+  const double k_1h  = IA_K1H_HMPC*cosmology.coverH0;
+  const double ratio = k/k_1h;
+  return -expm1(-ratio*ratio);
+}
+
+
+// f_2h(k) of the header above, exported for the NLA 2-halo leg of
+// cosmo2D.c
+double ia_window_2h(
+    const double k  // wavenumber in (c/H0)^-1
+  )
+{
+  const double k_2h  = IA_K2H_HMPC*cosmology.coverH0;
+  const double ratio = k/k_2h;
+  return exp(-ratio*ratio);
+}
+
+
+// ---------------------------------------------------------------------------
+// f(t) and g(t), the auxiliary functions of the sine and cosine
+// integrals (the nfw_ header), read from the nfw_ table by cubic
+// Hermite interpolation in ln t. The IA kernel only; nfw_um keeps its
+// linear read.
+//
+// What cubic Hermite interpolation is: between two neighbouring nodes
+// it uses the cubic that matches the tabulated VALUE and the tabulated
+// SLOPE at both nodes. With s in [0, 1] the fraction of the interval,
+//
+//   y(s) = h00(s) y_i + h10(s) h y'_i + h01(s) y_(i+1) + h11(s) h y'_(i+1)
+//   h00 = 2s^3 - 3s^2 + 1,   h10 = s^3 - 2s^2 + s,
+//   h01 = -2s^3 + 3s^2,      h11 = s^3 - s^2
+//
+// (h the node spacing, ' = d/dln t). Its error falls as h^4 (about
+// h^4 y''''/384), where the linear read's falls as h^2 (h^2 y''/8), on
+// the same table: at the table's spacing it is several orders of
+// magnitude more accurate.
+//
+// Why the slopes are exact and free: f and g obey f' = -g and
+// g' = f - 1/t (A&S 5.2.6-7), so in the table variables
+//
+//   df/dln t = -t g(t),   dG/dln t = t f(t)     (G = g + ln t)
+//
+// follow from the stored values themselves: fg_slope (built with the
+// table, ia_tables' rebuild block) holds h df/dln t and h dG/dln t at
+// every node, no derivative is approximated.
+//
+// Why the IA kernel needs it: the closed form of the kernel (the
+// section's kernel header) subtracts terms that can be about a million
+// times larger than their sum (near the series switch, large c, l = 6).
+// The linear read's relative error of f, g is amplified by that factor
+// into percent-level errors of gamma_hat; the Hermite read keeps the
+// kernel near its floating-point limit. nfw_um has no such cancellation
+// and keeps the cheaper linear read.
+//
+// Above NFW_TASY: the asymptotic series (A&S 5.2.34-35), nested,
+//
+//   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - ... + 14!/t^14)/t
+//   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - ... + 15!/t^14)/t^2
+//
+// three terms longer than nfw_um's, which this accuracy needs (2, 12,
+// ..., 182 and 6, 20, ..., 210 are the ratios of consecutive
+// coefficients). Below NFW_TMIN the read returns the first node
+// (nfw_pos).
+//
+// Cache invalidation:
+//   nfw_.tab: nfw_table (Ntable.random); fg_slope: the rebuild block of
+//   ia_tables (Ntable.random)
+//
+// Parameters:
+//   t, lnt - the argument and its log (the caller has ln t)
+//   f, g   - output: f(t), g(t)
+// ---------------------------------------------------------------------------
+static inline void ia_fg_read(
+    const double t,    // argument t > 0
+    const double lnt,  // ln t
+    double* f,         // output: f(t)
+    double* g          // output: g(t)
+  )
+{
+  if (t <= NFW_TASY) {
+    const double* restrict tab_f   = nfw_.tab[0];      // f(t_i)
+    const double* restrict tab_G   = nfw_.tab[1];      // G(t_i)
+    const double* restrict slope_f = ia_.fg_slope[0];  // h df/dln t
+    const double* restrict slope_G = ia_.fg_slope[1];  // h dG/dln t
+
+    double s;
+    const int i = nfw_pos(lnt, &s);  // node i, fraction s of [i, i + 1]
+
+    // the four Hermite basis polynomials at s
+    const double s2  = s*s;
+    const double s3  = s2*s;
+    const double h00 = 2.0*s3 - 3.0*s2 + 1.0;
+    const double h10 = s3 - 2.0*s2 + s;
+    const double h01 = -2.0*s3 + 3.0*s2;
+    const double h11 = s3 - s2;
+
+    *f = h00*tab_f[i] + h10*slope_f[i] + h01*tab_f[i + 1] + h11*slope_f[i + 1];
+
+    const double G = h00*tab_G[i] + h10*slope_G[i]
+                     + h01*tab_G[i + 1] + h11*slope_G[i + 1];
+    *g = G - lnt;  // g = G - ln t
+  }
+  else {
+    const double v = 1.0/(t*t);  // series variable v = 1/t^2
+
+    *f = (1.0 - 2.0*v*(1.0 - 12.0*v*(1.0 - 30.0*v*(1.0 - 56.0*v
+         *(1.0 - 90.0*v*(1.0 - 132.0*v*(1.0 - 182.0*v)))))))/t;
+
+    *g = v*(1.0 - 6.0*v*(1.0 - 20.0*v*(1.0 - 42.0*v*(1.0 - 72.0*v
+         *(1.0 - 110.0*v*(1.0 - 156.0*v*(1.0 - 210.0*v)))))));
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Moments of the kernel's radial weight,
+//
+//   M_p(x) = int_0^x y^p (1 + y)^-2 dy,   p = 0 .. IA_PMAX,
+//
+// the coefficients of the series branch (kernel header, item 2). From
+// y^(p-2) = [y^p + 2 y^(p-1) + y^(p-2)]/(1 + y)^2, integrated:
+//
+//   M_p + 2 M_(p-1) + M_(p-2) = x^(p-1)/(p - 1)
+//   M_0 = x/(1 + x),   M_1 = ln(1 + x) - x/(1 + x)
+//
+// x >= 1: the recursion runs forward from M_0, M_1 (stable for x > 1:
+// M_p grows like x^p/p, faster than the recursion's own solutions
+// (-1)^p, p (-1)^p; at x = 1 the loss is ~p^2 eps, negligible).
+// x < 1: M_p decays like x^(p+1)/(p+1), so the recursion runs backward
+// from the two highest moments, each from the convergent series of
+// (1 + y)^-2 about y = x (w = x/(1 + x) <= 1/2):
+//
+//   M_p(x) = x^(p+1)/(1 + x)^2 sum_j T_j,
+//   T_0 = 1/(p + 1),   T_(j+1) = T_j w (j + 2)/(p + j + 2)
+//
+// The powers x^p are built upward by multiplication, so a tiny x only
+// underflows the highest powers (whose moments are negligible).
+//
+// Parameters:
+//   x      - the edge, x > 0
+//   moment - output: [IA_PMAX + 1] M_0 .. M_IA_PMAX
+// ---------------------------------------------------------------------------
+static void ia_moments(
+    const double x,  // edge x > 0
+    double* moment   // output: [IA_PMAX + 1] M_p(x)
+  )
+{
+  // relative size of the last series term kept
+  const double series_tol = 1.0e-17;
+
+  // x^p, p = 0 .. IA_PMAX + 1, upward
+  double x_pow[IA_PMAX + 2];
+  x_pow[0] = 1.0;
+  for (int p=1; p<IA_PMAX+2; p++) {
+    x_pow[p] = x_pow[p - 1]*x;
+  }
+
+  if (x >= 1.0) {
+    // --- FORWARD RECURSION ---
+    moment[0] = x/(1.0 + x);
+    moment[1] = log1p(x) - x/(1.0 + x);
+    for (int p=2; p<=IA_PMAX; p++) {
+      moment[p] = x_pow[p - 1]/(p - 1) - 2.0*moment[p - 1] - moment[p - 2];
+    }
+    return;
+  }
+
+  // --- TOP TWO MOMENTS FROM THE SERIES ABOUT y = x ---
+  const double w = x/(1.0 + x);
+  const double inv_one_plus_x2 = 1.0/((1.0 + x)*(1.0 + x));
+
+  for (int p=IA_PMAX-1; p<=IA_PMAX; p++) {
+    double term = 1.0/(p + 1);
+    double sum  = term;
+    for (int j=0; term > series_tol*sum; j++) {
+      term *= w*(j + 2)/(p + j + 2);
+      sum  += term;
+    }
+    moment[p] = x_pow[p + 1]*inv_one_plus_x2*sum;
+  }
+
+  // --- BACKWARD RECURSION ---
+  for (int p=IA_PMAX; p>1; p--) {
+    moment[p - 2] = x_pow[p - 1]/(p - 1) - 2.0*moment[p - 1] - moment[p];
+  }
+}
+
+
+// Horner evaluation of sum_{n < count} coef[n] y^n
+static inline double ia_horner(
+    const double* coef,  // [count] coefficients, lowest power first
+    const int count,     // number of coefficients
+    const double y       // the variable
+  )
+{
+  double acc = 0.0;
+  for (int n=count-1; n>=0; n--) {
+    acc = acc*y + coef[n];
+  }
+  return acc;
+}
+
+
+// ---------------------------------------------------------------------------
+// The per-halo constants of one edge x of the kernel's radial integrals
+// (kernel header): for every multipole l <= 2 n_l and both slopes beta,
+//
+//   switch_u[l]   s_l(x), the series/closed-form switch in u = t x
+//   n_series[l]   K = ceil(K0 + K1 s_l), the series terms
+//   series        a_k M_(beta+l+2k)(x), k < K        (series branch)
+//   r_sin, r_cos  the x-dependent coefficients r_s,j, r_c,j of R_s, R_c
+//                 (closed form; the tables' header)
+//
+// Parameters:
+//   x    - the edge, x > 0
+//   n_l  - multipoles l = 2 .. 2 n_l
+//   edge - output
+// ---------------------------------------------------------------------------
+static void ia_edge_setup(
+    const double x,  // edge x > 0, in units of r_s
+    const int n_l,   // multipoles l = 2 .. 2 n_l
+    ia_edge* edge    // output
+  )
+{
+  edge->x    = x;
+  edge->lnx  = log(x);
+  edge->ln1x = log1p(x);
+
+  double moment[IA_PMAX + 1];
+  ia_moments(x, moment);
+
+  // x^p for the denominators x^p (1 + x) of r_s,j, r_c,j
+  double x_pow[IA_NCOEF];
+  x_pow[0] = 1.0;
+  for (int p=1; p<IA_NCOEF; p++) {
+    x_pow[p] = x_pow[p - 1]*x;
+  }
+  const double one_plus_x = 1.0 + x;
+
+  for (int li=0; li<n_l; li++) {
+    const int l      = 2*li + 2;
+    const int n_half = li + 2;  // coefficients of one parity, (l + 2)/2
+
+    // --- 1. SWITCH AND SERIES LENGTH ---
+    const double switch_u = fmin(fmax(IA_SWITCH_U_MIN[li],
+                                      IA_SWITCH_T_MIN[li]*x),
+                                 IA_SWITCH_U_MAX);
+    const int n_terms = (int) ceil(IA_SERIES_K0 + IA_SERIES_K1*switch_u);
+    edge->switch_u[li] = switch_u;
+    edge->n_series[li] = n_terms;
+
+    // --- 2. SERIES COEFFICIENTS a_k M_(beta+l+2k)(x) ---
+    // a_0 = 1/(2l + 1)!!, a_k = -a_(k-1)/(2k (2l + 2k + 1))
+    double a_k = 1.0;
+    for (int n=2*l+1; n>1; n-=2) {
+      a_k /= n;
+    }
+    for (int k=0; k<n_terms; k++) {
+      if (k > 0) {
+        a_k *= -1.0/(2.0*k*(2*l + 2*k + 1));
+      }
+      edge->series[li][0][k] = a_k*moment[1 + l + 2*k];   // beta = +1
+      edge->series[li][1][k] = a_k*moment[-1 + l + 2*k];  // beta = -1
+    }
+
+    // --- 3. CLOSED-FORM COEFFICIENTS r_s,j(x), r_c,j(x) ---
+    for (int bi=0; bi<2; bi++) {
+      for (int j=0; j<n_half; j++) {
+        const double num_sin = ia_horner(IA_R_S_NUM[li][bi][j], IA_NCOEF, x);
+        const double num_cos = ia_horner(IA_R_C_NUM[li][bi][j], IA_NCOEF, x);
+        const double den_sin = x_pow[IA_R_S_XPOW[li][bi][j]]*one_plus_x;
+        const double den_cos = x_pow[IA_R_C_XPOW[li][bi][j]]*one_plus_x;
+        edge->r_sin[li][bi][j] = num_sin/den_sin;
+        edge->r_cos[li][bi][j] = num_cos/den_cos;
+      }
+    }
+  }
+}
+
+
+// Per-k quantities of one edge that every multipole shares: the phase
+// u = t x and the three f, g combinations of the closed form G(x)
+typedef struct {
+  double sin_u;    // sin u
+  double cos_u;    // cos u
+  double comb_u;   // f(u) cos u + g(u) sin u   (multiplies S_u)
+  double comb_z1;  // f(z) cos u + g(z) sin u   (multiplies S_z)
+  double comb_z2;  // f(z) sin u - g(z) cos u   (multiplies C_z)
+} ia_phase;
+
+
+// Per-k quantities of one multipole l and slope beta: the polynomials in
+// 1/t of the closed form and its value at 0 (tables' header)
+typedef struct {
+  double S_u;
+  double S_z;
+  double C_z;
+  double G_zero;  // G(0)
+} ia_poly;
+
+
+// The closed-form antiderivative G(x) at one edge (kernel header,
+// item 1), for multipole index li and slope index bi (0: beta = +1,
+// 1: beta = -1); R_s, R_c from the edge's coefficients, Horner in 1/t^2
+static inline double ia_closed_G(
+    const ia_edge* edge,   // per-halo constants of the edge
+    const ia_phase* phase, // per-k phase and f, g combinations
+    const ia_poly* poly,   // per-k polynomials of (l, beta)
+    const int li,          // l/2 - 1
+    const int bi,          // 0: beta = +1, 1: beta = -1
+    const double inv_t,    // 1/t
+    const double inv_t2    // 1/t^2
+  )
+{
+  const int n_half = li + 2;
+  const double R_s = inv_t*ia_horner(edge->r_sin[li][bi], n_half, inv_t2);
+  const double R_c = ia_horner(edge->r_cos[li][bi], n_half, inv_t2);
+
+  return R_s*phase->sin_u + R_c*phase->cos_u
+         - poly->S_u*phase->comb_u
+         - poly->S_z*phase->comb_z1
+         + poly->C_z*phase->comb_z2;
+}
+
+
+// The series E(x) = t^l sum_k a_k M_(beta+l+2k)(x) t^(2k) at one edge
+// (kernel header, item 2), Horner in t^2
+static inline double ia_series_E(
+    const ia_edge* edge,   // per-halo constants of the edge
+    const int li,          // l/2 - 1
+    const int bi,          // 0: beta = +1, 1: beta = -1
+    const double t2,       // t^2
+    const double t_pow_l   // t^l
+  )
+{
+  const double sum = ia_horner(edge->series[li][bi], edge->n_series[li], t2);
+  return t_pow_l*sum;
+}
+
+
+// ---------------------------------------------------------------------------
+// m(c) gamma_hat(k|M) of one halo at one k: the satellite kernel of the
+// section banner, in the form the table builder sums,
+//
+//   m(c) gamma_hat = sum_{l = 2 .. 2 n_l} P_l K_l(t),   t = k r_s
+//   K_l(t) = (c/x_e)^2 E_l^+1(x_in) + c^2 [E_l^-1(c) - E_l^-1(x_in)]
+//
+// (the second piece only when x_e < c). Each E(x) is the series or
+// G(x) - G(0) (kernel header). When both edges of the power-law piece
+// use the closed form, its integral is G(c) - G(x_in) directly: G(0)
+// cancels, and leaving it out avoids its rounding error, which would
+// otherwise dominate at large t (where the piece is small and G(0) is
+// not).
+//
+// Work per call: at each edge that reaches the closed form for some l,
+// one sin/cos pair and two f, g reads (at u = t x and z = t (1 + x));
+// one more f, g read at t for G(0); then short Horner polynomials. The
+// caller passes ln t (the reads' axis); the 1/m(c) is folded into the
+// table weights w_dI, w_II (ia_tables).
+//
+// Cache invalidation:
+//   ia_fg_read (its header)
+//
+// Parameters:
+//   halo - the halo's per-halo constants (ia_tables, halo block)
+//   t    - k r_s
+//   lnt  - ln t
+//   n_l  - multipoles l = 2 .. 2 n_l
+//
+// Returns:
+//   m(c) gamma_hat(k|M) per unit a_1h, dimensionless
+// ---------------------------------------------------------------------------
+static inline double ia_gamma_hat_m(
+    const ia_halo* halo,  // per-halo constants
+    const double t,       // k r_s
+    const double lnt,     // ln t
+    const int n_l         // multipoles l = 2 .. 2 n_l
+  )
+{
+  const double inv_t   = 1.0/t;
+  const double inv_t2  = inv_t*inv_t;
+  const double t2      = t*t;
+  const int    n_edges = 1 + halo->has_power;
+
+  // --- 1. PER EDGE: PHASE, AND f, g WHERE THE CLOSED FORM IS USED ---
+  ia_phase phase[2] = {{0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 0.0}};
+  double   u_edge[2] = {0.0, 0.0};
+  int      any_closed = 0;
+
+  for (int e=0; e<n_edges; e++) {
+    const ia_edge* edge = &halo->edge[e];
+    const double u = t*edge->x;
+    u_edge[e] = u;
+
+    // the switch grows with l, so l = 2 reaches the closed form first
+    if (u >= edge->switch_u[0]) {
+      double f_u;
+      double g_u;
+      double f_z;
+      double g_z;
+      ia_fg_read(u, lnt + edge->lnx, &f_u, &g_u);        // at u = t x
+      ia_fg_read(t + u, lnt + edge->ln1x, &f_z, &g_z);   // z = t (1 + x)
+
+      const double sin_u = sin(u);
+      const double cos_u = cos(u);
+      phase[e].sin_u   = sin_u;
+      phase[e].cos_u   = cos_u;
+      phase[e].comb_u  = f_u*cos_u + g_u*sin_u;
+      phase[e].comb_z1 = f_z*cos_u + g_z*sin_u;
+      phase[e].comb_z2 = f_z*sin_u - g_z*cos_u;
+      any_closed = 1;
+    }
+  }
+
+  // f(t), g(t) for G(0)
+  double f_t = 0.0;
+  double g_t = 0.0;
+  if (any_closed) {
+    ia_fg_read(t, lnt, &f_t, &g_t);
+  }
+
+  // --- 2. SUM OVER MULTIPOLES ---
+  const ia_edge* inner = &halo->edge[0];  // x_in
+  const ia_edge* outer = &halo->edge[1];  // c
+
+  double gamma_m = 0.0;  // m(c) gamma_hat
+  double t_pow_l = 1.0;  // t^l
+
+  for (int li=0; li<n_l; li++) {
+    const int l      = 2*li + 2;
+    const int n_half = li + 2;
+    t_pow_l *= t2;
+
+    const int inner_closed = (u_edge[0] >= inner->switch_u[li]);
+    int outer_closed = 0;
+    if (halo->has_power) {
+      outer_closed = (u_edge[1] >= outer->switch_u[li]);
+    }
+
+    // the polynomials in 1/t of this l, both slopes (closed form only)
+    ia_poly poly[2] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+    if (inner_closed || outer_closed) {
+      for (int bi=0; bi<2; bi++) {
+        poly[bi].S_u = inv_t*ia_horner(IA_S_U[li][bi], n_half, inv_t2);
+        poly[bi].S_z = inv_t*ia_horner(IA_S_Z[li][bi], n_half, inv_t2);
+        poly[bi].C_z = ia_horner(IA_C_Z[li][bi], n_half, inv_t2);
+
+        const double G0_f = inv_t*ia_horner(IA_G0_F[li][bi], n_half, inv_t2);
+        const double G0_g = ia_horner(IA_G0_G[li][bi], n_half, inv_t2);
+        const double G0_c = ia_horner(IA_G0_C[li][bi], l + 2, inv_t);
+        poly[bi].G_zero = f_t*G0_f + g_t*G0_g + G0_c;
+      }
+    }
+
+    // inner piece: g = (c/x_e)^2 flat, beta = +1 on [0, x_in]
+    double E_inner;
+    if (inner_closed) {
+      E_inner = ia_closed_G(inner, &phase[0], &poly[0], li, 0, inv_t, inv_t2)
+                - poly[0].G_zero;
+    }
+    else {
+      E_inner = ia_series_E(inner, li, 0, t2, t_pow_l);
+    }
+    double K_l = halo->w_inner*E_inner;
+
+    // power-law piece: g = c^2 x^-2, beta = -1 on [x_in, c]
+    if (halo->has_power) {
+      double K_power;
+      if (inner_closed && outer_closed) {
+        // G(c) - G(x_in): G(0) cancels
+        const double G_hi = ia_closed_G(outer, &phase[1], &poly[1], li, 1,
+                                        inv_t, inv_t2);
+        const double G_lo = ia_closed_G(inner, &phase[0], &poly[1], li, 1,
+                                        inv_t, inv_t2);
+        K_power = G_hi - G_lo;
+      }
+      else {
+        // E(c) - E(x_in), each edge by its own branch
+        double E_hi;
+        double E_lo;
+        if (outer_closed) {
+          E_hi = ia_closed_G(outer, &phase[1], &poly[1], li, 1, inv_t, inv_t2)
+                 - poly[1].G_zero;
+        }
+        else {
+          E_hi = ia_series_E(outer, li, 1, t2, t_pow_l);
+        }
+        if (inner_closed) {
+          E_lo = ia_closed_G(inner, &phase[0], &poly[1], li, 1, inv_t, inv_t2)
+                 - poly[1].G_zero;
+        }
+        else {
+          E_lo = ia_series_E(inner, li, 1, t2, t_pow_l);
+        }
+        K_power = E_hi - E_lo;
+      }
+      K_l += halo->conc2*K_power;
+    }
+
+    gamma_m += IA_MULTIPOLE_WEIGHT[li]*K_l;
+  }
+
+  return gamma_m;
+}
+
+
+// ---------------------------------------------------------------------------
+// Fills ia_: the 1-halo IA sums S_dI, S_II and the red-central fraction
+// f_rc on one (a, ln k) grid over the source redshift range (section
+// banner for the physics):
+//
+//   S_dI(k, a) = int dlnM dn/dlnM (M/rho_m) u(k|M) (N_rs/n_g) |gamma_hat|
+//   S_II(k, a) = int dlnM dn/dlnM (N_rs/n_g)^2 gamma_hat^2
+//   f_rc(a)    = int dlnM dn/dlnM N_rc / n_g(a)
+//   n_g(a)     = int dlnM dn/dlnM N_tot
+//
+//   dn/dlnM = (rho_m/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/(sigma(M) D(a))
+//
+// with the occupations of the section banner (nuisance.ia_hod, the
+// Zheng et al. form of HOD_nc, HOD_ns with the IA population's own
+// parameters; nuisance.ia_red, the red fractions
+// f_red = (1/2) [1 + tanh((log10 M - log10 M_red)/width)]), u(k|M) the
+// NFW transform and gamma_hat the satellite kernel (ia_gamma_hat_m).
+//
+// 1. Quadrature: the Gauss-Legendre rule of p_mm (its header, item 1:
+// the Ntable.halo_nm ladder on Ntable.high_def_integration) over
+// [ln limits.halo_m_min, ln limits.halo_m_max]. Only the nodes with
+// red satellites (N_rs > 0: above the satellite cutoff M_0) enter the
+// S sums ("active" nodes); every node enters n_g and f_rc.
+//
+// 2. Grids: Ntable.halo_ia_na nodes uniform in a over the source range
+// [min_i amin_source(i), max_i amax_source(i)], set at every refill
+// (it moves with the source photo-z parameters); the ln k grid of p_mm
+// (Ntable.N_k_nlin nodes on [ln k_min, ln k_max]). The S sums are
+// computed exactly on the coarse ln k grid of p_gm (every k_step-th
+// node, plus pads) and their logs splined to the dense grid
+// (ln_k_spline_upsample).
+//
+// 3. Loop nests (each a separate OpenMP loop, so every expensive
+// per-halo or per-k quantity is spread over all threads):
+//
+//   per refill, per mass node q (serial; sigma2 and dlognudlogm reads)
+//     -> mass_node: M, w (rho_m/M) dlnnu/dlnM, nu0 = delta_c/sigma(M),
+//        r_Delta, M/rho_m, N_tot, N_rc, N_rs; the active node list
+//   per a row i (threaded)
+//     -> row: D(a), a_1h(a); fnu_pars; dn[i][q] = w (rho_m/M)
+//        dlnnu/dlnM f(nu) nu; n_g(a_i); f_red_cen[i]
+//   per row block, collapse(2) over (row, active node) (threaded)
+//     -> halo: c = conc(M, D), ln(1+c), r_s, ln r_s, x_e, the weights
+//        w_dI, w_II and the kernel's edge constants (ia_edge_setup)
+//   per row block, collapse(2) over (row, coarse k) (threaded)
+//     -> ln_coarse: ln sum_q w_dI um |gamma_m|, ln sum_q w_II gamma_m^2,
+//        um = u m(c) (nfw_um), gamma_m = m(c) gamma_hat (ia_gamma_hat_m)
+//   per a row i (threaded)
+//     -> tab: the two coarse ln k rows splined to the dense ln k grid
+//
+// The halo constants of all (row, active node) pairs are held at once
+// when they fit IA_HALO_SCRATCH halos; otherwise the rows are processed
+// in blocks of block_rows (a scratch of block_rows x n_nodes halos).
+// The 1/m(c)^2 of um and gamma_m lives in w_dI and w_II.
+//
+// The logs: u m(c) > 0 on the table's (c, k r_s) range (checked
+// numerically for the truncated NFW transform) and |gamma_hat| >= 0, so
+// both sums are positive; a non-positive sum aborts. f_1h(k)
+// and the amplitude a_1h(a) multiply at read (ia_p1h_dI, ia_p1h_II), so
+// the tables keep the smooth k^2 (S_dI) and k^4 (S_II) rise at low k.
+//
+// Thread safety: the single-threaded halo_warmup call before the
+// threaded loops builds every lazy table the rows read (its header);
+// the Hermite slopes of the nfw_ table are built in the rebuild block.
+// Every table value is one serial sum over mass nodes; threads only
+// split the table nodes, so no table depends on the thread count.
+//
+// Aborts: like.halo_model[3] not HALO_PROFILE_NFW; Ntable.halo_ia_lmax
+// not 2, 4 or 6; an IA HOD that is not set (log10 M_min outside
+// [10, 16]) or has sigma_lgM <= 0; a red-fraction width <= 0; no mass
+// node with red satellites; n_g = 0 at some a.
+//
+// Cache invalidation:
+//   rebuild (sizes, allocations, the GL rule, the ln k axes, the
+//     Hermite slopes): Ntable.random
+//   refill: cosmology.random, Ntable.random, nuisance.random_ia_halo,
+//     redshift.random_shear, nuisance.random_photoz_shear
+// ---------------------------------------------------------------------------
+static const int IA_HALO_SCRATCH = 4096; // halo constants held at once
+
+static void ia_tables(void)
+{
+  const int K_PAD = Ntable.halo_spline_pad; // pads per end, coarse ln k
+
+  // --- 1. NTABLE REBUILD: SIZES, ALLOCATIONS, GL RULE, AXES ---
+  if (NULL == ia_.tab || fdiff2(ia_.cache[1], Ntable.random)) {
+    if (ia_.tab != NULL) {
+      free(ia_.tab);
+      free(ia_.f_red_cen);
+      free(ia_.mass_node);
+      free(ia_.active);
+      free(ia_.row);
+      free(ia_.fnu_pars);
+      free(ia_.dn);
+      free(ia_.halo);
+      free(ia_.ln_coarse);
+      free(ia_.curv);
+      free(ia_.k_mult);
+      free(ia_.fg_slope);
+    }
+
+    const int accuracy = abs(Ntable.high_def_integration);
+
+    // mass-node ladder of the spectra (p_mm header, item 1)
+    if (0 == accuracy) {
+      ia_.n_nodes = Ntable.halo_nm;
+    }
+    else if (1 == accuracy) {
+      ia_.n_nodes = 2*Ntable.halo_nm;
+    }
+    else if (2 == accuracy) {
+      ia_.n_nodes = 4*Ntable.halo_nm;
+    }
+    else {
+      ia_.n_nodes = 1024;
+    }
+
+    // coarse ln k step of the S sums: the p_gm ladder
+    if (0 == accuracy) {
+      ia_.k_step = Ntable.halo_nk_step;
+    }
+    else if (1 == accuracy) {
+      ia_.k_step = Ntable.halo_nk_step/2;
+    }
+    else {
+      ia_.k_step = 1;
+    }
+    if (ia_.k_step < 1) {
+      ia_.k_step = 1;
+    }
+
+    ia_.n_a      = Ntable.halo_ia_na;
+    ia_.n_coarse = (Ntable.N_k_nlin - 1)/ia_.k_step + 2 + 2*K_PAD;
+
+    // a rows per block of the halo scratch (header, item 3)
+    ia_.block_rows = IA_HALO_SCRATCH/ia_.n_nodes;
+    if (ia_.block_rows < 1) {
+      ia_.block_rows = 1;
+    }
+    if (ia_.block_rows > ia_.n_a) {
+      ia_.block_rows = ia_.n_a;
+    }
+
+    const int n_a      = ia_.n_a;
+    const int n_nodes  = ia_.n_nodes;
+    const int n_coarse = ia_.n_coarse;
+
+    ia_.tab       = (double***) malloc3d(2, n_a, Ntable.N_k_nlin);
+    ia_.f_red_cen = (double*) malloc1d(n_a);
+    ia_.mass_node = (double**) malloc2d(9, n_nodes);
+    ia_.active    = (int*) malloc1d_int(n_nodes);
+    ia_.row       = (double**) malloc2d(3, n_a);
+    ia_.fnu_pars  = (fnu_params*) malloc(sizeof(fnu_params)*n_a);
+    ia_.dn        = (double**) malloc2d(n_a, n_nodes);
+    ia_.halo      = (ia_halo*)
+                    malloc(sizeof(ia_halo)*ia_.block_rows*n_nodes);
+    ia_.ln_coarse = (double***) malloc3d(2, n_a, n_coarse);
+    ia_.curv      = (double**) malloc2d(n_a, n_coarse);
+    ia_.k_mult    = (double*) malloc1d(n_coarse);
+    ln_k_spline_multipliers(n_coarse, ia_.k_mult);
+
+    // GL nodes M_q and weights w_q on [ln M_min, ln M_max]
+    const double lnMmin = log(limits.halo_m_min);
+    const double lnMmax = log(limits.halo_m_max);
+    gsl_integration_glfixed_table* gl_table = malloc_gslint_glfixed(n_nodes);
+    for (int q=0; q<n_nodes; q++) {
+      double lnM;
+      gsl_integration_glfixed_point(lnMmin, lnMmax, q, &lnM,
+                                    &ia_.mass_node[1][q], gl_table);
+      ia_.mass_node[0][q] = exp(lnM);
+    }
+    gsl_integration_glfixed_table_free(gl_table);
+
+    // the ln k axis (p_mm's)
+    ia_.lim[1][0] = log(limits.k_min_cH0);
+    ia_.lim[1][1] = log(limits.k_max_cH0);
+    ia_.lim[1][2] = (ia_.lim[1][1] - ia_.lim[1][0])
+                    /((double) Ntable.N_k_nlin - 1.0);
+
+    // Hermite slopes of the nfw_ table (ia_fg_read header): at node
+    // ln t_i, h df/dln t = -h t g(t) and h dG/dln t = h t f(t), with
+    // g = G - ln t and h the node spacing
+    nfw_table();
+    ia_.fg_slope = (double**) malloc2d(2, nfw_.n_nodes);
+    for (int i=0; i<nfw_.n_nodes; i++) {
+      const double lnt = nfw_.lim[0] + i*nfw_.lim[2];
+      const double t   = exp(lnt);
+      const double f_i = nfw_.tab[0][i];
+      const double g_i = nfw_.tab[1][i] - lnt;
+      ia_.fg_slope[0][i] = -t*g_i*nfw_.lim[2];
+      ia_.fg_slope[1][i] = t*f_i*nfw_.lim[2];
+    }
+  }
+
+  // --- 2. REFILL ---
+  if (fdiff2(ia_.cache[0], cosmology.random) ||
+      fdiff2(ia_.cache[1], Ntable.random) ||
+      fdiff2(ia_.cache[2], nuisance.random_ia_halo) ||
+      fdiff2(ia_.cache[3], redshift.random_shear) ||
+      fdiff2(ia_.cache[4], nuisance.random_photoz_shear))
+  {
+    // --- 2a. GUARDS, THE a GRID AND THE WARM-UP ---
+
+    // the rows read the NFW kernel directly (p_mm header, item 2)
+    if (like.halo_model[3] != HALO_PROFILE_NFW) {
+      log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+
+    const int lmax = Ntable.halo_ia_lmax;
+    if (lmax != 2 && lmax != 4 && lmax != 6) {
+      log_fatal("Ntable.halo_ia_lmax = %d must be 2, 4 or 6", lmax);
+      exit(1);
+    }
+    ia_.n_l = lmax/2;
+
+    // the IA HOD, {lg M_min, sigma_lgM, lg M_1, lg M_0, alpha, f_c}:
+    // lg M_min outside this range flags an HOD that was never set
+    const double lgM_min_lo = 10.0;
+    const double lgM_min_hi = 16.0;
+    const double lgM_min    = nuisance.ia_hod[0];
+    const double sigma_lgM  = nuisance.ia_hod[1];
+
+    const int hod_unset   = (lgM_min < lgM_min_lo || lgM_min > lgM_min_hi);
+    const int sigma_unset = !(sigma_lgM > 0);
+    if (hod_unset || sigma_unset) {
+      log_fatal("IA HOD not set (lgMmin = %g, sigma_lgM = %g)",
+                lgM_min, sigma_lgM);
+      exit(1);
+    }
+
+    // red fractions: centers and widths in log10 M
+    const double lgM_red_cen = nuisance.ia_red[0];
+    const double width_cen   = nuisance.ia_red[1];
+    const double lgM_red_sat = nuisance.ia_red[2];
+    const double width_sat   = nuisance.ia_red[3];
+    if (!(width_cen > 0) || !(width_sat > 0)) {
+      log_fatal("red-fraction widths must be > 0 (%g, %g)",
+                width_cen, width_sat);
+      exit(1);
+    }
+
+    // a grid over the source range, both ends included; it moves with
+    // the source photo-z parameters, so it is set at every refill
+    double amin = amin_source(0);
+    double amax = amax_source(0);
+    for (int ns=1; ns<redshift.shear_nbin; ns++) {
+      amin = fmin(amin, amin_source(ns));
+      amax = fmax(amax, amax_source(ns));
+    }
+    ia_.lim[0][0] = amin;
+    ia_.lim[0][1] = amax;
+    ia_.lim[0][2] = (amax - amin)/((double) ia_.n_a - 1.0);
+
+    // every lazy table the threaded loops read is built here, on one
+    // thread (header, Thread safety)
+    halo_warmup(ia_.lim[0][0], exp(ia_.lim[1][0]), 0, 0);
+
+    /* PHYSICAL DERIVATION & LOGIC FLOW (equations: header above)
+       1. node q: M, w (rho_m/M) dlnnu/dlnM, nu0, r_Delta, occupations
+          N_tot = f_c N_c + N_s, N_rc = f_c N_c f_red,cen,
+          N_rs = N_s f_red,sat                          (section banner)
+       2. row i: D(a), a_1h(a), dn = w (rho_m/M) dlnnu/dlnM f(nu) nu,
+          n_g = sum dn N_tot, f_rc = sum dn N_rc/n_g
+       3. (row, active node): c(M, D), r_s, r_e = max(r_floor,
+          r_Delta (|a_1h|/gamma_max)^(1/2)), x_e = r_e/r_s,
+          w_dI = dn (M/rho_m)(N_rs/n_g)/m^2, w_II = dn (N_rs/n_g)^2/m^2,
+          edge constants at x_in = min(x_e, c) and c   (F21 Eq. 20)
+       4. (row, coarse k): S_dI = sum w_dI um |gamma_m|     (F21 Eq. 17)
+                           S_II = sum w_II gamma_m^2        (F21 Eq. 18)
+       5. row i: ln S splined from the coarse to the dense ln k grid */
+
+    const int n_a      = ia_.n_a;
+    const int n_nodes  = ia_.n_nodes;
+    const int n_coarse = ia_.n_coarse;
+    const int n_l      = ia_.n_l;
+
+    const double rho_m     = cosmology.rho_crit*cosmology.Omega_m;
+    const double rho_delta = Delta*rho_m;
+
+    // --- 2b. PER MASS NODE, SERIAL: WEIGHTS AND OCCUPATIONS ---
+    double f_c = nuisance.ia_hod[5];  // 0 = unset: read as 1 (HOD_fc)
+    if (0.0 == f_c) {
+      f_c = 1.0;
+    }
+    const double M_1   = pow(10.0, nuisance.ia_hod[2]);
+    const double M_0   = pow(10.0, nuisance.ia_hod[3]);
+    const double alpha = nuisance.ia_hod[4];
+
+    double** const mass_node = ia_.mass_node;
+    ia_.n_active = 0;
+
+    for (int q=0; q<n_nodes; q++) {
+      const double m   = mass_node[0][q];
+      const double lgM = log10(m);
+
+      // N_c = (1 + erf[(lg M - lg M_min)/sigma_lgM])/2,
+      // N_s = N_c [(M - M_0)/M_1]^alpha above M_0, 0 below
+      const double n_cen = 0.5*(1.0 + erf((lgM - lgM_min)/sigma_lgM));
+      double n_sat = 0.0;
+      if (m > M_0) {
+        n_sat = n_cen*pow((m - M_0)/M_1, alpha);
+      }
+
+      // red fractions f_red = (1 + tanh[(lg M - lg M_red)/width])/2
+      const double f_red_cen = 0.5*(1.0 + tanh((lgM - lgM_red_cen)/width_cen));
+      const double f_red_sat = 0.5*(1.0 + tanh((lgM - lgM_red_sat)/width_sat));
+
+      mass_node[2][q] = mass_node[1][q]*(rho_m/m)*dlognudlogm(m);
+      mass_node[3][q] = delta_c/sqrt(sigma2(m));                // nu0
+      mass_node[4][q] = pow(3.0/(4.0*M_PI)*(m/rho_delta), 1.0/3.0); // r_Delta
+      mass_node[5][q] = m/rho_m;
+      mass_node[6][q] = f_c*n_cen + n_sat;                      // N_tot
+      mass_node[7][q] = f_c*n_cen*f_red_cen;                    // N_rc
+      mass_node[8][q] = n_sat*f_red_sat;                        // N_rs
+
+      if (mass_node[8][q] > 0) {
+        ia_.active[ia_.n_active] = q;
+        ia_.n_active++;
+      }
+    }
+    if (0 == ia_.n_active) {
+      log_fatal("IA HOD: no mass node hosts red satellites");
+      exit(1);
+    }
+    const int n_active = ia_.n_active;
+
+    // --- 2c. PER a ROW, THREADED: D, a_1h, dn, n_g, f_rc ---
+    #pragma omp parallel for schedule(static)
+    for (int i=0; i<n_a; i++) {
+      const double ai = ia_.lim[0][0] + i*ia_.lim[0][2];
+      const double D  = growfac(ai);
+      ia_.fnu_pars[i] = fnu_params_at(ai);
+
+      double* restrict dn_row = ia_.dn[i];
+      double n_gal = 0.0;       // sum_q dn N_tot -> n_g(a_i)
+      double n_red_cen = 0.0;   // sum_q dn N_rc
+
+      for (int q=0; q<n_nodes; q++) {
+        const double nu = mass_node[3][q]/D;
+        const double dn = mass_node[2][q]*fnu_core(nu, &ia_.fnu_pars[i])*nu;
+        dn_row[q] = dn;
+        n_gal     += dn*mass_node[6][q];
+        n_red_cen += dn*mass_node[7][q];
+      }
+
+      if (!(n_gal > 0)) {
+        log_fatal("IA HOD: n_g = %g at a = %g", n_gal, ai);
+        exit(1);
+      }
+
+      ia_.row[0][i]     = D;
+      ia_.row[1][i]     = ia_a1h(ai);
+      ia_.row[2][i]     = n_gal;
+      ia_.f_red_cen[i]  = n_red_cen/n_gal;
+    }
+
+    // --- 2d. ROW BLOCKS: HALO CONSTANTS, THEN THE COARSE SUMS ---
+    const double r_floor   = IA_R_FLOOR_MPCH/cosmology.coverH0; // c/H0
+    const double dlnk      = ia_.lim[1][2];
+    const double lnk_first = ia_.lim[1][0] - K_PAD*ia_.k_step*dlnk;
+
+    for (int i0=0; i0<n_a; i0+=ia_.block_rows) {
+      int n_rows = ia_.block_rows;
+      if (i0 + n_rows > n_a) {
+        n_rows = n_a - i0;
+      }
+
+      // (row, active node): the kernel's per-halo constants
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int b=0; b<n_rows; b++) {
+        for (int p=0; p<n_active; p++) {
+          const int i = i0 + b;
+          const int q = ia_.active[p];
+          ia_halo* halo = &ia_.halo[b*n_nodes + p];
+
+          const double m       = mass_node[0][q];
+          const double D       = ia_.row[0][i];
+          const double a1h_abs = fabs(ia_.row[1][i]);
+          const double n_gal   = ia_.row[2][i];
+          const double r_delta = mass_node[4][q];
+
+          // NFW: c(M, a), m(c) = ln(1 + c) - c/(1 + c), r_s = r_Delta/c
+          const double c    = conc(m, D);
+          const double ln1c = log1p(c);
+          const double mc   = ln1c - c/(1.0 + c);
+          const double r_s  = r_delta/c;
+
+          // r_e = max(r_floor, r_Delta (|a_1h|/gamma_max)^(1/2)): g is
+          // flat inside x_e = r_e/r_s (section banner)
+          const double r_cap = r_delta*sqrt(a1h_abs/IA_GAMMA_MAX);
+          const double r_e   = fmax(r_floor, r_cap);
+          const double x_e   = r_e/r_s;
+          const double x_in  = fmin(x_e, c);
+
+          // red satellites per galaxy of the sample, N_rs/n_g
+          const double sat_per_gal = mass_node[8][q]/n_gal;
+          const double dn          = ia_.dn[i][q];
+
+          halo->conc      = c;
+          halo->ln1c      = ln1c;
+          halo->r_s       = r_s;
+          halo->lnrs      = log(r_s);
+          halo->w_inner   = (c/x_e)*(c/x_e);
+          halo->conc2     = c*c;
+          halo->w_dI      = dn*mass_node[5][q]*sat_per_gal/(mc*mc);
+          halo->w_II      = dn*sat_per_gal*sat_per_gal/(mc*mc);
+          halo->has_power = (x_e < c);
+
+          ia_edge_setup(x_in, n_l, &halo->edge[0]);
+          if (halo->has_power) {
+            ia_edge_setup(c, n_l, &halo->edge[1]);
+          }
+        }
+      }
+
+      // (row, coarse k): the two sums over the active nodes
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int b=0; b<n_rows; b++) {
+        for (int ck=0; ck<n_coarse; ck++) {
+          const int i = i0 + b;
+          const double lnk = lnk_first + ck*ia_.k_step*dlnk;
+          const double k_coarse = exp(lnk);
+          const ia_halo* row_halo = &ia_.halo[b*n_nodes];
+
+          double sum_dI = 0.0;  // sum_q w_dI um |gamma_m|
+          double sum_II = 0.0;  // sum_q w_II gamma_m^2
+
+          for (int p=0; p<n_active; p++) {
+            const ia_halo* halo = &row_halo[p];
+            const double t   = k_coarse*halo->r_s; // k r_s
+            const double lnt = lnk + halo->lnrs; // ln(k r_s)
+
+            const double um      = nfw_um(halo->conc, t, lnt, halo->ln1c);
+            const double gamma_m = ia_gamma_hat_m(halo, t, lnt, n_l);
+
+            sum_dI += halo->w_dI*um*fabs(gamma_m);
+            sum_II += halo->w_II*gamma_m*gamma_m;
+          }
+
+          if (!(sum_dI > 0) || !(sum_II > 0)) {
+            log_fatal("non-positive IA 1-halo sum at ln k = %g", lnk);
+            exit(1);
+          }
+          ia_.ln_coarse[0][i][ck] = log(sum_dI);
+          ia_.ln_coarse[1][i][ck] = log(sum_II);
+        }
+      }
+    }
+
+    // --- 2e. PER a ROW, THREADED: SPLINE TO THE DENSE ln k GRID ---
+    #pragma omp parallel for schedule(static)
+    for (int i=0; i<n_a; i++) {
+      for (int s=0; s<2; s++) {
+        ln_k_spline_upsample(ia_.ln_coarse[s][i], n_coarse, ia_.k_step,
+                             K_PAD, dlnk, Ntable.N_k_nlin, ia_.k_mult,
+                             ia_.curv[i], ia_.tab[s][i]);
+      }
+    }
+
+    // --- 2f. CACHE TAGS: THE INPUTS THE TABLES NOW HOLD ---
+    ia_.cache[0] = cosmology.random;
+    ia_.cache[1] = Ntable.random;
+    ia_.cache[2] = nuisance.random_ia_halo;
+    ia_.cache[3] = redshift.random_shear;
+    ia_.cache[4] = nuisance.random_photoz_shear;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// f_rc(a), the fraction of the IA (source) sample that are red centrals,
+//
+//   f_rc(a) = int dlnM dn/dlnM f_c N_c(M) f_red,cen(M) / n_g(a)
+//
+// (F21's f_cen^red, the weight of the NLA 2-halo term), tabulated by
+// ia_tables (its header) and interpolated linearly in a.
+//
+// Cache invalidation:
+//   ia_tables (its header)
+//
+// Parameters:
+//   a - scale factor
+//
+// Returns:
+//   f_rc(a) in [0, 1]; 0 outside the source a range
+// ---------------------------------------------------------------------------
+double ia_f_red_central(
+    const double a  // scale factor
+  )
+{
+  ia_tables();
+
+  if (a < ia_.lim[0][0] || a > ia_.lim[0][1]) {
+    return 0.0;
+  }
+
+  return interpol1d(ia_.f_red_cen, ia_.n_a, ia_.lim[0][0], ia_.lim[0][1],
+                    ia_.lim[0][2], a);
+}
+
+
+// ---------------------------------------------------------------------------
+// P_dI^1h(k, a) = a_1h(a) f_1h(k) S_dI(k, a), the satellite (1-halo)
+// part of the matter-intrinsic spectrum (F21 Eq. 17; section banner),
+// with the SIGN of a_1h(a): the C_l cores of cosmo2D.c subtract it,
+// P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h]. ln S_dI is read
+// bilinearly in (a, ln k) from ia_tables and exponentiated.
+//
+// Cache invalidation:
+//   ia_tables (its header)
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1
+//   a - scale factor
+//
+// Returns:
+//   P_dI^1h in (c/H0)^3, signed; 0 outside the source a range; ln S_dI
+//   continued with unit slope outside [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
+double ia_p1h_dI(
+    const double k,  // wavenumber in (c/H0)^-1
+    const double a   // scale factor
+  )
+{
+  ia_tables();
+
+  if (a < ia_.lim[0][0] || a > ia_.lim[0][1]) {
+    return 0.0;
+  }
+
+  const double a1h = ia_a1h(a);
+  if (0.0 == a1h) {
+    return 0.0;
+  }
+
+  const double ln_S = interpol2d(ia_.tab[0],
+                                 ia_.n_a, ia_.lim[0][0], ia_.lim[0][1],
+                                 ia_.lim[0][2], a,
+                                 Ntable.N_k_nlin, ia_.lim[1][0],
+                                 ia_.lim[1][1], ia_.lim[1][2], log(k));
+
+  return a1h*ia_window_1h(k)*exp(ln_S);
+}
+
+
+// ---------------------------------------------------------------------------
+// P_II^1h(k, a) = a_1h(a)^2 f_1h(k) S_II(k, a), the satellite (1-halo)
+// part of the intrinsic-intrinsic E-mode spectrum (F21 Eq. 18; section
+// banner). ln S_II is read bilinearly in (a, ln k) from ia_tables and
+// exponentiated. The B mode of radial alignment vanishes (F21 sec. 4.1).
+//
+// Cache invalidation:
+//   ia_tables (its header)
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1
+//   a - scale factor
+//
+// Returns:
+//   P_II^1h in (c/H0)^3, >= 0; 0 outside the source a range; ln S_II
+//   continued with unit slope outside [ln k_min, ln k_max] (interpol2d)
+// ---------------------------------------------------------------------------
+double ia_p1h_II(
+    const double k,  // wavenumber in (c/H0)^-1
+    const double a   // scale factor
+  )
+{
+  ia_tables();
+
+  if (a < ia_.lim[0][0] || a > ia_.lim[0][1]) {
+    return 0.0;
+  }
+
+  const double a1h = ia_a1h(a);
+  if (0.0 == a1h) {
+    return 0.0;
+  }
+
+  const double ln_S = interpol2d(ia_.tab[1],
+                                 ia_.n_a, ia_.lim[0][0], ia_.lim[0][1],
+                                 ia_.lim[0][2], a,
+                                 Ntable.N_k_nlin, ia_.lim[1][0],
+                                 ia_.lim[1][1], ia_.lim[1][2], log(k));
+
+  return a1h*a1h*ia_window_1h(k)*exp(ln_S);
 }
 
 

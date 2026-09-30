@@ -58,7 +58,7 @@ namespace cosmolike_interface
 //   ni, nj = lens (clustering) tomographic bins, counted from 0
 //
 // Dimensionless: u_nfw_c, u_KS, conc, hb1nu, fnu, dlognudlogm,
-// bias_norm, bgal.
+// bias_norm, bgal, ia_f_red_central, ia_window_2h.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -214,6 +214,52 @@ void set_nuisance_hod_cpp(
 
 // gas (Compton-y) parameters nuisance.gas[0..n-1]
 void set_nuisance_gas_cpp(const arma::Col<double> gas);
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// HALO-MODEL INTRINSIC ALIGNMENT (Fortuna et al. 2021; cached tables over
+// the source a range, 0 outside it)
+//
+// ia_p1h_dI is signed with a_1h: the C_l cores of cosmo2D.c subtract it,
+// P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h]. Scalar overloads return
+// one value; array overloads batch over k at one a. The IA wrappers
+// abort for a outside (0, 1).
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+// red-central fraction f_rc(a) of the IA (source) sample (table in a)
+double ia_f_red_central_cpp(const double a);
+
+// -----------------------------------------------------------------------------
+
+// f_2h(k) = exp[-(k/k_2h)^2], the window of the NLA 2-halo term
+double ia_window_2h_cpp(const double k);
+
+arma::Col<double> ia_window_2h_cpp(const arma::Col<double> k);
+
+// -----------------------------------------------------------------------------
+
+// P_dI^1h = a_1h(a) f_1h(k) S_dI(k, a), signed with a_1h
+double ia_p1h_dI_cpp(const double k, const double a);
+
+arma::Col<double> ia_p1h_dI_cpp(const arma::Col<double> k, const double a);
+
+// -----------------------------------------------------------------------------
+
+// P_II^1h = a_1h(a)^2 f_1h(k) S_II(k, a), >= 0
+double ia_p1h_II_cpp(const double k, const double a);
+
+arma::Col<double> ia_p1h_II_cpp(const arma::Col<double> k, const double a);
+
+// halo-model IA parameters: a_1h, eta_1h, z_pivot; red-fraction sigmoids;
+// IA-population HOD (halo_wrapper.cpp header)
+void set_nuisance_ia_halo_cpp(
+    const arma::Col<double> ia_halo,
+    const arma::Col<double> ia_red,
+    const arma::Col<double> ia_hod
+  );
 
 // -----------------------------------------------------------------------------
 

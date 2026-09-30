@@ -76,6 +76,11 @@ void set_include_HOD_GX(const int flag);
 
 int get_include_HOD_GX(void);
 
+// runtime switch and reader of the halo-model IA gate (include_halo_IA)
+void set_include_halo_IA(const int flag);
+
+int get_include_halo_IA(void);
+
 double C_ks_tomo_limber(const double l, const int ni);
 
 double C_gk_tomo_limber(const double l, const int ni);

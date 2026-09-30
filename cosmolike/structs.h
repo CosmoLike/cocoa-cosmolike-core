@@ -136,6 +136,9 @@ typedef struct
   int halo_nk_step; // p_gm/p_gg coarse ln k step at high_def_integration
                     // 0 (halved per rung, down to exact; not boosted)
   int halo_na_lens; // p_gm/p_gg a nodes per lens bin (boosted)
+  int halo_ia_lmax; // halo-model IA: highest multipole (2, 4 or 6)
+  int halo_ia_na;   // halo-model IA tables: a nodes over the source range
+                    // (boosted)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // HALO MODEL
@@ -291,6 +294,7 @@ typedef struct
   uint64_t random_ia;
   uint64_t random_galaxy_bias;
   uint64_t random_gas;
+  uint64_t random_ia_halo;  // halo-model IA parameters (below)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // INTRINSIC ALIGMENT --------------------------------
@@ -364,6 +368,19 @@ typedef struct
   //gas[9] = gas_lgT_w;
   //gas[10] = gas_f_H;
   double gas[MAX_SIZE_ARRAYS]; // Compton-Y related variables
+  // ---------------------------------------------------
+  // HALO-MODEL INTRINSIC ALIGNMENT (Fortuna et al. 2021; halo.c)
+  // ---------------------------------------------------
+  // ia_halo[0] = a_1h (satellite radial alignment amplitude)
+  // ia_halo[1] = eta_1h (a_1h (1+z)^eta_1h / (1+z_pivot)^eta_1h)
+  // ia_halo[2] = z_pivot
+  double ia_halo[MAX_SIZE_ARRAYS];
+  // red fractions of centrals and satellites (sigmoids in log10 M):
+  // [0] lg M_c,cen [1] width_cen [2] lg M_c,sat [3] width_sat
+  double ia_red[MAX_SIZE_ARRAYS];
+  // HOD of the IA (source) population, {lg M_min, sigma_lgM, lg M_1,
+  // lg M_0, alpha, f_c} (the Zheng07 form of HOD_nc, HOD_ns)
+  double ia_hod[MAX_SIZE_ARRAYS];
   // ---------------------------------------------------
   // ---------------------------------------------------
   // CLUSTER ROUTINES (ALPHA STAGE)
