@@ -922,7 +922,10 @@ double zdistr_histo_n(double z, const int ni)
 //     - number of bins, redshift range, bin edges
 //   Also recomputes when Ntable.photoz_interpolation_type or
 //   Ntable.photoz_zmid_convention change, via the packed settings key
-//   described above the rebuild condition.
+//   described above the rebuild condition, and when
+//   Ntable.nz_fine_sampling_factor changes (init_accuracy_boost scales
+//   it; without this key a boost set after the n(z) is loaded would
+//   keep the fine grid of the old factor).
 //
 // Parameters:
 //   zz — redshift at which to evaluate (before photo-z shift)
@@ -967,9 +970,15 @@ double nz_source_photoz(double zz, const int nj)
   // The 1+ offset keeps a stamped slot nonzero, so it can never equal
   // the zero that C puts in the static cache array before the first
   // build.
+  //
+  // cache[2] holds the fine-sampling factor the fine grid was built
+  // with. It is keyed on its value, not on Ntable.random: Ntable.random
+  // is redrawn by every Ntable setter (init_binning, ...), and the n(z)
+  // tables must not rebuild for changes that do not touch them.
   if (table == NULL || fdiff2(cache[0], redshift.random_shear) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
-                                + 8*Ntable.photoz_zmid_convention)) {
+                                + 8*Ntable.photoz_zmid_convention) ||
+      cache[2] != (uint64_t) Ntable.nz_fine_sampling_factor) {
     if (table == NULL) {
       for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++)
         photoz_splines[i] = NULL;
@@ -1107,6 +1116,7 @@ double nz_source_photoz(double zz, const int nj)
     // same packed encoding as the rebuild condition above
     cache[1] = (uint64_t) (1 + Ntable.photoz_interpolation_type
                              + 8*Ntable.photoz_zmid_convention);
+    cache[2] = (uint64_t) Ntable.nz_fine_sampling_factor;
   }
 
   const int ntomo = redshift.shear_nbin;
@@ -1376,7 +1386,8 @@ double pf_histo_n(double z, const int ni)
 //     - number of bins, redshift range, bin edges
 //   Also recomputes when Ntable.photoz_interpolation_type or
 //   Ntable.photoz_zmid_convention change, via the packed settings key
-//   described above the rebuild condition.
+//   described above the rebuild condition, and when
+//   Ntable.nz_fine_sampling_factor changes (as in nz_source_photoz).
 //
 // Parameters:
 //   zz — redshift at which to evaluate (before photo-z transformation)
@@ -1419,9 +1430,13 @@ double nz_lens_photoz(double zz, int nj)
   // The 1+ offset keeps a stamped slot nonzero, so it can never equal
   // the zero that C puts in the static cache array before the first
   // build.
+  //
+  // cache[2]: the fine-sampling factor of the fine grid, keyed on its
+  // value (see nz_source_photoz).
   if (NULL == table || fdiff2(cache[0], redshift.random_clustering) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
-                                + 8*Ntable.photoz_zmid_convention))
+                                + 8*Ntable.photoz_zmid_convention) ||
+      cache[2] != (uint64_t) Ntable.nz_fine_sampling_factor)
   {
     if (table == NULL) {
       for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++) {
@@ -1555,6 +1570,7 @@ double nz_lens_photoz(double zz, int nj)
     // same packed encoding as the rebuild condition above
     cache[1] = (uint64_t) (1 + Ntable.photoz_interpolation_type
                              + 8*Ntable.photoz_zmid_convention);
+    cache[2] = (uint64_t) Ntable.nz_fine_sampling_factor;
   }
 
   const int ntomo = redshift.clustering_nbin;
