@@ -65,6 +65,22 @@ double bcl_richness(const double a, const int nl);
 double pcm_1h_richness(const double k, const double a, const int nl);
 
 // ---------------------------------------------------------------------------
+// The same spectrum at n points and every richness bin in one call:
+//   out[nl][q] = pcm_1h_richness(k[q], a[q], nl),  q = 0 .. n-1,
+//   nl = 0 .. cluster.richness_nbin - 1
+// (out: cluster.richness_nbin rows of length >= n; k, a and the rows of
+// out must not overlap). The read of the cluster-lensing Limber integrand:
+// the n points are the quadrature nodes of one multipole. A point's place
+// on the table is found once and serves every richness bin, four points
+// per SIMDe vector; every value is bitwise pcm_1h_richness's
+// (COSMO2D_NOT_USE_SIMD: that scalar call per point). Thread rule of
+// pcm_1h_richness: after cluster_warmup, calls from threaded loops only
+// read.
+// ---------------------------------------------------------------------------
+void pcm_1h_richness_fill(const double* k, const double* a, const int n,
+  double** out);
+
+// ---------------------------------------------------------------------------
 // Builds every lazily filled cluster table (this file, the kernel and
 // lensing-efficiency tables of redshift_spline_cluster.c) serially. The
 // interface calls it before any threaded loop reads a cluster table.

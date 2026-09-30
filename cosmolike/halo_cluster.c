@@ -83,6 +83,9 @@
 //   bcl_richness   = b_nl(a), the richness-weighted linear bias
 //   pcm_1h_richness = P1h_nl(k, a), the one-halo cluster-matter spectrum
 //                    ("p" power, "cm" cluster-matter, "1h" one halo)
+//   pcm_1h_richness_fill = that read at many (k, a) points and every
+//                    richness bin in one call (the Limber nodes of one
+//                    multipole), four points per SIMDe vector
 //   cluster_tinker_* = a private copy of halo.c's Tinker 2010 f(nu) shape,
 //                    at the fixed amplitude 0.368 (CLUSTER_HMF_ALPHA_FIXED)
 //   cluster_mass_tables = THE fill: one deep-unrolled loop nest over
@@ -122,11 +125,12 @@
 // what cluster_warmup is for.
 //
 // SIMD: the P1h sums evaluate the NFW kernel on four mass nodes per SIMDe
-// vector (AVX2 on x86-64, NEON on arm64, from one source). The vector
-// path performs the scalar path's floating-point operations in the scalar
-// order on every element, so its tables are bitwise the scalar path's.
-// COSMO2D_NOT_USE_SIMD (the DEBUG build; basics.h then leaves SIMDe out)
-// selects the scalar loops, the reference.
+// vector, and the batch read pcm_1h_richness_fill takes four (k, a)
+// points per vector (AVX2 on x86-64, NEON on arm64, from one source).
+// Both vector paths perform the scalar path's floating-point operations
+// in the scalar order on every element, so their values are bitwise the
+// scalar path's. COSMO2D_NOT_USE_SIMD (the DEBUG build; basics.h then
+// leaves SIMDe out) selects the scalar loops, the reference.
 // ---------------------------------------------------------------------------
 
 
@@ -2285,6 +2289,384 @@ double pcm_1h_richness(
   const double ln_p_hi = cluster_p1h_row(nl, i + 1, lnk, lnk_beyond);
 
   return exp(ln_p_lo + t_a*(ln_p_hi - ln_p_lo));
+}
+
+
+#ifndef COSMO2D_NOT_USE_SIMD
+// ---------------------------------------------------------------------------
+// cluster_load_pairs4: two neighbouring table values per lane, regrouped.
+//
+// A spline read needs the two nodes that bracket its point: (y_j, y_{j+1})
+// and (c_j, c_{j+1}). They sit side by side in memory, so one 16-byte
+// load per lane fetches a pair; the four pairs are then regrouped into a
+// v4d of left values and a v4d of right values. This is the memory access
+// of cluster_nfw_read4 with one difference: there the four lanes read one
+// table row at four indices, here each lane has its own row as well (its
+// own a node), so the caller passes the four addresses.
+//
+// Why no gather instruction (the limber_fill_interp idiom of cosmo2D.c):
+// a gather takes one base address, and the lanes read different rows;
+// paired loads also fetch both neighbours at once.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) void cluster_load_pairs4(
+    const double* const left_node[4],  // address of each lane's left value
+    v4d* vleft,                        // output: left_node[l][0] on lane l
+    v4d* vright                        // output: left_node[l][1] on lane l
+  )
+{
+  // the pair of each lane, one two-double load each (loadu reads two
+  // consecutive doubles from memory into a v2d)
+  const v2d vpair0 = simde_mm_loadu_pd(left_node[0]);  // lane 0's pair
+  const v2d vpair1 = simde_mm_loadu_pd(left_node[1]);  // lane 1's pair
+  const v2d vpair2 = simde_mm_loadu_pd(left_node[2]);  // lane 2's pair
+  const v2d vpair3 = simde_mm_loadu_pd(left_node[3]);  // lane 3's pair
+
+  // unpacklo takes the first double of each pair, unpackhi the second
+
+  // the left values of lanes 0,1
+  const v2d vleft_low = simde_mm_unpacklo_pd(vpair0, vpair1);
+
+  // the left values of lanes 2,3
+  const v2d vleft_high = simde_mm_unpacklo_pd(vpair2, vpair3);
+
+  // the right values of lanes 0,1
+  const v2d vright_low = simde_mm_unpackhi_pd(vpair0, vpair1);
+
+  // the right values of lanes 2,3
+  const v2d vright_high = simde_mm_unpackhi_pd(vpair2, vpair3);
+
+  // the left values on all four lanes (set_m128d joins the halves, low
+  // first)
+  *vleft = simde_mm256_set_m128d(vleft_high, vleft_low);
+
+  // the right values on all four lanes
+  *vright = simde_mm256_set_m128d(vright_high, vright_low);
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_spline_horner4: spline_horner on four lanes, the house
+// natural-spline read
+//
+//   S(x_j + t) = y_j + t (b + t (c_j + t d)),
+//   b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3,  d = (c_{j+1} - c_j)/(3 h)
+//
+// with lane l holding one read: its own interval (the caller loaded y_j,
+// y_{j+1}, c_j, c_{j+1} of that interval into lane l) and its own offset t.
+//
+// Why it is bitwise spline_horner: the same operations in the same order,
+// the divisions kept as divisions (a vector division rounds as the scalar
+// one does), and the three multiply-adds of the Horner form fused
+// (cluster_fmadd4), as the compiler fuses the scalar expression. In b,
+// c_{j+1} + 2 c_j is the same double fused or not (2 c_j is exact), and
+// neither difference of b has a product as a direct operand, so nothing
+// else can fuse.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_spline_horner4(
+    const v4d vy0,   // y_j of each lane
+    const v4d vy1,   // y_{j+1}
+    const v4d vc0,   // c_j = S''(x_j)/2
+    const v4d vc1,   // c_{j+1}
+    const v4d vt,    // offset t from x_j of each lane, 0 <= t <= h
+    const double h   // grid spacing
+  )
+{
+  // h, 2, 3 and 3 h in all four lanes (set1 copies one scalar into every
+  // lane; 3.0*h is the scalar path's product, computed once)
+  const v4d vh     = simde_mm256_set1_pd(h);
+  const v4d vtwo   = simde_mm256_set1_pd(2.0);
+  const v4d vthree = simde_mm256_set1_pd(3.0);
+  const v4d v3h    = simde_mm256_set1_pd(3.0*h);
+
+  // scalar: b = (y[j+1] - y[j])/h - h*(curv[j+1] + 2.0*curv[j])/3.0
+
+  // y_{j+1} - y_j
+  const v4d vdy = simde_mm256_sub_pd(vy1, vy0);
+
+  // (y_{j+1} - y_j)/h, the chord slope
+  const v4d vslope = simde_mm256_div_pd(vdy, vh);
+
+  // 2 c_j
+  const v4d vtwo_c0 = simde_mm256_mul_pd(vtwo, vc0);
+
+  // c_{j+1} + 2 c_j
+  const v4d vcsum = simde_mm256_add_pd(vc1, vtwo_c0);
+
+  // h (c_{j+1} + 2 c_j)
+  const v4d vh_csum = simde_mm256_mul_pd(vh, vcsum);
+
+  // h (c_{j+1} + 2 c_j)/3
+  const v4d vcurv_term = simde_mm256_div_pd(vh_csum, vthree);
+
+  // b
+  const v4d vb = simde_mm256_sub_pd(vslope, vcurv_term);
+
+  // scalar: d = (curv[j+1] - curv[j])/(3.0*h)
+
+  // c_{j+1} - c_j
+  const v4d vdc = simde_mm256_sub_pd(vc1, vc0);
+
+  // d
+  const v4d vd = simde_mm256_div_pd(vdc, v3h);
+
+  // scalar: y[j] + t*(b + t*(curv[j] + t*d)), innermost bracket first,
+  // each t*(..) + .. fused
+
+  // c_j + t d
+  const v4d vinner = cluster_fmadd4(vt, vd, vc0);
+
+  // b + t (c_j + t d)
+  const v4d vouter = cluster_fmadd4(vt, vinner, vb);
+
+  // y_j + t (b + t (c_j + t d))
+  return cluster_fmadd4(vt, vouter, vy0);
+}
+#endif
+
+
+// ---------------------------------------------------------------------------
+// P1h_nl at n points and every richness bin in one call:
+//
+//   out[nl][q] = pcm_1h_richness(k[q], a[q], nl),
+//   q = 0 .. n-1,  nl = 0 .. cluster.richness_nbin - 1
+//
+// the read of the cluster-lensing Limber integrand, whose n points are
+// the quadrature nodes of one multipole: a_q along the line of sight,
+// k_q = (l + 1/2)/f_K(a_q) (C_cs_tomo_limber_work of cosmo2D_cluster.c).
+//
+// Why a batch: a point's place on the table does not depend on the
+// richness bin. ln k, the a node i with its fraction t_a and the ln k
+// interval j with its offset t are found once per point and serve every
+// bin, and four points are read per SIMDe vector (one per lane of a v4d).
+//
+// The vector body takes the groups of four points that read the table
+// the ordinary way: every a inside the a grid and every k at or below
+// the last ln k node. A group with a point outside the a grid (P1h = 0)
+// or above the table (the power-law continuation), and the last n % 4
+// points, go through pcm_1h_richness itself. Both are the scalar read,
+// so every value is bitwise pcm_1h_richness's: the same operations in
+// the same order per point (cluster_spline_horner4), libm log and exp on
+// every lane.
+//
+// Thread rule of pcm_1h_richness: the first call after a key changed must
+// run outside any parallel region (cluster_warmup); after it, calls from
+// threaded loops only read.
+//
+// Parameters:
+//   k   - [n] wavenumbers in (c/H0)^-1
+//   a   - [n] scale factors
+//   n   - number of points
+//   out - [cluster.richness_nbin][>= n] output: P1h_nl(k_q, a_q) in
+//         (c/H0)^3; 0 outside the a grid
+// ---------------------------------------------------------------------------
+void pcm_1h_richness_fill(
+    const double* restrict k,
+    const double* restrict a,
+    const int n,
+    double** out
+  )
+{
+  const int nl_bins = cluster.richness_nbin;
+
+  cluster_p1h_table();
+
+#ifndef COSMO2D_NOT_USE_SIMD
+  // --- table geometry: the numbers of pcm_1h_richness, cluster_p1h_row ---
+  const double a_lo     = cl_.a_lim[0];   // first a node
+  const double a_hi     = cl_.a_lim[1];   // last a node
+  const double lnk_min  = p1h_.lnk_min;   // reads clamp below
+  const double lnk_last = p1h_.lnk_last;  // reads extrapolate above
+  const double h        = p1h_.dlnk;      // ln k spacing
+
+  // the same numbers in all four lanes (set1 copies one scalar into
+  // every lane)
+
+  // a_lo
+  const v4d va_lo = simde_mm256_set1_pd(a_lo);
+
+  // the a spacing
+  const v4d vh_a = simde_mm256_set1_pd(cl_.a_lim[2]);
+
+  // n_a - 2, the index of the last a interval
+  const v4d vlast_a = simde_mm256_set1_pd((double) (p1h_.n_a - 2));
+
+  // ln k of node 0
+  const v4d vlnk_first = simde_mm256_set1_pd(p1h_.lnk_first);
+
+  // the ln k spacing
+  const v4d vh = simde_mm256_set1_pd(h);
+
+  // n_k - 2, the index of the last ln k interval
+  const v4d vlast_k = simde_mm256_set1_pd((double) (p1h_.n_k - 2));
+
+  int q = 0;
+  for (; q<=n-4; q+=4) {
+    // --- 1. ln k OF EACH POINT, AND THE GROUP TEST (scalar) ---
+    // scalar (pcm_1h_richness): 0 outside the a grid; lnk = log(k),
+    // clamped to ln k_min below the table, continued as a power law above
+    // ln k_last. The libm log runs per lane, as the scalar path calls it.
+    double lnk[4];
+    int ordinary = 1;  // 1: every point of the group reads the table
+    for (int lane=0; lane<4; lane++) {
+      const double a_lane = a[q + lane];
+      if (a_lane < a_lo || a_lane > a_hi) {
+        ordinary = 0;  // outside the a grid
+      }
+
+      double lnk_lane = log(k[q + lane]);
+      if (lnk_lane < lnk_min) {
+        lnk_lane = lnk_min;  // flat below k_min
+      }
+      else if (lnk_lane > lnk_last) {
+        ordinary = 0;  // above the table
+      }
+      lnk[lane] = lnk_lane;
+    }
+
+    if (0 == ordinary) {
+      // the scalar read for the four points of this group
+      for (int lane=0; lane<4; lane++) {
+        for (int nl=0; nl<nl_bins; nl++) {
+          out[nl][q + lane] = pcm_1h_richness(k[q + lane], a[q + lane], nl);
+        }
+      }
+      continue;
+    }
+
+    // --- 2. a: NODE i AND FRACTION t_a OF EACH POINT ---
+    // scalar: ra = (a - a_lo)/h_a;  i = min((int) ra, n_a - 2);
+    //         t_a = ra - i
+    // trunc and min in double, exact for the non-negative ra of a point
+    // inside the grid (cluster_nfw_pos4 header: why not a vector
+    // double-to-int conversion)
+
+    // a of points q..q+3 (loadu reads four consecutive doubles from
+    // memory into the lanes)
+    const v4d va = simde_mm256_loadu_pd(a + q);
+
+    // a - a_lo
+    const v4d va_offset = simde_mm256_sub_pd(va, va_lo);
+
+    // ra = (a - a_lo)/h_a, the position in a intervals
+    const v4d vra = simde_mm256_div_pd(va_offset, vh_a);
+
+    // trunc(ra): round toward zero, the interval number as a double
+    const v4d vra_trunc = simde_mm256_round_pd(vra, SIMDE_MM_FROUND_TO_ZERO);
+
+    // i = min(trunc(ra), n_a - 2): the last-interval clamp
+    const v4d vnode_a = simde_mm256_min_pd(vra_trunc, vlast_a);
+
+    // t_a = ra - i
+    const v4d vt_a = simde_mm256_sub_pd(vra, vnode_a);
+
+    // --- 3. ln k: INTERVAL j AND OFFSET t OF EACH POINT ---
+    // scalar (cluster_p1h_row): r = (lnk - lnk_first)/h;
+    //         j = min((int) r, n_k - 2);  t = (r - j)*h
+
+    // the four clamped ln k
+    const v4d vlnk = simde_mm256_loadu_pd(lnk);
+
+    // ln k - ln k of node 0
+    const v4d vlnk_offset = simde_mm256_sub_pd(vlnk, vlnk_first);
+
+    // r = (ln k - ln k_first)/h, the position in ln k intervals
+    const v4d vr = simde_mm256_div_pd(vlnk_offset, vh);
+
+    // trunc(r)
+    const v4d vr_trunc = simde_mm256_round_pd(vr, SIMDE_MM_FROUND_TO_ZERO);
+
+    // j = min(trunc(r), n_k - 2): the last-interval clamp
+    const v4d vnode_k = simde_mm256_min_pd(vr_trunc, vlast_k);
+
+    // r - j
+    const v4d vr_frac = simde_mm256_sub_pd(vr, vnode_k);
+
+    // t = (r - j) h, the offset from node j in ln k
+    const v4d vt = simde_mm256_mul_pd(vr_frac, vh);
+
+    // i and j of each lane to plain arrays (storeu writes the four lanes
+    // to memory), then to int lane by lane
+    double node_a[4];
+    double node_k[4];
+    simde_mm256_storeu_pd(node_a, vnode_a);
+    simde_mm256_storeu_pd(node_k, vnode_k);
+
+    int index_a[4];  // a node i of each lane
+    int index_k[4];  // ln k interval j of each lane
+    for (int lane=0; lane<4; lane++) {
+      index_a[lane] = (int) node_a[lane];
+      index_k[lane] = (int) node_k[lane];
+    }
+
+    // --- 4. EVERY RICHNESS BIN AT THESE FOUR POINTS ---
+    for (int nl=0; nl<nl_bins; nl++) {
+      // where each lane reads: its interval j on its two a rows i and
+      // i + 1, in ln P1h (y) and in the spline coefficients (c)
+      const double* y_lo[4];  // &ln_p[nl][i][j]
+      const double* c_lo[4];  // &curv[nl][i][j]
+      const double* y_hi[4];  // &ln_p[nl][i + 1][j]
+      const double* c_hi[4];  // &curv[nl][i + 1][j]
+      for (int lane=0; lane<4; lane++) {
+        const int ia = index_a[lane];
+        const int jk = index_k[lane];
+
+        y_lo[lane] = p1h_.ln_p[nl][ia] + jk;
+        c_lo[lane] = p1h_.curv[nl][ia] + jk;
+        y_hi[lane] = p1h_.ln_p[nl][ia + 1] + jk;
+        c_hi[lane] = p1h_.curv[nl][ia + 1] + jk;
+      }
+
+      v4d vy0;  // y_j
+      v4d vy1;  // y_{j+1}
+      v4d vc0;  // c_j
+      v4d vc1;  // c_{j+1}
+
+      // scalar: ln_p_lo = cluster_p1h_row(nl, i, lnk, 0), the spline on
+      // the lower a row
+      cluster_load_pairs4(y_lo, &vy0, &vy1);
+      cluster_load_pairs4(c_lo, &vc0, &vc1);
+      const v4d vln_p_lo = cluster_spline_horner4(vy0, vy1, vc0, vc1, vt, h);
+
+      // scalar: ln_p_hi = cluster_p1h_row(nl, i + 1, lnk, 0), the upper
+      // a row
+      cluster_load_pairs4(y_hi, &vy0, &vy1);
+      cluster_load_pairs4(c_hi, &vc0, &vc1);
+      const v4d vln_p_hi = cluster_spline_horner4(vy0, vy1, vc0, vc1, vt, h);
+
+      // scalar: exp(ln_p_lo + t_a*(ln_p_hi - ln_p_lo)), linear in a
+
+      // ln_p_hi - ln_p_lo
+      const v4d vrise = simde_mm256_sub_pd(vln_p_hi, vln_p_lo);
+
+      // ln_p_lo + t_a (ln_p_hi - ln_p_lo), fused as the scalar sum
+      const v4d vln_p = cluster_fmadd4(vt_a, vrise, vln_p_lo);
+
+      // the four ln P1h to a plain double[4], then the libm exp of the
+      // scalar path on each
+      double ln_p[4];
+      simde_mm256_storeu_pd(ln_p, vln_p);
+
+      double* restrict out_nl = out[nl];
+      for (int lane=0; lane<4; lane++) {
+        out_nl[q + lane] = exp(ln_p[lane]);
+      }
+    }
+  }
+
+  // scalar tail: n not a multiple of four
+  for (; q<n; q++) {
+    for (int nl=0; nl<nl_bins; nl++) {
+      out[nl][q] = pcm_1h_richness(k[q], a[q], nl);
+    }
+  }
+#else
+  // the reference: the scalar read at every point
+  for (int q=0; q<n; q++) {
+    for (int nl=0; nl<nl_bins; nl++) {
+      out[nl][q] = pcm_1h_richness(k[q], a[q], nl);
+    }
+  }
+#endif
 }
 
 

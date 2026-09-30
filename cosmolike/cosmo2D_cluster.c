@@ -1060,6 +1060,45 @@ static void C_cs_tomo_limber_work(
   nonlinear_power_at_nodes(cn_all, nbin_cluster, npts_max, lx, nell,
     p_nonlinear);
 
+#ifndef COSMO2D_NOT_USE_SIMD
+  // One (cluster bin, l) row of support nodes per task, read by the batch
+  // reader of halo_cluster.c: pcm_1h_richness_fill takes the row's nodes
+  // four per SIMDe vector and every richness bin at once (a node's place
+  // on the P1h table does not depend on the richness bin). Each value is
+  // bitwise the pcm_1h_richness call of the reference loop in the other
+  // branch, and no value depends on how the threads share the rows.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int ni = 0; ni < nbin_cluster; ni++) {
+    for (int i = 0; i < nell; i++) {
+      const cosmo_nodes* cn = &cn_all[ni];
+
+      // the one-halo term lives where W_c does: the support panel
+      const int nsupport = cn->nsupport;
+
+      // Local restrict pointers (the cosmo2D.c idiom): the node rows are
+      // reached through pointer-to-pointer indirection inside a
+      // collapse(2) region, and without them the compiler reloads the
+      // row addresses at every node
+      const double* restrict a_node  = cn->data[CN_A];
+      const double* restrict fK_node = cn->data[CN_FK];
+
+      // Limber wavenumbers of the row, k = (l + 1/2)/f_K (thread-private:
+      // declared inside the task)
+      double k_node[nsupport];
+      for (int p = 0; p < nsupport; p++) {
+        k_node[p] = (lx[i] + 0.5)/fK_node[p];
+      }
+
+      // the output row of each richness bin at this (cluster bin, l)
+      double* p1h_rows[nbin_richness];
+      for (int nl = 0; nl < nbin_richness; nl++) {
+        p1h_rows[nl] = p_one_halo[ni][nl][i];
+      }
+
+      pcm_1h_richness_fill(k_node, a_node, nsupport, p1h_rows);
+    }
+  }
+#else
   #pragma omp parallel for collapse(3) schedule(static)
   for (int ni = 0; ni < nbin_cluster; ni++) {
     for (int i = 0; i < nell; i++) {
@@ -1078,6 +1117,7 @@ static void C_cs_tomo_limber_work(
       }
     }
   }
+#endif
 
   // --- 6. LIMBER SUM: one row (pair, richness) and one l per task ---
   #pragma omp parallel for collapse(2) schedule(static)
