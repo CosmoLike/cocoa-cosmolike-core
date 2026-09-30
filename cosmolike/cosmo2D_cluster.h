@@ -16,7 +16,7 @@ extern "C" {
 // one work function per statistic (the C_gs_tomo_limber_work design), with
 // cosmo_nodes kept private to cosmo2D_cluster.c (no core export).
 //
-//   C_cs = int dchi/f_K^2 { [W_kappa_ns - W_IA_ns] (b_nl W_c - C_c W_mag,c)
+//   C_cs = int dchi/f_K^2 { [W_kappa_ns - W_IA_ns] (b_nl W_c + C_c W_mag,c)
 //                           P_NL + W_kappa_ns W_c P1h_nl }
 //   C_cc = int dchi/f_K^2 (b_nl1 W_c + C_c W_mag,c)(b_nl2 W_c + C_c W_mag,c)
 //                           P_NL
