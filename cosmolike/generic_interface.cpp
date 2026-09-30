@@ -847,6 +847,50 @@ void init_include_halo_IA(const int include_halo_IA)
 }
 
 // ---------------------------------------------------------------------------
+// Select the density field of the halo model's peak height, writing
+// like.halo_model[4] (halo.h): 0 = HALO_FIELD_MATTER, total matter (the
+// default); 1 = HALO_FIELD_CB, cold dark matter + baryons. Under 1,
+// sigma^2(M) integrates the linear P_cb of set_linear_power_spectrum_cb
+// and the Lagrangian radius and the rho/M of dn/dlnM use
+// rho_crit (Omega_m - Omega_nu) (Omega_nu from set_cosmological_parameters);
+// r_Delta, the matter windows M/rho_m, the lensing kernels and the 2-halo
+// spectra stay total matter. One switch for every consumer: sigma2 and
+// dlognudlogm (cosmo3D.c, halo.c), the HOD tables, p_gm, p_gg, the
+// halo-model IA and the cluster mass tables (halo_cluster.c). p_mm, p_my
+// and p_yy abort under 1 (their 2-halo term is total-matter only).
+// Likelihood yaml key: halo_matter_field.
+//
+// Cache invalidation:
+// a flip redraws cosmology.random, the tag sigma2 and every halo table
+// key on, so no table serves a value of the other field.
+//
+// Validation: the value must be 0 or 1, else critical() + exit(1).
+//
+// Parameters:
+//   halo_matter_field - 0 = total matter, 1 = cold dark matter + baryons
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_halo_matter_field(const int halo_matter_field)
+{
+  static constexpr std::string_view fname = "init_halo_matter_field"sv;
+  debug("{}: {}", fname, errbegins);
+  if (halo_matter_field != HALO_FIELD_MATTER &&
+      halo_matter_field != HALO_FIELD_CB) {
+    critical("{}: invalid halo_matter_field = {} (0 = total matter, "
+             "1 = cold dark matter + baryons)", fname, halo_matter_field);
+    exit(1);
+  }
+  if (like.halo_model[4] != halo_matter_field) {
+    like.halo_model[4] = halo_matter_field;
+    cosmology.random = RandomNumber::get_instance().get();
+  }
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -1902,17 +1946,24 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 //
 // When any input changed (fdiff): writes cosmology.Omega_m,
 // Omega_v = 1 - Omega_m, Omega_b (the Compton-y halo-model sector reads
-// it; the y spectra abort while it is 0), h0 = hubble/100 (input H0 in
-// km/s/Mpc), a fixed nonzero Omega_nu placeholder and
-// MGSigma = MGmu = 0, and bumps cosmology.random so every table keyed
-// on the cosmology rebuilds. Unchanged inputs leave the cache key
-// alone.
+// it; the y spectra abort while it is 0), Omega_nu = omega_nu_h2/h^2
+// (part of Omega_m; the halo model reads it under
+// like.halo_model[4] = HALO_FIELD_CB, init_halo_matter_field),
+// h0 = hubble/100 (input H0 in km/s/Mpc) and MGSigma = MGmu = 0, and
+// bumps cosmology.random so every table keyed on the cosmology
+// rebuilds. Unchanged inputs leave the cache key alone.
+//
+// Validation: hubble > 0, omega_nu_h2 >= 0 and Omega_nu < Omega_m,
+// else critical() + exit(1).
 //
 // Parameters:
-//   omega_matter - Omega_m today
+//   omega_matter - Omega_m today, massive neutrinos included
 //   omega_baryon - Omega_b today (0 = not provided; only the
 //                  Compton-y sector demands it)
 //   hubble       - H0 (km/s/Mpc)
+//   omega_nu_h2  - omega_nu h^2 = Omega_nu h^2 of the massive neutrinos
+//                  today (CAMB's omnuh2; 0 = none; the default of the
+//                  declaration in generic_interface.hpp)
 //
 // Returns:
 //   void
@@ -1920,27 +1971,46 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 void set_cosmological_parameters(
     const double omega_matter,
     const double omega_baryon,
-    const double hubble
+    const double hubble,
+    const double omega_nu_h2
   )
 {
   static constexpr std::string_view fname = "set_cosmological_parameters"sv;
   debug("{}: {}", fname, errbegins);
+  // the negated comparisons also reject NaN
+  if (!(hubble > 0.0)) [[unlikely]] {
+    critical("{}: H0 = {} km/s/Mpc must be > 0", fname, hubble);
+    exit(1);
+  }
+  if (!(omega_nu_h2 >= 0.0)) [[unlikely]] {
+    critical("{}: omega_nu h^2 = {} must be >= 0", fname, omega_nu_h2);
+    exit(1);
+  }
+  // Omega_nu from the physical density omega_nu h^2 and h = H0/100
+  const double h = hubble/100.0;
+  const double omega_nu = omega_nu_h2/(h*h);
+  if (!(omega_nu < omega_matter)) [[unlikely]] {
+    critical("{}: Omega_nu = omega_nu h^2/h^2 = {} must be < Omega_m = {} "
+             "(Omega_m includes the massive neutrinos)",
+             fname, omega_nu, omega_matter);
+    exit(1);
+  }
   // Cosmolike should not need parameters from inflation or dark energy.
   // Cobaya provides P(k,z), H(z), D(z), Chi(z)...
   // It may require H0 to set scales and \Omega_M to set the halo model
   int cache_update = 0;
   if (fdiff(cosmology.Omega_m, omega_matter) ||
       fdiff(cosmology.Omega_b, omega_baryon) ||
-      fdiff(cosmology.h0, hubble/100.0)) { // assuming H0 in km/s/Mpc 
+      fdiff(cosmology.Omega_nu, omega_nu) ||
+      fdiff(cosmology.h0, hubble/100.0)) { // assuming H0 in km/s/Mpc
     cache_update = 1;
   }
   if (1 == cache_update || 1 == force_cache_update_test) {
     cosmology.Omega_m = omega_matter;
     cosmology.Omega_v = 1.0-omega_matter;
     cosmology.Omega_b = omega_baryon;
-    // Cosmolike only needs to know that there are massive neutrinos (>0)
-    cosmology.Omega_nu = 0.1;
-    cosmology.h0 = hubble/100.0; 
+    cosmology.Omega_nu = omega_nu;
+    cosmology.h0 = hubble/100.0;
     cosmology.MGSigma = 0.0;
     cosmology.MGmu = 0.0;
     cosmology.random = cosmolike_interface::RandomNumber::get_instance().get();
@@ -2384,8 +2454,11 @@ void set_growth(vector io_z, vector io_G)
 // Table layout (structs.h): (nk+1) x (nz+1), values in [i<nk][j<nz], the
 // log10k axis in column nz and the z axis in row nk. When sizes, values or
 // either axis changed (fdiff scans): reallocates cosmology.lnPL, writes
-// lnPL_nk/lnPL_nz, NaN-scans during the parallel fill, and bumps
-// cosmology.random. Unchanged input leaves the cache key alone.
+// lnPL_nk/lnPL_nz, NaN-scans during the parallel fill, drops the P_cb
+// table of the previous P_lin (cosmology.lnPL_cb: it lives on lnPL's
+// grid and belongs to that spectrum; set_linear_power_spectrum_cb
+// installs the new one) and bumps cosmology.random. Unchanged input
+// leaves the cache key and the P_cb table alone.
 //
 // Under COSMO3D_ASSUME_PIECEWISE_UNIFORM the log10k axis must be one
 // uniform segment (critical() otherwise) and the z axis may be piecewise
@@ -2505,9 +2578,143 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
         }
       }
     }
+    // the P_cb table of the replaced spectrum (structs.h: installed as a
+    // pair with lnPL, after it)
+    if (cosmology.lnPL_cb != NULL) {
+      free(cosmology.lnPL_cb);
+      cosmology.lnPL_cb = NULL;
+    }
     cosmology.random = RandomNumber::get_instance().get();
   }
 
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+// Install ln P_cb(log10k, z), the linear power spectrum of cold dark
+// matter plus baryons (CAMB's delta_nonu), on the grid of the linear
+// P_lin table. sigma2 reads it (p_lin_cb) when like.halo_model[4] =
+// HALO_FIELD_CB; nothing reads it otherwise.
+//
+// Order: after set_linear_power_spectrum of the same cosmology, which
+// drops the P_cb table of the previous spectrum. The table stores values
+// only (structs.h); p_lin_cb reads lnPL's axes, so both axes must equal
+// lnPL's.
+//
+// When cosmology.lnPL_cb is not installed or any value changed (fdiff
+// scan): allocates it if needed, fills it (NaN scan) and bumps
+// cosmology.random. Unchanged input leaves the cache key alone.
+//
+// Validation: io_lnP size = nk * nz; lnPL installed with nk = io_log10k
+// size and nz = io_z size; each axis node equal to lnPL's (fdiff); no
+// NaN. Else critical() + exit(1).
+//
+// Parameters:
+//   io_log10k - log10 k grid (h/Mpc), lnPL's
+//   io_z      - redshift grid, lnPL's
+//   io_lnP    - flattened ln P_cb, io_lnP(i*nz + j) = ln P_cb(k_i, z_j),
+//               (Mpc/h)^3
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void set_linear_power_spectrum_cb(vector io_log10k, vector io_z, vector io_lnP)
+{
+  static constexpr std::string_view fname = "set_linear_power_spectrum_cb"sv;
+  debug("{}: {}", fname, errbegins);
+
+  // --- 1. THE GRID MUST BE lnPL's ---
+  if (io_z.n_elem*io_log10k.n_elem != io_lnP.n_elem) [[unlikely]] {
+    critical(errorsz1d,fname,erriiwz,io_z.n_elem*io_log10k.n_elem,io_lnP.n_elem);
+    exit(1);
+  }
+  if (NULL == cosmology.lnPL) [[unlikely]] {
+    critical("{}: no linear P(k) installed: call set_linear_power_spectrum "
+             "first (the P_cb table lives on its grid)", fname);
+    exit(1);
+  }
+  const int nk = cosmology.lnPL_nk;
+  const int nz = cosmology.lnPL_nz;
+  if (nk != static_cast<int>(io_log10k.n_elem) ||
+      nz != static_cast<int>(io_z.n_elem)) [[unlikely]] {
+    critical("{}: P_cb grid {} x {} (log10k x z) differs from the linear "
+             "P(k) grid {} x {}", fname, io_log10k.n_elem, io_z.n_elem, nk, nz);
+    exit(1);
+  }
+  for (int i=0; i<nk; i++) {
+    if (fdiff(cosmology.lnPL[i][nz], io_log10k(i))) [[unlikely]] {
+      critical("{}: log10k node {} = {} differs from the linear P(k) "
+               "node {}", fname, i, io_log10k(i), cosmology.lnPL[i][nz]);
+      exit(1);
+    }
+  }
+  for (int j=0; j<nz; j++) {
+    if (fdiff(cosmology.lnPL[nk][j], io_z(j))) [[unlikely]] {
+      critical("{}: z node {} = {} differs from the linear P(k) node {}",
+               fname, j, io_z(j), cosmology.lnPL[nk][j]);
+      exit(1);
+    }
+  }
+
+  // --- 2. CHANGE DETECTION ---
+  int cache_update = 0;
+  if (NULL == cosmology.lnPL_cb) {
+    cache_update = 1;
+  }
+  else {
+    for (int i=0; i<nk; i++) {
+      for (int j=0; j<nz; j++) {
+        if (fdiff(cosmology.lnPL_cb[i][j], io_lnP(i*nz + j))) {
+          cache_update = 1;
+          goto jump;
+        }
+      }
+    }
+  }
+
+  jump:
+
+  // --- 3. FILL ---
+  if (1 == cache_update || 1 == force_cache_update_test) {
+    if (NULL == cosmology.lnPL_cb) {
+      cosmology.lnPL_cb = (double**) malloc2d(nk, nz);
+    }
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int i=0; i<nk; i++) {
+      for (int j=0; j<nz; j++) {
+        if (std::isnan(io_lnP(i*nz + j))) [[unlikely]] {
+          critical("{}: {}", fname, errnanit); exit(1);
+        }
+        cosmology.lnPL_cb[i][j] = io_lnP(i*nz + j);
+      }
+    }
+    cosmology.random = RandomNumber::get_instance().get();
+  }
+
+  debug("{}: {}", fname, errends);
+}
+
+// ---------------------------------------------------------------------------
+// Remove the P_cb table (cosmology.lnPL_cb): the call of a caller that
+// has no cold dark matter + baryon spectrum to hand over. sigma2 aborts
+// under like.halo_model[4] = HALO_FIELD_CB while no table is installed.
+//
+// Cache invalidation:
+// bumps cosmology.random when a table was installed; a call with none
+// installed changes nothing.
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void clear_linear_power_spectrum_cb()
+{
+  static constexpr std::string_view fname = "clear_linear_power_spectrum_cb"sv;
+  debug("{}: {}", fname, errbegins);
+  if (cosmology.lnPL_cb != NULL) {
+    free(cosmology.lnPL_cb);
+    cosmology.lnPL_cb = NULL;
+    cosmology.random = RandomNumber::get_instance().get();
+  }
   debug("{}: {}", fname, errends);
 }
 

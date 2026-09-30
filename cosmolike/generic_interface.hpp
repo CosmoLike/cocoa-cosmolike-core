@@ -631,6 +631,10 @@ void init_include_halo_IA(
     const int include_halo_IA
   );
 
+void init_halo_matter_field(
+    const int halo_matter_field
+  );
+
 void init_accuracy_boost(
     const double accuracy_boost,
     const int integration_accuracy
@@ -714,10 +718,13 @@ void init_ggl_exclude(
 	arma::Col<int> ggl_exclude
   );
 
+// omega_nu_h2 = omega_nu h^2 of the massive neutrinos (CAMB's omnuh2);
+// the default 0 keeps a three-argument caller compiling
 void set_cosmological_parameters(
     const double omega_matter,
     const double omega_baryon,
-    const double hubble
+    const double hubble,
+    const double omega_nu_h2 = 0.0
   );
 
 void set_distances(
@@ -732,9 +739,19 @@ void set_growth(
 
 void set_linear_power_spectrum(
     arma::Col<double> io_log10k,
-    arma::Col<double> io_z, 
+    arma::Col<double> io_z,
     arma::Col<double> io_lnP
   );
+
+// ln P_cb (cold dark matter + baryons) on the grid of the linear P(k);
+// call after set_linear_power_spectrum
+void set_linear_power_spectrum_cb(
+    arma::Col<double> io_log10k,
+    arma::Col<double> io_z,
+    arma::Col<double> io_lnP
+  );
+
+void clear_linear_power_spectrum_cb();
 
 void set_IA_PS(
     arma::Col<double> PS,

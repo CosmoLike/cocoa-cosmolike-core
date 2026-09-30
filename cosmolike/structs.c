@@ -113,16 +113,17 @@ void reset_like_struct(void)
   like.adopt_limber_gs = 1;
   // halo.c model choices (halo.h macros, all 0): HMF_TINKER_2010,
   // HALO_BIAS_TINKER_2010, CONCENTRATION_BHATTACHARYA_2013,
-  // HALO_PROFILE_NFW - set explicitly so the defaults are deliberate
+  // HALO_PROFILE_NFW, HALO_FIELD_MATTER - set explicitly so the
+  // defaults are deliberate
   like.halo_model[0] = 0;
   like.halo_model[1] = 0;
   like.halo_model[2] = 0;
   like.halo_model[3] = 0;
+  like.halo_model[4] = 0;
 }
 
 void reset_cosmology_struct(void)
 {
-  cosmology.Omega_nu = 0.;
   cosmology.coverH0 = 2997.92458;
   cosmology.rho_crit = 7.4775e+21;
   cosmology.MGSigma = 0.0;
@@ -140,6 +141,11 @@ void reset_cosmology_struct(void)
   cosmology.lnPL_nk = 0;
   cosmology.lnPL_nz = 0;
   cosmology.lnPL = NULL;
+  // the P_cb table belongs to the lnPL table it was installed with
+  // (structs.h), so it goes with it; free(NULL) is a no-op on the
+  // first call (the global struct starts zeroed)
+  free(cosmology.lnPL_cb);
+  cosmology.lnPL_cb = NULL;
   cosmology.chi_nz = 0;
   cosmology.chi = NULL;
   cosmology.G_nz = 0;

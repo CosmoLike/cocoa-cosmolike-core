@@ -15,6 +15,7 @@
 #include "basics.h"
 #include "baryons.h"
 #include "cosmo3D.h"
+#include "halo.h"
 #include "structs.h"
 
 // ---------------------------------------------------------------------------
@@ -27,9 +28,12 @@
 //     set_distances                 -> cosmology.chi  (z, chi(z) in Mpc/h)
 //     set_growth                    -> cosmology.G    (z, G(z); D = G*a)
 //     set_linear_power_spectrum     -> cosmology.lnPL (ln P on log10k x z)
+//     set_linear_power_spectrum_cb  -> cosmology.lnPL_cb (ln P_cb, cold
+//                                      dark matter + baryons, on the
+//                                      lnPL grid; optional)
 //     set_non_linear_power_spectrum -> cosmology.lnP  (same layout)
 //   -> the lookup functions below (chi_all, norm_growfac*, f_growth, p_lin,
-//      p_nonlin, ...) interpolate those tables
+//      p_lin_cb, p_nonlin, ...) interpolate those tables
 //   -> radial weights and Limber integrands (cosmo2D.c) consume them.
 //
 // Unit conventions, once for the whole file (cosmology.coverH0 = c/H0
@@ -1031,6 +1035,159 @@ double p_lin(const double k, const double a)
   return exp(out_lnP)/(cosmology.coverH0*cosmology.coverH0*cosmology.coverH0);
 }
 #endif
+
+
+
+// ---------------------------------------------------------------------------
+// Linear power spectrum of cold dark matter plus baryons, P_cb(k, a): the
+// matter field without the massive neutrinos, which free-stream out of
+// halos. Read by sigma2 when like.halo_model[4] = HALO_FIELD_CB.
+//
+// Table: cosmology.lnPL_cb[i][j] = ln P_cb at (log10k_i, z_j), installed
+// by set_linear_power_spectrum_cb on the grid of cosmology.lnPL; the axes
+// and the direct-index metadata are read from lnPL. The two variants
+// below are p_lin's two variants with lnPL_cb in place of lnPL in the
+// four value reads: the same brackets, fractions and arithmetic, so a
+// P_cb table equal to P_lin returns p_lin's values bit for bit.
+//
+// Precondition: cosmology.lnPL_cb installed (the caller checks; sigma2
+// aborts otherwise).
+//
+// Cache invalidation:
+// no static state. set_linear_power_spectrum_cb bumps cosmology.random
+// when it installs a new table.
+//
+// Parameters:
+//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
+//   a - scale factor
+//
+// Returns:
+//   P_cb(k, a) in (c/H0)^3 units
+// ---------------------------------------------------------------------------
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+double p_lin_cb(const double k, const double a)
+{
+  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
+  const double log10k = log10(k / cosmology.coverH0);
+  const double z      = 1.0 / a - 1.0;
+
+  // brackets by direct index on lnPL's axes (see p_lin)
+  int i = (int)((log10k - cosmology.lnPL_log10k_min) * cosmology.lnPL_log10k_inv_dx);
+  if (i < 0)                       i = 0;
+  if (i > cosmology.lnPL_nk - 2)   i = cosmology.lnPL_nk - 2;
+
+  int j = piecewise_index(z, cosmology.lnPL_z_nseg,
+                          cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
+                          cosmology.lnPL_z_seg_xmin,  cosmology.lnPL_z_seg_inv_dx,
+                          cosmology.lnPL_nz);
+
+  // interpolation fractions from lnPL's grid points
+  const double xi  = cosmology.lnPL[i  ][cosmology.lnPL_nz];
+  const double xi1 = cosmology.lnPL[i+1][cosmology.lnPL_nz];
+  const double zj  = cosmology.lnPL[cosmology.lnPL_nk][j  ];
+  const double zj1 = cosmology.lnPL[cosmology.lnPL_nk][j+1];
+
+  const double dx = (log10k - xi) / (xi1 - xi);
+  const double dy = (z      - zj) / (zj1 - zj);
+
+  // bilinear ln P_cb on the [i, i+1] x [j, j+1] cell
+  const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnPL_cb[i  ][j  ]
+                         + (1-dx)*   dy  * cosmology.lnPL_cb[i  ][j+1]
+                         +    dx *(1-dy) * cosmology.lnPL_cb[i+1][j  ]
+                         +    dx *   dy  * cosmology.lnPL_cb[i+1][j+1];
+
+  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
+  return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
+}
+#else
+double p_lin_cb(const double k, const double a)
+{
+  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
+  const double log10k = log10(k/cosmology.coverH0);
+  const double z = 1.0/a-1.0;
+
+  // bracket log10k by binary search on lnPL's k-axis row
+  int i = 0;
+  {
+    size_t ilo = 0;
+    size_t ihi = cosmology.lnPL_nk-1;
+    while (ihi>ilo+1)
+    {
+      size_t ll = (ihi+ilo)/2;
+      if(cosmology.lnPL[ll][cosmology.lnPL_nz] > log10k)
+        ihi = ll;
+      else
+        ilo = ll;
+    }
+    i = ilo;
+  }
+
+  // bracket z by binary search on lnPL's z-axis row
+  int j = 0;
+  {
+    size_t ilo = 0;
+    size_t ihi = cosmology.lnPL_nz-1;
+    while (ihi>ilo+1)
+    {
+      size_t ll = (ihi+ilo)/2;
+      if(cosmology.lnPL[cosmology.lnPL_nk][ll] > z)
+        ihi = ll;
+      else
+        ilo = ll;
+    }
+    j = ilo;
+  }
+
+  // bilinear ln P_cb interpolation on the [i, i+1] x [j, j+1] cell
+  double dx = (log10k                                 - cosmology.lnPL[i][cosmology.lnPL_nz])/
+              (cosmology.lnPL[i+1][cosmology.lnPL_nz] - cosmology.lnPL[i][cosmology.lnPL_nz]);
+
+  double dy = (z                                     - cosmology.lnPL[cosmology.lnPL_nk][j])/
+              (cosmology.lnPL[cosmology.lnPL_nk][j+1]- cosmology.lnPL[cosmology.lnPL_nk][j]);
+
+  const double out_lnP =    (1-dx)*(1-dy)*cosmology.lnPL_cb[i][j]
+                          + (1-dx)*dy*cosmology.lnPL_cb[i][j+1]
+                          + dx*(1-dy)*cosmology.lnPL_cb[i+1][j]
+                          + dx*dy*cosmology.lnPL_cb[i+1][j+1];
+
+  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
+  return exp(out_lnP)/(cosmology.coverH0*cosmology.coverH0*cosmology.coverH0);
+}
+#endif
+
+
+
+// ---------------------------------------------------------------------------
+// Density parameter of the field the halo model counts halos in, chosen
+// by like.halo_model[4] (halo.h):
+//
+//   HALO_FIELD_MATTER   Omega_m             (total matter)
+//   HALO_FIELD_CB       Omega_m - Omega_nu  (cold dark matter + baryons)
+//
+// rho_crit times this value is the mean density that ties a halo mass
+// to its Lagrangian radius in sigma2 and that sets the rho/M factor of
+// dn/dlnM in halo.c and halo_cluster.c. Under HALO_FIELD_MATTER it
+// returns cosmology.Omega_m itself, so the products it enters are
+// today's products bit for bit.
+//
+// Aborts: any other like.halo_model[4].
+//
+// Returns:
+//   Omega of the halo field, dimensionless
+// ---------------------------------------------------------------------------
+double omega_halo_field(void)
+{
+  if (HALO_FIELD_MATTER == like.halo_model[4]) {
+    return cosmology.Omega_m;
+  }
+  else if (HALO_FIELD_CB == like.halo_model[4]) {
+    return cosmology.Omega_m - cosmology.Omega_nu;
+  }
+  else {
+    log_fatal("like.halo_model[4] = %d not supported", like.halo_model[4]);
+    exit(1);
+  }
+}
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------

@@ -179,7 +179,8 @@ typedef struct
   double Omega_m;  // matter density parameter
   double Omega_v;  // cosmogical constant parameter
   double h0;       // Hubble constant
-  double Omega_nu; // Omega_m = Omega_cdm + Omega_nu (neutrinos) + omb
+  double Omega_nu; // massive neutrinos today, omega_nu h^2/h^2; part of
+                   // Omega_m = Omega_cdm + Omega_b + Omega_nu
   double coverH0;  // units for comoving distances - speeds up code
   double rho_crit; // = 3 H_0^2/(8 pi G), critical comoving density
   double MGSigma;
@@ -231,6 +232,20 @@ typedef struct
   double  lnPL_z_seg_xmin  [MAX_GRID_SEGMENTS];
   double  lnPL_z_seg_inv_dx[MAX_GRID_SEGMENTS];
 #endif
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  // LINEAR CDM + BARYON POWER SPECTRUM P_cb (the matter
+  // without the massive neutrinos; read when
+  // like.halo_model[4] = HALO_FIELD_CB)
+  // size = (lnPL_nk, lnPL_nz), values only:
+  // lnPL_cb[i][j] = ln P_cb at (log10k_i, z_j) of lnPL,
+  // whose axes and direct-index metadata p_lin_cb reads.
+  // NULL = not installed. A new lnPL table drops it
+  // (set_linear_power_spectrum): the two are installed
+  // as a pair.
+  // ---------------------------------------------------
+  // ---------------------------------------------------
+  double** lnPL_cb;
   // ---------------------------------------------------
   // ---------------------------------------------------
   // DISTANCE chi(a)
@@ -433,10 +448,13 @@ typedef struct
                                           // [2] = bs2, 
                                           // [3] = b3, 
                                           // [4] = bmag 
-  int halo_model[MAX_SIZE_ARRAYS]; // [0] = HMF, 
-                                   // [1] = BIAS, 
+  int halo_model[MAX_SIZE_ARRAYS]; // [0] = HMF,
+                                   // [1] = BIAS,
                                    // [2] = CONCENTRATION
                                    // [3] = HALO PROFILE
+                                   // [4] = DENSITY FIELD of sigma(M)
+                                   //       and of the mass function
+                                   //       (halo.h: HALO_FIELD_*)
 } likepara;
 
 typedef struct
