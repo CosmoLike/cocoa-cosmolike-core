@@ -708,10 +708,10 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                                                linestyle='None', markersize=markersize)
                         else:
                             if marker is None:   
-                                lines = axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
+                                lines = axes[j,i].plot(theta, xim[:,i,j]/xim_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
                                                        linewidth=next(linewidthcycler), linestyle=next(linestylecycler))
                             else:
-                                axes[j,i].plot(theta, xip[:,i,j]/xip_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
+                                axes[j,i].plot(theta, xim[:,i,j]/xim_ref[:,i,j]-1.0, color=cm(x/len(xi)), 
                                                markerfacecolor='None', marker=next(markercycler), 
                                                markeredgecolor=cm(x/len(xi)), 
                                                linestyle='None', markersize=markersize)    
