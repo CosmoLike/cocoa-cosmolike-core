@@ -37,7 +37,7 @@ iu = np.triu_indices(5)
 # fiducial state (nuisances set by the wrapper) and fiducial tables
 nw.C_ss_tomo_limber(ell=ELL)
 nw.xi()
-(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0) = cnu.get_camb_cosmology(**POINT, **CAMB)
+(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0, _, _) = cnu.get_camb_cosmology(**POINT, **CAMB)
 lk = np.asarray(lk); z2 = np.asarray(z2); z1 = np.asarray(z1)
 
 

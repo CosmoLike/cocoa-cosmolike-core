@@ -4,7 +4,11 @@ Every EXAMPLE_EVALUATE notebook needs the same thing before it can
 call the compiled cosmolike interface: linear and nonlinear matter
 power spectra on a (z, k) grid, the growth factor, and comoving
 distances, all in the h units cosmolike expects. This module holds
-the one function that produces them. It talks only to CAMB (and,
+the one function that produces them, together with the two
+massive-neutrino inputs of the halo model: omega_nu h^2 and the linear
+power spectrum of cold dark matter + baryons (P_cb, CAMB's delta_nonu),
+which cosmolike reads when the halo field is cb
+(ci.init_halo_matter_field(1)). It talks only to CAMB (and,
 optionally, to the EuclidEmulator2 boost); it never imports a
 project's compiled cosmolike interface, so every project shares it.
 
@@ -83,9 +87,10 @@ def get_camb_cosmology(omegam,
 
     Returns:
       (log10k_interp_2D, z_interp_2D, lnPL, lnPNL, G_growth, z_growth,
-       z_interp_1D, chi): the arrays ci.set_cosmology consumes, as
-      the keywords log10k_2D, z_2D, lnP_linear, lnP_nonlinear, G,
-      z_G, z_1D and chi. All are 1D float64 arrays:
+       z_interp_1D, chi, omegan2, lnPL_cb): what ci.set_cosmology
+      consumes, as the keywords log10k_2D, z_2D, lnP_linear,
+      lnP_nonlinear, G, z_G, z_1D, chi, omegan2 and lnP_linear_cb.
+      omegan2 is a float, every other entry a 1D float64 array:
         log10k_interp_2D = log10 of k in h/Mpc, n_k nodes.
         z_interp_2D      = z nodes of the power spectra, n_z2D nodes.
         lnPL, lnPNL      = ln of the linear and nonlinear P(k) in
@@ -98,6 +103,12 @@ def get_camb_cosmology(omegam,
                            up to z_interp_2D[-1]; n_zG nodes.
         z_interp_1D      = z nodes of chi, n_z1D nodes.
         chi              = comoving distance in Mpc/h, n_z1D entries.
+        omegan2          = omega_nu h^2 of the massive neutrinos, as
+                           CAMB computed it (pars.omnuh2).
+        lnPL_cb          = ln of the linear P_cb (cold dark matter +
+                           baryons) in (Mpc/h)^3, laid out as lnPL.
+      Under ci.init_halo_matter_field(0) cosmolike reads neither of
+      the last two, and handing them over changes no number.
       G_growth is not on the z_2D nodes: it must go to set_cosmology
       together with z_G = z_growth (set_cosmology without z_G pairs G
       with z_2D, and the size mismatch aborts the process).
@@ -188,6 +199,14 @@ def get_camb_cosmology(omegam,
                                                  extrap_kmax=extrap_kmax,
                                                  hubble_units = False,
                                                  k_hunit = False);
+    # the matter without the massive neutrinos, which free-stream out
+    # of halos: sigma(M) of the cb halo field integrates this spectrum
+    PKL_cb = results.get_matter_power_interpolator(var1="delta_nonu",
+                                                   var2="delta_nonu",
+                                                   nonlinear=False,
+                                                   extrap_kmax=extrap_kmax,
+                                                   hubble_units=False,
+                                                   k_hunit=False);
     PKNL = results.get_matter_power_interpolator(var1="delta_tot",
                                                  var2="delta_tot",
                                                  nonlinear=True,
@@ -201,6 +220,10 @@ def get_camb_cosmology(omegam,
     # interface expects. The added log((H0/100)^3) converts P(k) from
     # Mpc^3 to (Mpc/h)^3.
     lnPL = np.log(PKL.P(z_interp_2D,np.power(10.0, log10k_interp_2D)).flatten(order='F')) + np.log((H0/100.0)**3)
+    # the same grid, layout and units for P_cb
+    k_grid = np.power(10.0, log10k_interp_2D)
+    lnPL_cb = np.log(PKL_cb.P(z_interp_2D, k_grid).flatten(order='F'))
+    lnPL_cb = lnPL_cb + np.log((H0/100.0)**3)
 
     if non_linear_emul == 1:
         # imported only on this branch: EuclidEmulator2 prints a
@@ -269,5 +292,8 @@ def get_camb_cosmology(omegam,
 
     chi = results.comoving_radial_distance(z_interp_1D) * (H0/100.)
 
+    # omega_nu h^2 as CAMB set it from mnu (one massive state)
+    omegan2 = float(pars.omnuh2)
+
     return (log10k_interp_2D, z_interp_2D, lnPL, lnPNL, G_growth, z_growth,
-            z_interp_1D, chi)
+            z_interp_1D, chi, omegan2, lnPL_cb)

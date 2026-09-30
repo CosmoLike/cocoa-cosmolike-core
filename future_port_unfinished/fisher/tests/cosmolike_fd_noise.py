@@ -35,7 +35,7 @@ iu = np.triu_indices(5)
 
 nw.C_ss_tomo_limber(ell=ELL)
 nw.xi()
-(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0) = cnu.get_camb_cosmology(**POINT, **CAMB)
+(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0, _, _) = cnu.get_camb_cosmology(**POINT, **CAMB)
 lk, z2, z1 = map(np.asarray, (lk, z2, z1))
 G0, chi0 = np.asarray(G0), np.asarray(chi0)
 

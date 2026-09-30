@@ -25,7 +25,7 @@ for lab, kw in (("AccuracyBoost=1 (default)", dict(AccuracyBoost=1.0)),
     base.update(kw)
     out = []
     for f in (1.0, np.exp(s), np.exp(-s)):
-        (lk, z2, lnPL, lnPN, _, _, _, _) = cnu.get_camb_cosmology(
+        (lk, z2, lnPL, lnPN, _, _, _, _, _, _) = cnu.get_camb_cosmology(
             **dict(POINT, As_1e9=POINT["As_1e9"]*f), **base)
         out.append((np.asarray(lnPL), np.asarray(lnPN)))
     nz, nk = len(z2), len(lk)

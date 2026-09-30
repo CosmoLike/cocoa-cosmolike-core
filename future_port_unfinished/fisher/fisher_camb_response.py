@@ -59,8 +59,8 @@ def get_camb_response(X, step, point, log=False, **camb_kwargs):
         p[X] = value
         return cnu.get_camb_cosmology(**p, **camb_kwargs)
 
-    (lk_p, zP, lnPL_p, lnPN_p, G_p, zG, zchi, chi_p) = run(xp)
-    (lk_m, _,  lnPL_m, lnPN_m, G_m, _,  _,    chi_m) = run(xm)
+    (lk_p, zP, lnPL_p, lnPN_p, G_p, zG, zchi, chi_p, _, _) = run(xp)
+    (lk_m, _,  lnPL_m, lnPN_m, G_m, _,  _,    chi_m, _, _) = run(xm)
     nz, nk = len(zP), len(lk_p)
     # (z, k) tables; the flat arrays are Fortran-ordered, as set_cosmology
     # consumes them
