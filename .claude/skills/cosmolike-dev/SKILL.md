@@ -138,6 +138,15 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
   ~72ms dominates the emulator path; non-Limber ~12ms (was ~150ms).
   Hot path: `xi_pm_tomo` → Limber fill → Legendre summation.
 
+## Which model reviews and writes documentation
+
+Documentation passes and reviews go to **Fable 5** (model id
+`claude-fable-5`), never Fable 5.1 - Vivian (2026-09-29): "I am
+comfortable with Fable 5 - not 5.1". The Agent tool's generic `fable`
+setting does not pin the version: use the `fable5` agent type
+(`.claude/agents/fable5.md`, frontmatter `model: claude-fable-5`) for
+every Fable task.
+
 ## Clean & Human-Readable Code Style Guide
 
 (Vivian, 2026-09-29: "you wrote the code to be fast - you got that - but
@@ -186,6 +195,21 @@ cost nothing at run time.
   modules / distinct physical steps; 2 blank lines between helper
   functions or mathematical definitions; 1 blank line inside a function
   between phases (pre-computation vs the integration loop).
+
+### SIMD code a student can read (Vivian, 2026-09-29)
+
+On a nested call like `nfw_um4(simde_mm256_loadu_pd(conc_gal + q),
+simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)), ...)`: "very
+hard to understand - put comments right in front of lines that use
+simde and split the calls in multiple lines so a student can
+understand". So, in every SIMD block:
+- one intrinsic per statement, each result in a named const v4d with a
+  physics name (vconc_gal, vkrs_gal = k r_s,g, ...) and a short comment
+  naming the scalar quantity held by the four lanes;
+- before the block, the scalar line it mirrors;
+- one plain sentence the first time an intrinsic kind appears (load,
+  mul, add, horizontal sum) - never a SIMD tutorial.
+Naming temporaries never changes the operation graph: bitwise safe.
 
 ### Equation-to-Code Blueprinting
 
@@ -439,6 +463,26 @@ Trapezoid rules, uniform in a log variable:
 - `tinker_alpha` in s = ln nu: [-90, 3.5], DS = 0.1 (936 nodes), exact
   to 2.9e-12 vs DS = 0.01 on [-200, 5] (the difference is the dropped
   lower tail).
+
+### Halo-model IA (ia_tables; Fortuna et al. 2021)
+
+- Kernel: closed-form l = 2, 4, 6 satellite-alignment profile (the
+  derivation: scratchpad ia_kernel/KERNEL.md of 2026-09-29, to be moved
+  into the halo.c header by a Fable pass), series branch below a
+  per-edge switch. The l sum does NOT converge for the de-projected
+  sin^-2 theta profile (prefactors -1.875, -1.875, -2.13, -2.39, ...):
+  l <= 6 is F21's model choice, knob Ntable.halo_ia_lmax.
+- f, g read: cubic Hermite on the nfw_ table with the exact slopes
+  df/dln t = -t g, dG/dln t = t f (approved 2026-09-29 for the IA kernel
+  only): f to 1e-14, g to 1e-11, against 5e-9 / 2e-8 for the linear read,
+  which the l = 4, 6 closed forms amplify by up to 1e6. nfw_um keeps the
+  linear read.
+- gamma_hat vs mpmath: 2e-11 (l = 2), ~1e-9 worst (l <= 6, at the c = 20
+  switch gap), ~1e-10 elsewhere.
+- Refill cost ~15-40 ms at 4 threads for l <= 6 (M2); 10-15 ms for l = 2.
+- Mass nodes below the IA HOD's M_0 carry no red satellites and are
+  skipped in the kernel sums (about half at the p_mm mass range);
+  mapping the rule from M_0 upward (as p_gm) is an open improvement.
 
 ### Tables and splines
 
