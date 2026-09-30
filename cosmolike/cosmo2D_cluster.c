@@ -2021,18 +2021,26 @@ typedef struct
 // ---------------------------------------------------------------------------
 // Legendre sums w[row][i] = sum_{l=1}^{lmax-1} Pl[i][l] Cl[row][l].
 //
-// Memory bound: at LMAX = 75000 a C_l row and a kernel row are 600 kB
-// each, and the one-(row, theta)-per-task loop streams both for every
-// single multiply-add (the cluster blocks hold 90 rows x 20 theta bins).
-// A tile of 4 rows x 4 theta bins loads 8 streams for 16 multiply-adds,
-// so each C_l row is read Ntheta/4 times and each kernel row nrows/4
-// times (~7x faster on the 48-row cluster lensing block, 4 threads).
+// The only sum is over l: every (row, theta bin) has its own.
 //
-// Every (row, theta) entry keeps its own reduction with the same
-// vectorization as the reference loop, so the sums are bitwise those of
-// the reference (COSMO2D_NOT_USE_SIMD). Edge tiles repeat the last row /
-// theta pointer instead of switching to a remainder kernel: every entry
-// goes through the same code, and the repeats are simply not stored.
+// Why the reference loop (COSMO2D_NOT_USE_SIMD) is slow: at LMAX = 75000
+// a C_l row and a kernel row are 600 kB each, far more than the L1 cache
+// holds. The reference loop makes one full pass over l per (row, theta
+// bin), so it reads the whole of Cl[row] again for every theta bin and
+// the whole of Pl[i] again for every row: two values fetched from memory
+// per multiply-add, and the loop waits on memory, not on arithmetic (the
+// des_cluster blocks hold 90 rows x 20 theta bins).
+//
+// The default loop takes 4 rows and 4 theta bins in one pass over l: 8
+// values fetched per 16 multiply-adds, each C_l row read Ntheta/4 times
+// and each kernel row nrows/4 times. Each of the 16 sums adds the same
+// products in the same order as the reference loop does for that (row,
+// theta bin), so the results are bitwise those of the reference. Measured
+// on the 6x2pt + N data vector: 22% less cosmolike time at 4 and at 8
+// threads (cluster lensing alone 27-35%).
+//
+// Why 4 x 4: the 16 sums and the 8 fetched values must stay in the CPU's
+// vector registers (32 on arm64); a larger group spills them to memory.
 //
 // Thread safety: call outside parallel regions.
 // ---------------------------------------------------------------------------
@@ -2066,63 +2074,77 @@ static void legendre_sums_cluster(
     }
   }
 #else
-  const int nrow_tiles   = (nrows + 3)/4;
-  const int ntheta_tiles = (ntheta + 3)/4;
-
+  // Same sums as the reference loop above, 4 rows x 4 theta bins per
+  // pass over l: `row` and `i` are the first row and the first theta bin
+  // of the group, which covers rows row .. row+3 and bins i .. i+3.
   #pragma omp parallel for collapse(2) schedule(static)
-  for (int rt = 0; rt < nrow_tiles; rt++) {
-    for (int tt = 0; tt < ntheta_tiles; tt++) {
-      // rows r[q] and theta bins t[q] of the tile; past the edge, repeats
-      // of the last one (computed, never stored)
-      int r[4];
-      int t[4];
-      for (int q = 0; q < 4; q++) {
-        r[q] = (4*rt + q < nrows)  ? 4*rt + q : nrows - 1;
-        t[q] = (4*tt + q < ntheta) ? 4*tt + q : ntheta - 1;
-      }
+  for (int row = 0; row < nrows; row += 4) {
+    for (int i = 0; i < ntheta; i += 4) {
+      // Past the end of the block (nrows or ntheta not a multiple of 4)
+      // the extra slots point at the last valid row / theta bin: the loop
+      // below always reads valid memory, and those repeats are computed
+      // but never stored
+      const int row1 = (row + 1 < nrows) ? row + 1 : nrows - 1;
+      const int row2 = (row + 2 < nrows) ? row + 2 : nrows - 1;
+      const int row3 = (row + 3 < nrows) ? row + 3 : nrows - 1;
+      const int i1   = (i + 1 < ntheta) ? i + 1 : ntheta - 1;
+      const int i2   = (i + 2 < ntheta) ? i + 2 : ntheta - 1;
+      const int i3   = (i + 3 < ntheta) ? i + 3 : ntheta - 1;
 
       // restrict: as in the reference loop, the compiler cannot otherwise
-      // prove the eight rows do not alias and reloads them every step
-      const double* restrict c0 = Cl[r[0]];
-      const double* restrict c1 = Cl[r[1]];
-      const double* restrict c2 = Cl[r[2]];
-      const double* restrict c3 = Cl[r[3]];
-      const double* restrict p0 = Pl[t[0]];
-      const double* restrict p1 = Pl[t[1]];
-      const double* restrict p2 = Pl[t[2]];
-      const double* restrict p3 = Pl[t[3]];
+      // prove the eight arrays do not alias and reloads them every step
+      const double* restrict cl0 = Cl[row];   // C_l of rows row .. row+3
+      const double* restrict cl1 = Cl[row1];
+      const double* restrict cl2 = Cl[row2];
+      const double* restrict cl3 = Cl[row3];
+      const double* restrict pl0 = Pl[i];     // kernel of bins i .. i+3
+      const double* restrict pl1 = Pl[i1];
+      const double* restrict pl2 = Pl[i2];
+      const double* restrict pl3 = Pl[i3];
 
-      // s<row><theta>: sixteen independent reductions
-      double s00 = 0.0, s01 = 0.0, s02 = 0.0, s03 = 0.0;
-      double s10 = 0.0, s11 = 0.0, s12 = 0.0, s13 = 0.0;
-      double s20 = 0.0, s21 = 0.0, s22 = 0.0, s23 = 0.0;
-      double s30 = 0.0, s31 = 0.0, s32 = 0.0, s33 = 0.0;
+      // sum<a><b>: the sum of row + a and theta bin i + b. Sixteen
+      // separate sums over l; nothing is added across rows or bins, they
+      // only share the reads of cl and pl
+      double sum00 = 0.0, sum01 = 0.0, sum02 = 0.0, sum03 = 0.0;
+      double sum10 = 0.0, sum11 = 0.0, sum12 = 0.0, sum13 = 0.0;
+      double sum20 = 0.0, sum21 = 0.0, sum22 = 0.0, sum23 = 0.0;
+      double sum30 = 0.0, sum31 = 0.0, sum32 = 0.0, sum33 = 0.0;
 
-      #pragma omp simd reduction(+:s00,s01,s02,s03,s10,s11,s12,s13,\
-                                   s20,s21,s22,s23,s30,s31,s32,s33)
+      #pragma omp simd reduction(+:sum00,sum01,sum02,sum03,\
+                                   sum10,sum11,sum12,sum13,\
+                                   sum20,sum21,sum22,sum23,\
+                                   sum30,sum31,sum32,sum33)
       for (int l = 1; l < lmax; l++) {
-        const double x0 = c0[l];
-        const double x1 = c1[l];
-        const double x2 = c2[l];
-        const double x3 = c3[l];
-        const double y0 = p0[l];
-        const double y1 = p1[l];
-        const double y2 = p2[l];
-        const double y3 = p3[l];
-        s00 += y0*x0; s01 += y1*x0; s02 += y2*x0; s03 += y3*x0;
-        s10 += y0*x1; s11 += y1*x1; s12 += y2*x1; s13 += y3*x1;
-        s20 += y0*x2; s21 += y1*x2; s22 += y2*x2; s23 += y3*x2;
-        s30 += y0*x3; s31 += y1*x3; s32 += y2*x3; s33 += y3*x3;
+        sum00 += pl0[l]*cl0[l];
+        sum01 += pl1[l]*cl0[l];
+        sum02 += pl2[l]*cl0[l];
+        sum03 += pl3[l]*cl0[l];
+
+        sum10 += pl0[l]*cl1[l];
+        sum11 += pl1[l]*cl1[l];
+        sum12 += pl2[l]*cl1[l];
+        sum13 += pl3[l]*cl1[l];
+
+        sum20 += pl0[l]*cl2[l];
+        sum21 += pl1[l]*cl2[l];
+        sum22 += pl2[l]*cl2[l];
+        sum23 += pl3[l]*cl2[l];
+
+        sum30 += pl0[l]*cl3[l];
+        sum31 += pl1[l]*cl3[l];
+        sum32 += pl2[l]*cl3[l];
+        sum33 += pl3[l]*cl3[l];
       }
 
-      const double s[4][4] = {{s00, s01, s02, s03},
-                              {s10, s11, s12, s13},
-                              {s20, s21, s22, s23},
-                              {s30, s31, s32, s33}};
+      // store the sums of the rows and bins that exist
+      const double sum[4][4] = {{sum00, sum01, sum02, sum03},
+                                {sum10, sum11, sum12, sum13},
+                                {sum20, sum21, sum22, sum23},
+                                {sum30, sum31, sum32, sum33}};
       for (int a = 0; a < 4; a++) {
         for (int b = 0; b < 4; b++) {
-          if (4*rt + a < nrows && 4*tt + b < ntheta) {
-            w_vec[r[a]*ntheta + t[b]] = s[a][b];
+          if (row + a < nrows && i + b < ntheta) {
+            w_vec[(row + a)*ntheta + (i + b)] = sum[a][b];
           }
         }
       }
