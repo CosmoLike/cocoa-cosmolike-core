@@ -1530,6 +1530,10 @@ double w_gg_tomo(
       fdiff2(cache[2], redshift.random_clustering) ||
       fdiff2(cache[3], Ntable.random) ||
       fdiff2(cache[4], nuisance.random_galaxy_bias) ||
+      // redshift.random_shear: with magnification bias on, amax_lens
+      // (redshift_spline.c) ends the lens range at the source z_min,
+      // so a new source n(z) alone moves these integrals
+      fdiff2(cache[5], redshift.random_shear) ||
       cache_limber != limber)
   {
     const int lmin = 1;
@@ -1560,6 +1564,7 @@ double w_gg_tomo(
     cache[2] = redshift.random_clustering;
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
+    cache[5] = redshift.random_shear;
     cache_limber = limber;
   }
 
@@ -1754,7 +1759,11 @@ double w_gk_tomo(
       fdiff2(cache[2], redshift.random_clustering) ||
       fdiff2(cache[3], Ntable.random) ||
       fdiff2(cache[4], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[5], cmb.random))
+      fdiff2(cache[5], cmb.random) ||
+      // redshift.random_shear: with magnification bias on, amax_lens
+      // (redshift_spline.c) ends the lens range at the source z_min,
+      // so a new source n(z) alone moves these integrals
+      fdiff2(cache[6], redshift.random_shear))
   { 
     #pragma omp parallel for
     for (int l=0; l<Ntable.LMAX; l++) {
@@ -1795,6 +1804,7 @@ double w_gk_tomo(
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = cmb.random;
+    cache[6] = redshift.random_shear;
   }
   if (ni < 0 || ni > redshift.clustering_nbin-1) {
     log_fatal("error in selecting bin number ni = %d (max %d)", ni, redshift.clustering_nbin);
@@ -5560,7 +5570,11 @@ double C_gg_tomo_limber(
       fdiff2(cache[2], redshift.random_clustering) ||
       fdiff2(cache[3], Ntable.random) ||
       fdiff2(cache[4], nuisance.random_galaxy_bias) ||
-      fdiff2(cache[5], (uint64_t) include_HOD_GX))
+      fdiff2(cache[5], (uint64_t) include_HOD_GX) ||
+      // redshift.random_shear: with magnification bias on, amax_lens
+      // (redshift_spline.c) ends the lens range at the source z_min,
+      // so a new source n(z) alone moves these integrals
+      fdiff2(cache[6], redshift.random_shear))
   {
     double* lx = (double*) malloc1d(nell);
     for (int i=0; i<nell; i++) {
@@ -5574,6 +5588,7 @@ double C_gg_tomo_limber(
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
     cache[5] = (uint64_t) include_HOD_GX;
+    cache[6] = redshift.random_shear;
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1 || 
@@ -6222,7 +6237,11 @@ double C_gk_tomo_limber(const double l, const int ni)
       fdiff2(cache[1], nuisance.random_photoz_clustering) ||
       fdiff2(cache[2], redshift.random_clustering) ||
       fdiff2(cache[3], Ntable.random) ||
-      fdiff2(cache[4], nuisance.random_galaxy_bias))
+      fdiff2(cache[4], nuisance.random_galaxy_bias) ||
+      // redshift.random_shear: with magnification bias on, amax_lens
+      // (redshift_spline.c) ends the lens range at the source z_min,
+      // so a new source n(z) alone moves these integrals
+      fdiff2(cache[5], redshift.random_shear))
   {
     if (ncoarse > 0) {
       // ---------------------------------------------------------------
@@ -6302,6 +6321,7 @@ double C_gk_tomo_limber(const double l, const int ni)
     cache[2] = redshift.random_clustering;
     cache[3] = Ntable.random;
     cache[4] = nuisance.random_galaxy_bias;
+    cache[5] = redshift.random_shear;
   }
   
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
