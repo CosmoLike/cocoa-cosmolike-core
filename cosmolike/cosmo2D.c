@@ -156,7 +156,11 @@ static void halo_IA_unsupported(const char* where)
 //   C_xy_tomo_limber_nointerp_ells
 //     -> create_cosmo_nodes      (chi, D, H/H0, dchi/da at the
 //                                Gauss-Legendre nodes; ell/bin
-//                                independent, computed once)
+//                                independent, computed once; the lens
+//                                bins of gs, gg, gk go through
+//                                create_cosmo_nodes_lens, one rule on
+//                                the n(z) support and one on the
+//                                magnification foreground)
 //     -> C_xy_tomo_limber_work   (precompute weights + kernels per node
 //                                -> SIMD quadrature per (ell, pair))
 //
@@ -2113,7 +2117,8 @@ double w_ks_tomo(
 // Memory layout: data[CN_NPARAMS][npts], contiguous via malloc2d.
 // ---------------------------------------------------------------------------
 typedef struct {
-  int npts;       // number of Gauss-Legendre quadrature points (= w->n)
+  int npts;       // number of Gauss-Legendre quadrature points (= w->n;
+                  // 2 w->n for a lens bin split by create_cosmo_nodes_lens)
   double** data;  // data[param][p]: cosmological quantities at each node
 } cosmo_nodes;
 
@@ -2195,6 +2200,155 @@ cosmo_nodes create_cosmo_nodes(
 // ---------------------------------------------------------------------------
 void free_cosmo_nodes(cosmo_nodes* cn) {
   free(cn->data);
+}
+
+// ---------------------------------------------------------------------------
+// Near edge (largest scale factor) of the photo-z padded n(z) support of
+// lens bin ni:
+//
+//   zmin = (zdist_zmin[ni] - zmean[ni]) * sigma_ni + zmean[ni]
+//   a_nz = 1 / (1 + max(zmin - 2*|dz_ni|, 0.001))
+//
+// with sigma_ni = nuisance.photoz[1][1][ni] (stretch) and
+// dz_ni = nuisance.photoz[1][0][ni] (shift): the stretched table edge,
+// padded by one |dz_ni| for either sign of the shift and one more as
+// margin. This is the bound amax_lens (redshift_spline.c) returns for a
+// bin without magnification, written with the same operations in the
+// same order, so the two are the same double: keep them in step. With
+// magnification amax_lens moves past a_nz to the lower edge of the source
+// sample, and a_nz stays the near edge of the padded lens n(z), the
+// support of the density kernel W_gal.
+//
+// Parameters:
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//
+// Returns:
+//   the largest scale factor of the bin's padded n(z) support
+// ---------------------------------------------------------------------------
+static double amax_lens_nz(const int ni)
+{
+  // the redshift floor of amax_lens: it keeps a < 1, where the kernels
+  // are defined
+  const double z_floor = 0.001;
+
+  const double zmin =
+    (redshift.clustering_zdist_z[RANGE_MIN][ni]
+      - redshift.clustering_zdist_z[ZDIST_MEAN][ni])*nuisance.photoz[1][1][ni]
+      + redshift.clustering_zdist_z[ZDIST_MEAN][ni];
+  return 1. / (1 + fmax(zmin -2.*fabs(nuisance.photoz[1][0][ni]), z_floor));
+}
+
+// ---------------------------------------------------------------------------
+// Gauss-Legendre nodes of lens bin ni on its Limber range [amin_lens(ni),
+// amax_lens(ni)]: the nodes of the C_gs, C_gg and C_gk Limber integrals,
+// and so of the Limber terms the non-Limber C_cl_tomo and C_gs_tomo
+// subtract.
+//
+// Why the range is split. Without magnification the range is the bin's
+// photo-z padded n(z) support, and one rule w covers it. With
+// magnification (gbmag(0, ni) != 0) amax_lens widens the range down to the
+// lower edge of the source sample, because the magnification kernel W_mag
+// has support in front of the lens galaxies. One rule on the widened range
+// spreads its nodes over the whole foreground and leaves fewer on the
+// narrow density kernel W_gal: the density terms then depend on how far
+// the range stretches, and b_mag = 0 against any b_mag != 0 changes the
+// resolution of the density terms, not only the physics. The widened range
+// is therefore split at a_nz = amax_lens_nz(ni), the near edge of the
+// padded n(z) support, into two panels, each a full rule w on its own
+// interval:
+//
+//   n(z) panel        [amin_lens, a_nz]: node for node the rule of the bin
+//                     without magnification; every density term lives here
+//   foreground panel  [a_nz, amax_lens]: in front of the padded n(z)
+//                     support, where the magnification kernel carries the
+//                     signal
+//
+// Both panels take the size of w, so each scales with
+// Ntable.high_def_integration exactly as the single rule does, and the
+// resolution of the density kernel no longer depends on the extent of the
+// foreground.
+//
+// Nodes 0 .. w->n - 1 are the n(z) panel and the rest the foreground (the
+// layout of the cluster bins in cosmo2D_cluster.c). A Limber sum runs over
+// all cn.npts nodes of its bin, so the consumers need only the count,
+// which is larger for a bin with the foreground panel.
+//
+// One rule over the whole range (create_cosmo_nodes) remains when
+//   - the bin has no magnification: amax_lens = a_nz, nothing to split,
+//     and the nodes are bitwise those of the unsplit design;
+//   - the foreground is empty: the source sample starts behind a_nz, so
+//     amax_lens is the nearer bound;
+//   - COSMO2D_LENS_SINGLE_RULE is defined: every bin, the reference for
+//     debugging the split.
+//
+// Thread safety: call it outside parallel regions; like create_cosmo_nodes
+// it performs the lazy initialization of chi_all, growfac and hoverh0v2.
+//
+// Parameters:
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
+//   w  - Gauss-Legendre rule of each panel
+//
+// Returns:
+//   a cosmo_nodes the caller releases with free_cosmo_nodes
+// ---------------------------------------------------------------------------
+static cosmo_nodes create_cosmo_nodes_lens(
+    const int ni,                            // lens tomographic bin
+    const gsl_integration_glfixed_table* w   // Gauss-Legendre rule per panel
+  )
+{
+  // --- 1. THE LIMBER RANGE AND THE NEAR EDGE OF THE N(Z) SUPPORT ---
+  const double amin = amin_lens(ni);
+  const double amax = amax_lens(ni);
+  const double a_nz = amax_lens_nz(ni);
+
+  const int has_magnification = (gbmag(0.0, ni) != 0);
+  const int has_foreground    = (a_nz < amax);
+  const int has_nz_panel      = (amin < a_nz);
+
+  int split = 0;
+  if (has_magnification && has_foreground && has_nz_panel) {
+    split = 1;
+  }
+#ifdef COSMO2D_LENS_SINGLE_RULE
+  split = 0; // the reference: one rule on every bin
+#endif
+
+  if (0 == split) {
+    return create_cosmo_nodes(amin, amax, w);
+  }
+
+  // --- 2. TWO PANELS, ONE RULE EACH, CONCATENATED (N(Z) PANEL FIRST) ---
+  const int nodes_per_panel = (int) w->n;
+
+  const double panel_lower[2] = {amin, a_nz};  // n(z) panel, foreground
+  const double panel_upper[2] = {a_nz, amax};
+
+  cosmo_nodes cn;
+  cn.npts = 2*nodes_per_panel;
+  cn.data = (double**) malloc2d(CN_NPARAMS, cn.npts);
+
+  for (int panel = 0; panel < 2; panel++) {
+    for (int q = 0; q < nodes_per_panel; q++) {
+      const int p = panel*nodes_per_panel + q;
+
+      // node q of the rule, mapped onto the panel's interval
+      gsl_integration_glfixed_point(panel_lower[panel],
+                                    panel_upper[panel],
+                                    q,
+                                    &cn.data[CN_A][p],
+                                    &cn.data[CN_WT][p],
+                                    w);
+
+      // the cosmology at the node, as in create_cosmo_nodes
+      const double a      = cn.data[CN_A][p];
+      struct chis chidchi = chi_all(a);
+      cn.data[CN_FK][p]      = chidchi.chi;
+      cn.data[CN_GROWFAC][p] = growfac(a);
+      cn.data[CN_HOVERH0][p] = hoverh0v2(a, chidchi.dchida);
+      cn.data[CN_DCHIDA][p]  = chidchi.dchida;
+    }
+  }
+  return cn;
 }
 
 // ---------------------------------------------------------------------------
@@ -4271,7 +4425,9 @@ static void C_gs_tomo_limber_work(
 //
 // Builds the Gauss-Legendre quadrature nodes of each lens bin on its Limber
 // range [amin_lens, amax_lens] (64 nodes at the default accuracy, more with
-// Ntable.high_def_integration), the ell prefactors
+// Ntable.high_def_integration; a bin whose range magnification widens
+// gets one such rule on its n(z) support and one on the foreground, see
+// create_cosmo_nodes_lens), the ell prefactors
 //
 //   ell_prefactor  = l (l+1) / (l + 1/2)^2                  (magnification)
 //   ell_prefactor2 = sqrt((l-1) l (l+1) (l+2)) / (l + 1/2)^2 (spin-2 shear)
@@ -4329,9 +4485,7 @@ void C_gs_tomo_limber_linpsopt_nointerp_ells(
 
   cosmo_nodes cn_all[redshift.clustering_nbin];
   for (int zl = 0; zl<redshift.clustering_nbin; zl++) {
-    const double amin = amin_lens(zl);
-    const double amax = amax_lens(zl);
-    cn_all[zl] = create_cosmo_nodes(amin, amax, w);
+    cn_all[zl] = create_cosmo_nodes_lens(zl, w);
   }
   if (nell <= 0) {
     log_fatal("nell = %d <= 0", nell); exit(1);
@@ -4669,11 +4823,11 @@ double C_gs_tomo_limber(
       fdiff2(cache[9], (uint64_t) include_halo_IA) ||
       fdiff2(cache[10], nuisance.random_ia_halo))
   {
+    // per-lens-bin nodes (split rule with magnification, see
+    // create_cosmo_nodes_lens)
     cosmo_nodes cn_all[redshift.clustering_nbin];
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-      const double amin = amin_lens(zl);
-      const double amax = amax_lens(zl);
-      cn_all[zl] = create_cosmo_nodes(amin, amax, w);
+      cn_all[zl] = create_cosmo_nodes_lens(zl, w);
     }
 
     if (ncoarse > 0) {
@@ -5360,7 +5514,9 @@ static void C_gg_tomo_limber_work(
 //
 // Builds the Gauss-Legendre nodes of each lens bin on [amin_lens,
 // amax_lens] (128 nodes at the default accuracy; 256, 512, 1024 for
-// Ntable.high_def_integration = 1, 2, 3+) and the magnification prefactor
+// Ntable.high_def_integration = 1, 2, 3+; a bin whose range magnification
+// widens gets one such rule on its n(z) support and one on the
+// foreground, see create_cosmo_nodes_lens) and the magnification prefactor
 // l (l+1)/(l + 1/2)^2, then calls C_gg_tomo_limber_work.
 //
 // use_linear_ps selects the power spectrum:
@@ -5426,7 +5582,7 @@ void C_gg_tomo_limber_linpsopt_nointerp_ells(
     if (!(amin < amax)) {
       log_fatal("amin < amax not true"); exit(1);
     }
-    cn_all[zl] = create_cosmo_nodes(amin, amax, w);
+    cn_all[zl] = create_cosmo_nodes_lens(zl, w);
   }
 
   double* ep = (double*) malloc1d(nell);
@@ -5961,13 +6117,15 @@ static void C_gk_tomo_limber_work(
 //
 // Builds the Gauss-Legendre nodes of each lens bin on [amin_lens,
 // amax_lens] (64 nodes at the default accuracy; 128, 256, 512, 1024 for
-// Ntable.high_def_integration = 1, 2, 3, 4+) and the spin-0 prefactor
+// Ntable.high_def_integration = 1, 2, 3, 4+; a bin whose range
+// magnification widens gets one such rule on its n(z) support and one on
+// the foreground, see create_cosmo_nodes_lens) and the spin-0 prefactor
 // l*(l+1)/(l + 1/2)^2 per multipole, then calls C_gk_tomo_limber_work.
 //
 // Cache invalidation:
 // the static Gauss-Legendre table rebuilds when
 // Ntable.random changes; the quadrature nodes are rebuilt on every call
-// (they depend on the current cosmology through create_cosmo_nodes).
+// (they depend on the current cosmology through create_cosmo_nodes_lens).
 //
 // Parameters:
 //   ells  - multipole values, length nell (need not be integers)
@@ -6016,7 +6174,7 @@ void C_gk_tomo_limber_nointerp_ells(
     if (!(amin>0) || !(amin<1) || !(amax>0) || !(amax<1)) {
       log_fatal("0 < amin/amax < 1 not true"); exit(1);
     }
-    cn_all[b] = create_cosmo_nodes(amin, amax, w);
+    cn_all[b] = create_cosmo_nodes_lens(b, w);
   }
 
   double* epf = (double*) malloc1d(nell);
