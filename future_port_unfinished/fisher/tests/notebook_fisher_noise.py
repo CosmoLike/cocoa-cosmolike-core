@@ -92,7 +92,7 @@ def fisher_D(dv, h, cosmo_dv=None):
 # ---- (c) synthetic tables for the five cosmological parameters ------------
 dv1 = make_dv(1.0, 1.0)
 dv1(CV)                                   # fiducial state and nuisances
-(lk, z2, lnPL0, lnPN0, G0, z1, chi0) = cnu.get_camb_cosmology(**kw)
+(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0) = cnu.get_camb_cosmology(**kw)
 lk, z2, z1, G0, chi0 = map(np.asarray, (lk, z2, z1, G0, chi0))
 POINT = {k: kw[k] for k in ("omegam", "omegab", "H0", "ns", "As_1e9", "w",
                             "w0pwa", "mnu")}
@@ -113,7 +113,7 @@ def synthetic_dv(param, AccuracyBoost=None):
     ci.set_cosmology(omegam=CV[4]*(1 + t*r["dlnOm_dX"]), H0=CV[2],
                      log10k_2D=lk, z_2D=z2, lnP_linear=lnPL0,
                      lnP_nonlinear=lnPN0 + t*r["dlnPNL_dX"],
-                     G=G0*np.exp(t*r["dlnG_dX"]), z_1D=z1,
+                     G=G0*np.exp(t*r["dlnG_dX"]), z_G=zG, z_1D=z1,
                      chi=chi0 + t*r["dchi_dX"])
     return np.array(ci.compute_data_vector_masked(), dtype=np.float64)
 

@@ -24,7 +24,7 @@ s = 0.01
 out = []
 for f in (0.0, 1.0, -1.0):
     p = dict(POINT, As_1e9=POINT["As_1e9"]*np.exp(f*s))
-    (lk, z2, _, lnPN, _, _, _) = cnu.get_camb_cosmology(**p, **BASE)
+    (lk, z2, _, lnPN, _, _, _, _) = cnu.get_camb_cosmology(**p, **BASE)
     out.append(np.asarray(lnPN).reshape(len(z2), len(lk), order="F"))
 lk, z2 = np.asarray(lk), np.asarray(z2)
 d = out[0] - 0.5*(out[1] + out[2])

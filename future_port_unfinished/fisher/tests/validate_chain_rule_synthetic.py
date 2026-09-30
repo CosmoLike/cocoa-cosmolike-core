@@ -37,14 +37,14 @@ iu = np.triu_indices(5)
 # fiducial state (nuisances set by the wrapper) and fiducial tables
 nw.C_ss_tomo_limber(ell=ELL)
 nw.xi()
-(lk, z2, lnPL0, lnPN0, G0, z1, chi0) = cnu.get_camb_cosmology(**POINT, **CAMB)
+(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0) = cnu.get_camb_cosmology(**POINT, **CAMB)
 lk = np.asarray(lk); z2 = np.asarray(z2); z1 = np.asarray(z1)
 
 
 def set_tables(om, lnPN, G, chi):
     ci.set_cosmology(omegam=om, H0=POINT["H0"], log10k_2D=lk, z_2D=z2,
-                     lnP_linear=lnPL0, lnP_nonlinear=lnPN, G=G, z_1D=z1,
-                     chi=chi)
+                     lnP_linear=lnPL0, lnP_nonlinear=lnPN, G=G, z_G=zG,
+                     z_1D=z1, chi=chi)
 
 
 resp = [get_camb_response(X, s, POINT, log=log, **CAMB)

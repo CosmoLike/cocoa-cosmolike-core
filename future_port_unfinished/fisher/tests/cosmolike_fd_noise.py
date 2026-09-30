@@ -35,7 +35,7 @@ iu = np.triu_indices(5)
 
 nw.C_ss_tomo_limber(ell=ELL)
 nw.xi()
-(lk, z2, lnPL0, lnPN0, G0, z1, chi0) = cnu.get_camb_cosmology(**POINT, **CAMB)
+(lk, z2, lnPL0, lnPN0, G0, zG, z1, chi0) = cnu.get_camb_cosmology(**POINT, **CAMB)
 lk, z2, z1 = map(np.asarray, (lk, z2, z1))
 G0, chi0 = np.asarray(G0), np.asarray(chi0)
 
@@ -45,7 +45,7 @@ def at(r, t):
     ci.set_cosmology(omegam=POINT["omegam"]*(1 + t*r["dlnOm_dX"]),
                      H0=POINT["H0"], log10k_2D=lk, z_2D=z2,
                      lnP_linear=lnPL0, lnP_nonlinear=lnPN0 + t*r["dlnPNL_dX"],
-                     G=G0*np.exp(t*r["dlnG_dX"]), z_1D=z1,
+                     G=G0*np.exp(t*r["dlnG_dX"]), z_G=zG, z_1D=z1,
                      chi=chi0 + t*r["dchi_dX"])
     C = np.array(ci.C_ss_tomo_limber(l=ELL)[0])
     xp, xm = map(np.array, ci.xi_pm_tomo())
@@ -56,7 +56,7 @@ resp = [get_camb_response(X, s, POINT, log=log, **CAMB)
         for X, log, s in PARAMS]
 ci.set_cosmology(omegam=POINT["omegam"], H0=POINT["H0"], log10k_2D=lk,
                  z_2D=z2, lnP_linear=lnPL0, lnP_nonlinear=lnPN0, G=G0,
-                 z_1D=z1, chi=chi0)
+                 z_G=zG, z_1D=z1, chi=chi0)
 ci.reset_fisher_response()
 for ip, r in enumerate(resp):
     ci.set_fisher_response(ip=ip, **r)
