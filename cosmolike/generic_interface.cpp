@@ -3318,8 +3318,9 @@ void set_lens_sample_size(const int Ntomo)
 // Cache invalidation:
 // bumps redshift.random_clustering first, then calls
 // nz_lens_photoz(0.1, 0) so the static interpolant rebuilds here,
-// single-threaded, and stores clustering_zdist_zmean[k] = zmean(k) (the
-// fiducial means the photo-z stretch transform rescales around).
+// single-threaded, and stores clustering_zdist_zmean[k], the mean of
+// bin k with no photo-z shift and no stretch (zmean_all): the fiducial
+// means zmean() returns and the photo-z stretch rescales around.
 //
 // Validation: redshift.clustering_nbin already set and within
 // MAX_SIZE_ARRAYS, else critical() + exit(1).
@@ -3421,9 +3422,28 @@ void set_lens_sample(arma::Mat<double> input_table)
 
     nz_lens_photoz(0.1, 0); // init static variables
 
+    // The fiducial means: the n(z) with no photo-z shift and no stretch,
+    // whatever the nuisance holds right now (a notebook may have set it
+    // before loading the n(z)). The nuisance is written directly and
+    // restored, so its cache key does not move; zmean_all is uncached,
+    // so nothing keeps the identity values. The means are computed into
+    // zm first and copied after, so every bin's stretch center inside
+    // nz_lens_photoz is the stored value from before this load.
+    double zm[MAX_SIZE_ARRAYS];
+    double shift[MAX_SIZE_ARRAYS];
+    double stretch[MAX_SIZE_ARRAYS];
     for (int k=0; k<Ntomo; k++) {
-      redshift.clustering_zdist_zmean[k] = zmean(k);
-      debug("{}: bin {} - {} = {}.", fname, k, "<z_s>", zmean(k));
+      shift[k] = nuisance.photoz[1][0][k];
+      stretch[k] = nuisance.photoz[1][1][k];
+      nuisance.photoz[1][0][k] = 0.0;
+      nuisance.photoz[1][1][k] = 1.0;
+    }
+    zmean_all(zm);
+    for (int k=0; k<Ntomo; k++) {
+      nuisance.photoz[1][0][k] = shift[k];
+      nuisance.photoz[1][1][k] = stretch[k];
+      redshift.clustering_zdist_zmean[k] = zm[k];
+      debug("{}: bin {} - {} = {}.", fname, k, "<z_l>", zm[k]);
     }
   }
   debug("{}: {}", fname, errends);

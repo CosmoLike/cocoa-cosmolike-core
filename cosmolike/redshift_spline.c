@@ -1657,7 +1657,7 @@ double nz_lens_photoz(double zz, int nj)
 // ---------------------------------------------------------------------------
 // Integrand for the mean lens redshift: z * n_j(z).
 //
-// GSL quadrature callback used by zmean, with n_j = nz_lens_photoz.
+// GSL quadrature callback used by zmean_all, with n_j = nz_lens_photoz.
 //
 // Parameters:
 //   z      - redshift
@@ -1682,7 +1682,7 @@ double int_for_zmean(double z, void* params)
 // ---------------------------------------------------------------------------
 // Normalization integrand for the mean lens redshift: n_j(z).
 //
-// GSL quadrature callback used by zmean to compute the denominator
+// GSL quadrature callback used by zmean_all to compute the denominator
 // int n_j(z) dz, with n_j = nz_lens_photoz.
 //
 // Parameters:
@@ -1706,77 +1706,90 @@ double norm_for_zmean(double z, void* params)
 }
 
 // ---------------------------------------------------------------------------
-// Mean true redshift of lens galaxies in tomography bin ni.
+// Mean true redshift of the lens n(z) of every bin, at the current lens
+// photo-z nuisance:
 //
-//   zmean(ni) = int z * n_i(z) dz / int n_i(z) dz
+//   out[i] = int z * n_i(z) dz / int n_i(z) dz
 //
-// over the bin's tabulated range [zdist_zmin[ni], zdist_zmax[ni]], with
+// over the bin's tabulated range [zdist_zmin[i], zdist_zmax[i]], with
 // n_i = nz_lens_photoz. Unlike zmean_source, this explicitly divides by
 // the norm because nz_lens_photoz includes a stretch factor that breaks
-// unit normalization. All bins are tabulated at once with fixed-order
-// Gauss-Legendre quadrature (256/512/1024 nodes, chosen by
-// |Ntable.high_def_integration|).
+// unit normalization. Fixed-order Gauss-Legendre quadrature (256/512/1024
+// nodes, chosen by |Ntable.high_def_integration|).
 //
-// Cache invalidation:
-// the table rebuilds when Ntable.random or
-// redshift.random_clustering change. nz_lens_photoz is warmed
-// single-threaded before the parallel loop over bins.
+// No cache: set_lens_sample calls it once per n(z) load, with the lens
+// photo-z nuisance at the identity, to fill the fiducial means
+// redshift.clustering_zdist_zmean that zmean() returns. A cached copy
+// keyed on the n(z) alone would hand a later caller the value of
+// whatever shifts were current at its last rebuild.
+//
+// Parameters:
+//   out - clustering_nbin doubles, written
+// ---------------------------------------------------------------------------
+void zmean_all(double* out)
+{
+  const int hdi = abs(Ntable.high_def_integration);
+  const size_t szint = (0 == hdi) ? 256 :
+                       (1 == hdi) ? 512 : 1024; // predefined GSL tables
+  gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
+
+  (void) nz_lens_photoz(0., 0); // init static vars
+  #pragma omp parallel for schedule(static)
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    double ar[1] = {(double) i};
+    gsl_function F;
+    F.params = ar;
+
+    F.function = int_for_zmean;
+    const double num = gsl_integration_glfixed(&F,
+                                        redshift.clustering_zdist_zmin[i],
+                                        redshift.clustering_zdist_zmax[i], w);
+    F.function = norm_for_zmean;
+    const double den = gsl_integration_glfixed(&F,
+                                        redshift.clustering_zdist_zmin[i],
+                                        redshift.clustering_zdist_zmax[i], w);
+    if (!(den > 0.0)) {
+      log_fatal("zmean denominator is non-positive (lens bin %d)", i);
+      exit(1);
+    }
+    out[i] = num/den;
+  }
+  gsl_integration_glfixed_table_free(w);
+}
+
+// ---------------------------------------------------------------------------
+// Fiducial mean true redshift of lens bin ni: the mean of the loaded lens
+// n(z) with no photo-z shift and no stretch, computed once per n(z) load
+// by set_lens_sample (zmean_all) and stored in
+// redshift.clustering_zdist_zmean.
+//
+// Its users treat it as a fixed reference redshift of the bin: the pivot
+// of the separable linear term of the non-Limber w_gg (cosmo2D.c), the
+// pivot of the evolving linear bias (bias.c), the lens redshift of the
+// point-mass term (generic_interface.cpp), the redshift of the HOD
+// (halo.c), and the center of the photo-z stretch (nz_lens_photoz). A
+// fixed value makes every one of them a function of the parameters only,
+// never of the order in which earlier calls moved the photo-z nuisance.
 //
 // Parameters:
 //   ni - lens tomographic bin index (0 .. clustering_nbin-1)
 //
 // Returns:
-//   tabulated mean redshift of bin ni.
+//   the fiducial mean redshift of bin ni.
 // ---------------------------------------------------------------------------
 double zmean(const int ni)
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double* table = NULL;
-  static gsl_integration_glfixed_table* w = NULL;
-
-  if (table == NULL || 
-      fdiff2(cache[0], Ntable.random) ||
-      fdiff2(cache[1], redshift.random_clustering))
-  {
-    if (table != NULL) free(table);
-    // one slot of slack: only the first clustering_nbin entries are
-    // ever written or read
-    table = (double*) malloc1d(redshift.clustering_nbin+1);
-    const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 256 : 
-                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
-    if (w != NULL) gsl_integration_glfixed_table_free(w);
-    w = malloc_gslint_glfixed(szint);
-
-    (void) nz_lens_photoz(0., 0); // init static vars
-    #pragma omp parallel for schedule(static)
-    for (int i=0; i<redshift.clustering_nbin; i++) {
-      double ar[1] = {(double) i};
-      gsl_function F;
-      F.params = ar;
-      
-      F.function = int_for_zmean;
-      const double num = gsl_integration_glfixed(&F, 
-                                          redshift.clustering_zdist_zmin[i], 
-                                          redshift.clustering_zdist_zmax[i], w);
-      F.function = norm_for_zmean;
-      const double den = gsl_integration_glfixed(&F, 
-                                          redshift.clustering_zdist_zmin[i], 
-                                          redshift.clustering_zdist_zmax[i], w);
-      if (!(den > 0.0)) {
-        log_fatal("zmean denominator is non-positive (lens bin %d)", i);
-        exit(1);
-      }
-      table[i] = num/den;
-    }
-    cache[0] = Ntable.random;
-    cache[1] = redshift.random_clustering;
-  }
-
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
     log_fatal("invalid bin input ni = %d", ni); exit(1);
-  }  
-  return table[ni];
+  }
+  // a mean redshift is positive once a lens n(z) is loaded; the stored
+  // value is zero before set_lens_sample runs
+  if (!(redshift.clustering_zdist_zmean[ni] > 0.0)) {
+    log_fatal("lens bin %d has no fiducial mean redshift (lens n(z) not "
+              "loaded)", ni);
+    exit(1);
+  }
+  return redshift.clustering_zdist_zmean[ni];
 }
 
 // ---------------------------------------------------------------------------
