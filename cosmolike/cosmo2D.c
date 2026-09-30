@@ -3757,8 +3757,12 @@ double C_gs_tomo_limber_nointerp(
 // Key difference from SS: galaxy-shear has DIFFERENT integration limits per
 // lens bin (amin_lens, amax_lens vary with nl), so cosmo_nodes are created
 // per lens bin (cn_all[clustering_nbin]) rather than a single global cn.
+// The node count may differ between lens bins as well (cn_all[zl].npts):
+// every per-node array below is padded to the largest count, npts_max,
+// the precompute loops skip a bin's padding nodes, and each pair's sum
+// runs over the nodes of its own lens bin only.
 //
-// Memory layout:
+// Memory layout (npts = npts_max, the largest node count over the bins):
 //   WB[10][clustering_nbin][npts]: lens weights and galaxy bias parameters
 //     WB[0] = W_gal      (lens galaxy radial kernel)
 //     WB[1] = W_mag       (magnification lensing kernel)
@@ -3918,29 +3922,35 @@ static void C_gs_tomo_limber_work(
   }
 
   // -----------------------------------------------------------------------
-  // Allocate precomputed arrays
+  // Allocate precomputed arrays, padded to the largest node count over the
+  // lens bins (the bins' counts may differ; see the header)
   // -----------------------------------------------------------------------
-  const int npts = cn_all[0].npts;
+  int npts_max = 0;
+  for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
+    if (cn_all[zl].npts > npts_max) {
+      npts_max = cn_all[zl].npts;
+    }
+  }
 
-  double*** WB = (double***) malloc3d(10, redshift.clustering_nbin, npts);
-  zero3d(WB, 10, redshift.clustering_nbin, npts);
+  double*** WB = (double***) malloc3d(10, redshift.clustering_nbin, npts_max);
+  zero3d(WB, 10, redshift.clustering_nbin, npts_max);
 
   double**** WC = (double****) malloc4d(5, 
                                         redshift.clustering_nbin,
                                         redshift.shear_nbin, 
-                                        npts);
-  zero4d(WC, 5, redshift.clustering_nbin, redshift.shear_nbin, npts);
+                                        npts_max);
+  zero4d(WC, 5, redshift.clustering_nbin, redshift.shear_nbin, npts_max);
 
   double**** KIA = (double****) malloc4d(10, 
                                          redshift.clustering_nbin, 
                                          nell, 
-                                         npts);
-  zero4d(KIA, 10, redshift.clustering_nbin, nell, npts);
+                                         npts_max);
+  zero4d(KIA, 10, redshift.clustering_nbin, nell, npts_max);
 
   // HOD galaxy-matter spectrum at the nodes: KH[0] = p_gm(k, a, zl)
   double**** KH = NULL;
   if (1 == hod) {
-    KH = (double****) malloc4d(1, redshift.clustering_nbin, nell, npts);
+    KH = (double****) malloc4d(1, redshift.clustering_nbin, nell, npts_max);
   }
 
   // halo IA at the nodes: KHI[0] = P_delta f_2h, KHI[1] = P_1h,dI;
@@ -3948,8 +3958,8 @@ static void C_gs_tomo_limber_work(
   double**** KHI = NULL;
   double** FRC = NULL;
   if (1 == halo_ia) {
-    KHI = (double****) malloc4d(2, redshift.clustering_nbin, nell, npts);
-    FRC = (double**) malloc2d(redshift.clustering_nbin, npts);
+    KHI = (double****) malloc4d(2, redshift.clustering_nbin, nell, npts_max);
+    FRC = (double**) malloc2d(redshift.clustering_nbin, npts_max);
   }
 
   double limTATT[3];
@@ -4000,8 +4010,11 @@ static void C_gs_tomo_limber_work(
     // -----------------------------------------------------------------------
     #pragma omp for collapse(2) schedule(static) nowait
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-      for (int p = 0; p < npts; p++) {
+      for (int p = 0; p < npts_max; p++) {
         const cosmo_nodes* cn = &cn_all[zl];
+        if (p >= cn->npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
         const double a  = cn->data[CN_A][p];
         const double z  = 1.0/a - 1.0;
         const double growfac_a = cn->data[CN_GROWFAC][p];
@@ -4029,9 +4042,12 @@ static void C_gs_tomo_limber_work(
     // -----------------------------------------------------------------------
     #pragma omp for collapse(3) schedule(static)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-      for (int p = 0; p < npts; p++) {
+      for (int p = 0; p < npts_max; p++) {
         for (int i = 0; i < nell; i++) {
           const cosmo_nodes* cn = &cn_all[zl];
+          if (p >= cn->npts) {
+            continue; // padding node: bin zl has fewer nodes
+          }
           const double a  = cn->data[CN_A][p];
           const double fK = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
@@ -4101,7 +4117,10 @@ static void C_gs_tomo_limber_work(
   if (1 == halo_ia) {
     #pragma omp parallel for collapse(2) schedule(static)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
-      for (int p = 0; p < npts; p++) {
+      for (int p = 0; p < npts_max; p++) {
+        if (p >= cn_all[zl].npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
         FRC[zl][p] = ia_f_red_central(cn_all[zl].data[CN_A][p]);
       }
     }
@@ -4109,7 +4128,10 @@ static void C_gs_tomo_limber_work(
     #pragma omp parallel for collapse(3) schedule(static)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       for (int i = 0; i < nell; i++) {
-        for (int p = 0; p < npts; p++) {
+        for (int p = 0; p < npts_max; p++) {
+          if (p >= cn_all[zl].npts) {
+            continue; // padding node: bin zl has fewer nodes
+          }
           const double a = cn_all[zl].data[CN_A][p];
           const double k = (lx[i] + 0.5)/cn_all[zl].data[CN_FK][p];
 
@@ -4135,6 +4157,7 @@ static void C_gs_tomo_limber_work(
       const int ZLNZ = ZL(j);
       const int ZSNZ = ZS(j);
       const cosmo_nodes* cn = &cn_all[ZLNZ];
+      const int npts = cn->npts; // the nodes of this pair's lens bin
 
       const double ell = lx[i] + 0.5;
       const double ep  = ell_prefactor[i];
@@ -4309,11 +4332,6 @@ void C_gs_tomo_limber_linpsopt_nointerp_ells(
     const double amin = amin_lens(zl);
     const double amax = amax_lens(zl);
     cn_all[zl] = create_cosmo_nodes(amin, amax, w);
-  }
-  for (int q = 1; q < redshift.clustering_nbin; q++) {
-    if (cn_all[q].npts != cn_all[0].npts) {
-      log_fatal("inconsistent quadrature size"); exit(1);
-    }
   }
   if (nell <= 0) {
     log_fatal("nell = %d <= 0", nell); exit(1);
@@ -4657,11 +4675,6 @@ double C_gs_tomo_limber(
       const double amax = amax_lens(zl);
       cn_all[zl] = create_cosmo_nodes(amin, amax, w);
     }
-    for (int q = 1; q < redshift.clustering_nbin; q++) {
-      if (cn_all[q].npts != cn_all[0].npts) {
-        log_fatal("inconsistent quadrature size"); exit(1);
-      }
-    }
 
     if (ncoarse > 0) {
       // ---------------------------------------------------------------
@@ -4958,7 +4971,8 @@ double C_gg_tomo_limber_nointerp(
 //   C_l = SUM_p wt_p * mask_p * [ (WGAL*b1 + WMAG*ep*bmag + WRSD)^2 * PK
 //                                 + oneloop ] * (dchi/da) / fK^2
 //
-// over the Gauss-Legendre nodes p of the bin (cn_all), with
+// over the Gauss-Legendre nodes p of the bin (cn_all[bin], cn_all[bin].npts
+// of them; the count may differ between bins), with
 //   ep      = l (l+1) / (l + 1/2)^2           (magnification ell prefactor)
 //   PK      = P_delta(k, a), or (D(a)/D(a_piv))^2 * P_lin(k, a_piv)
 //             per lens bin when use_linear_ps = 1,
@@ -4979,7 +4993,9 @@ double C_gg_tomo_limber_nointerp(
 // W_RSD and P_delta dominate the cost (lsst_y1, 1750 ells x 5 bins, one
 // thread: 33 ms; the retired per-(node, ell) GSL path took 45 ms).
 //
-// Memory layout:
+// Memory layout (npts = npts_max, the largest node count over the bins;
+// the precompute loops skip a bin's padding nodes and its sum never reads
+// them):
 //   WB[4][nbin][npts]        W_gal, W_mag, b1, bmag
 //   WO[4][nbin][npts]        b2, bs2, b3, bK            (one-loop bias only)
 //   KG[3][nbin][nell][npts]  PK, W_RSD, mask
@@ -5036,7 +5052,14 @@ static void C_gg_tomo_limber_work(
   }
 
   const int nbin = redshift.clustering_nbin;
-  const int npts = cn_all[0].npts;
+
+  // per-node arrays are padded to the largest node count over the bins
+  int npts_max = 0;
+  for (int zl=0; zl<nbin; zl++) {
+    if (cn_all[zl].npts > npts_max) {
+      npts_max = cn_all[zl].npts;
+    }
+  }
 
   int nonlinear_bias = 0;
   if (0 == use_linear_ps && 0 == hod) {
@@ -5099,21 +5122,21 @@ static void C_gg_tomo_limber_work(
   }
 
   // -----------------------------------------------------------------------
-  // Allocate precomputed arrays
+  // Allocate precomputed arrays (padded to npts_max)
   // -----------------------------------------------------------------------
-  double*** WB  = (double***) malloc3d(4, nbin, npts);
-  double**** KG = (double****) malloc4d(3, nbin, nell, npts);
+  double*** WB  = (double***) malloc3d(4, nbin, npts_max);
+  double**** KG = (double****) malloc4d(3, nbin, nell, npts_max);
   // HOD spectra at the nodes: KH[0] = p_gg(k, a, zl, zl),
   // KH[1] = p_gm(k, a, zl)
   double**** KH = NULL;
   if (1 == hod) {
-    KH = (double****) malloc4d(2, nbin, nell, npts);
+    KH = (double****) malloc4d(2, nbin, nell, npts_max);
   }
   double*** WO  = NULL;
   double**** KB = NULL;
   if (1 == nonlinear_bias) {
-    WO = (double***) malloc3d(4, nbin, npts);
-    KB = (double****) malloc4d(6, nbin, nell, npts);
+    WO = (double***) malloc3d(4, nbin, npts_max);
+    KB = (double****) malloc4d(6, nbin, nell, npts_max);
   }
 
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
@@ -5139,8 +5162,11 @@ static void C_gg_tomo_limber_work(
     // -----------------------------------------------------------------------
     #pragma omp for collapse(2) schedule(static) nowait
     for (int zl=0; zl<nbin; zl++) {
-      for (int p=0; p<npts; p++) {
+      for (int p=0; p<npts_max; p++) {
         const cosmo_nodes* cn = &cn_all[zl];
+        if (p >= cn->npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
         const double a = cn->data[CN_A][p];
         const double z = 1.0/a - 1.0;
         WB[0][zl][p] = W_gal(a, zl, cn->data[CN_HOVERH0][p]);
@@ -5161,8 +5187,11 @@ static void C_gg_tomo_limber_work(
     #pragma omp for collapse(3) schedule(static)
     for (int zl=0; zl<nbin; zl++) {
       for (int i=0; i<nell; i++) {
-        for (int p=0; p<npts; p++) {
+        for (int p=0; p<npts_max; p++) {
           const cosmo_nodes* cn = &cn_all[zl];
+          if (p >= cn->npts) {
+            continue; // padding node: bin zl has fewer nodes
+          }
           const double a   = cn->data[CN_A][p];
           const double fK  = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
@@ -5245,6 +5274,7 @@ static void C_gg_tomo_limber_work(
   for (int zl=0; zl<nbin; zl++) {
     for (int i=0; i<nell; i++) {
       const cosmo_nodes* cn = &cn_all[zl];
+      const int npts = cn->npts; // the nodes of bin zl
       const double ell = lx[i] + 0.5;
       const double ep  = ell_prefactor[i];
 
@@ -5695,7 +5725,8 @@ void C_gg_tomo_limber_fill(
 // reach mask as the gg batch. HOD is not implemented in the batched path
 // (log_fatal), as in gg.
 //
-// Memory layout:
+// Memory layout (npts = npts_max, the largest node count over the lens
+// bins, as in the gg batch: each bin's sum runs over its own nodes):
 //   WB[5][clustering_nbin][npts]        W_gal, W_mag, b1, bmag, W_k
 //   WO[4][clustering_nbin][npts]        b2, bs2, b3, bK    (one-loop only)
 //   KG[3][clustering_nbin][nell][npts]  PK, W_RSD, mask
@@ -5730,8 +5761,15 @@ static void C_gk_tomo_limber_work(
     log_fatal("HOD not implemented in the batched gk path"); exit(1);
   }
   const int nbin = redshift.clustering_nbin;
-  const int npts = cn_all[0].npts;
   const int nonlinear_bias = has_b2_galaxies();
+
+  // per-node arrays are padded to the largest node count over the bins
+  int npts_max = 0;
+  for (int zl=0; zl<nbin; zl++) {
+    if (cn_all[zl].npts > npts_max) {
+      npts_max = cn_all[zl].npts;
+    }
+  }
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
@@ -5772,15 +5810,15 @@ static void C_gk_tomo_limber_work(
   }
 
   // -----------------------------------------------------------------------
-  // Allocate precomputed arrays
+  // Allocate precomputed arrays (padded to npts_max)
   // -----------------------------------------------------------------------
-  double*** WB  = (double***) malloc3d(5, nbin, npts);
-  double**** KG = (double****) malloc4d(3, nbin, nell, npts);
+  double*** WB  = (double***) malloc3d(5, nbin, npts_max);
+  double**** KG = (double****) malloc4d(3, nbin, nell, npts_max);
   double*** WO  = NULL;
   double**** KB = NULL;
   if (1 == nonlinear_bias) {
-    WO = (double***) malloc3d(4, nbin, npts);
-    KB = (double****) malloc4d(3, nbin, nell, npts);
+    WO = (double***) malloc3d(4, nbin, npts_max);
+    KB = (double****) malloc4d(3, nbin, nell, npts_max);
   }
 
   #pragma omp parallel
@@ -5790,8 +5828,11 @@ static void C_gk_tomo_limber_work(
     // ---------------------------------------------------------------------
     #pragma omp for collapse(2) schedule(static) nowait
     for (int zl=0; zl<nbin; zl++) {
-      for (int p=0; p<npts; p++) {
+      for (int p=0; p<npts_max; p++) {
         const cosmo_nodes* cn = &cn_all[zl];
+        if (p >= cn->npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
         const double a  = cn->data[CN_A][p];
         const double fK = cn->data[CN_FK][p];
         const double z  = 1.0/a - 1.0;
@@ -5814,8 +5855,11 @@ static void C_gk_tomo_limber_work(
     #pragma omp for collapse(3) schedule(static)
     for (int zl=0; zl<nbin; zl++) {
       for (int i=0; i<nell; i++) {
-        for (int p=0; p<npts; p++) {
+        for (int p=0; p<npts_max; p++) {
           const cosmo_nodes* cn = &cn_all[zl];
+          if (p >= cn->npts) {
+            continue; // padding node: bin zl has fewer nodes
+          }
           const double a   = cn->data[CN_A][p];
           const double fK  = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
@@ -5859,6 +5903,7 @@ static void C_gk_tomo_limber_work(
   for (int zl=0; zl<nbin; zl++) {
     for (int i=0; i<nell; i++) {
       const cosmo_nodes* cn = &cn_all[zl];
+      const int npts = cn->npts; // the nodes of bin zl
       const double ell = lx[i] + 0.5;
       const double ep  = ell_prefactor[i];
 
@@ -5972,11 +6017,6 @@ void C_gk_tomo_limber_nointerp_ells(
       log_fatal("0 < amin/amax < 1 not true"); exit(1);
     }
     cn_all[b] = create_cosmo_nodes(amin, amax, w);
-  }
-  for (int q = 1; q < redshift.clustering_nbin; q++) {
-    if (cn_all[q].npts != cn_all[0].npts) {
-      log_fatal("inconsistent quadrature size"); exit(1);
-    }
   }
 
   double* epf = (double*) malloc1d(nell);
