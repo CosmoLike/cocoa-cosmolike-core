@@ -135,6 +135,39 @@ void limber_fill_interp(
     const int n                    // number of grid points
   );
 
+// Legendre sums of the real-space functions, for every spectrum nz and
+// theta bin i: w_vec[nz*ntheta + i] = sum_{l=lmin}^{lmax-1} Pl[i][l]*Cl[nz][l].
+// Grouped (4 spectra x 4 theta bins per pass over l) so each C_l and
+// kernel array is read far fewer times; bitwise equal to the one-sum-
+// per-pass loop (kept under COSMO2D_NOT_USE_SIMD). Details in cosmo2D.c.
+// Call outside parallel regions.
+void legendre_sums(
+    const int NSIZE,   // number of spectra (rows of Cl)
+    const int ntheta,  // number of theta bins (rows of Pl)
+    const int lmin,    // first multipole of the sums
+    const int lmax,    // one past the last multipole of the sums
+    double** Pl,       // [ntheta][lmax] bin-averaged Legendre kernel
+    double** Cl,       // [NSIZE][lmax] C_l at every integer l
+    double* w_vec      // output [NSIZE*ntheta], indexed nz*ntheta + i
+  );
+
+// The xi+- version (2 pairs x 4 theta bins per pass over l):
+//   xip[nz*ntheta + i] = sum_l Glp[i][l]*(Cl_EE[nz][l] + Cl_BB[nz][l])
+//   xim[nz*ntheta + i] = sum_l Glm[i][l]*(Cl_EE[nz][l] - Cl_BB[nz][l])
+// Call outside parallel regions.
+void legendre_sums_xipm(
+    const int NSIZE,   // number of shear pairs (rows of Cl_EE, Cl_BB)
+    const int ntheta,  // number of theta bins (rows of Glp, Glm)
+    const int lmin,    // first multipole of the sums
+    const int lmax,    // one past the last multipole of the sums
+    double** Glp,      // [ntheta][lmax] bin-averaged kernel of xi_+
+    double** Glm,      // [ntheta][lmax] bin-averaged kernel of xi_-
+    double** Cl_EE,    // [NSIZE][lmax] E-mode C_l at every integer l
+    double** Cl_BB,    // [NSIZE][lmax] B-mode C_l at every integer l
+    double* xip,       // output [NSIZE*ntheta], indexed nz*ntheta + i
+    double* xim        // output [NSIZE*ntheta], indexed nz*ntheta + i
+  );
+
 // Batch computation of the scale-cut derivative dC_ss/dlnk (2011.06469
 // eq 17) on a (ln k, ell) grid. Each (k, ell) maps onto the single Limber
 // node chi(a) = (l + 1/2)/k; nodes outside the source support return 0.

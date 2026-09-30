@@ -538,7 +538,7 @@ void C_ks_tomo_limber_fill(
 //   Cl     - [NSIZE][lmax] C_l at every integer l
 //   w_vec  - output [NSIZE*ntheta], indexed nz*ntheta + i
 // ---------------------------------------------------------------------------
-static void legendre_sums(
+void legendre_sums(
     const int NSIZE,
     const int ntheta,
     const int lmin,
@@ -671,7 +671,7 @@ static void legendre_sums(
 //   xip    - output [NSIZE*ntheta], indexed nz*ntheta + i
 //   xim    - output [NSIZE*ntheta], indexed nz*ntheta + i
 // ---------------------------------------------------------------------------
-static void legendre_sums_xipm(
+void legendre_sums_xipm(
     const int NSIZE,
     const int ntheta,
     const int lmin,

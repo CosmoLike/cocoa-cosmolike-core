@@ -26,6 +26,142 @@
 #include "log.c/src/log.h"
 
 // ---------------------------------------------------------------------------
+// Legendre sums with a multipole filter, for every spectrum nz and theta
+// bin i:
+//
+//   w_vec[nz*ntheta + i] = sum_{l=lmin}^{lmax-1} (Pl[i][l]*filter[l])*Cl[nz][l]
+//
+// The filtered counterpart of legendre_sums (cosmo2D.c; the reasons for
+// the grouping are given there): 4 spectra and 4 theta bins per pass over
+// l. The product keeps the order of the reference loop, (Pl*filter)*Cl,
+// and every (nz, i) keeps its own sum, so the results are bitwise those
+// of the reference (COSMO2D_NOT_USE_SIMD). Pl*filter is formed once per
+// theta bin of the group instead of once per (nz, i).
+//
+// Thread safety: call outside parallel regions.
+//
+// Parameters:
+//   NSIZE  - number of spectra (rows of Cl)
+//   ntheta - number of theta bins (rows of Pl)
+//   lmin   - first multipole of the sums
+//   lmax   - one past the last multipole of the sums
+//   Pl     - [ntheta][lmax] bin-averaged Legendre kernel
+//   filter - [lmax] multipole filter (the CMB beam/filter)
+//   Cl     - [NSIZE][lmax] spectra at every integer l
+//   w_vec  - output [NSIZE*ntheta], indexed nz*ntheta + i
+// ---------------------------------------------------------------------------
+static void legendre_sums_filtered(
+    const int NSIZE,
+    const int ntheta,
+    const int lmin,
+    const int lmax,
+    double** Pl,
+    const double* filter,
+    double** Cl,
+    double* w_vec
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<ntheta; i++) {
+      // Local restrict pointers: without these, GCC cannot prove the
+      // Pl, filter and Cl rows don't alias (pointer-to-pointer
+      // indirection inside a collapse(2) OpenMP region) and gives up
+      // on the SIMD reduction below
+      const double* restrict c0 = Cl[nz];
+      const double* restrict cf = filter;
+      const double* restrict g0 = Pl[i];
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int l=lmin; l<lmax; l++) {
+        sum += g0[l] * cf[l] * c0[l];
+      }
+      w_vec[nz*ntheta + i] = sum;
+    }
+  }
+#else
+  // nz and i are the first spectrum and the first theta bin of the group,
+  // which covers spectra nz .. nz+3 and theta bins i .. i+3
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz+=4) {
+    for (int i=0; i<ntheta; i+=4) {
+      // past the end: repeats of the last valid spectrum / theta bin,
+      // computed but never stored (see legendre_sums in cosmo2D.c)
+      const int nz1 = (nz + 1 < NSIZE) ? nz + 1 : NSIZE - 1;
+      const int nz2 = (nz + 2 < NSIZE) ? nz + 2 : NSIZE - 1;
+      const int nz3 = (nz + 3 < NSIZE) ? nz + 3 : NSIZE - 1;
+      const int i1  = (i + 1 < ntheta) ? i + 1 : ntheta - 1;
+      const int i2  = (i + 2 < ntheta) ? i + 2 : ntheta - 1;
+      const int i3  = (i + 3 < ntheta) ? i + 3 : ntheta - 1;
+
+      const double* restrict cf  = filter;
+      const double* restrict cl0 = Cl[nz];   // spectra nz .. nz+3
+      const double* restrict cl1 = Cl[nz1];
+      const double* restrict cl2 = Cl[nz2];
+      const double* restrict cl3 = Cl[nz3];
+      const double* restrict pl0 = Pl[i];    // kernel of theta bins i .. i+3
+      const double* restrict pl1 = Pl[i1];
+      const double* restrict pl2 = Pl[i2];
+      const double* restrict pl3 = Pl[i3];
+
+      // sum<a><b>: the sum of spectrum nz + a and theta bin i + b
+      double sum00 = 0.0, sum01 = 0.0, sum02 = 0.0, sum03 = 0.0;
+      double sum10 = 0.0, sum11 = 0.0, sum12 = 0.0, sum13 = 0.0;
+      double sum20 = 0.0, sum21 = 0.0, sum22 = 0.0, sum23 = 0.0;
+      double sum30 = 0.0, sum31 = 0.0, sum32 = 0.0, sum33 = 0.0;
+
+      #pragma omp simd reduction(+:sum00,sum01,sum02,sum03,\
+                                   sum10,sum11,sum12,sum13,\
+                                   sum20,sum21,sum22,sum23,\
+                                   sum30,sum31,sum32,sum33)
+      for (int l=lmin; l<lmax; l++) {
+        // Pl*filter of the four theta bins: (Pl*filter)*Cl below is the
+        // product order of the reference loop
+        const double pf0 = pl0[l] * cf[l];
+        const double pf1 = pl1[l] * cf[l];
+        const double pf2 = pl2[l] * cf[l];
+        const double pf3 = pl3[l] * cf[l];
+
+        sum00 += pf0 * cl0[l];
+        sum01 += pf1 * cl0[l];
+        sum02 += pf2 * cl0[l];
+        sum03 += pf3 * cl0[l];
+
+        sum10 += pf0 * cl1[l];
+        sum11 += pf1 * cl1[l];
+        sum12 += pf2 * cl1[l];
+        sum13 += pf3 * cl1[l];
+
+        sum20 += pf0 * cl2[l];
+        sum21 += pf1 * cl2[l];
+        sum22 += pf2 * cl2[l];
+        sum23 += pf3 * cl2[l];
+
+        sum30 += pf0 * cl3[l];
+        sum31 += pf1 * cl3[l];
+        sum32 += pf2 * cl3[l];
+        sum33 += pf3 * cl3[l];
+      }
+
+      // store the sums of the spectra and theta bins that exist
+      const double sum[4][4] = {{sum00, sum01, sum02, sum03},
+                                {sum10, sum11, sum12, sum13},
+                                {sum20, sum21, sum22, sum23},
+                                {sum30, sum31, sum32, sum33}};
+      for (int a=0; a<4; a++) {
+        for (int b=0; b<4; b++) {
+          if (nz + a < NSIZE && i + b < ntheta) {
+            w_vec[(nz + a)*ntheta + (i + b)] = sum[a][b];
+          }
+        }
+      }
+    }
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Physical scale cuts from the response function RF (2011.06469 eq 17).
 //
 // For an observable X, the weight of the modes below a candidate cut
@@ -1486,29 +1622,10 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
       limber_fill_interp(2, tab2, out2, lmin, Ntable.LMAX, ln_ell,
                          la, 1.0/ldx, nell);
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        // Local restrict pointers: without these, GCC cannot prove the
-        // Glpm and cx rows don't alias (pointer-to-pointer indirection
-        // inside a collapse(2) OpenMP region) and gives up on the SIMD
-        // reduction below
-        const double* restrict c0 = cx[0][nz];
-        const double* restrict c1 = cx[1][nz];
-        const double* restrict g0 = Glpm[0][i];
-        const double* restrict g1 = Glpm[1][i];
-        double sum0 = 0.0;
-        double sum1 = 0.0;
-        #pragma omp simd reduction(+:sum0, sum1)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum0 += g0[l] * (c0[l] + c1[l]);
-          sum1 += g1[l] * (c0[l] - c1[l]);
-        }
-        const int q = nz * Ntable.Ntheta + i;
-        ans[0][q] = sum0;
-        ans[1][q] = sum1;
-      }
-    }
+    // the grouped xi+- sums of xi_pm_tomo (cosmo2D.c): same sums, 2 pairs
+    // x 4 theta bins per pass over l instead of one (pair, theta) per pass
+    legendre_sums_xipm(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX,
+                       Glpm[0], Glpm[1], cx[0], cx[1], ans[0], ans[1]);
     // warm xi_pm_tomo's cached tables single-threaded (one call builds
     // both xi+ and xi-); the parallel loop below then only reads them
     (void) xi_pm_tomo(0, 0, Z1(0), Z2(0), 1);
@@ -1934,24 +2051,8 @@ double* dlnw_ks_dlnk_tomo_nointerp(
       limber_fill_interp(1, tab1, out1, lmin, Ntable.LMAX, ln_ell,
                          la, 1.0/ldx, nell);
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        // Local restrict pointers: without these, GCC cannot prove the
-        // Pl, cmbf and cx rows don't alias (pointer-to-pointer
-        // indirection inside a collapse(2) OpenMP region) and gives up
-        // on the SIMD reduction below
-        const double* restrict c0 = cx[nz];
-        const double* restrict cf = cmbf;
-        const double* restrict g0 = Pl[i];
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += g0[l] * cf[l] * c0[l];
-        }
-        ans[nz*Ntable.Ntheta + i] = sum;
-      }
-    }
+    legendre_sums_filtered(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX,
+                           Pl, cmbf, cx, ans);
     // warm w_ks_tomo's cached table single-threaded (one call builds
     // every bin; the third argument is the limber flag, 1 = Limber);
     // the parallel loop below then only reads it
