@@ -30,10 +30,14 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
 
 ## Core principles
 
-1. **Correctness is non-negotiable.** In the default (strict IEEE-754) build,
-   chi2 must match the reference value exactly — to the last printed digit —
-   before and after a change. A change that alters chi2 is a bug until proven
-   to be a deliberate, documented accuracy improvement.
+1. **Correctness is non-negotiable, at the scale physics can see.** The
+   pass criterion of a frozen-reference test is |chi2 - reference| < 0.2
+   (`CHI2_TOLERANCE`): no physics is detectable below that (CAMB settings,
+   CAMB versus CLASS already move chi2 by that much), so the owner does not
+   tighten it. Record chi2 and its difference to at least four decimals so
+   drift below the threshold stays visible. Separately, an optimization or
+   refactor that is not meant to change the physics is checked on the full
+   unmasked data vector, not on chi2 alone (see the validation protocol).
 2. **Measure, never guess.** Every optimization starts with a profile and ends
    with `perf stat -r 3`. Single-evaluation timings on shared nodes (SeaWulf,
    NVWulf) are noise; never accept or report them as evidence.
@@ -79,8 +83,20 @@ profile → baseline → change ONE thing → validate → measure → document 
 
 Run all of these before declaring a change correct:
 
-- **chi2 exact match** against the recorded reference in the default IEEE
-  build. Print enough digits (e.g. `9.67405...`) that drift is visible.
+- **Frozen references:** |chi2 - reference| < 0.2 in the default IEEE build
+  (the tests' `CHI2_TOLERANCE`), with chi2 and the difference printed to at
+  least four decimals so drift is visible.
+- **Full data vector, for optimizations and refactors:** chi2 is one
+  covariance-weighted number after the mask; it cannot see a bug in masked
+  entries (small scales cut by the scale cuts, which notebooks and other
+  masks do use) or in a branch the frozen point never reaches (table edges,
+  large photo-z shifts, out-of-grid fallbacks). Compare the full unmasked
+  data vector against the reference build (or the `COSMO2D_NOT_USE_SIMD`
+  fallback) at several parameter points. Bitwise equality is the default
+  expectation when the operation order is unchanged: it is free and it
+  catches a single misplaced rounding. Where an optimization cannot be
+  bitwise (a vector libm replacement, reordered sums), say so in a comment
+  and in the commit, and state the per-entry tolerance the comparison used.
 - **Determinism sweep:** repeat the evaluation several times within one
   process and across processes, at `OMP_NUM_THREADS=1` and a high count
   (e.g. 8 or node-width). Any variation = race / uninitialized memory.
@@ -689,8 +705,10 @@ Clear requests need no consult.
 Reject or push back unless all of these hold (details in
 `references/pitfalls.md`):
 
-- [ ] chi2 identical to reference in default build; determinism sweep clean
-      across thread counts.
+- [ ] Frozen chi2 within 0.2 of the reference (printed to four decimals);
+      full unmasked data vector bitwise equal to the reference build, or
+      within a stated tolerance where the change documents why it cannot
+      be bitwise; determinism sweep clean across thread counts.
 - [ ] Builds and runs clean in all three modes; DEBUG sanitizers quiet.
 - [ ] New hot loops inside `collapse(2)` regions use local `restrict` pointers.
 - [ ] No flat `memset`/`memcpy` over padded multi-dim allocations; uses
