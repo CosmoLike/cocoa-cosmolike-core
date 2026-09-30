@@ -45,8 +45,10 @@ using namespace std::literals; // enables "sv" literal
 //   3. IPCluster, the measurement side of the joint vector (mask, data,
 //      covariance, chi2). The core IP singleton cannot hold it: its mask
 //      setter is hard-wired to the Mx2pt block sizes, and it inverts the
-//      full covariance, which is singular in Y space (see IPCluster);
-//   4. array wrappers of the cluster C functions for the Python tests.
+//      full covariance, which is singular in Y space (see IPCluster).
+//
+// The Python arrays of the cluster statistics, indexed by the bins
+// themselves, live in cosmo2D_wrapper_cluster.cpp/.hpp.
 //
 // Joint data-vector layout (Nt = Ntable.Ntheta, NL = cluster.richness_nbin,
 // NRP = NL (NL + 1)/2 richness pairs; blocks in this order):
@@ -308,36 +310,6 @@ arma::Mat<double> compute_cluster_selection_factor();
 // masked theory vector in the full layout (zeros off-mask); probes whose
 // flag is off stay at zero
 arma::Col<double> compute_data_vector_cluster_masked();
-
-// ============================================================================
-// [SECTION] ARRAY WRAPPERS FOR THE PYTHON TESTS
-// ============================================================================
-//
-// Each wrapper warms the cluster tables single-threaded (cluster_warmup)
-// before calling the C function, then copies the result into an arma
-// container with the same index order as the C output.
-
-// C_cs Limber: cube (cs pair n, richness bin nl, ell)
-arma::Cube<double> C_cs_tomo_limber_cluster_cpp(const arma::Col<double> l);
-
-// C_cc Limber: cube (cluster bin ni, richness pair n, ell)
-arma::Cube<double> C_cc_tomo_limber_cluster_cpp(const arma::Col<double> l);
-
-// C_cg Limber: cube (cg pair n, richness bin nl, ell)
-arma::Cube<double> C_cg_tomo_limber_cluster_cpp(const arma::Col<double> l);
-
-// gamma_t before the Y transform and the selection bias:
-// cube (cs pair n, richness bin nl, theta bin)
-arma::Cube<double> w_gammat_cluster_tomo_cpp();
-
-// w_cc without the selection bias: cube (cluster bin, richness pair, theta)
-arma::Cube<double> w_cc_tomo_cpp(const int limber);
-
-// w_cg without the selection bias: cube (cg pair n, richness bin nl, theta)
-arma::Cube<double> w_cg_tomo_cpp(const int limber);
-
-// counts: matrix (cluster z bin, richness bin)
-arma::Mat<double> N_cluster_tomo_cpp();
 
 }  // namespace cosmolike_interface
 #endif // HEADER GUARD

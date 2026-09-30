@@ -82,10 +82,6 @@ namespace py = pybind11;
 // on the calling thread, then loops serially over the engine, whose
 // first call computes and caches the whole block (its OpenMP loops only
 // read the warmed tables).
-//
-// The array wrappers of generic_interface_cluster.cpp (the C names plus
-// _cpp) return the same numbers in the pair-packed layout of the joint
-// data vector, (pair, richness bin, theta); they serve the unit tests.
 // ---------------------------------------------------------------------------
 namespace cosmolike_interface
 {

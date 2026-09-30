@@ -35,10 +35,7 @@ namespace cosmolike_interface
 //
 //   (theta or ell, richness bin, cluster z bin, source or lens bin),
 //
-// the argument order of the C functions. The array wrappers of
-// generic_interface_cluster.hpp (w_gammat_cluster_tomo_cpp, ...) keep
-// the C names; they return the pair-packed layout of the joint data
-// vector, (pair, richness bin, theta), for the unit tests.
+// the argument order of the C functions.
 //
 // Index names (cosmo2D_cluster.h): nt = theta bin, nl = richness bin,
 // ni = cluster redshift bin, ns = source bin, ng = lens bin.
