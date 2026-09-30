@@ -3187,7 +3187,8 @@ double u_y_ejc(
 // ---------------------------------------------------------------------------
 static struct {
   uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable, [2] HOD,
-                                   //   [3] clustering n(z) tags
+                                   //   [3] clustering n(z), [4] lens
+                                   //   photo-z (the a grid) tags
   int nbin;                 // lens bins of the allocation
   int n_nodes;              // Gauss-Legendre mass nodes per lens bin
   double lim[3];            // a grid: min, max, step
@@ -3241,17 +3242,20 @@ static struct {
 // so that P_q nu f(nu) is half_width w_q (dn/dlnM) <N|M> at mass node q.
 //
 // The a grid: Ntable.N_a nodes uniform in a over [1/(1 + z_max),
-// 1/(1 + z_min)] of the clustering n(z), all bins; ngal and bgal return
-// 0 outside it and interpolate linearly inside, accurate to about 1e-5
-// (the quadrature itself is converged below 1e-6).
+// 1/(1 + z_min)] of the clustering n(z), all bins, widened to every lens
+// bin's [amin_lens, amax_lens] when one reaches past it (the refill
+// explains why); ngal and bgal return 0 outside it and interpolate
+// linearly inside, accurate to about 1e-5 (the quadrature itself is
+// converged below 1e-6).
 //
 // Aborts: HOD_nc, on a lens bin whose HOD is not set; the tables cover
 // all bins at once.
 //
 // Cache invalidation:
-//   rebuild (sizes, GL nodes, a grid, every allocation): Ntable.random
+//   rebuild (sizes, GL nodes, every allocation): Ntable.random
 //     or redshift.random_clustering
-//   refill: those two, cosmology.random or nuisance.random_galaxy_bias
+//   refill (and the a grid): those two, cosmology.random,
+//     nuisance.random_galaxy_bias or nuisance.random_photoz_clustering
 // ---------------------------------------------------------------------------
 static void hod_tables(void)
 {
@@ -3306,19 +3310,54 @@ static void hod_tables(void)
                                     &hod_.gauss_legendre[1][q], gauss_table);
     }
     gsl_integration_glfixed_table_free(gauss_table);
-
-    // The a grid: min, max, step.
-    hod_.lim[0] = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
-    hod_.lim[1] = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
-    hod_.lim[2] = (hod_.lim[1] - hod_.lim[0])/((double) Ntable.N_a - 1.0);
   }
 
-  // Refill: cosmology, Ntable, the HOD or the clustering n(z) changed.
+  // Refill: cosmology, Ntable, the HOD, the clustering n(z) or the lens
+  // photo-z changed.
   if (fdiff2(hod_.cache[0], cosmology.random) ||
       fdiff2(hod_.cache[1], Ntable.random) ||
       fdiff2(hod_.cache[2], nuisance.random_galaxy_bias) ||
-      fdiff2(hod_.cache[3], redshift.random_clustering))
+      fdiff2(hod_.cache[3], redshift.random_clustering) ||
+      fdiff2(hod_.cache[4], nuisance.random_photoz_clustering))
   {
+    // The a grid: min, max, step. It must cover every a at which p_gm and
+    // p_gg read ngal and bgal, i.e. every lens bin's [amin_lens, amax_lens]
+    // (the rows of their per-bin grids): outside the grid ngal and bgal
+    // are 0, the row's P = bgal P_delta + GM02/ngal is GM02/0 = inf, and
+    // W_gal p_gm (cosmo2D.c) is 0 x inf = NaN in every gammat and w entry.
+    // Two effects move the lens ranges (redshift_spline.c) past the
+    // clustering table's [1/(1 + zmax_all), 1/(1 + zmin_all)]:
+    //   - magnification bias (gbmag != 0) widens amax_lens to the source
+    //     edge 1/(1 + max(shear zmin_all, 0.001)). DES Y3: the lens n(z)
+    //     starts at z = 0.005 and the source n(z) at z = 0, so every
+    //     bin's range ends at a = 1/1.001 = 0.999, past 1/1.005 = 0.995;
+    //   - the lens photo-z shift and stretch move both ends: a bin whose
+    //     n(z) reaches the table's top extends past 1/(1 + zmax_all) once
+    //     its stretch or its 2|shift| padding exceeds the last z step.
+    //     desy1xplanck MagLim: every bin reaches z = 1.58, zmax_all =
+    //     1.59, and bins 1 and 4 (stretch 1.31 and 1.08) start at
+    //     a = 0.333 and 0.379, below 1/2.59 = 0.386.
+    // So the grid is the union of the table's range and every bin's.
+    // When no bin reaches past the table, the grid (and every result) is
+    // exactly the previous one. When a bin extends the top, the top gets
+    // a 1e-12 relative margin: the last row amin + (na - 1) step of p_gm
+    // and p_gg can round a few ulps past amax_lens (the first row is amin
+    // exactly, so the bottom needs none).
+    const double a_table_min = 1.0/(redshift.clustering_zdist_zmax_all + 1.0);
+    const double a_table_max = 1.0/(redshift.clustering_zdist_zmin_all + 1.0);
+    double a_lower = a_table_min;
+    double a_upper = a_table_max;
+    for (int l=0; l<redshift.clustering_nbin; l++) {
+      a_lower = fmin(a_lower, amin_lens(l));
+      a_upper = fmax(a_upper, amax_lens(l));
+    }
+    if (a_upper > a_table_max) {
+      a_upper *= 1.0 + 1.e-12; // rounding margin (see above)
+    }
+    hod_.lim[0] = a_lower;
+    hod_.lim[1] = a_upper;
+    hod_.lim[2] = (hod_.lim[1] - hod_.lim[0])/((double) Ntable.N_a - 1.0);
+
     const int nbin    = hod_.nbin;
     const int n_a     = Ntable.N_a;
     const int n_nodes = hod_.n_nodes;
@@ -3405,6 +3444,7 @@ static void hod_tables(void)
     hod_.cache[1] = Ntable.random;
     hod_.cache[2] = nuisance.random_galaxy_bias;
     hod_.cache[3] = redshift.random_clustering;
+    hod_.cache[4] = nuisance.random_photoz_clustering;
   }
 }
 
@@ -3417,8 +3457,8 @@ static void hod_tables(void)
 //   ngal(a) = int dlnM (dn/dlnM) [f_c N_c(M) + N_s(M)],
 //
 // tabulated by hod_tables (its header) and interpolated linearly on its
-// a grid; 0 outside [1/(1 + z_max), 1/(1 + z_min)] of the clustering
-// n(z).
+// a grid; 0 outside that grid ([1/(1 + z_max), 1/(1 + z_min)] of the
+// clustering n(z), widened to every lens bin's [amin_lens, amax_lens]).
 //
 // Parameters:
 //   ni - lens bin, 0 <= ni < redshift.clustering_nbin (aborts otherwise)
@@ -3454,8 +3494,8 @@ double ngal(const int ni, const double a)
 //   bgal(a) = int dlnM (dn/dlnM) [f_c N_c(M) + N_s(M)] b(nu) / ngal(a),
 //
 // tabulated by hod_tables (its header) and interpolated linearly on its
-// a grid; 0 outside [1/(1 + z_max), 1/(1 + z_min)] of the clustering
-// n(z). The large-scale galaxy bias of p_gm and p_gg.
+// a grid; 0 outside that grid (ngal's header). The large-scale galaxy
+// bias of p_gm and p_gg.
 //
 // Parameters:
 //   ni - lens bin, 0 <= ni < redshift.clustering_nbin (aborts otherwise)
