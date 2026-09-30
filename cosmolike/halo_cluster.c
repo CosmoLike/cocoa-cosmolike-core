@@ -92,6 +92,9 @@
 //   cluster_p1h_table = P1h on exact ln k nodes from those weights
 //   cluster_nfw_*  = a private copy of halo.c's NFW kernel (nfw_um and its
 //                    f, G table), verified against halo.c's u_nfw_c
+//   cluster_nfw_um4 = that kernel on four mass nodes per SIMDe vector (a
+//                    private copy of halo.c's nfw_um4), bitwise the scalar
+//                    kernel on each node
 //   cluster_warmup = builds every lazy cluster table on one thread
 //
 // Tables and reads:
@@ -117,6 +120,13 @@
 // thread count. Tables are built lazily on the first read after a key
 // changed: that first read must run outside any parallel region, which is
 // what cluster_warmup is for.
+//
+// SIMD: the P1h sums evaluate the NFW kernel on four mass nodes per SIMDe
+// vector (AVX2 on x86-64, NEON on arm64, from one source). The vector
+// path performs the scalar path's floating-point operations in the scalar
+// order on every element, so its tables are bitwise the scalar path's.
+// COSMO2D_NOT_USE_SIMD (the DEBUG build; basics.h then leaves SIMDe out)
+// selects the scalar loops, the reference.
 // ---------------------------------------------------------------------------
 
 
@@ -566,6 +576,579 @@ static inline double cluster_nfw_um(
   const double sin_half = sin(0.5*c*x);  // sin(c x/2)
   return (Gx - Gu + ln1c) + 2.0*gu*sin_half*sin_half + (fu - 1.0/xu)*sin(c*x);
 }
+
+
+#ifndef COSMO2D_NOT_USE_SIMD
+// ============================================================================
+// [SECTION] SIMDe PATH OF THE NFW KERNEL (private copy of halo.c's nfw_um4)
+// ============================================================================
+//
+// cluster_nfw_um on four mass nodes at once, for the P1h sums of
+// cluster_p1h_table (pass B): cluster_nfw_um4 is cluster_nfw_um with each
+// of its four arguments carrying four nodes, and each lane of its result
+// bitwise the scalar cluster_nfw_um of that node. halo.c keeps its vector
+// kernel (nfw_um4 and its helpers) static, as it keeps the scalar one, so
+// this file holds a copy of them that reads the private table cluster_nfw_.
+// The operations are halo.c's, statement for statement; its headers carry
+// the long form of every explanation below.
+//
+// SIMDe (simde/x86/avx2.h and fma.h) gives AVX2 on x86-64 and NEON on
+// arm64 from one source. basics.h includes it only when
+// COSMO2D_NOT_USE_SIMD is not defined (the DEBUG build defines it), so
+// every SIMDe type and call of this file sits inside
+// #ifndef COSMO2D_NOT_USE_SIMD, with the scalar loop, the reference, in
+// the other branch.
+//
+// A v4d holds four doubles side by side, its "lanes" 0, 1, 2, 3 (one AVX2
+// register on x86-64, two NEON registers on arm64); a v2d holds two: one
+// half of a v4d, lanes 0,1 (the low half) or lanes 2,3 (the high half).
+// Vector variables carry a v prefix. One simde_mm256_* call applies the
+// same operation to all four lanes, so a v4d line does what the scalar
+// line quoted above it does for one node, four nodes at a time.
+//
+// The helpers, in reading order:
+//
+//   cluster_fmadd4, cluster_fnmadd4 - a*b + c and c - a*b with one rounding
+//   cluster_nfw_pos4         - position (node index, fraction) of ln t on
+//                              the table grid
+//   cluster_nfw_read4        - the linear table read at that position
+//   cluster_nfw_sin4         - libm sin on each lane
+//   cluster_nfw_series_step4 - one bracket of the asymptotic series
+//   cluster_nfw_G_asym4      - the asymptotic series of G(t)
+//   cluster_nfw_um4          - the kernel itself
+//
+// Why each lane is bitwise the scalar path, under the strict IEEE flags of
+// the default build (-frounding-math -ftrapping-math): a fused
+// multiply-add exactly where the compiler fuses the scalar a*b + c,
+// sign-bit masks instead of floating-point compares (the strict flags
+// split a vector compare into scalar compares per lane), table indices
+// truncated and clamped in double, libm sin on every lane, and every
+// helper always inlined (on arm64 a v4d is a union of two NEON registers
+// and a real call would pass it through memory).
+typedef simde__m256d v4d;   // 4 doubles
+typedef simde__m128d v2d;   // 2 doubles: one half of a v4d
+
+
+// ---------------------------------------------------------------------------
+// cluster_fmadd4: a*b + c on four lanes with one rounding.
+//
+// A fused multiply-add keeps the product a*b exact and rounds only the
+// final sum; a separate multiply and add rounds twice, and the two results
+// can differ in the last bit. The compiler fuses the scalar path's
+// a*b + c (cluster_nfw_um, the spline reads), so the vector path must fuse
+// the same products at the same places to stay bitwise equal to it.
+//
+// With native x86 FMA, simde_mm256_fmadd_pd is one AVX2 instruction.
+// Without it (arm64) SIMDe writes that call as a multiply and then an
+// add, two roundings, while the two-lane simde_mm_fmadd_pd is a real
+// fused NEON instruction: the v4d is split into its two v2d halves, each
+// half is fused, and the halves are joined again. Lane l of the result is
+// a[l]*b[l] + c[l] either way.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_fmadd4(
+    const v4d va,   // a on four lanes
+    const v4d vb,   // b on four lanes
+    const v4d vc    // c on four lanes
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  // a*b + c on all four lanes, one fused instruction
+  return simde_mm256_fmadd_pd(va, vb, vc);
+#else
+  // the low half of each input (castpd256_pd128 keeps the lower two
+  // doubles; it moves no data)
+  const v2d va_low = simde_mm256_castpd256_pd128(va);  // a, lanes 0,1
+  const v2d vb_low = simde_mm256_castpd256_pd128(vb);  // b, lanes 0,1
+  const v2d vc_low = simde_mm256_castpd256_pd128(vc);  // c, lanes 0,1
+
+  // the high half of each input (extractf128_pd(v, 1) takes the upper
+  // two doubles)
+  const v2d va_high = simde_mm256_extractf128_pd(va, 1);  // a, lanes 2,3
+  const v2d vb_high = simde_mm256_extractf128_pd(vb, 1);  // b, lanes 2,3
+  const v2d vc_high = simde_mm256_extractf128_pd(vc, 1);  // c, lanes 2,3
+
+  // a*b + c fused on lanes 0,1
+  const v2d vlow  = simde_mm_fmadd_pd(va_low, vb_low, vc_low);
+
+  // a*b + c fused on lanes 2,3
+  const v2d vhigh = simde_mm_fmadd_pd(va_high, vb_high, vc_high);
+
+  // join the halves: set_m128d(high, low) puts vlow in lanes 0,1 and
+  // vhigh in lanes 2,3
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_fnmadd4: c - a*b on four lanes with one rounding (cluster_fmadd4
+// with the product negated). The asymptotic series of cluster_nfw_um is a
+// chain of 1 - k v (...) steps that the compiler fuses this way in the
+// scalar path.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_fnmadd4(
+    const v4d va,   // a on four lanes
+    const v4d vb,   // b on four lanes
+    const v4d vc    // c on four lanes
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  // c - a*b on all four lanes, one fused instruction
+  return simde_mm256_fnmadd_pd(va, vb, vc);
+#else
+  // the low half of each input, as in cluster_fmadd4
+  const v2d va_low = simde_mm256_castpd256_pd128(va);  // a, lanes 0,1
+  const v2d vb_low = simde_mm256_castpd256_pd128(vb);  // b, lanes 0,1
+  const v2d vc_low = simde_mm256_castpd256_pd128(vc);  // c, lanes 0,1
+
+  // the high half of each input
+  const v2d va_high = simde_mm256_extractf128_pd(va, 1);  // a, lanes 2,3
+  const v2d vb_high = simde_mm256_extractf128_pd(vb, 1);  // b, lanes 2,3
+  const v2d vc_high = simde_mm256_extractf128_pd(vc, 1);  // c, lanes 2,3
+
+  // c - a*b fused on lanes 0,1
+  const v2d vlow  = simde_mm_fnmadd_pd(va_low, vb_low, vc_low);
+
+  // c - a*b fused on lanes 2,3
+  const v2d vhigh = simde_mm_fnmadd_pd(va_high, vb_high, vc_high);
+
+  // join the halves: vlow in lanes 0,1, vhigh in lanes 2,3
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_nfw_pos4: cluster_nfw_pos on four lanes, the position of ln t on
+// the cluster_nfw_ grid for four values of t at once:
+//
+//   pos  = (max(ln t, ln t_min) - ln t_min)/spacing
+//   i    = min(trunc(pos), n_nodes - 2)      (clamped onto the last cell)
+//   frac = pos - i
+//
+// Lane l of vlnt is one ln t; index[l] and lane l of the result are its i
+// and frac.
+//
+// Why it is bitwise cluster_nfw_pos: the scalar path computes pos in
+// double, converts it to int (which truncates) and clamps. Here trunc and
+// min are taken in double, and both are exact for the non-negative
+// positions of the grid, so pos - i is the same double and the int
+// conversion, done lane by lane, yields the same i. A vector
+// double-to-int conversion is avoided on purpose: the strict IEEE flags
+// split it into scalar conversions per lane.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_nfw_pos4(
+    const v4d vlnt,   // ln t on four lanes
+    int index[4]      // output: node index i of each lane
+  )
+{
+  // ln t_min, the first grid node, in all four lanes (set1 copies one
+  // scalar into every lane)
+  const v4d vlnt_min = simde_mm256_set1_pd(cluster_nfw_.lim[0]);
+
+  // 1/spacing of the grid in all four lanes
+  const v4d vinv_spacing = simde_mm256_set1_pd(cluster_nfw_.inv_spacing);
+
+  // n_nodes - 2, the index of the last cell, in all four lanes
+  const v4d vlast_cell =
+      simde_mm256_set1_pd((double) (cluster_nfw_.n_nodes - 2));
+
+  // max(ln t, ln t_min): the table clamp below ln t_min
+  const v4d vlnt_clamped = simde_mm256_max_pd(vlnt, vlnt_min);
+
+  // ln t - ln t_min, the distance from the first grid node
+  const v4d vlnt_offset = simde_mm256_sub_pd(vlnt_clamped, vlnt_min);
+
+  // pos = (ln t - ln t_min)/spacing, the position in grid cells
+  const v4d vpos = simde_mm256_mul_pd(vlnt_offset, vinv_spacing);
+
+  // trunc(pos): round toward zero, the cell number as a double
+  const v4d vpos_trunc = simde_mm256_round_pd(vpos, SIMDE_MM_FROUND_TO_ZERO);
+
+  // i = min(trunc(pos), n - 2): the last-cell clamp
+  const v4d vnode = simde_mm256_min_pd(vpos_trunc, vlast_cell);
+
+  double node[4];
+
+  // the four cell numbers to the plain double[4] (storeu writes the four
+  // lanes to memory), then to int lane by lane
+  simde_mm256_storeu_pd(node, vnode);
+  for (int lane=0; lane<4; lane++) {
+    index[lane] = (int) node[lane];
+  }
+
+  // frac = pos - i on each lane
+  return simde_mm256_sub_pd(vpos, vnode);
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_nfw_read4: the linear table read of cluster_nfw_um on four
+// lanes, tab[i] + frac*(tab[i + 1] - tab[i]); lane l reads tab at index[l]
+// with lane l of vfrac.
+//
+// Memory access: each lane needs the two neighbours tab[i], tab[i + 1],
+// which sit side by side, so one 16-byte load per lane fetches both (a
+// v2d pair); the four pairs are then regrouped into a v4d of left nodes
+// and a v4d of right nodes. A gather instruction would do the same, but
+// it is slow on several x86 cores and is lane-by-lane loads on NEON
+// anyway.
+//
+// Why it is bitwise cluster_nfw_um: the scalar read is
+// frac*(tab[i + 1] - tab[i]) + tab[i], which the compiler fuses into one
+// multiply-add; the vector read fuses the same product (cluster_fmadd4).
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_nfw_read4(
+    const double* restrict tab,  // table row on the ln t grid: f or G
+    const int index[4],          // node index i of each lane
+    const v4d vfrac              // fraction of the cell of each lane
+  )
+{
+  // the pair (tab[i], tab[i + 1]) of each lane, one two-double load each
+  // (loadu reads two consecutive doubles from memory into a v2d)
+  const v2d vpair0 = simde_mm_loadu_pd(tab + index[0]);  // lane 0's pair
+  const v2d vpair1 = simde_mm_loadu_pd(tab + index[1]);  // lane 1's pair
+  const v2d vpair2 = simde_mm_loadu_pd(tab + index[2]);  // lane 2's pair
+  const v2d vpair3 = simde_mm_loadu_pd(tab + index[3]);  // lane 3's pair
+
+  // regroup the pairs into left nodes tab[i] and right nodes tab[i + 1]:
+  // unpacklo takes the first double of each pair, unpackhi the second
+
+  // (tab[i0], tab[i1]): the left nodes of lanes 0,1
+  const v2d vleft_low = simde_mm_unpacklo_pd(vpair0, vpair1);
+
+  // (tab[i2], tab[i3]): the left nodes of lanes 2,3
+  const v2d vleft_high = simde_mm_unpacklo_pd(vpair2, vpair3);
+
+  // (tab[i0 + 1], tab[i1 + 1]): the right nodes of lanes 0,1
+  const v2d vright_low = simde_mm_unpackhi_pd(vpair0, vpair1);
+
+  // (tab[i2 + 1], tab[i3 + 1]): the right nodes of lanes 2,3
+  const v2d vright_high = simde_mm_unpackhi_pd(vpair2, vpair3);
+
+  // tab[i] on all four lanes (set_m128d joins the halves, low first)
+  const v4d vleft = simde_mm256_set_m128d(vleft_high, vleft_low);
+
+  // tab[i + 1] on all four lanes
+  const v4d vright = simde_mm256_set_m128d(vright_high, vright_low);
+
+  // tab[i + 1] - tab[i], the rise across the cell
+  const v4d vrise = simde_mm256_sub_pd(vright, vleft);
+
+  // frac*(tab[i + 1] - tab[i]) + tab[i], fused as the scalar read
+  return cluster_fmadd4(vfrac, vrise, vleft);
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_nfw_sin4: sin on each of four lanes, with the libm sin of the
+// scalar path.
+//
+// cluster_nfw_um needs sin(c x/2) and sin(c x) per node, about half of
+// the kernel's cost. There is no vector sine here (the rule of halo.c's
+// nfw_sin4): a vector math library would give a different last bit from
+// libm, and the vector path must be bitwise cluster_nfw_um. So the four
+// angles are written out of the v4d into a plain double[4], sin is called
+// on each one exactly as the scalar path does, and the four sines are
+// read back into a v4d.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_nfw_sin4(
+    const v4d vangle   // the four angles, in radians
+  )
+{
+  double angle[4];
+  double sine[4];
+
+  // the four angles to a plain double[4]
+  simde_mm256_storeu_pd(angle, vangle);
+
+  // sin of each angle, the same libm call as the scalar path
+  for (int lane=0; lane<4; lane++) {
+    sine[lane] = sin(angle[lane]);
+  }
+
+  // the four sines back into one v4d (loadu reads four doubles from memory)
+  return simde_mm256_loadu_pd(sine);
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_nfw_series_step4: one step of the nested asymptotic series of
+// cluster_nfw_um, poly -> 1 - k v poly, on four lanes, fused as the
+// scalar 1.0 - k*v*(...) (cluster_fnmadd4). Starting from the innermost
+// bracket (1 - 56v or 1 - 72v), each call wraps the series in one more
+// bracket, k taking the next coefficient ratio (cluster_nfw_um header).
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_nfw_series_step4(
+    const double k,   // coefficient ratio of this bracket
+    const v4d vv,     // series variable v = 1/t^2 on four lanes
+    const v4d vpoly   // the nested bracket built so far
+  )
+{
+  // the coefficient ratio k in all four lanes
+  const v4d vratio = simde_mm256_set1_pd(k);
+
+  // k v on each lane
+  const v4d vkv = simde_mm256_mul_pd(vratio, vv);
+
+  // 1 in all four lanes
+  const v4d vone = simde_mm256_set1_pd(1.0);
+
+  // 1 - (k v) poly, one rounding, as the scalar 1.0 - k*v*(...)
+  return cluster_fnmadd4(vkv, vpoly, vone);
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_nfw_G_asym4: the asymptotic series of G(t) = g(t) + ln t on
+// four lanes,
+//
+//   G(t) = v(1 - 6v(1 - 20v(1 - 42v(1 - 72v)))) + ln t,   v = 1/t^2,
+//
+// the same brackets in the same order as cluster_nfw_um, each
+// 1 - k v (..) fused (cluster_fnmadd4) and the final v poly + ln t fused
+// (cluster_fmadd4), as the compiler fuses the scalar expression.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_nfw_G_asym4(
+    const v4d vv,    // series variable v = 1/t^2 on four lanes
+    const v4d vlnt   // ln t on four lanes
+  )
+{
+  // 1 in all four lanes
+  const v4d vone = simde_mm256_set1_pd(1.0);
+
+  // the innermost coefficient ratio 72 in all four lanes
+  const v4d vratio72 = simde_mm256_set1_pd(72.0);
+
+  // 1 - 72v
+  v4d vpoly = cluster_fnmadd4(vratio72, vv, vone);
+
+  // the outer brackets, one per step
+  vpoly = cluster_nfw_series_step4(42.0, vv, vpoly);  // 1 - 42v(1 - 72v)
+  vpoly = cluster_nfw_series_step4(20.0, vv, vpoly);  // 1 - 20v(...)
+  vpoly = cluster_nfw_series_step4(6.0, vv, vpoly);   // 1 - 6v(...)
+
+  // v poly + ln t, fused
+  return cluster_fmadd4(vv, vpoly, vlnt);
+}
+
+
+// ---------------------------------------------------------------------------
+// cluster_nfw_um4: cluster_nfw_um on four mass nodes at once, u m(c) of
+// four halos at one k. Lane l of every argument belongs to one mass node
+// and lane l of the result is u m(c) of that node.
+//
+// Algorithm, in order (the banners in the body):
+//   1. branch masks: per lane, table (t <= CLUSTER_NFW_TASY) or asymptotic
+//      series (t > CLUSTER_NFW_TASY) for t = xu and for t = x, from the
+//      sign bit of CLUSTER_NFW_TASY - t (movemask), no FP compare;
+//   2. table reads: f(xu), G(xu), G(x) (cluster_nfw_pos4,
+//      cluster_nfw_read4), skipped when every lane is past the table;
+//   3. asymptotic series: f(xu), G(xu), G(x) in v = 1/t^2, skipped when no
+//      lane needs it; per lane, blendv keeps the table value or takes the
+//      series;
+//   4. the two sines (cluster_nfw_sin4), then the combination.
+//
+// Why it is bitwise cluster_nfw_um: the same operations in the same order
+// on every lane, a fused multiply-add exactly where the compiler fuses
+// the scalar a*b + c, and libm sin on every lane. The branch is taken per
+// lane by masks, so a lane past CLUSTER_NFW_TASY gets the series value
+// and a lane below it the table value, as the scalar if/else would give.
+//
+// cluster_nfw_table must have run (the build is not thread-safe; this
+// read is).
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d cluster_nfw_um4(
+    const v4d vc,     // concentration r_Delta/r_s on four lanes
+    const v4d vx,     // k r_s on four lanes
+    const v4d vlnx,   // ln x on four lanes
+    const v4d vln1c   // ln(1 + c) on four lanes
+  )
+{
+  const double* restrict tab_f = cluster_nfw_.tab[0];  // f(t)
+  const double* restrict tab_G = cluster_nfw_.tab[1];  // G(t) = g(t) + ln t
+
+  // 1 in all four lanes
+  const v4d vone = simde_mm256_set1_pd(1.0);
+
+  // CLUSTER_NFW_TASY, the top of the table, in all four lanes
+  const v4d vtasy = simde_mm256_set1_pd(CLUSTER_NFW_TASY);
+
+  // scalar: lnxu = lnx + ln1c;  xu = (1.0 + c)*x
+
+  // ln xu = ln x + ln(1 + c)
+  const v4d vlnxu = simde_mm256_add_pd(vlnx, vln1c);
+
+  // 1 + c
+  const v4d vone_plus_c = simde_mm256_add_pd(vone, vc);
+
+  // xu = (1 + c) x
+  const v4d vxu = simde_mm256_mul_pd(vone_plus_c, vx);
+
+  // --- 1. BRANCH MASKS ---
+  // scalar: if (xu <= CLUSTER_NFW_TASY) read the table, else the series;
+  // the same for x. CLUSTER_NFW_TASY - t has its sign bit set exactly
+  // where t > CLUSTER_NFW_TASY (the series) and clear where the table is
+  // read (+0 at t = CLUSTER_NFW_TASY). The masks must see the rounded xu
+  // of the scalar compare: xu = (1 + c) x stays unfused because it has
+  // other uses (1/xu, the blend), which GCC's -ffp-contract=fast needs to
+  // leave the product alone
+
+  // CLUSTER_NFW_TASY - xu: negative (sign bit set) on the series lanes
+  const v4d vasym_u = simde_mm256_sub_pd(vtasy, vxu);
+
+  // CLUSTER_NFW_TASY - x
+  const v4d vasym_x = simde_mm256_sub_pd(vtasy, vx);
+
+  // movemask collects the sign bit of each lane into bit l of an int:
+  // 0 = every lane reads the table, 0xF = every lane takes the series
+  const int asym_u = simde_mm256_movemask_pd(vasym_u);  // for t = xu
+  const int asym_x = simde_mm256_movemask_pd(vasym_x);  // for t = x
+
+  // --- 2. TABLE READS: f(xu), G(xu), G(x) ---
+  // lanes past CLUSTER_NFW_TASY read the clamped last interval; the blend
+  // below replaces them
+
+  // (0, 0, 0, 0) until a branch fills them
+  v4d vfu = simde_mm256_setzero_pd();  // f(xu)
+  v4d vGu = simde_mm256_setzero_pd();  // G(xu)
+  v4d vGx = simde_mm256_setzero_pd();  // G(x)
+
+  if (asym_u != 0xF) {
+    int index_u[4];
+
+    // scalar: iu = cluster_nfw_pos(lnxu, &frac_u), f and G share the grid
+    const v4d vfrac_u = cluster_nfw_pos4(vlnxu, index_u);
+
+    // scalar: Gu = frac_u*(tab_G[iu + 1] - tab_G[iu]) + tab_G[iu]
+    vGu = cluster_nfw_read4(tab_G, index_u, vfrac_u);
+
+    // scalar: fu = frac_u*(tab_f[iu + 1] - tab_f[iu]) + tab_f[iu]
+    vfu = cluster_nfw_read4(tab_f, index_u, vfrac_u);
+  }
+  if (asym_x != 0xF) {
+    int index_x[4];
+
+    // scalar: ix = cluster_nfw_pos(lnx, &frac_x)
+    const v4d vfrac_x = cluster_nfw_pos4(vlnx, index_x);
+
+    // scalar: Gx = frac_x*(tab_G[ix + 1] - tab_G[ix]) + tab_G[ix]
+    vGx = cluster_nfw_read4(tab_G, index_x, vfrac_x);
+  }
+
+  // --- 3. ASYMPTOTIC SERIES (A&S 5.2.34-35, cluster_nfw_um) ---
+  // lanes that read the table evaluate the series at t = CLUSTER_NFW_TASY,
+  // a finite stand-in (no 1/t^2 overflow at tiny t) that the blend discards
+  if (asym_u != 0) {
+    // t = xu on the series lanes, CLUSTER_NFW_TASY on the table lanes
+    // (blendv takes lane l from its second argument where the sign bit of
+    // lane l of the mask is set, from its first argument otherwise)
+    const v4d vt = simde_mm256_blendv_pd(vtasy, vxu, vasym_u);
+
+    // t^2
+    const v4d vt2 = simde_mm256_mul_pd(vt, vt);
+
+    // scalar: v = 1.0/(xu*xu), the series variable
+    const v4d vv = simde_mm256_div_pd(vone, vt2);
+
+    // scalar: fu = (1 - 2v(1 - 12v(1 - 30v(1 - 56v))))/xu, innermost first
+
+    // the innermost coefficient ratio 56 in all four lanes
+    const v4d vratio56 = simde_mm256_set1_pd(56.0);
+
+    // 1 - 56v
+    v4d vpoly = cluster_fnmadd4(vratio56, vv, vone);
+
+    // the outer brackets, one per step
+    vpoly = cluster_nfw_series_step4(30.0, vv, vpoly);  // 1 - 30v(1 - 56v)
+    vpoly = cluster_nfw_series_step4(12.0, vv, vpoly);  // 1 - 12v(...)
+    vpoly = cluster_nfw_series_step4(2.0, vv, vpoly);   // 1 - 2v(...)
+
+    // poly/t
+    const v4d vfu_asym = simde_mm256_div_pd(vpoly, vt);
+
+    // f(xu): the series on the series lanes, the table value elsewhere
+    vfu = simde_mm256_blendv_pd(vfu, vfu_asym, vasym_u);
+
+    // scalar: Gu = v*(1 - 6v(1 - 20v(1 - 42v(1 - 72v)))) + lnxu
+    const v4d vGu_asym = cluster_nfw_G_asym4(vv, vlnxu);
+
+    // G(xu): the series on the series lanes, the table value elsewhere
+    vGu = simde_mm256_blendv_pd(vGu, vGu_asym, vasym_u);
+  }
+  if (asym_x != 0) {
+    // t = x on the series lanes, CLUSTER_NFW_TASY on the table lanes
+    const v4d vt = simde_mm256_blendv_pd(vtasy, vx, vasym_x);
+
+    // t^2
+    const v4d vt2 = simde_mm256_mul_pd(vt, vt);
+
+    // scalar: w = 1.0/(x*x), the series variable
+    const v4d vw = simde_mm256_div_pd(vone, vt2);
+
+    // scalar: Gx = w*(1 - 6w(1 - 20w(1 - 42w(1 - 72w)))) + lnx
+    const v4d vGx_asym = cluster_nfw_G_asym4(vw, vlnx);
+
+    // G(x): the series on the series lanes, the table value elsewhere
+    vGx = simde_mm256_blendv_pd(vGx, vGx_asym, vasym_x);
+  }
+
+  // --- 4. u m(c) ---
+  // u m(c) = [Gx - Gu + ln(1+c)] + 2 g(xu) sin^2(c x/2)
+  //          + [f(xu) - 1/xu] sin(c x),
+  // g(xu) = Gu - ln xu; the scalar sum fuses both products:
+  //   gu = Gu - lnxu;  sin_half = sin(0.5*c*x);
+  //   (Gx - Gu + ln1c) + 2.0*gu*sin_half*sin_half + (fu - 1.0/xu)*sin(c*x)
+
+  // 2 in all four lanes
+  const v4d vtwo = simde_mm256_set1_pd(2.0);
+
+  // gu = Gu - ln xu, that is g(xu)
+  const v4d vgu = simde_mm256_sub_pd(vGu, vlnxu);
+
+  // 2 gu
+  const v4d vtwo_gu = simde_mm256_mul_pd(vtwo, vgu);
+
+  // 0.5 in all four lanes
+  const v4d vhalf = simde_mm256_set1_pd(0.5);
+
+  // 0.5 c
+  const v4d vhalf_c = simde_mm256_mul_pd(vhalf, vc);
+
+  // 0.5 c x, the half angle
+  const v4d vhalf_cx = simde_mm256_mul_pd(vhalf_c, vx);
+
+  // sin(c x/2)
+  const v4d vsin_half = cluster_nfw_sin4(vhalf_cx);
+
+  // c x, the full angle
+  const v4d vcx = simde_mm256_mul_pd(vc, vx);
+
+  // sin(c x)
+  const v4d vsin_full = cluster_nfw_sin4(vcx);
+
+  // Gx - Gu
+  const v4d vGx_minus_Gu = simde_mm256_sub_pd(vGx, vGu);
+
+  // Gx - Gu + ln(1 + c), that is g(x) - g(xu)
+  const v4d vg_diff = simde_mm256_add_pd(vGx_minus_Gu, vln1c);
+
+  // 1/xu
+  const v4d vinv_xu = simde_mm256_div_pd(vone, vxu);
+
+  // fu - 1/xu
+  const v4d vf_term = simde_mm256_sub_pd(vfu, vinv_xu);
+
+  // 2 gu sin(c x/2)
+  const v4d vtwo_gu_sin = simde_mm256_mul_pd(vtwo_gu, vsin_half);
+
+  // (2 gu sin_half) sin_half + g_diff, fused as the scalar sum
+  const v4d vsum = cluster_fmadd4(vtwo_gu_sin, vsin_half, vg_diff);
+
+  // (fu - 1/xu) sin(c x) + the rest, fused: u m(c) on the four lanes
+  return cluster_fmadd4(vf_term, vsin_full, vsum);
+}
+#endif
 
 
 // The private kernel against halo.c's u_nfw_c for a cluster-mass halo at
@@ -1284,7 +1867,9 @@ double bcl_richness(
 //                                 and their c, ln(1 + c), r_s, ln r_s,
 //                                 W_nl(a_i, q) compacted
 //   per (i, k node), threaded     um = u m(c) per active node, shared by
-//     (pass B)                    every richness bin: sum_q W_nl um
+//     (pass B)                    every richness bin: sum_q W_nl um (the
+//                                 kernel four nodes per SIMDe vector,
+//                                 cluster_nfw_um4; the sums in node order)
 //   per (nl, i), threaded         the spline coefficients in ln k
 //     (pass C)
 //
@@ -1497,6 +2082,79 @@ static void cluster_p1h_table(void)
           sum[nl] = 0.0;
         }
 
+#ifndef COSMO2D_NOT_USE_SIMD
+        // The reference loop (the #else branch below) with the kernel on
+        // four active nodes j, j+1, j+2, j+3 per step (one per lane of a
+        // v4d; cluster_nfw_um4 = cluster_nfw_um on each lane, bitwise).
+        // Only the kernel is vectorized: its four values go back to a
+        // plain double[4] and enter the sums one node at a time, in the
+        // order j, j+1, j+2, j+3 of the reference loop, so every sum[nl]
+        // adds the same terms in the same order and the table is bitwise
+        // the reference's. (halo.c's spectra keep one partial sum per
+        // lane instead, which changes the last digits of the sums; here
+        // the sums are nl_bins multiply-adds per node next to a kernel
+        // with two sines, so keeping the scalar order costs nothing.)
+
+        // k and ln k of this column in all four lanes (set1 copies one
+        // scalar into every lane)
+        const v4d vk   = simde_mm256_set1_pd(k);    // k
+        const v4d vlnk = simde_mm256_set1_pd(lnk);  // ln k
+
+        int j = 0;
+        for (; j<=n_active-4; j+=4) {
+          // the four arguments of cluster_nfw_um at nodes j..j+3; scalar:
+          //   cluster_nfw_um(conc[j], k*r_s[j], lnk + lnrs[j], ln1c[j])
+
+          // c, the concentrations of nodes j..j+3 (loadu reads four
+          // consecutive doubles from memory into the lanes)
+          const v4d vconc = simde_mm256_loadu_pd(conc + j);
+
+          // r_s of nodes j..j+3
+          const v4d vrs = simde_mm256_loadu_pd(r_s + j);
+
+          // x = k r_s
+          const v4d vkrs = simde_mm256_mul_pd(vk, vrs);
+
+          // ln r_s of nodes j..j+3
+          const v4d vlnrs = simde_mm256_loadu_pd(lnrs + j);
+
+          // ln x = ln k + ln r_s
+          const v4d vlnkrs = simde_mm256_add_pd(vlnk, vlnrs);
+
+          // ln(1 + c) of nodes j..j+3
+          const v4d vln1c = simde_mm256_loadu_pd(ln1c + j);
+
+          // um = u m(c) at nodes j..j+3
+          const v4d vum = cluster_nfw_um4(vconc, vkrs, vlnkrs, vln1c);
+
+          // the four kernel values to a plain double[4] (storeu writes
+          // the four lanes to memory)
+          double um[4];
+          simde_mm256_storeu_pd(um, vum);
+
+          // scalar: sum[nl] += w[nl]*um, node by node in the reference
+          // order (lane 0 is node j, lane 3 is node j+3)
+          for (int lane=0; lane<4; lane++) {
+            const double* restrict w = p1h_.weight[i][j + lane];
+            for (int nl=0; nl<nl_bins; nl++) {
+              sum[nl] += w[nl]*um[lane];
+            }
+          }
+        }
+
+        // scalar tail: n_active not a multiple of four (the reference
+        // loop's body on the leftover nodes)
+        for (; j<n_active; j++) {
+          const double um = cluster_nfw_um(conc[j], k*r_s[j], lnk + lnrs[j],
+                                           ln1c[j]);
+
+          const double* restrict w = p1h_.weight[i][j];
+          for (int nl=0; nl<nl_bins; nl++) {
+            sum[nl] += w[nl]*um;
+          }
+        }
+#else
+        // the reference: one scalar kernel call per active node
         for (int j=0; j<n_active; j++) {
           // u m(c) at x = k r_s, ln x = ln k + ln r_s
           const double um = cluster_nfw_um(conc[j], k*r_s[j], lnk + lnrs[j],
@@ -1507,6 +2165,7 @@ static void cluster_p1h_table(void)
             sum[nl] += w[nl]*um;
           }
         }
+#endif
 
         for (int nl=0; nl<nl_bins; nl++) {
           if (isnan(sum[nl])) {
