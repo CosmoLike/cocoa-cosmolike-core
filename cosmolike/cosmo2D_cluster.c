@@ -41,6 +41,18 @@
 // Determinism: every lazily built table is refilled outside parallel
 // regions, every output number is one serial sum inside one thread, and no
 // reduction crosses threads, so no result depends on OMP_NUM_THREADS.
+//
+// SIMD: the loops whose loads are not contiguous carry explicit SIMDe
+// code (AVX2 on x86-64, NEON on arm64, from one source): the spline onto
+// the dense l grid (limber_table_cluster_upsample), the P1h read at the
+// Limber nodes (pcm_1h_richness_fill of halo_cluster.c) and the table
+// read at every integer l (limber_fill_interp of cosmo2D.c). The first
+// two perform the scalar operations in the scalar order on every
+// element, so they are bitwise the scalar loops, which
+// COSMO2D_NOT_USE_SIMD (the DEBUG build) selects as the reference. The
+// Limber sums and the Legendre sums read contiguous rows: they stay
+// `omp simd` reductions over local restrict pointers, the cosmo2D.c
+// rule.
 // ============================================================================
 
 #include <math.h>
@@ -204,6 +216,155 @@ static const gsl_integration_glfixed_table* limber_gl_table_cluster(void)
   }
   return w;
 }
+
+
+
+#ifndef COSMO2D_NOT_USE_SIMD
+// ============================================================================
+// [SECTION] SIMDe VECTORS AND FUSED MULTIPLY-ADDS (private copies of halo.c's)
+// ============================================================================
+//
+// The explicit vector code of this file goes through SIMDe
+// (simde/x86/avx2.h and fma.h): AVX2 on x86-64, NEON on arm64, from one
+// source. basics.h includes SIMDe only when COSMO2D_NOT_USE_SIMD is not
+// defined (the DEBUG build defines it), so every SIMDe type and call sits
+// inside #ifndef COSMO2D_NOT_USE_SIMD, with the scalar loop, the
+// reference, in the other branch.
+//
+// A v4d holds four doubles side by side, its "lanes" 0, 1, 2, 3 (one AVX2
+// register on x86-64, two NEON registers on arm64); a v2d holds two: one
+// half of a v4d. Vector variables carry a v prefix.
+//
+// halo.c keeps its fused multiply-add helpers (nfw_fmadd4) static, so
+// this file holds its own copy (as halo_cluster.c does). Both helpers are
+// always inlined: on arm64 a v4d is a union of two NEON registers and a
+// real call would pass it through memory.
+typedef simde__m256d v4d;   // 4 doubles
+typedef simde__m128d v2d;   // 2 doubles: one half of a v4d
+
+
+// ---------------------------------------------------------------------------
+// limber_fmadd4: a*b + c on four lanes with one rounding.
+//
+// A fused multiply-add keeps the product a*b exact and rounds only the
+// final sum; a separate multiply and add rounds twice, and the two results
+// can differ in the last bit. The compiler fuses the scalar a*b + c of
+// the reference loops, so a vector path must fuse the same products at
+// the same places to stay bitwise equal to them.
+//
+// With native x86 FMA, simde_mm256_fmadd_pd is one AVX2 instruction.
+// Without it (arm64) SIMDe writes that call as a multiply and then an
+// add, two roundings, while the two-lane simde_mm_fmadd_pd is a real
+// fused NEON instruction: the v4d is split into its two v2d halves (lanes
+// 0,1 low, lanes 2,3 high), each half is fused, and the halves are joined
+// again. Lane l of the result is a[l]*b[l] + c[l] either way.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d limber_fmadd4(
+    const v4d va,   // a on four lanes
+    const v4d vb,   // b on four lanes
+    const v4d vc    // c on four lanes
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  // a*b + c on all four lanes, one fused instruction
+  return simde_mm256_fmadd_pd(va, vb, vc);
+#else
+  // the low half of each input (castpd256_pd128 keeps the lower two
+  // doubles; it moves no data)
+  const v2d va_low = simde_mm256_castpd256_pd128(va);  // a, lanes 0,1
+  const v2d vb_low = simde_mm256_castpd256_pd128(vb);  // b, lanes 0,1
+  const v2d vc_low = simde_mm256_castpd256_pd128(vc);  // c, lanes 0,1
+
+  // the high half of each input (extractf128_pd(v, 1) takes the upper
+  // two doubles)
+  const v2d va_high = simde_mm256_extractf128_pd(va, 1);  // a, lanes 2,3
+  const v2d vb_high = simde_mm256_extractf128_pd(vb, 1);  // b, lanes 2,3
+  const v2d vc_high = simde_mm256_extractf128_pd(vc, 1);  // c, lanes 2,3
+
+  // a*b + c fused on lanes 0,1
+  const v2d vlow  = simde_mm_fmadd_pd(va_low, vb_low, vc_low);
+
+  // a*b + c fused on lanes 2,3
+  const v2d vhigh = simde_mm_fmadd_pd(va_high, vb_high, vc_high);
+
+  // join the halves: set_m128d(high, low) puts vlow in lanes 0,1 and
+  // vhigh in lanes 2,3
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
+// limber_fmsub4: a*b - c on four lanes with one rounding, the vector form
+// of the scalar a*b - c that the compiler fuses.
+//
+// Written as a*b + (-c) through limber_fmadd4: IEEE 754 defines x - y as
+// x + (-y), so the two are the same double, signed zeros included. -c is
+// exact: xor with -0.0 (only the sign bit set) flips the sign bit of each
+// lane and touches nothing else. SIMDe's own simde_mm256_fmsub_pd is not
+// used because without native x86 FMA it is a multiply and then a
+// subtraction (two roundings), in its two-lane form as well.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) v4d limber_fmsub4(
+    const v4d va,   // a on four lanes
+    const v4d vb,   // b on four lanes
+    const v4d vc    // c on four lanes
+  )
+{
+  // -0.0 in all four lanes: the sign bit alone
+  const v4d vsign_bit = simde_mm256_set1_pd(-0.0);
+
+  // -c on each lane
+  const v4d vminus_c = simde_mm256_xor_pd(vc, vsign_bit);
+
+  // a*b + (-c), one rounding
+  return limber_fmadd4(va, vb, vminus_c);
+}
+
+
+// ---------------------------------------------------------------------------
+// limber_load_pairs4: the two neighbours row[j], row[j+1] of four lanes,
+// each lane with its own index j, regrouped into a v4d of left values
+// and a v4d of right values.
+//
+// An interpolation between two table nodes needs both, and they sit side
+// by side in memory: one 16-byte load per lane fetches the pair. The four
+// pairs are then regrouped (unpacklo takes the first double of each pair,
+// unpackhi the second). The memory access of halo.c's nfw_read4.
+// ---------------------------------------------------------------------------
+static inline __attribute__((always_inline)) void limber_load_pairs4(
+    const double* restrict row,  // table row
+    const int* index,            // [4] left index j of each lane
+    v4d* vleft,                  // output: row[j] on each lane
+    v4d* vright                  // output: row[j+1] on each lane
+  )
+{
+  // the pair (row[j], row[j+1]) of each lane, one two-double load each
+  // (loadu reads two consecutive doubles from memory into a v2d)
+  const v2d vpair0 = simde_mm_loadu_pd(row + index[0]);  // lane 0's pair
+  const v2d vpair1 = simde_mm_loadu_pd(row + index[1]);  // lane 1's pair
+  const v2d vpair2 = simde_mm_loadu_pd(row + index[2]);  // lane 2's pair
+  const v2d vpair3 = simde_mm_loadu_pd(row + index[3]);  // lane 3's pair
+
+  // the left values row[j] of lanes 0,1
+  const v2d vleft_low = simde_mm_unpacklo_pd(vpair0, vpair1);
+
+  // the left values of lanes 2,3
+  const v2d vleft_high = simde_mm_unpacklo_pd(vpair2, vpair3);
+
+  // the right values row[j+1] of lanes 0,1
+  const v2d vright_low = simde_mm_unpackhi_pd(vpair0, vpair1);
+
+  // the right values of lanes 2,3
+  const v2d vright_high = simde_mm_unpackhi_pd(vpair2, vpair3);
+
+  // row[j] on all four lanes (set_m128d joins the halves, low first)
+  *vleft = simde_mm256_set_m128d(vleft_high, vleft_low);
+
+  // row[j+1] on all four lanes
+  *vright = simde_mm256_set_m128d(vright_high, vright_low);
+}
+#endif
 
 
 
@@ -577,6 +738,126 @@ static void limber_table_cluster_upsample(limber_table_cluster* T)
     spline_coeffs_uniform(T->tabe[row], T->nexact, h, T->cspl[row]);
   }
 
+#ifndef COSMO2D_NOT_USE_SIMD
+  // The reference loop (the #else branch below), four dense nodes i, i+1,
+  // i+2, i+3 per step, one per lane of a v4d.
+  //
+  // Why explicit SIMDe: every dense node reads its exact interval through
+  // an index (y[j], y[j+1], c[j], c[j+1] with j = qidx[i]), so the loads
+  // are not contiguous and the compiler leaves the loop scalar (the
+  // blocker of cosmo2D.c's limber_fill_interp). Here the two neighbours
+  // of a lane sit side by side, so one 16-byte load per lane fetches
+  // both and the four pairs are regrouped into a v4d of left values and a
+  // v4d of right values (limber_load_pairs4; halo.c's nfw_read4 idiom:
+  // a gather instruction is slow on several x86 cores and is lane-by-lane
+  // loads on NEON anyway).
+  //
+  // Bitwise the reference: the same operations in the same order on
+  // every node, with the multiply-adds fused where the compiler fuses the
+  // scalar expressions: the product (y[j+1] - y[j])*inv_h into the
+  // subtraction that forms b (limber_fmsub4) and the three t*(..) + ..
+  // of the Horner form (limber_fmadd4). c[j+1] + 2.0*c[j] is the same
+  // double fused or not (2 c[j] is exact), and the divisions stay
+  // divisions.
+  //
+  // One row per task (the reference collapses rows and nodes): a row is
+  // the unit the vector loop walks contiguously. Each dense node is
+  // computed on its own, so no value depends on the thread count.
+  #pragma omp parallel for schedule(static)
+  for (int row = 0; row < T->nrows; row++) {
+    // Local restrict pointers: the rows are reached through
+    // pointer-to-pointer indirection inside the parallel region, and
+    // without them the compiler cannot prove that a store to the dense
+    // row leaves the exact rows and the node map unchanged, and reloads
+    // them at every step (the cosmo2D.c idiom)
+    const double* restrict y    = T->tabe[row];  // exact C_l
+    const double* restrict c    = T->cspl[row];  // spline c coefficients
+    const int* restrict qidx    = T->qidx;       // dense node -> interval j
+    const double* restrict qdel = T->qdel;       // dense node -> offset dx
+    double* restrict dense      = T->tab[row];   // output: dense C_l
+    const int nell              = T->nell;
+
+    // h, 1/h, 2, 3 and 3 h in all four lanes (set1 copies one scalar into
+    // every lane; 3.0*h is the reference's product, computed once)
+    const v4d vh     = simde_mm256_set1_pd(h);
+    const v4d vinv_h = simde_mm256_set1_pd(inv_h);
+    const v4d vtwo   = simde_mm256_set1_pd(2.0);
+    const v4d vthree = simde_mm256_set1_pd(3.0);
+    const v4d v3h    = simde_mm256_set1_pd(3.0*h);
+
+    int i = 0;
+    for (; i <= nell - 4; i += 4) {
+      v4d vy0;  // y[j]   of dense nodes i..i+3
+      v4d vy1;  // y[j+1]
+      v4d vc0;  // c[j]
+      v4d vc1;  // c[j+1]
+
+      // the exact nodes that bracket each dense node: j = qidx[i + lane]
+      limber_load_pairs4(y, qidx + i, &vy0, &vy1);
+      limber_load_pairs4(c, qidx + i, &vc0, &vc1);
+
+      // dx = qdel[i..i+3] (loadu reads four consecutive doubles from
+      // memory into the lanes)
+      const v4d vdx = simde_mm256_loadu_pd(qdel + i);
+
+      // scalar: b = (y[j+1] - y[j])*inv_h - h*(c[j+1] + 2.0*c[j])/3.0
+
+      // y[j+1] - y[j]
+      const v4d vdy = simde_mm256_sub_pd(vy1, vy0);
+
+      // 2 c[j]
+      const v4d vtwo_c0 = simde_mm256_mul_pd(vtwo, vc0);
+
+      // c[j+1] + 2 c[j]
+      const v4d vcsum = simde_mm256_add_pd(vc1, vtwo_c0);
+
+      // h (c[j+1] + 2 c[j])
+      const v4d vh_csum = simde_mm256_mul_pd(vh, vcsum);
+
+      // h (c[j+1] + 2 c[j])/3
+      const v4d vcurv_term = simde_mm256_div_pd(vh_csum, vthree);
+
+      // b = (y[j+1] - y[j]) inv_h - h (c[j+1] + 2 c[j])/3, the product
+      // fused into the subtraction
+      const v4d vb = limber_fmsub4(vdy, vinv_h, vcurv_term);
+
+      // scalar: d = (c[j+1] - c[j])/(3.0*h)
+
+      // c[j+1] - c[j]
+      const v4d vdc = simde_mm256_sub_pd(vc1, vc0);
+
+      // d
+      const v4d vd = simde_mm256_div_pd(vdc, v3h);
+
+      // scalar: y[j] + dx*(b + dx*(c[j] + dx*d)), innermost bracket
+      // first, each dx*(..) + .. fused
+
+      // c[j] + dx d
+      const v4d vinner = limber_fmadd4(vdx, vd, vc0);
+
+      // b + dx (c[j] + dx d)
+      const v4d vouter = limber_fmadd4(vdx, vinner, vb);
+
+      // y[j] + dx (b + dx (c[j] + dx d))
+      const v4d vdense = limber_fmadd4(vdx, vouter, vy0);
+
+      // to dense[i..i+3] (storeu writes the four lanes to memory)
+      simde_mm256_storeu_pd(dense + i, vdense);
+    }
+
+    // scalar tail: the last nell % 4 dense nodes, the statements of the
+    // reference loop
+    for (; i < nell; i++) {
+      const int j     = qidx[i];
+      const double dx = qdel[i];
+
+      const double b = (y[j+1] - y[j])*inv_h - h*(c[j+1] + 2.0*c[j])/3.0;
+      const double d = (c[j+1] - c[j])/(3.0*h);
+
+      dense[i] = y[j] + dx*(b + dx*(c[j] + dx*d));
+    }
+  }
+#else
   #pragma omp parallel for collapse(2) schedule(static)
   for (int row = 0; row < T->nrows; row++) {
     for (int i = 0; i < T->nell; i++) {
@@ -592,6 +873,7 @@ static void limber_table_cluster_upsample(limber_table_cluster* T)
       T->tab[row][i] = y[j] + dx*(b + dx*(c[j] + dx*d));
     }
   }
+#endif
 }
 
 
