@@ -15,6 +15,15 @@ integer factor with the same block endpoints, so a boost increase is
 a true refinement of the previous grid instead of a re-phasing of
 the linear-interpolation error.
 
+The tables live on three redshift grids. The power spectra use the
+2D grid z_interp_2D (140 nodes at boost 1, dz ~ 0.03 below z = 3).
+The distances use the dense 1D grid z_interp_1D (dz = 0.003 below
+z = 3). The growth table uses the same dense grid, cut at the last
+2D node (z_growth). cosmolike reads the growth table linearly in z,
+and on the 2D grid that linear read would miss D(z) by up to 9e-5.
+The growth table and its z grid are handed to set_cosmology as G
+and z_G, as the likelihoods do.
+
 Units handed back (cosmolike conventions):
   k          in h/Mpc (log10 grid)
   P(k)       in (Mpc/h)^3 (natural log of it)
@@ -73,10 +82,25 @@ def get_camb_cosmology(omegam,
       halofit_version = CAMB halofit flavor for the nonlinear P(k).
 
     Returns:
-      (log10k_interp_2D, z_interp_2D, lnPL, lnPNL, G_growth,
-       z_interp_1D, chi): the exact tuple ci.set_cosmology consumes.
-      lnPL/lnPNL are the (z, k) tables flattened in Fortran (column)
-      order, the layout the compiled interface expects.
+      (log10k_interp_2D, z_interp_2D, lnPL, lnPNL, G_growth, z_growth,
+       z_interp_1D, chi): the arrays ci.set_cosmology consumes, as
+      the keywords log10k_2D, z_2D, lnP_linear, lnP_nonlinear, G,
+      z_G, z_1D and chi. All are 1D float64 arrays:
+        log10k_interp_2D = log10 of k in h/Mpc, n_k nodes.
+        z_interp_2D      = z nodes of the power spectra, n_z2D nodes.
+        lnPL, lnPNL      = ln of the linear and nonlinear P(k) in
+                           (Mpc/h)^3: the (n_z2D, n_k) tables flattened
+                           in Fortran (column) order, the layout the
+                           compiled interface expects.
+        G_growth         = G(z) = D(z) (1 + z) on z_growth, divided by
+                           its value at z_interp_2D[-1]; n_zG entries.
+        z_growth         = z nodes of G_growth: the z_interp_1D nodes
+                           up to z_interp_2D[-1]; n_zG nodes.
+        z_interp_1D      = z nodes of chi, n_z1D nodes.
+        chi              = comoving distance in Mpc/h, n_z1D entries.
+      G_growth is not on the z_2D nodes: it must go to set_cosmology
+      together with z_G = z_growth (set_cosmology without z_G pairs G
+      with z_2D, and the size mismatch aborts the process).
     """
     # camb is imported here, not at module top: the notebooks adjust
     # sys.path before importing it, and a module-top import would fix
@@ -224,11 +248,26 @@ def get_camb_cosmology(omegam,
     # only AFTER the tables were evaluated: shift the k grid to h/Mpc
     log10k_interp_2D = log10k_interp_2D - np.log10(H0/100.)
 
-    # growth factor from the linear P(k) at one large scale
-    # (k = 5e-4/Mpc), normalized to 1 at the last (highest-z) node
-    G_growth = np.sqrt(PKL.P(z_interp_2D, 0.0005)/PKL.P(0, 0.0005))*(1 + z_interp_2D)
-    G_growth = G_growth/G_growth[len(G_growth)-1]
+    # growth factor G(z) = D(z) (1 + z) from the linear P(k) at one
+    # large scale (k = 5e-4/Mpc), where P grows as D^2. It is sampled
+    # on the dense 1D grid, cut where the 2D grid (the z range of PKL)
+    # ends: cosmolike reads G linearly in z, and on the 2D grid
+    # (dz ~ 0.03) that read misses D by up to 9e-5 and the growth rate
+    # (the slope of the table) by 1%. PKL is a spline in z through
+    # CAMB's transfer redshifts, so the extra nodes ask CAMB for no
+    # extra redshifts. Same expression as the likelihoods
+    # (likelihood/_cosmolike_prototype_base.py).
+    z_growth = z_interp_1D[z_interp_1D <= z_interp_2D[-1]]
+    power_ratio = PKL.P(z_growth, 0.0005)/PKL.P(0, 0.0005)
+    G_growth = np.sqrt(power_ratio)*(1 + z_growth)
+    # the table is divided by G at the last 2D node (z = 49.99), just
+    # above the last z_growth node; cosmolike divides by G(z = 0) on
+    # its side, so D(z = 0) = 1 whatever this constant is
+    z_norm = z_interp_2D[-1]
+    power_ratio_norm = PKL.P(z_norm, 0.0005)/PKL.P(0, 0.0005)
+    G_growth = G_growth/(np.sqrt(power_ratio_norm)*(1 + z_norm))
 
     chi = results.comoving_radial_distance(z_interp_1D) * (H0/100.)
 
-    return (log10k_interp_2D, z_interp_2D, lnPL, lnPNL, G_growth, z_interp_1D, chi)
+    return (log10k_interp_2D, z_interp_2D, lnPL, lnPNL, G_growth, z_growth,
+            z_interp_1D, chi)
