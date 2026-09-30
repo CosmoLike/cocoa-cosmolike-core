@@ -30,10 +30,12 @@ namespace cosmolike_interface
 //     -> w_gammat_cluster_tomo(nt, nl, ni, ns) (cosmo2D_cluster.c: reads
 //                                               a cached block)
 //
-// Names, as in cosmo2D_wrapper.hpp: each function is the C function's
-// name plus _cpp, and its Python name is the C name itself
-// (cosmo2D_cluster.c w_cc_tomo -> w_cc_tomo_cpp -> ci.w_cc_tomo). The
-// arrays are indexed by the bins themselves,
+// Names, as in cosmo2D_wrapper.hpp: each function is the name of its C
+// engine plus _cpp, and its Python name is the C name itself
+// (cosmo2D_cluster.c w_cc_tomo -> w_cc_tomo_cpp -> ci.w_cc_tomo).
+// w_sigma_cluster_tomo_cpp has no single engine: it is named after the
+// Sigma of the data vector it returns. The arrays are indexed by the
+// bins themselves,
 //
 //   (theta or ell, richness bin, cluster z bin, source or lens bin),
 //
