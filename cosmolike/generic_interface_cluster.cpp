@@ -1740,7 +1740,8 @@ void IPCluster::set_data(std::string datavector_filename)
 // Stages after assembly (see the class header for why the squeezed
 // matrix is the one inverted):
 //   squeeze to the unmasked entries -> positive diagonal check -> eig_sym
-//   check (every eigenvalue > 0) -> arma::inv -> expand the inverse to the
+//   check of the CORRELATION matrix (every eigenvalue > 0) -> invert it and
+//   rescale by the standard deviations -> expand the inverse to the
 //   full layout (zero rows and columns at masked entries).
 // ---------------------------------------------------------------------------
 void IPCluster::set_inv_cov(std::string cov_filename)
@@ -1835,18 +1836,28 @@ void IPCluster::set_inv_cov(std::string cov_filename)
       exit(1);
     }
   }
-  const vector eigvals = arma::eig_sym(this->cov_masked_sqzd_);
+  // The joint vector's variances span ~19 orders of magnitude (xi- ~1e-15,
+  // counts ~1e4), so eigenvalues of the raw matrix carry round-off of order
+  // 1e-16 * lambda_max (a positive-definite covariance showed raw
+  // eigenvalues down to -1e-12 next to lambda_max = 7.6e3). The test and
+  // the inversion run on the correlation matrix R = D^-1/2 C D^-1/2
+  // (scale invariant, unit diagonal), and C^-1 = D^-1/2 R^-1 D^-1/2.
+  const vector inv_sigma = 1.0/arma::sqrt(this->cov_masked_sqzd_.diag());
+  const matrix corr = this->cov_masked_sqzd_ % (inv_sigma*inv_sigma.t());
+  const vector eigvals = arma::eig_sym(corr);
   for (int a=0; a<this->ndata_sqzd_; a++) {
     if (!(eigvals(a) > 0.0)) [[unlikely]] {
-      critical("{}: masked cov not positive definite (eigenvalue {} = {})",
-        fname, a, eigvals(a));
+      critical("{}: masked correlation matrix not positive definite "
+        "(eigenvalue {} = {})", fname, a, eigvals(a));
       exit(1);
     }
   }
-  if (!arma::inv(this->inv_cov_masked_sqzd_, this->cov_masked_sqzd_)) [[unlikely]] {
-    critical("{}: inversion of the masked covariance failed", fname);
+  matrix inv_corr;
+  if (!arma::inv(inv_corr, corr)) [[unlikely]] {
+    critical("{}: inversion of the masked correlation matrix failed", fname);
     exit(1);
   }
+  this->inv_cov_masked_sqzd_ = inv_corr % (inv_sigma*inv_sigma.t());
 
   // --- 5. EXPAND THE INVERSE ---
 
