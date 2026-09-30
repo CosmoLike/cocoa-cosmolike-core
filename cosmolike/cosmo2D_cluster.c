@@ -769,9 +769,31 @@ static void cluster_leg_at_nodes(
 
       const int on_support = (p < cn->nsupport);
 
+      // The volume-only kernel (Y1 eq 15, the default) does not depend on
+      // the richness bin: W_c and W_mag,c are evaluated once per node and
+      // shared by every richness bin (the same calls with the same
+      // arguments, so the values are bitwise those of a per-bin call).
+      // The abundance-weighted kernel differs per bin and is evaluated
+      // inside the loop.
+      const int kernel_per_richness =
+        (CLUSTER_KERNEL_ABUNDANCE == cluster.kernel_mode);
+      double W_c_shared   = 0.0;
+      double W_mag_shared = 0.0;
+      if (0 == kernel_per_richness) {
+        if (1 == on_support) {
+          W_c_shared = W_cluster(a, ni, 0, hoverh0);
+        }
+        if (0.0 != C_c) {
+          W_mag_shared = W_mag_cluster(a, fK, ni, 0);
+        }
+      }
+
       for (int nl = 0; nl < nbin_richness; nl++) {
         if (1 == on_support) {
-          const double W_c = W_cluster(a, ni, nl, hoverh0);
+          double W_c = W_c_shared;
+          if (1 == kernel_per_richness) {
+            W_c = W_cluster(a, ni, nl, hoverh0);
+          }
           const double b_c = bcl_richness(a, nl);
 
           if (cluster_kernel != NULL) {
@@ -780,7 +802,11 @@ static void cluster_leg_at_nodes(
           cluster_density[ni][nl][p] = b_c*W_c;
         }
         if (0.0 != C_c) {
-          cluster_magnification[ni][nl][p] = C_c*W_mag_cluster(a, fK, ni, nl);
+          double W_mag = W_mag_shared;
+          if (1 == kernel_per_richness) {
+            W_mag = W_mag_cluster(a, fK, ni, nl);
+          }
+          cluster_magnification[ni][nl][p] = C_c*W_mag;
         }
       }
     }

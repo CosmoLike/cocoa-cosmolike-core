@@ -1657,7 +1657,12 @@ void cluster_warmup(void)
 
   // --- 1. THIS FILE ---
   cluster_mass_tables();
-  cluster_p1h_table();
+  // the one-halo table only enters cluster lensing (C_cs); its work
+  // function warms pcm_1h_richness serially itself before its threaded
+  // loops, so a run without cluster lensing skips this refill
+  if (1 == cluster.probe_cs) {
+    cluster_p1h_table();
+  }
 
   // --- 2. redshift_spline_cluster.c ---
   for (int ni=0; ni<cluster.zdist_nbin; ni++) {
