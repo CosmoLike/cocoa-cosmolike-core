@@ -504,6 +504,289 @@ void C_ks_tomo_limber_fill(
 // ----------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Legendre sums of the real-space functions below, for every spectrum nz
+// and every theta bin i:
+//
+//   w_vec[nz*ntheta + i] = sum_{l=lmin}^{lmax-1} Pl[i][l] * Cl[nz][l]
+//
+// The only sum is over l: every (nz, i) has its own.
+//
+// Why the reference loop (COSMO2D_NOT_USE_SIMD) is slow: at LMAX = 75000 a
+// C_l array and a kernel array are 600 kB each, far more than the L1 cache
+// holds. The reference loop makes one full pass over l per (nz, i), so it
+// reads the whole of Cl[nz] again for every theta bin and the whole of
+// Pl[i] again for every spectrum: two values fetched from memory per
+// multiply-add, and the loop waits on memory, not on arithmetic.
+//
+// The default loop takes 4 spectra and 4 theta bins in one pass over l: 8
+// values fetched per 16 multiply-adds, each Cl[nz] read ntheta/4 times and
+// each Pl[i] read NSIZE/4 times. Each of the 16 sums adds the same products
+// in the same order as the reference loop does for that (nz, i), so the
+// results are bitwise those of the reference.
+//
+// Why 4 x 4: the 16 sums and the 8 fetched values must stay in the CPU's
+// vector registers; a larger group spills them to memory.
+//
+// Thread safety: call outside parallel regions.
+//
+// Parameters:
+//   NSIZE  - number of spectra (rows of Cl)
+//   ntheta - number of theta bins (rows of Pl)
+//   lmin   - first multipole of the sums
+//   lmax   - one past the last multipole of the sums
+//   Pl     - [ntheta][lmax] bin-averaged Legendre kernel
+//   Cl     - [NSIZE][lmax] C_l at every integer l
+//   w_vec  - output [NSIZE*ntheta], indexed nz*ntheta + i
+// ---------------------------------------------------------------------------
+static void legendre_sums(
+    const int NSIZE,
+    const int ntheta,
+    const int lmin,
+    const int lmax,
+    double** Pl,
+    double** Cl,
+    double* w_vec
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<ntheta; i++) {
+      const double* restrict pl = Pl[i];
+      const double* restrict cl = Cl[nz];
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int l=lmin; l<lmax; l++) {
+        sum += pl[l] * cl[l];
+      }
+      w_vec[nz*ntheta + i] = sum;
+    }
+  }
+#else
+  // nz and i are the first spectrum and the first theta bin of the group,
+  // which covers spectra nz .. nz+3 and theta bins i .. i+3
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz+=4) {
+    for (int i=0; i<ntheta; i+=4) {
+      // Past the end (NSIZE or ntheta not a multiple of 4) the extra slots
+      // point at the last valid spectrum / theta bin: the loop below always
+      // reads valid memory, and those repeats are computed but never stored
+      const int nz1 = (nz + 1 < NSIZE) ? nz + 1 : NSIZE - 1;
+      const int nz2 = (nz + 2 < NSIZE) ? nz + 2 : NSIZE - 1;
+      const int nz3 = (nz + 3 < NSIZE) ? nz + 3 : NSIZE - 1;
+      const int i1  = (i + 1 < ntheta) ? i + 1 : ntheta - 1;
+      const int i2  = (i + 2 < ntheta) ? i + 2 : ntheta - 1;
+      const int i3  = (i + 3 < ntheta) ? i + 3 : ntheta - 1;
+
+      const double* restrict cl0 = Cl[nz];   // C_l of spectra nz .. nz+3
+      const double* restrict cl1 = Cl[nz1];
+      const double* restrict cl2 = Cl[nz2];
+      const double* restrict cl3 = Cl[nz3];
+      const double* restrict pl0 = Pl[i];    // kernel of theta bins i .. i+3
+      const double* restrict pl1 = Pl[i1];
+      const double* restrict pl2 = Pl[i2];
+      const double* restrict pl3 = Pl[i3];
+
+      // sum<a><b>: the sum of spectrum nz + a and theta bin i + b. Sixteen
+      // separate sums over l; nothing is added across spectra or bins,
+      // they only share the reads of cl and pl
+      double sum00 = 0.0, sum01 = 0.0, sum02 = 0.0, sum03 = 0.0;
+      double sum10 = 0.0, sum11 = 0.0, sum12 = 0.0, sum13 = 0.0;
+      double sum20 = 0.0, sum21 = 0.0, sum22 = 0.0, sum23 = 0.0;
+      double sum30 = 0.0, sum31 = 0.0, sum32 = 0.0, sum33 = 0.0;
+
+      #pragma omp simd reduction(+:sum00,sum01,sum02,sum03,\
+                                   sum10,sum11,sum12,sum13,\
+                                   sum20,sum21,sum22,sum23,\
+                                   sum30,sum31,sum32,sum33)
+      for (int l=lmin; l<lmax; l++) {
+        sum00 += pl0[l] * cl0[l];
+        sum01 += pl1[l] * cl0[l];
+        sum02 += pl2[l] * cl0[l];
+        sum03 += pl3[l] * cl0[l];
+
+        sum10 += pl0[l] * cl1[l];
+        sum11 += pl1[l] * cl1[l];
+        sum12 += pl2[l] * cl1[l];
+        sum13 += pl3[l] * cl1[l];
+
+        sum20 += pl0[l] * cl2[l];
+        sum21 += pl1[l] * cl2[l];
+        sum22 += pl2[l] * cl2[l];
+        sum23 += pl3[l] * cl2[l];
+
+        sum30 += pl0[l] * cl3[l];
+        sum31 += pl1[l] * cl3[l];
+        sum32 += pl2[l] * cl3[l];
+        sum33 += pl3[l] * cl3[l];
+      }
+
+      // store the sums of the spectra and theta bins that exist
+      const double sum[4][4] = {{sum00, sum01, sum02, sum03},
+                                {sum10, sum11, sum12, sum13},
+                                {sum20, sum21, sum22, sum23},
+                                {sum30, sum31, sum32, sum33}};
+      for (int a=0; a<4; a++) {
+        for (int b=0; b<4; b++) {
+          if (nz + a < NSIZE && i + b < ntheta) {
+            w_vec[(nz + a)*ntheta + (i + b)] = sum[a][b];
+          }
+        }
+      }
+    }
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Legendre sums of xi_pm_tomo, for every shear pair nz and theta bin i:
+//
+//   xip[nz*ntheta + i] = sum_l Glp[i][l] * (Cl_EE[nz][l] + Cl_BB[nz][l])
+//   xim[nz*ntheta + i] = sum_l Glm[i][l] * (Cl_EE[nz][l] - Cl_BB[nz][l])
+//
+// Same idea as legendre_sums (see the note there): the reference loop
+// (COSMO2D_NOT_USE_SIMD) makes one full pass over l per (nz, i), fetching
+// four values (EE, BB, Gl+, Gl-) for two multiply-adds and recomputing
+// EE + BB and EE - BB for every theta bin. The default loop takes 2 pairs
+// and 4 theta bins in one pass: 12 values fetched per 16 multiply-adds,
+// and EE +- BB computed once per pair. Each sum adds the same products in
+// the same order as the reference, so the results are bitwise identical.
+//
+// Why 2 x 4: each pair brings two C_l arrays and each theta bin two
+// kernels, so 2 x 4 already holds 16 sums, 12 fetched values and 4
+// temporaries in the vector registers. Measured against 1x4, 2x2 and 4x2
+// at 10 to 55 pairs: the fastest or within noise of it at 4 threads.
+//
+// Thread safety: call outside parallel regions.
+//
+// Parameters:
+//   NSIZE  - number of shear pairs (rows of Cl_EE, Cl_BB)
+//   ntheta - number of theta bins (rows of Glp, Glm)
+//   lmin   - first multipole of the sums
+//   lmax   - one past the last multipole of the sums
+//   Glp    - [ntheta][lmax] bin-averaged kernel of xi_+
+//   Glm    - [ntheta][lmax] bin-averaged kernel of xi_-
+//   Cl_EE  - [NSIZE][lmax] E-mode C_l at every integer l
+//   Cl_BB  - [NSIZE][lmax] B-mode C_l at every integer l
+//   xip    - output [NSIZE*ntheta], indexed nz*ntheta + i
+//   xim    - output [NSIZE*ntheta], indexed nz*ntheta + i
+// ---------------------------------------------------------------------------
+static void legendre_sums_xipm(
+    const int NSIZE,
+    const int ntheta,
+    const int lmin,
+    const int lmax,
+    double** Glp,
+    double** Glm,
+    double** Cl_EE,
+    double** Cl_BB,
+    double* xip,
+    double* xim
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz++) {
+    for (int i=0; i<ntheta; i++) {
+      const int q = nz * ntheta + i;
+      const double* restrict c0 = Cl_EE[nz];
+      const double* restrict c1 = Cl_BB[nz];
+      const double* restrict gp = Glp[i];
+      const double* restrict gm = Glm[i];
+      double sum0 = 0.0;
+      double sum1 = 0.0;
+      #pragma omp simd reduction(+:sum0, sum1)
+      for (int l=lmin; l<lmax; l++) {
+        sum0 += gp[l] * (c0[l] + c1[l]);
+        sum1 += gm[l] * (c0[l] - c1[l]);
+      }
+      xip[q] = sum0;
+      xim[q] = sum1;
+    }
+  }
+#else
+  // nz and i are the first pair and the first theta bin of the group,
+  // which covers pairs nz, nz+1 and theta bins i .. i+3
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int nz=0; nz<NSIZE; nz+=2) {
+    for (int i=0; i<ntheta; i+=4) {
+      // past the end: repeats of the last valid pair / theta bin,
+      // computed but never stored (see legendre_sums)
+      const int nz1 = (nz + 1 < NSIZE) ? nz + 1 : NSIZE - 1;
+      const int i1  = (i + 1 < ntheta) ? i + 1 : ntheta - 1;
+      const int i2  = (i + 2 < ntheta) ? i + 2 : ntheta - 1;
+      const int i3  = (i + 3 < ntheta) ? i + 3 : ntheta - 1;
+
+      const double* restrict ee0 = Cl_EE[nz];   // pair nz
+      const double* restrict bb0 = Cl_BB[nz];
+      const double* restrict ee1 = Cl_EE[nz1];  // pair nz+1
+      const double* restrict bb1 = Cl_BB[nz1];
+      const double* restrict gp0 = Glp[i];      // Gl+ of theta bins i .. i+3
+      const double* restrict gp1 = Glp[i1];
+      const double* restrict gp2 = Glp[i2];
+      const double* restrict gp3 = Glp[i3];
+      const double* restrict gm0 = Glm[i];      // Gl- of theta bins i .. i+3
+      const double* restrict gm1 = Glm[i1];
+      const double* restrict gm2 = Glm[i2];
+      const double* restrict gm3 = Glm[i3];
+
+      // xip<a><b>, xim<a><b>: the sums of pair nz + a and theta bin i + b.
+      // Sixteen separate sums over l; nothing is added across pairs or bins
+      double xip00 = 0.0, xip01 = 0.0, xip02 = 0.0, xip03 = 0.0;
+      double xip10 = 0.0, xip11 = 0.0, xip12 = 0.0, xip13 = 0.0;
+      double xim00 = 0.0, xim01 = 0.0, xim02 = 0.0, xim03 = 0.0;
+      double xim10 = 0.0, xim11 = 0.0, xim12 = 0.0, xim13 = 0.0;
+
+      #pragma omp simd reduction(+:xip00,xip01,xip02,xip03,\
+                                   xip10,xip11,xip12,xip13,\
+                                   xim00,xim01,xim02,xim03,\
+                                   xim10,xim11,xim12,xim13)
+      for (int l=lmin; l<lmax; l++) {
+        const double sum_eb0 = ee0[l] + bb0[l];  // EE + BB of pair nz
+        const double dif_eb0 = ee0[l] - bb0[l];  // EE - BB of pair nz
+        const double sum_eb1 = ee1[l] + bb1[l];  // EE + BB of pair nz+1
+        const double dif_eb1 = ee1[l] - bb1[l];  // EE - BB of pair nz+1
+
+        xip00 += gp0[l] * sum_eb0;
+        xip01 += gp1[l] * sum_eb0;
+        xip02 += gp2[l] * sum_eb0;
+        xip03 += gp3[l] * sum_eb0;
+
+        xip10 += gp0[l] * sum_eb1;
+        xip11 += gp1[l] * sum_eb1;
+        xip12 += gp2[l] * sum_eb1;
+        xip13 += gp3[l] * sum_eb1;
+
+        xim00 += gm0[l] * dif_eb0;
+        xim01 += gm1[l] * dif_eb0;
+        xim02 += gm2[l] * dif_eb0;
+        xim03 += gm3[l] * dif_eb0;
+
+        xim10 += gm0[l] * dif_eb1;
+        xim11 += gm1[l] * dif_eb1;
+        xim12 += gm2[l] * dif_eb1;
+        xim13 += gm3[l] * dif_eb1;
+      }
+
+      // store the sums of the pairs and theta bins that exist
+      const double sp[2][4] = {{xip00, xip01, xip02, xip03},
+                               {xip10, xip11, xip12, xip13}};
+      const double sm[2][4] = {{xim00, xim01, xim02, xim03},
+                               {xim10, xim11, xim12, xim13}};
+      for (int a=0; a<2; a++) {
+        for (int b=0; b<4; b++) {
+          if (nz + a < NSIZE && i + b < ntheta) {
+            xip[(nz + a)*ntheta + (i + b)] = sp[a][b];
+            xim[(nz + a)*ntheta + (i + b)] = sm[a][b];
+          }
+        }
+      }
+    }
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // Shear-shear real-space two-point correlation functions xi_+(theta) and
 // xi_-(theta) with bin-averaged Hankel transform.
 //
@@ -525,8 +808,9 @@ void C_ks_tomo_limber_fill(
 //   2. High-ell (l = LMIN_tab..LMAX): fast interpolation from the cached
 //      log-spaced table via C_ss_tomo_limber_fill with AVX2 gather
 //
-// The final Hankel sum over ~100k multipoles is SIMD-vectorized via
-// #pragma omp simd with dual reduction accumulators for xi_+ and xi_-.
+// The final Hankel sum over ~100k multipoles is legendre_sums_xipm (above):
+// 2 pairs x 4 theta bins per pass over l, SIMD-vectorized via #pragma omp
+// simd with one reduction accumulator per (pair, theta bin, +/-).
 //
 // Cache invalidation:
 // recomputes when cosmology, shear photo-z, IA, shear
@@ -796,25 +1080,8 @@ double xi_pm_tomo(
     else {
       log_fatal("NonLimber not implemented"); exit(1);
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const int q = nz * Ntable.Ntheta + i;
-        const double* restrict c0 = Cl[0][nz];
-        const double* restrict c1 = Cl[1][nz];
-        const double* restrict gp = Glpm[0][i];
-        const double* restrict gm = Glpm[1][i];
-        double sum0 = 0.0;
-        double sum1 = 0.0;
-        #pragma omp simd reduction(+:sum0, sum1)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum0 += gp[l] * (c0[l] + c1[l]);
-          sum1 += gm[l] * (c0[l] - c1[l]);
-        }
-        xipm[0][q] = sum0;
-        xipm[1][q] = sum1;
-      }
-    }
+    legendre_sums_xipm(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX,
+                       Glpm[0], Glpm[1], Cl[0], Cl[1], xipm[0], xipm[1]);
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
@@ -1058,19 +1325,7 @@ double w_gammat_tomo(
         C_gs_tomo_limber_fill(nz, limits.LMAX_NOLIMBER, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const double* restrict pl = Pl[i];
-        const double* restrict cl = Cl[nz];
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += pl[l] * cl[l];
-        }
-        w_vec[nz*Ntable.Ntheta+i] = sum;
-      }
-    }
+    legendre_sums(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX, Pl, Cl, w_vec);
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_photoz_clustering;
@@ -1299,19 +1554,7 @@ double w_gg_tomo(
         C_gg_tomo_limber_fill(nz, limits.LMAX_NOLIMBER, Ntable.LMAX, lnell, Cl[nz]);
       }
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const double* restrict pl = Pl[i];
-        const double* restrict cl = Cl[nz];
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += pl[l] * cl[l];
-        }
-        w_vec[nz*Ntable.Ntheta + i] = sum;
-      }
-    }
+    legendre_sums(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX, Pl, Cl, w_vec);
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
@@ -1545,19 +1788,7 @@ double w_gk_tomo(
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const double* restrict pl = Pl[i];
-        const double* restrict cl = Cl[nz];
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += pl[l] * cl[l];
-        }
-        w_vec[nz*Ntable.Ntheta+i] = sum;
-      }
-    }
+    legendre_sums(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX, Pl, Cl, w_vec);
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_clustering;
     cache[2] = redshift.random_clustering;
@@ -1788,19 +2019,7 @@ double w_ks_tomo(
       log_fatal("NonLimber not implemented");
       exit(1);
     }
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int nz=0; nz<NSIZE; nz++) {
-      for (int i=0; i<Ntable.Ntheta; i++) {
-        const double* restrict pl = Pl[i];
-        const double* restrict cl = Cl[nz];
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int l=lmin; l<Ntable.LMAX; l++) {
-          sum += pl[l] * cl[l];
-        }
-        w_vec[nz*Ntable.Ntheta+i] = sum;
-      }
-    }
+    legendre_sums(NSIZE, Ntable.Ntheta, lmin, Ntable.LMAX, Pl, Cl, w_vec);
     cache[0] = cosmology.random;
     cache[1] = nuisance.random_photoz_shear;
     cache[2] = nuisance.random_ia;
