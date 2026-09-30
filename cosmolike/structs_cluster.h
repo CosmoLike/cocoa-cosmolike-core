@@ -91,13 +91,17 @@ typedef struct
   // photometric redshift z_lambda inside bin i (Y1 eq 6). Passed as a table
   // from Python (top-hat, erf of a Gaussian photo-z, or from randoms), laid
   // out like redshift.clustering_zdist_table: rows 0 .. zdist_nbin - 1 hold
-  // the bins, row zdist_nbin holds z.
+  // the bins, row zdist_nbin holds z. The z values are sample points (no
+  // half-cell offset, unlike the galaxy n(z) files) and <phi_i|z> is their
+  // piecewise-linear interpolant.
   int zdist_nbin;
   int zdist_nz;                          // number of z rows of the input
   double** zdist_table;                  // [zdist_nbin + 1][zdist_nz]
   double zdist_zmin_all;
   double zdist_zmax_all;
-  double zdist_zmin[MAX_SIZE_ARRAYS];    // support of <phi_i|z>
+  // support of <phi_i|z>: the zero nodes bracketing the nonzero values of
+  // each column (zmin > 0), so a top-hat edge is kept exactly
+  double zdist_zmin[MAX_SIZE_ARRAYS];
   double zdist_zmax[MAX_SIZE_ARRAYS];
   // nominal z_lambda edges of each bin: the selection-bias zbar and the
   // physical scale cuts read these; a kernel table never overwrites them
@@ -111,7 +115,11 @@ typedef struct
   int cg_npowerspectra;                  // (cluster bin, lens bin) pairs
   int cg_lens_bin[MAX_SIZE_ARRAYS];      // lens bin paired with cluster bin
                                          // ni in w_cg (-1: none)
-  int cc_npowerspectra;                  // cluster bins in w_cc (auto only)
+  int cc_npowerspectra;                  // cluster bins in w_cc (auto only;
+                                         // each holds R(R+1)/2 richness
+                                         // pairs, R = richness_nbin)
+  // the three pair counts above are written by the pair maps of
+  // redshift_spline_cluster.c (their single owner)
 
   // ---------------------------------------------------------------------------
   // NUISANCE PARAMETERS
