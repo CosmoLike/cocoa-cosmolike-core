@@ -2488,7 +2488,7 @@ void C_ss_tomo_limber_nointerp_ells(
     cache[0] = Ntable.random;
   }
 
-  const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
+  const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
   const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
 
   cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);
@@ -2621,7 +2621,7 @@ void dC_ss_dlnk_tomo_limber_work(
   )
 {
   halo_IA_unsupported("dC_ss_dlnk_tomo_limber_work");
-  const double amin = 1./(redshift.shear_zdist_zmax_all + 1.);
+  const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
   const double amax = 1./(1. + fmax(redshift.shear_zdist_zmin_all, 1e-6));
 
   // -----------------------------------------------------------------------
@@ -3136,7 +3136,7 @@ double C_ss_tomo_limber(
       fdiff2(cache[5], (uint64_t) include_halo_IA) ||
       fdiff2(cache[6], nuisance.random_ia_halo))
   {
-    const double amin = 1./(redshift.shear_zdist_zmax_all+1.);
+    const double amin = 1./(zmax_source_photoz() + 1.); // shifted support
     const double amax = 1./(1.+fmax(redshift.shear_zdist_zmin_all,1e-6));
     
     cosmo_nodes cn = create_cosmo_nodes(amin, amax, w);

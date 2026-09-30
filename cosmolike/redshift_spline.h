@@ -10,6 +10,10 @@ extern "C" {
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 
+// upper edge (in z) of the shifted source support and of the shifted and
+// stretched lens support: the start of every line-of-sight integral
+double zmax_source_photoz(void);
+double zmax_lens_photoz(void);
 double amin_source(int i);
 
 double amax_source(int i);

@@ -65,13 +65,81 @@
 // -----------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Highest true redshift where the SHIFTED source n(z) can be nonzero.
+//
+// nz_source_photoz evaluates the tabulated n(z) at z - dz_j (dz_j =
+// nuisance.photoz[0][0][j], the photo-z shift of source bin j), so a
+// positive shift moves n(z) mass above the table's upper edge zmax_all:
+//
+//   zmax = zmax_all + max(0, max_j dz_j)
+//
+// Every line-of-sight integral over the source sample (the lensing
+// efficiencies g_tomo, g2_tomo and the Limber ranges) must start at
+// a = 1/(1 + zmax); starting at 1/(1 + zmax_all) silently drops that
+// mass (for the DES Y6 source n(z), which reaches z = 3, a shift of
+// +0.034 drops 0.17% of bin 0 and lowers g(a) by 3% at z = 0.6 and 16%
+// at z = 2). With every dz_j <= 0, zmax = zmax_all exactly.
+//
+// Returns:
+//   the upper edge of the shifted source support, in redshift.
+// ---------------------------------------------------------------------------
+double zmax_source_photoz(void)
+{
+  double max_shift = 0.0;
+  for (int j=0; j<redshift.shear_nbin; j++) {
+    max_shift = fmax(max_shift, nuisance.photoz[0][0][j]);
+  }
+  return redshift.shear_zdist_zmax_all + max_shift;
+}
+
+// ---------------------------------------------------------------------------
+// Highest true redshift where the shifted and stretched lens n(z) can be
+// nonzero.
+//
+// nz_lens_photoz evaluates the tabulated n(z) at
+// (z - dz_i - zmean_i)/sigma_i + zmean_i (shift dz_i, stretch sigma_i,
+// nuisance.photoz[1][0][i] and [1][1][i]), so the table's upper edge
+// zmax_all maps to
+//
+//   z_i = zmean_i + sigma_i (zmax_all - zmean_i) + dz_i,
+//
+// and the support of the whole sample ends at
+//
+//   zmax = max(zmax_all, max_i z_i).
+//
+// The lens magnification efficiency g_lens must start at 1/(1 + zmax).
+// With dz_i <= 0 and sigma_i <= 1 for every bin, zmax = zmax_all exactly.
+//
+// Returns:
+//   the upper edge of the shifted and stretched lens support, in redshift.
+// ---------------------------------------------------------------------------
+double zmax_lens_photoz(void)
+{
+  const double zmax_all = redshift.clustering_zdist_zmax_all;
+  double zmax = zmax_all;
+  for (int i=0; i<redshift.clustering_nbin; i++) {
+    const double zmean   = redshift.clustering_zdist_zmean[i];
+    const double stretch = nuisance.photoz[1][1][i];
+    const double shift   = nuisance.photoz[1][0][i];
+    // Only a positive shift or a stretch > 1 can move the edge above
+    // zmax_all. Skipping the other bins is exact, and it keeps the result
+    // bitwise equal to zmax_all at the defaults: in floating point
+    // zmean + 1.0*(zmax_all - zmean) + 0.0 can land one ulp above zmax_all.
+    if (shift > 0.0 || stretch > 1.0) {
+      zmax = fmax(zmax, zmean + stretch*(zmax_all - zmean) + shift);
+    }
+  }
+  return zmax;
+}
+
+// ---------------------------------------------------------------------------
 // Lower scale-factor bound for line-of-sight integrals over source bin ni.
 //
-//   a_min = 1 / (1 + zmax_all)
+//   a_min = 1 / (1 + zmax_source_photoz())
 //
-// where zmax_all = redshift.shear_zdist_zmax_all, the upper edge of the
-// tabulated source n(z) range. The same bound applies to every source bin;
-// ni is only validated.
+// the upper edge of the tabulated source n(z) range moved up by the largest
+// positive photo-z shift (zmax_source_photoz). The same bound applies to
+// every source bin; ni is only validated.
 //
 // Parameters:
 //   ni - source tomographic bin index (0 .. shear_nbin-1)
@@ -85,7 +153,7 @@ double amin_source(int ni)
     log_fatal("invalid bin input ni = %d", ni);
     exit(1);
   }
-  return 1. / (redshift.shear_zdist_zmax_all + 1.);
+  return 1. / (zmax_source_photoz() + 1.);
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,7 +1832,8 @@ double g_tomo(double ainput, const int ni) {
   // x = fine trapezoid steps per coarse table cell (Na - 1 = x*(N_a - 1))
   const int x  = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
-  const double amin = 1.0/(redshift.shear_zdist_zmax_all + 1.0);
+  // start of the SHIFTED source support (zmax_source_photoz)
+  const double amin = 1.0/(zmax_source_photoz() + 1.0);
   // amax stops just short of a = 1 (today): chi(1) = 0 and the Q
   // integrand divides by chi(a')
   const double amax = 0.999999;
@@ -1902,7 +1971,8 @@ double g2_tomo(double a, int ni)
   // x = fine trapezoid steps per coarse table cell (Na - 1 = x*(N_a - 1))
   const int x = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
-  const double amin = 1.0 / (redshift.shear_zdist_zmax_all + 1.0);
+  // start of the SHIFTED source support (zmax_source_photoz)
+  const double amin = 1.0 / (zmax_source_photoz() + 1.0);
   // amax stops just short of a = 1 (today): chi(1) = 0 and the Q and R
   // integrands divide by chi(a')
   const double amax = 0.999999;
@@ -2053,7 +2123,8 @@ double g_lens(double a, int ni)
   // x = fine trapezoid steps per coarse table cell (Na - 1 = x*(N_a - 1))
   const int x = 60*(1 + abs(Ntable.high_def_integration));
   const int Na = x * (Ntable.N_a - 1) + 1;
-  const double amin = 1.0 / (redshift.clustering_zdist_zmax_all + 1.0);
+  // start of the shifted and stretched lens support (zmax_lens_photoz)
+  const double amin = 1.0 / (zmax_lens_photoz() + 1.0);
   // amax stops just short of a = 1 (today): chi(1) = 0 and the Q
   // integrand divides by chi(a')
   const double amax = 0.999999;
