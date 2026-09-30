@@ -62,6 +62,10 @@ typedef simde__m128d v2d;
 // factor, D(1) = 1. This is the nu of Tinker et al. 2010 (1001.3162
 // sec. 2), not the nu = delta_c^2/sigma^2 of Cooray & Sheth 2002
 // (astro-ph/0206508 Eq. 57). Rare, massive halos have nu >> 1.
+// like.halo_model[4] = HALO_FIELD_CB takes sigma and the mean density
+// of R and of the mass function from cold dark matter + baryons
+// (Omega_m - Omega_nu) instead of the total matter (HALO MODEL POWER
+// SPECTRA banner).
 //
 // The two constants below:
 //
@@ -3371,10 +3375,12 @@ static void hod_tables(void)
     const int n_a     = Ntable.N_a;
     const int n_nodes = hod_.n_nodes;
 
-    const double rho_m = cosmology.rho_crit * cosmology.Omega_m;
+    // mean density of the halo field (POWER SPECTRA banner): rho_m, or
+    // rho_cb under like.halo_model[4] = HALO_FIELD_CB
+    const double rho_hmf = cosmology.rho_crit * omega_halo_field();
 
     // --- 2. PER-REFILL PRECOMPUTATION ---
-    // nu0_q = delta_c/sigma(M_q) and P_q = half_width w_q (rho_m/M_q)
+    // nu0_q = delta_c/sigma(M_q) and P_q = half_width w_q (rho_hmf/M_q)
     // (dln nu/dln M) <N|M_q> at the mass nodes
     // ln M_q = mid + half_width x_q of each bin: the a-free part of the
     // integrand. The HOD does not evolve; hod_.lim[0] is an a inside
@@ -3401,7 +3407,7 @@ static void hod_tables(void)
 
         hod_.node_data[0][b][q] = delta_c/sqrt(sigma2(m)); // nu0_q
         hod_.node_data[1][b][q] = half_width*hod_.gauss_legendre[1][q]
-                                  *(rho_m/m)*dlognudlogm(m)*occupation; // P_q
+                                  *(rho_hmf/m)*dlognudlogm(m)*occupation; // P_q
       }
     }
 
@@ -3550,7 +3556,25 @@ double bgal(const int ni, const double a)
 //
 // the mass function (fnu, dlognudlogm; sigma2 in cosmo3D.c), b the Tinker
 // bias (hb1nu) and the windows W_X the Fourier transforms of the profiles,
-// in the units of the field times a volume:
+// in the units of the field times a volume.
+//
+// The halo field (like.halo_model[4], halo.h). Under HALO_FIELD_CB halos
+// form from cold dark matter + baryons (the massive neutrinos
+// free-stream out of them): sigma(M) is the cb variance (sigma2) and
+// the rho/M of dn/dlnM is rho_hmf/M, rho_hmf = rho_crit (Omega_m -
+// Omega_nu), so the mass in halos is the cb mass (DES Y1 clusters,
+// 2010.01138). The code writes rho_hmf = rho_crit omega_halo_field()
+// (cosmo3D.c) at every mass-function prefactor; under the default
+// HALO_FIELD_MATTER it is rho_m. The matter window M/rho_m, r_Delta
+// and the 2-halo spectra stay total matter under both fields. The
+// builders whose 2-halo term is I11_m P_lin (p_mm, p_my, p_yy) abort
+// under HALO_FIELD_CB: with cb halos I11_m -> 1 - f_nu, and the
+// missing neutrino terms (P_cb, P_cb,nu) are not implemented. The
+// galaxy spectra (p_gm, p_gg), the HOD tables and the halo-model IA
+// follow the switch: their 2-halo term is b_gal times the total
+// nonlinear P (the DES convention).
+//
+// The windows:
 //
 //   matter    W_m = (M/rho_m) u(k|M),  u -> 1 at k -> 0   (c/H0)^3
 //   pressure  W_y = W_p (1-halo); + u_y_ejc in I11_y       U (energy)
@@ -3799,6 +3823,15 @@ double p_mm(
     // the k columns read the NFW kernel directly (header, item 2)
     if (like.halo_model[3] != HALO_PROFILE_NFW) {
       log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+
+    // total-matter halos only: the 2-halo term I11^2 P_lin has no cb
+    // form (HALO MODEL POWER SPECTRA banner)
+    if (like.halo_model[4] != HALO_FIELD_MATTER) {
+      log_fatal("p_mm: like.halo_model[4] = %d not supported (the matter "
+                "spectrum needs the total-matter halo field)",
+                like.halo_model[4]);
       exit(1);
     }
 
@@ -4137,6 +4170,15 @@ double p_my(
     // the k columns read the NFW kernel directly (header, item 2)
     if (like.halo_model[3] != HALO_PROFILE_NFW) {
       log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+
+    // total-matter halos only: the 2-halo term I11_m I11_y P_lin has no
+    // cb form (HALO MODEL POWER SPECTRA banner)
+    if (like.halo_model[4] != HALO_FIELD_MATTER) {
+      log_fatal("p_my: like.halo_model[4] = %d not supported (the "
+                "matter-pressure spectrum needs the total-matter halo "
+                "field)", like.halo_model[4]);
       exit(1);
     }
 
@@ -4529,6 +4571,15 @@ double p_yy(
       fdiff2(cache[1], Ntable.random) ||
       fdiff2(cache[2], nuisance.random_gas))
   {
+    // total-matter halos only: the 2-halo term I11_y^2 P_lin has no cb
+    // form (HALO MODEL POWER SPECTRA banner)
+    if (like.halo_model[4] != HALO_FIELD_MATTER) {
+      log_fatal("p_yy: like.halo_model[4] = %d not supported (the "
+                "pressure spectrum needs the total-matter halo field)",
+                like.halo_model[4]);
+      exit(1);
+    }
+
     // the gas: f_bnd carries Omega_b/Omega_m, u_KS the exponents
     // Gamma/(Gamma - 1) and 1/(Gamma - 1)
     if (!(cosmology.Omega_b > 0)) {
@@ -5007,6 +5058,9 @@ double p_gm(
     // sigma2 and dlognudlogm reads happen here, before the threads
     const double rho_m     = cosmology.rho_crit * cosmology.Omega_m;
     const double rho_delta = Delta * rho_m;
+    // mean density of the halo field in the rho/M of dn/dlnM: rho_m,
+    // or rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+    const double rho_hmf   = cosmology.rho_crit * omega_halo_field();
 
     for (int l=0; l<nbin; l++) {
       // u_g's condition, checked for every bin at once
@@ -5025,13 +5079,13 @@ double p_gm(
 
       const double fc = HOD_fc(l);
 
-      // bin_tab rows: M | half_width w_q (rho_m/M) dlnnu/dlnM | nu at
+      // bin_tab rows: M | half_width w_q (rho_hmf/M) dlnnu/dlnM | nu at
       // D = 1 | r_Delta from M = (4 pi/3) Delta rho_m r_Delta^3 |
       // N_s | f_c N_c
       for (int q=0; q<nnode; q++) {
         const double m = exp(mid + half_width*gl[0][q]);
         bin_tab[l][0][q] = m;
-        bin_tab[l][1][q] = half_width*gl[1][q]*(rho_m/m)*dlognudlogm(m);
+        bin_tab[l][1][q] = half_width*gl[1][q]*(rho_hmf/m)*dlognudlogm(m);
         bin_tab[l][2][q] = delta_c/sqrt(sigma2(m));
         bin_tab[l][3][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
         bin_tab[l][4][q] = HOD_ns(m, lim[l][0], l);
@@ -5559,14 +5613,17 @@ double p_gg(
     // reads happen here, before the threads
     const double rho_m     = cosmology.rho_crit * cosmology.Omega_m;
     const double rho_delta = Delta * rho_m;
+    // mean density of the halo field in the rho/M of dn/dlnM: rho_m,
+    // or rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+    const double rho_hmf   = cosmology.rho_crit * omega_halo_field();
 
     // mass_tab rows 2-4: nu at D = 1 | r_Delta from
-    // M = (4 pi/3) Delta rho_m r_Delta^3 | weight (rho_m/M) dlnnu/dlnM
+    // M = (4 pi/3) Delta rho_m r_Delta^3 | weight (rho_hmf/M) dlnnu/dlnM
     for (int q=0; q<nnode; q++) {
       const double m = mass_tab[0][q];
       mass_tab[2][q] = delta_c/sqrt(sigma2(m));
       mass_tab[3][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
-      mass_tab[4][q] = mass_tab[1][q]*(rho_m/m)*dlognudlogm(m);
+      mass_tab[4][q] = mass_tab[1][q]*(rho_hmf/m)*dlognudlogm(m);
     }
 
     // --- 2c. PER (BIN, MASS NODE): OCCUPATION, SERIAL ---
@@ -7053,10 +7110,10 @@ static void ia_tables(void)
     halo_warmup(ia_.lim[0][0], exp(ia_.lim[1][0]), 0, 0);
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (equations: header above)
-       1. node q: M, w (rho_m/M) dlnnu/dlnM, nu0, r_Delta, occupations
+       1. node q: M, w (rho_hmf/M) dlnnu/dlnM, nu0, r_Delta, occupations
           N_tot = f_c N_c + N_s, N_rc = f_c N_c f_red,cen,
           N_rs = N_s f_red,sat                          (section banner)
-       2. row i: D(a), a_1h(a), dn = w (rho_m/M) dlnnu/dlnM f(nu) nu,
+       2. row i: D(a), a_1h(a), dn = w (rho_hmf/M) dlnnu/dlnM f(nu) nu,
           n_g = sum dn N_tot, f_rc = sum dn N_rc/n_g
        3. (row, active node): c(M, D), r_s, r_e = max(r_floor,
           r_Delta (|a_1h|/gamma_max)^(1/2)), x_e = r_e/r_s,
@@ -7073,6 +7130,9 @@ static void ia_tables(void)
 
     const double rho_m     = cosmology.rho_crit*cosmology.Omega_m;
     const double rho_delta = Delta*rho_m;
+    // mean density of the halo field in the rho/M of dn/dlnM: rho_m,
+    // or rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+    const double rho_hmf   = cosmology.rho_crit*omega_halo_field();
 
     // --- 2b. PER MASS NODE, SERIAL: WEIGHTS AND OCCUPATIONS ---
     double f_c = nuisance.ia_hod[5];  // 0 = unset: read as 1 (HOD_fc)
@@ -7102,7 +7162,7 @@ static void ia_tables(void)
       const double f_red_cen = 0.5*(1.0 + tanh((lgM - lgM_red_cen)/width_cen));
       const double f_red_sat = 0.5*(1.0 + tanh((lgM - lgM_red_sat)/width_sat));
 
-      mass_node[2][q] = mass_node[1][q]*(rho_m/m)*dlognudlogm(m);
+      mass_node[2][q] = mass_node[1][q]*(rho_hmf/m)*dlognudlogm(m);
       mass_node[3][q] = delta_c/sqrt(sigma2(m));                // nu0
       mass_node[4][q] = pow(3.0/(4.0*M_PI)*(m/rho_delta), 1.0/3.0); // r_Delta
       mass_node[5][q] = m/rho_m;
@@ -7402,7 +7462,7 @@ static double hod_bgal_direct(
      b_gal = (1/n_gal) int dlnM dn/dlnM b(nu) <N|M>, one Gauss-Legendre
      sum over ln M:
      1. nu = delta_c/(sigma(M) D(a)); occupation <N|M> = f_c N_c + N_s
-     2. dn_gal = weight (rho_m/M) dlnnu/dlnM <N|M> f(nu) nu, the node's
+     2. dn_gal = weight (rho_hmf/M) dlnnu/dlnM <N|M> f(nu) nu, the node's
         share of the galaxy number density (Tinker dn/dlnM)
      3. n_gal = sum_q dn_gal; bn_gal = sum_q b(nu) dn_gal
      4. return b_gal = bn_gal/n_gal */
@@ -7434,8 +7494,10 @@ static double hod_bgal_direct(
 
   // --- 2. COSMOLOGY AND HOD FACTORS AT THIS SCALE FACTOR ---
 
-  const double rho_m = cosmology.rho_crit * cosmology.Omega_m;
-  const double D     = growfac(a);
+  // mean density of the halo field in the rho/M of dn/dlnM: rho_m, or
+  // rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+  const double rho_hmf = cosmology.rho_crit * omega_halo_field();
+  const double D       = growfac(a);
 
   // the nu-independent halves of the Tinker mass function f(nu) and the
   // halo bias b(nu), frozen at this scale factor
@@ -7465,7 +7527,7 @@ static double hod_bgal_direct(
     // the node's share of the galaxy number density:
     // dn_gal = weight x dn/dlnM x <N|M>
     const double dn_gal =
-        weight*(rho_m/m)*dlognudlogm(m)*occupation*fnu_core(nu, &fnu_pars)*nu;
+        weight*(rho_hmf/m)*dlognudlogm(m)*occupation*fnu_core(nu, &fnu_pars)*nu;
 
     n_gal  += dn_gal;
     bn_gal += dn_gal*hb1nu_core(nu, &hb1nu_pars);

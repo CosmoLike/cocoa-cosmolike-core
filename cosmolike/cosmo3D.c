@@ -1539,7 +1539,8 @@ double MG_Sigma(double a __attribute__((unused))) {
 //
 // so W(0) = 1 (W(0.01) = 0.99999): modes much longer than R pass
 // through untouched, modes much shorter than R average away. Mass and
-// radius are tied by the mean matter density rho_crit Omega_m,
+// radius are tied by the mean matter density rho_crit Omega_m (the
+// density of the smoothed field: item 10),
 //
 //   M = (4 pi/3) R^3 rho_crit Omega_m,
 //   R = (3 M/(4 pi rho_crit Omega_m))^(1/3).
@@ -1722,10 +1723,31 @@ double MG_Sigma(double a __attribute__((unused))) {
 // the consumers make, and those reads stay untouched. Cost per
 // refill: ~9.7e4 p_lin reads, 0.71 ms with 4 threads.
 //
+// 10. Which density field
+//
+// like.halo_model[4] (halo.h) names the field whose variance the table
+// holds:
+//
+//   HALO_FIELD_MATTER  P_lin (total matter), M = (4 pi/3) R^3 rho_crit
+//                      Omega_m: the equations above as written
+//   HALO_FIELD_CB      P_cb (cold dark matter + baryons, p_lin_cb), and
+//                      Omega_m - Omega_nu in place of Omega_m in R(M)
+//
+// Massive neutrinos free-stream out of the potential wells, so halos
+// form from the cb field (DES Y1 clusters, 2010.01138). The table is
+// P_cb at a = 1; consumers rescale by the total-matter growth D(a) as
+// they do for total matter (the DES reference code does the same).
+// omega_halo_field returns the Omega; under HALO_FIELD_MATTER it is
+// cosmology.Omega_m itself, so that path computes today's R(M).
+//
 // Cache invalidation:
 //   allocation, ln M limits, coarse-grid map and node cache: rebuilt
 //     when Ntable.random changes (hdi enters the node counts)
-//   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1])
+//   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1]);
+//     cosmology.random is redrawn by a new P_lin, a new P_cb table
+//     (set_linear_power_spectrum_cb), a new Omega_m or Omega_nu
+//     (set_cosmological_parameters) and a flip of like.halo_model[4]
+//     (init_halo_matter_field)
 //
 // Parameters:
 //   M - halo mass in M_sun/h
@@ -1972,6 +1994,19 @@ double sigma2(
     const int nm = (ncoarse > 0) ? ncoarse : Ntable.N_M;
     double* out = (ncoarse > 0) ? tabc : table;
 
+    // The smoothed field (header, item 10): total matter, or cold dark
+    // matter + baryons when like.halo_model[4] = HALO_FIELD_CB. The
+    // field fixes the spectrum of the lobe sums (p_lin or p_lin_cb) and
+    // the mean density omega_field rho_crit of the Lagrangian radius.
+    const int use_cb = (HALO_FIELD_CB == like.halo_model[4]);
+    if (use_cb && NULL == cosmology.lnPL_cb) {
+      log_fatal("sigma2: like.halo_model[4] = HALO_FIELD_CB needs the "
+                "linear P_cb table (set_linear_power_spectrum_cb, after "
+                "set_linear_power_spectrum)");
+      exit(1);
+    }
+    const double omega_field = omega_halo_field();
+
     const double EPS = 1e-7; // relative tail tolerance of the lobe sum
     // restrict copies of the node cache. restrict is a promise to the
     // compiler that, while these pointers are in scope, the memory they
@@ -1993,27 +2028,36 @@ double sigma2(
     // across threads.
     #pragma omp parallel for schedule(static)
     for (int m = 0; m < nm; m++) {
-      // R from M through M = (4 pi/3) R^3 rho_crit Omega_m (header,
-      // item 1); 0.75/pi is 3/(4 pi). cosmology.rho_crit = 7.4775e21 is
+      // R from M through M = (4 pi/3) R^3 rho_crit Omega (header,
+      // item 1; Omega = omega_field, Omega_m for total matter);
+      // 0.75/pi is 3/(4 pi). cosmology.rho_crit = 7.4775e21 is
       // the critical density in M_sun/h per (c/H0)^3, so R comes out in
       // c/H0 units and k = x/R in (c/H0)^-1 units, the units p_lin
       // expects (the unit conventions at the top of this file). At
       // M = 1e6 with Omega_m = 0.3: R = 4.74e-6 c/H0 = 0.0142 Mpc/h.
       const double Mm = exp(lnm[m]);
       const double R =
-          pow(0.75*Mm/(M_PI*cosmology.rho_crit*cosmology.Omega_m), 1./3.);
+          pow(0.75*Mm/(M_PI*cosmology.rho_crit*omega_field), 1./3.);
       const double invR = 1.0/R;
 
       // Segment sums s_j in order, head first (header, item 8). Per
       // node one P_lin read and one multiply-add: p_lin(k, 1.0) is the
       // linear spectrum at k = x_q/R and at scale factor a = 1 (the
       // second argument); the Bessel factor already sits in wq[q].
+      // p_lin_cb reads the P_cb table with p_lin's arithmetic.
       double total = 0.0;
       double sprev = 0.0;
       for (int j = 0; j < nseg; j++) {
         double s = 0.0;
-        for (int q = oq[j]; q < oq[j+1]; q++) {
-          s += wq[q]*p_lin(xq[q]*invR, 1.0);
+        if (use_cb) {
+          for (int q = oq[j]; q < oq[j+1]; q++) {
+            s += wq[q]*p_lin_cb(xq[q]*invR, 1.0);
+          }
+        }
+        else {
+          for (int q = oq[j]; q < oq[j+1]; q++) {
+            s += wq[q]*p_lin(xq[q]*invR, 1.0);
+          }
         }
         total += s;
         // Stopping rule (header, item 8): with r = s_j/s_{j-1} the

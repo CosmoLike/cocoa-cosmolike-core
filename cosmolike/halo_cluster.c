@@ -45,15 +45,26 @@
 // with the ingredients of halo.c, used exactly as its mass integrals use
 // them (hod_tables, p_gm):
 //
-//   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M    mass function (f(nu),
+//   dn/dlnM = (rho_hmf/M) nu f(nu) dln nu/dln M  mass function (f(nu),
 //                                                dlognudlogm)
 //   nu      = delta_c/(sigma(M) D(a))            peak height (sigma2 of
 //                                                cosmo3D.c, D = growfac)
 //   b_h     = hb1nu(nu, a)                       Tinker 2010 halo bias
 //   u(k|M)  = truncated NFW transform, c = conc(M, D) (Bhattacharya 2013)
-//   rho_m   = rho_crit Omega_m                   total matter (the halo.c
-//                                                convention, neutrinos
-//                                                included)
+//   rho_m   = rho_crit Omega_m                   total matter, neutrinos
+//                                                included: r_Delta and
+//                                                the matter window M/rho_m
+//   rho_hmf = rho_crit omega_halo_field()        the halo field's mean
+//                                                density: rho_m, or
+//                                                rho_crit (Omega_m -
+//                                                Omega_nu) under cb
+//
+// The halo field is halo.c's (like.halo_model[4], halo.h): under
+// HALO_FIELD_CB (the DES Y1 model, 2010.01138) sigma(M) is the variance
+// of cold dark matter + baryons and rho_hmf their mean density, the
+// counts and the bias follow nu_cb, and r_Delta, the 1-halo window
+// M/rho_m and the 2-halo spectrum (cosmo2D_cluster.c) stay total
+// matter. The default HALO_FIELD_MATTER makes rho_hmf = rho_m.
 //
 // and, when cluster.selection_model == CLUSTER_SELECTION_Y1, the Y1
 // mass-dependent selection bias (Y1 eqs 1 and 31) inside the bias
@@ -1203,7 +1214,7 @@ static void cluster_nfw_check(void)
 //   b_nl(a)    = sum_q dn_q(a) P_q b_q(a) / n_nl(a)
 //   W_nl(a, q) = dn_q(a) P_q (M_q/rho_m) / (m(c_q) n_nl(a))
 //
-//   dn_q(a) = w_q (rho_m/M_q) nu f(nu) dln nu/dln M,  nu = nu0_q/D(a):
+//   dn_q(a) = w_q (rho_hmf/M_q) nu f(nu) dln nu/dln M,  nu = nu0_q/D(a):
 //             the quadrature weight times dn/dlnM (halo.c's product order);
 //             f(nu) = cluster_tinker_fnu (alpha = 0.368) or halo.c's fnu
 //             (alpha(a) of Eq. 7), per cluster.hmf_alpha_mode
@@ -1218,7 +1229,7 @@ static void cluster_nfw_check(void)
 // Loop levels (each quantity at the outermost level it depends on):
 //
 //   per Ntable rebuild     x_q, w_q on [-1, 1]
-//   per refill, per q      ln M_q, M_q, w_q (rho_m/M_q) dln nu/dln M,
+//   per refill, per q      ln M_q, M_q, w_q (rho_hmf/M_q) dln nu/dln M,
 //     (mass_node)          nu0_q = delta_c/sigma(M_q), the mass part of
 //                          <ln lambda>, r_Delta(M_q), the mass part of S
 //   per a row              a, z, D(a), the redshift parts of <ln lambda>
@@ -1247,7 +1258,7 @@ static void cluster_nfw_check(void)
 enum {
   MN_LNM,       // ln M_q
   MN_M,         // M_q, Msun/h
-  MN_WEIGHT,    // half_width w_q (rho_m/M_q) dln nu/dln M
+  MN_WEIGHT,    // half_width w_q (rho_hmf/M_q) dln nu/dln M
   MN_NU0,       // nu0_q = delta_c/sigma(M_q): the peak height at D = 1
   MN_MU_MASS,   // mor[0] + mor[1] ln(M_q/M_piv)
   MN_RDELTA,    // r_Delta(M_q) in c/H0
@@ -1565,7 +1576,7 @@ static void cluster_mass_tables(void)
           mass parts of <ln lambda> and S, r_Delta
        2. per a row: a, z, D(a), the redshift parts of <ln lambda> and S,
           the Tinker 2010 parameters at alpha = 0.368 (fixed mode)
-       3. per (a row, q): nu = nu0_q/D, dn_q = w (rho_m/M) dlnnu/dlnM
+       3. per (a row, q): nu = nu0_q/D, dn_q = w (rho_hmf/M) dlnnu/dlnM
           f(nu) nu, b_q = b_h(nu) S, <ln lambda>, sigma, c(M, D), r_s
        4. per (nl, a row): P_q = [erf(x_max) - erf(x_min)]/2,
           n = sum dn_q P_q, b = sum dn_q P_q b_q / n,
@@ -1575,6 +1586,9 @@ static void cluster_mass_tables(void)
     // --- 2d. PER MASS NODE (serial: sigma2, dlognudlogm reads) ---
     const double rho_m     = cosmology.rho_crit*cosmology.Omega_m;
     const double rho_delta = CLUSTER_DELTA_HALO*rho_m;
+    // mean density of the halo field in the rho/M of dn/dlnM (section
+    // header): rho_m, or rho_cb under like.halo_model[4] = HALO_FIELD_CB
+    const double rho_hmf   = cosmology.rho_crit*omega_halo_field();
 
     const double lnM_min    = log(cluster.m_min);
     const double lnM_max    = log(cluster.m_max);
@@ -1588,7 +1602,7 @@ static void cluster_mass_tables(void)
       cl_.mass_node[MN_LNM][q]     = lnM;
       cl_.mass_node[MN_M][q]       = m;
       cl_.mass_node[MN_WEIGHT][q]  = half_width*cl_.gl[1][q]
-                                     *(rho_m/m)*dlognudlogm(m);
+                                     *(rho_hmf/m)*dlognudlogm(m);
       cl_.mass_node[MN_NU0][q]     = CLUSTER_DELTA_C/sqrt(sigma2(m));
       cl_.mass_node[MN_MU_MASS][q] = mor_mean_mass_part(lnM);
       cl_.mass_node[MN_RDELTA][q]  = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
