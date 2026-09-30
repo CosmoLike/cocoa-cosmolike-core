@@ -64,6 +64,32 @@ pybind11, and the notebooks call them from Python.
 - `cosmo2D_scuts_wrapper.cpp/.hpp`: the scale-cut diagnostics of
   `cosmo2D_scuts.c`.
 
+## Massive neutrinos in the halo model
+
+Every project's `set_cosmology` binding takes, besides the power
+spectra, growth and distances, two neutrino inputs:
+
+- `omegan2`: $\Omega_\nu h^2$ of the massive neutrinos (CAMB's
+  `omnuh2`; default 0), stored as `cosmology.Omega_nu`, part of
+  $\Omega_m$;
+- `lnP_linear_cb`: $\ln P_{cb}$, the linear power spectrum of cold
+  dark matter plus baryons (CAMB's `delta_nonu`) on the grid and in
+  the layout of `lnP_linear` (default empty: no table).
+
+They matter only when the halo model counts halos of cold dark
+matter plus baryons, the DES Y1 cluster model (arXiv:2010.01138):
+`init_halo_matter_field(1)`, the likelihood yaml key
+`halo_matter_field: 1` (`like.halo_model[4]`, `halo.h`). Then
+$\sigma^2(M)$ integrates $P_{cb}$, and the Lagrangian radius and the
+$\rho/M$ factor of $dn/d\ln M$ use
+$\rho_{crit}(\Omega_m - \Omega_\nu)$; the NFW truncation radius, the
+matter window $M/\rho_m$, the lensing kernels and the two-halo spectra
+stay total matter, and `p_mm`, `p_my`, `p_yy` stop with an error (their
+two-halo term has no neutrino form). The default 0 is the total-matter
+halo model, and nothing reads the two inputs. The likelihoods always
+send $\Omega_\nu h^2$ and send $P_{cb}$ under 1; the notebook helper
+`cosmolike_notebook_utils.get_camb_cosmology` returns both.
+
 ## The cluster code
 
 `cosmolike/` also implements the DES Y6-style cluster analysis of
