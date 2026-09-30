@@ -231,7 +231,12 @@ static struct { double**** tab; double lim[6]; int nlnk; int nell; }
 static struct { double*** tab; double lim[6]; int nlnk; int nell; }
     dCks_ = {0};
 
+// Under COSMO2D_NOT_USE_SIMD (the DEBUG build) basics.h does not include
+// the SIMDe headers, so the type below does not exist there; it is used
+// only inside the SIMD branches.
+#ifndef COSMO2D_NOT_USE_SIMD
 typedef simde__m256d v4d; // 4 doubles, AVX2-width (as in cosmo2D.c)
+#endif
 
 // ---------------------------------------------------------------------------
 // Blend two k-rows of a cached (ln k, ln l) table at one fixed weight.
