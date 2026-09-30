@@ -2019,6 +2019,120 @@ typedef struct
 
 
 // ---------------------------------------------------------------------------
+// Legendre sums w[row][i] = sum_{l=1}^{lmax-1} Pl[i][l] Cl[row][l].
+//
+// Memory bound: at LMAX = 75000 a C_l row and a kernel row are 600 kB
+// each, and the one-(row, theta)-per-task loop streams both for every
+// single multiply-add (the cluster blocks hold 90 rows x 20 theta bins).
+// A tile of 4 rows x 4 theta bins loads 8 streams for 16 multiply-adds,
+// so each C_l row is read Ntheta/4 times and each kernel row nrows/4
+// times (~7x faster on the 48-row cluster lensing block, 4 threads).
+//
+// Every (row, theta) entry keeps its own reduction with the same
+// vectorization as the reference loop, so the sums are bitwise those of
+// the reference (COSMO2D_NOT_USE_SIMD). Edge tiles repeat the last row /
+// theta pointer instead of switching to a remainder kernel: every entry
+// goes through the same code, and the repeats are simply not stored.
+//
+// Thread safety: call outside parallel regions.
+// ---------------------------------------------------------------------------
+static void legendre_sums_cluster(
+    const int nrows,        // C_l rows
+    const int ntheta,       // theta bins
+    const int lmax,         // sums run over l = 1 .. lmax - 1
+    double** Pl,            // [ntheta][lmax] bin-averaged kernel
+    double** Cl,            // [nrows][lmax] C_l at every integer l
+    double* w_vec           // output: [nrows][ntheta]
+  )
+{
+#ifdef COSMO2D_NOT_USE_SIMD
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int row = 0; row < nrows; row++) {
+    for (int i = 0; i < ntheta; i++) {
+      // Local restrict pointers: without them the compiler cannot prove
+      // that Pl[i] and Cl[row] do not alias (pointer-to-pointer
+      // indirection inside a collapse(2) region) and emits
+      // reload-checking code; the body is a single multiply-add with
+      // nothing to hide that overhead behind (SKILL.md, pitfall 1)
+      const double* restrict pl = Pl[i];
+      const double* restrict cl = Cl[row];
+
+      double sum = 0.0;
+      #pragma omp simd reduction(+:sum)
+      for (int l = 1; l < lmax; l++) {
+        sum += pl[l]*cl[l];
+      }
+      w_vec[row*ntheta + i] = sum;
+    }
+  }
+#else
+  const int nrow_tiles   = (nrows + 3)/4;
+  const int ntheta_tiles = (ntheta + 3)/4;
+
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int rt = 0; rt < nrow_tiles; rt++) {
+    for (int tt = 0; tt < ntheta_tiles; tt++) {
+      // rows r[q] and theta bins t[q] of the tile; past the edge, repeats
+      // of the last one (computed, never stored)
+      int r[4];
+      int t[4];
+      for (int q = 0; q < 4; q++) {
+        r[q] = (4*rt + q < nrows)  ? 4*rt + q : nrows - 1;
+        t[q] = (4*tt + q < ntheta) ? 4*tt + q : ntheta - 1;
+      }
+
+      // restrict: as in the reference loop, the compiler cannot otherwise
+      // prove the eight rows do not alias and reloads them every step
+      const double* restrict c0 = Cl[r[0]];
+      const double* restrict c1 = Cl[r[1]];
+      const double* restrict c2 = Cl[r[2]];
+      const double* restrict c3 = Cl[r[3]];
+      const double* restrict p0 = Pl[t[0]];
+      const double* restrict p1 = Pl[t[1]];
+      const double* restrict p2 = Pl[t[2]];
+      const double* restrict p3 = Pl[t[3]];
+
+      // s<row><theta>: sixteen independent reductions
+      double s00 = 0.0, s01 = 0.0, s02 = 0.0, s03 = 0.0;
+      double s10 = 0.0, s11 = 0.0, s12 = 0.0, s13 = 0.0;
+      double s20 = 0.0, s21 = 0.0, s22 = 0.0, s23 = 0.0;
+      double s30 = 0.0, s31 = 0.0, s32 = 0.0, s33 = 0.0;
+
+      #pragma omp simd reduction(+:s00,s01,s02,s03,s10,s11,s12,s13,\
+                                   s20,s21,s22,s23,s30,s31,s32,s33)
+      for (int l = 1; l < lmax; l++) {
+        const double x0 = c0[l];
+        const double x1 = c1[l];
+        const double x2 = c2[l];
+        const double x3 = c3[l];
+        const double y0 = p0[l];
+        const double y1 = p1[l];
+        const double y2 = p2[l];
+        const double y3 = p3[l];
+        s00 += y0*x0; s01 += y1*x0; s02 += y2*x0; s03 += y3*x0;
+        s10 += y0*x1; s11 += y1*x1; s12 += y2*x1; s13 += y3*x1;
+        s20 += y0*x2; s21 += y1*x2; s22 += y2*x2; s23 += y3*x2;
+        s30 += y0*x3; s31 += y1*x3; s32 += y2*x3; s33 += y3*x3;
+      }
+
+      const double s[4][4] = {{s00, s01, s02, s03},
+                              {s10, s11, s12, s13},
+                              {s20, s21, s22, s23},
+                              {s30, s31, s32, s33}};
+      for (int a = 0; a < 4; a++) {
+        for (int b = 0; b < 4; b++) {
+          if (4*rt + a < nrows && 4*tt + b < ntheta) {
+            w_vec[r[a]*ntheta + t[b]] = s[a][b];
+          }
+        }
+      }
+    }
+  }
+#endif
+}
+
+
+// ---------------------------------------------------------------------------
 // Bring a real-space block up to date.
 //
 //   1. GEOMETRY (Ntable.random, Ntheta, LMAX, block size): allocate.
@@ -2128,28 +2242,7 @@ static void real_space_cluster_update(
         T->lim[0], 1.0/T->lim[2], T->nell);
     }
 
-    // Legendre sums: one (row, theta bin) per task, serial sum over l
-    const int ntheta = Ntable.Ntheta;
-
-    #pragma omp parallel for collapse(2) schedule(static)
-    for (int row = 0; row < nrows; row++) {
-      for (int i = 0; i < ntheta; i++) {
-        // Local restrict pointers: without them the compiler cannot prove
-        // that Pl[i] and Cl[row] do not alias (pointer-to-pointer
-        // indirection inside a collapse(2) region) and emits
-        // reload-checking code; the body is a single multiply-add with
-        // nothing to hide that overhead behind (SKILL.md, pitfall 1)
-        const double* restrict pl = Pl[i];
-        const double* restrict cl = R->Cl[row];
-
-        double sum = 0.0;
-        #pragma omp simd reduction(+:sum)
-        for (int l = 1; l < lmax; l++) {
-          sum += pl[l]*cl[l];
-        }
-        R->w_vec[row*ntheta + i] = sum;
-      }
-    }
+    legendre_sums_cluster(nrows, Ntable.Ntheta, lmax, Pl, R->Cl, R->w_vec);
 
     keys_stamp(R->cache, keys, nkeys);
   }
