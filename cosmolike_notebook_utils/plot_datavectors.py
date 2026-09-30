@@ -272,7 +272,7 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
         # range onto the colormap's 0..1 axis; the curves use the same
         # colormap, so bar and line colors agree
         cb = fig.colorbar(
-            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = 'gist_rainbow'), 
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
             ax = axes.ravel().tolist(), 
             orientation = 'vertical', 
             aspect = 50, 
@@ -553,7 +553,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
         # range onto the colormap's 0..1 axis; the curves use the same
         # colormap, so bar and line colors agree
         cb = fig.colorbar(
-            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = 'gist_rainbow'), 
+            matplotlib.cm.ScalarMappable(norm = matplotlib.colors.Normalize(param[0], param[-1]), cmap = cmap), 
             ax = axes.ravel().tolist(), 
             orientation = 'vertical', 
             aspect = 50, 
