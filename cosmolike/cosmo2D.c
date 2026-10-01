@@ -6196,6 +6196,10 @@ static void C_gk_tomo_limber_work(
     KB = (double****) malloc4d(3, nbin, nell, npts_max);
   }
 
+  // per-thread scratch of the batched P reads (Pdelta_at_a: one call per
+  // node, the z half of the table read once per node instead of once per
+  // multipole): KPN[2t] = the node's Limber wavenumbers, KPN[2t+1] = P
+  double** KPN = (double**) malloc2d(2*omp_get_max_threads(), nell);
   #pragma omp parallel
   {
     // ---------------------------------------------------------------------
@@ -6225,7 +6229,31 @@ static void C_gk_tomo_limber_work(
       }
     }
     // ---------------------------------------------------------------------
-    // Precompute: P(k,a), RSD kernel and its support, one-loop kernels
+    // Precompute: P_delta of every node at every multipole, one batched
+    // read per node (see KPN). Its own loop over (bin, node), since the
+    // fill below runs over (bin, ell, node); nowait, because the two write
+    // disjoint slots.
+    // ---------------------------------------------------------------------
+    #pragma omp for collapse(2) schedule(static) nowait
+    for (int zl=0; zl<nbin; zl++) {
+      for (int p=0; p<npts_max; p++) {
+        const cosmo_nodes* cn = &cn_all[zl];
+        if (p >= cn->npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
+        double* restrict kn = KPN[2*omp_get_thread_num()];
+        double* restrict pn = KPN[2*omp_get_thread_num() + 1];
+        for (int i=0; i<nell; i++) {
+          kn[i] = (lx[i] + 0.5)/cn->data[CN_FK][p];
+        }
+        Pdelta_at_a(cn->data[CN_A][p], kn, nell, pn);
+        for (int i=0; i<nell; i++) {
+          KG[0][zl][i][p] = pn[i];
+        }
+      }
+    }
+    // ---------------------------------------------------------------------
+    // Precompute: RSD kernel and its support, one-loop kernels
     // ---------------------------------------------------------------------
     #pragma omp for collapse(3) schedule(static)
     for (int zl=0; zl<nbin; zl++) {
@@ -6235,11 +6263,9 @@ static void C_gk_tomo_limber_work(
           if (p >= cn->npts) {
             continue; // padding node: bin zl has fewer nodes
           }
-          const double a   = cn->data[CN_A][p];
           const double fK  = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
           const double k   = ell/fK;
-          KG[0][zl][i][p] = Pdelta(k, a);
           KG[1][zl][i][p] = 0.0;
           KG[2][zl][i][p] = 1.0;
           if (1 == include_RSD_GK) {
@@ -6325,7 +6351,7 @@ static void C_gk_tomo_limber_work(
       table[zl][i] = sum*ep;
     }
   }
-  free(WB); free(KG);
+  free(WB); free(KG); free(KPN);
   if (WO != NULL) free(WO);
   if (KB != NULL) free(KB);
 }
