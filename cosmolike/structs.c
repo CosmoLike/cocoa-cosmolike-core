@@ -279,6 +279,7 @@ void reset_Ntable_struct(void)
   Ntable.halo_ia_lmax = 6;   // halo IA multipoles: F21's l <= 6
   Ntable.halo_ia_na = 51;    // halo IA a nodes over the source range
   Ntable.NL_Nchi  = 512;   // Cosmo2D - NL = NonLimber (NL_Nchi)
+  Ntable.NL_Nchi_boost = 1.0; // init_nonlimber_accuracy_boost
   Ntable.high_def_integration = 0;
   Ntable.FPTboost=0;
   Ntable.dCX_dlnk_nlnk[NODES_DENSE] = 256;

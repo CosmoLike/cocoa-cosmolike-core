@@ -691,6 +691,64 @@ void init_fpt_internal_boost(const double internal_boost)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// The unboosted NL_Nchi and the last global accuracy boost, shared by
+// init_accuracy_boost and init_nonlimber_accuracy_boost so that
+//
+//   Ntable.NL_Nchi = ceil(baseline * accuracy_boost * Ntable.NL_Nchi_boost)
+//
+// holds whichever of the two runs last (the baseline is captured once, by
+// the first of them to run, before either has scaled NL_Nchi).
+// ---------------------------------------------------------------------------
+static int nl_nchi_base = 0;
+static double nl_accuracy_boost = 1.0;
+
+// ---------------------------------------------------------------------------
+// Refine the non-Limber FFTLog chi grid on top of the accuracy boost:
+// Ntable.NL_Nchi = ceil(512 * accuracy_boost * nonlimber_boost) (512 = the
+// baseline). The yaml key nonlimber_accuracyboost of every likelihood.
+//
+// Why a separate knob: the non-Limber C_l (C_gs_tomo, C_cl_tomo and their
+// Fourier-space versions) sample the radial kernels on a log chi grid over
+// z = 0.002 - 4, and narrow lens bins need a finer grid than the rest of
+// cosmolike needs tables. Measured on 2026-10-01 at the 3x2pt fiducial with
+// non-Limber gg: roman_kl (10 narrow bins) moves by delta^T C^-1 delta =
+// 8.4, 0.09, 1e-5 from NL_Nchi 512 to 1024, 2048, 4096, while roman_fourier,
+// roman_real and lsst_y1 move by <= 1e-4 already from 512 to 1024. Raising
+// the global accuracy boost would refine NL_Nchi too, together with every
+// other table; this refines it alone. The accuracy boost stays global: it
+// multiplies NL_Nchi as before, on top of this factor.
+//
+// Cache invalidation:
+// bumps Ntable.random.
+//
+// Validation: nonlimber_boost > 0, else critical() + exit(1).
+//
+// Parameters:
+//   nonlimber_boost - NL_Nchi multiplier on top of the accuracy boost (> 0)
+//
+// Returns:
+//   void
+// ---------------------------------------------------------------------------
+void init_nonlimber_accuracy_boost(const double nonlimber_boost)
+{
+  static constexpr std::string_view fname = "init_nonlimber_accuracy_boost"sv;
+  debug("{}: {}", fname, errbegins);
+  if (!(nonlimber_boost > 0)) {
+    critical("{}: invalid nonlimber_boost = {}", fname, nonlimber_boost);
+    exit(1);
+  }
+  if (0 == nl_nchi_base) {
+    nl_nchi_base = Ntable.NL_Nchi;
+  }
+  Ntable.NL_Nchi_boost = nonlimber_boost;
+  Ntable.NL_Nchi = static_cast<int>(
+    ceil(nl_nchi_base*nl_accuracy_boost*Ntable.NL_Nchi_boost));
+  Ntable.random = RandomNumber::get_instance().get(); // update cache
+  debug("{}: {}", fname, errends);
+  return;
+}
+
+// ---------------------------------------------------------------------------
 // Choose the galaxy-galaxy lensing C_l^gs computation, writing
 // like.adopt_limber[LIMBER_GS]: 1 = Limber at every multipole (the default); 0 =
 // the non-Limber C_gs_tomo below limits.LMAX_NOLIMBER, in gamma_t
@@ -907,7 +965,8 @@ void init_halo_matter_field(const int halo_matter_field)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.halo_ia_na              -> ceil(baseline * boost)
-//   Ntable.NL_Nchi                 -> ceil(baseline * boost)
+//   Ntable.NL_Nchi                 -> ceil(baseline * boost *
+//                                     Ntable.NL_Nchi_boost)
 //   Ntable.nz_fine_sampling_factor -> ceil(baseline * boost)
 //   Ntable.FPT_internal_accuracy_boost -> baseline * boost (double)
 //
@@ -952,8 +1011,14 @@ void init_accuracy_boost(
   if (0 == cache[2]) cache[2] = Ntable.dCX_dlnk_nlnk[NODES_DENSE];
   Ntable.dCX_dlnk_nlnk[NODES_DENSE] = static_cast<int>(ceil(cache[2]*accuracy_boost));
 
-  if (0 == cache[3]) cache[3] = Ntable.NL_Nchi;
-  Ntable.NL_Nchi = static_cast<int>(ceil(cache[3]*accuracy_boost));
+  // NL_Nchi: the baseline shared with init_nonlimber_accuracy_boost (see
+  // nl_nchi_base), times the boost, times the non-Limber refinement
+  if (0 == nl_nchi_base) {
+    nl_nchi_base = Ntable.NL_Nchi;
+  }
+  nl_accuracy_boost = accuracy_boost;
+  Ntable.NL_Nchi = static_cast<int>(
+    ceil(nl_nchi_base*accuracy_boost*Ntable.NL_Nchi_boost));
 
   if (0 == cache[4]) cache[4] = Ntable.nz_fine_sampling_factor;
   Ntable.nz_fine_sampling_factor = 

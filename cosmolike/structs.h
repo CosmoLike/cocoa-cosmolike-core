@@ -91,6 +91,8 @@ typedef struct
                     // ln sigma^2; 0 = exact
   int NL_Nell_block;   // Cosmo2D - NL = NonLimber
   int NL_Nchi;         // Cosmo2D - NL = NonLimber
+  double NL_Nchi_boost; // NL_Nchi multiplier on top of the accuracy boost
+                        // (init_nonlimber_accuracy_boost; 1 = none)
   // ---------------------------------------------------
   // ---------------------------------------------------
   // THETA RANGE ON REAL SPACE CORRELATION FUNCTIONS
