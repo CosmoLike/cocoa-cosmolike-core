@@ -8936,13 +8936,40 @@ void cfftlog_ells_p2(
 // Returns:
 //   nothing; the result is written into Cl
 // ---------------------------------------------------------------------------
-void C_cl_tomo(
-    double* const* const Cl,
-    double tol
+// ---------------------------------------------------------------------------
+// The FFTLog machinery of C_cl_tomo on runs of integer multipoles: run r
+// covers l = runs[2r] .. runs[2r+1] - 1, the runs ascend, and none is longer
+// than the block of 16. The early-exit test runs at the last multipole of
+// each run, per lens bin, and the loop stops once every bin has converged.
+//
+// C_cl_tomo hands it blocks of 16 from 0 to LMAX_NOLIMBER - 1; the
+// Fourier-space C_gg_tomo_ells only the integers next to its band centers,
+// so the Limber terms, the inverse transforms and the y-sums run at those
+// few multipoles instead of all of them.
+//
+// Parameters:
+//   Cl    - output [clustering_nbin][>= LMAX_NOLIMBER]: the non-Limber C_l
+//           at the run multipoles a bin reached before converging
+//   LMAX  - output [clustering_nbin]: the end of the run in which the bin
+//           converged (its freeze point), LMAX_NOLIMBER if it never did
+//   tol   - early-exit tolerance on |C_l / C_l^limber(P_delta) - 1|;
+//           tol <= 0 disables the exit (every run is computed)
+//   runs  - the runs, [2*nruns] (see above)
+//   nruns - number of runs
+//
+// Returns:
+//   CLnl, the Limber C_l(P_delta) at the run multipoles, indexed
+//   CLnl[i][l] (static: valid until the next call)
+// ---------------------------------------------------------------------------
+static double** C_cl_tomo_core(
+    double* const* const Cl,  // output [nbins][>= LMAX_NOLIMBER]
+    int* const LMAX,          // output [nbins], the freeze points
+    const double tol,         // early-exit tolerance
+    const int* const runs,    // runs of multipoles [2*nruns]
+    const int nruns           // number of runs
   )
 {
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  static int* LMAX = NULL;
   static double* x = NULL;
   static double*** fx= NULL;
   static double*** y = NULL;
@@ -8956,15 +8983,12 @@ void C_cl_tomo(
   const int nbins = redshift.clustering_nbin; 
   const int nchi  = Ntable.NL_Nchi;
   
-  if (NULL == LMAX || 
-      NULL == x || 
+  if (NULL == x ||  
       NULL == y || 
       NULL == Fy || 
       NULL == fx ||
       fdiff2(cache[0], Ntable.random))
   {
-    if (LMAX != NULL) free((void*) LMAX);
-    LMAX = (int*) malloc1d_int(nbins);
     if (x != NULL) free((void*) x);
     x =  (double*) malloc1d(nchi);
     if (y != NULL) free((void*) y);
@@ -8981,9 +9005,6 @@ void C_cl_tomo(
     CLlin = (double**) malloc2d(nbins, limits.LMAX_NOLIMBER);
     if (lx != NULL) free((void*) lx);
     lx = (double*) malloc1d(limits.LMAX_NOLIMBER);
-    for (int l=0; l<limits.LMAX_NOLIMBER; l++) {
-      lx[l] = (double) l;
-    }
     // FFTLog computes the Bessel convolution of these integrals with a
     // circular FFT, and a circular FFT is periodic: whatever leaks past
     // one end of the chi array re-enters at the other (wrap-around
@@ -9039,13 +9060,32 @@ void C_cl_tomo(
     (void) gbmag(0.,0); (void) p_lin(0.1, 1.0);
   }
 
-  // Limber terms at every l < LMAX_NOLIMBER, batched in one pass: full
+  // Limber terms at the multipoles of the runs, batched in one pass: full
   // model (P_delta) and the linear counterpart of the FFTLog term. They
   // share the nodes, the radial weights and the RSD kernel (the a_chi and
   // W_RSD lookups that dominate the cost), which one call computes once
-  // for both. Indexed CLnl[i][l], CLlin[i][l].
-  C_gg_tomo_limber_nl_lin_nointerp_ells(lx, limits.LMAX_NOLIMBER, nbins,
-                                        CLnl, CLlin);
+  // for both. Indexed CLnl[i][l], CLlin[i][l] (entries of other l are not
+  // written).
+  int nlx = 0;
+  for (int r=0; r<nruns; r++) {
+    for (int l=runs[2*r]; l<runs[2*r+1]; l++) {
+      lx[nlx++] = (double) l;
+    }
+  }
+  {
+    double** tnl  = (double**) malloc2d(nbins, nlx);
+    double** tlin = (double**) malloc2d(nbins, nlx);
+    C_gg_tomo_limber_nl_lin_nointerp_ells(lx, nlx, nbins, tnl, tlin);
+    for (int i=0; i<nbins; i++) {
+      for (int m=0; m<nlx; m++) {
+        const int l = (int) lx[m];
+        CLnl[i][l]  = tnl[i][m];
+        CLlin[i][l] = tlin[i][m];
+      }
+    }
+    free((void*) tnl);
+    free((void*) tlin);
+  }
 
   double zlo[nbins]; // Limber lens range (see the header comment)
   double zhi[nbins];
@@ -9148,18 +9188,25 @@ void C_cl_tomo(
                   SIZE2);
 
   const int BLOCK = 16;
+  for (int r=0; r<nruns; r++) {
+    if (runs[2*r] < 0 || runs[2*r+1] > limits.LMAX_NOLIMBER ||
+        runs[2*r+1] <= runs[2*r] || runs[2*r+1] - runs[2*r] > BLOCK ||
+        (r > 0 && runs[2*r] < runs[2*r-1])) {
+      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
+      exit(1);
+    }
+  }
   int converged[nbins];
   for (int i=0; i<nbins; i++) {
     converged[i] = 0;
     LMAX[i] = limits.LMAX_NOLIMBER;
   } 
   int all_done = 0;
-  int ks = 0;
 
-  while (!all_done && ks < limits.LMAX_NOLIMBER)
-  {    
-    const int ke = (ks + BLOCK < limits.LMAX_NOLIMBER) ? ks + BLOCK : 
-                                                         limits.LMAX_NOLIMBER;
+  for (int r=0; r<nruns && !all_done; r++)
+  {
+    const int ks = runs[2*r];
+    const int ke = runs[2*r+1];
 
     cfftlog_ells_p2((double* const) x,
                      nchi, 
@@ -9242,48 +9289,75 @@ void C_cl_tomo(
     for (int i=0; i <nbins; i++) {
       if (!converged[i]) all_done = 0;
     }
-    ks = ke;
-  }
-
-  for (int i=0; i<nbins; i++) {
-    for (int k=LMAX[i]; k<limits.LMAX_NOLIMBER; k++) {
-      Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) : CLnl[i][k];
-    }
   }
 
   free((void*) toutfwd);
   free((void*) eta_m);
+  return CLnl;
+}
+
+
+// ---------------------------------------------------------------------------
+void C_cl_tomo(
+    double* const* const Cl,
+    double tol
+  )
+{
+  const int LNL   = limits.LMAX_NOLIMBER;
+  const int nbins = redshift.clustering_nbin;
+  const int BLOCK = 16; // C_cl_tomo_core's per-block arrays
+  const int nruns = (LNL + BLOCK - 1)/BLOCK;
+  int runs[2*nruns];
+  for (int r=0; r<nruns; r++) {
+    runs[2*r]   = r*BLOCK;
+    runs[2*r+1] = ((r + 1)*BLOCK < LNL) ? (r + 1)*BLOCK : LNL;
+  }
+  int LMAX[nbins];
+  double** CLnl = C_cl_tomo_core(Cl, LMAX, tol, runs, nruns);
+
+  // Limber continuation of converged bins: the Limber-path values (the
+  // batch up to LMIN_tab, the interpolation table above)
+  for (int i=0; i<nbins; i++) {
+    for (int k=LMAX[i]; k<LNL; k++) {
+      Cl[i][k] = (k > limits.LMIN_tab) ? C_gg_tomo_limber(k, i, i) : CLnl[i][k];
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Galaxy clustering C_l^gg (auto spectra) at arbitrary multipoles, with the
-// non-Limber correction of C_cl_tomo below limits.LMAX_NOLIMBER. The
-// Fourier-space data vectors call it (generic_interface.hpp,
-// like.adopt_limber[LIMBER_GG] = 0): their multipoles like.ell are band centers,
-// not integers. The gg counterpart of C_gs_tomo_ells.
+// non-Limber correction below limits.LMAX_NOLIMBER. The Fourier-space data
+// vectors call it (generic_interface.hpp, like.adopt_limber[LIMBER_GG] = 0):
+// their multipoles like.ell are band centers, not integers. The gg
+// counterpart of C_gs_tomo_ells.
 //
-// C_cl_tomo works at integer multipoles only. At a band center l this
-// function returns the Limber value at l plus the non-Limber correction
-// interpolated linearly between the two integers around l:
+// At a band center l this function returns the exact Limber value at l
+// plus the non-Limber correction interpolated linearly between the two
+// integers around l:
 //
 //   C(l)  = C^limber(l) + (1 - t)*dC(l0) + t*dC(l0 + 1)
-//   dC(n) = C_cl_tomo(n) - C^limber(n),   l0 = floor(l),  t = l - l0
+//   dC(n) = C^nonlimber(n) - C^limber(n),   l0 = floor(l),  t = l - l0
 //
-// C^limber(n) at the integers is built exactly as C_cl_tomo continues a
-// converged bin (the batch up to LMIN_tab, the interpolation table
-// C_gg_tomo_limber above), so dC(n) is zero wherever a bin has converged
-// to Limber, and the band value there is the plain Limber value.
+// Everything is computed at the multipoles it is needed, never tabulated:
+// C^limber at the band centers (C_gg_tomo_limber_nointerp_ells), and
+// C^nonlimber and C^limber at the integers l0, l0 + 1 only, through
+// C_cl_tomo_core (its Limber P_delta values there are exact too).
 //
-// Example: l = 35.4 gives l0 = 35, t = 0.4 and
-//   C(35.4) = C^limber(35.4) + 0.6*dC(35) + 0.4*dC(36).
+// No early exit: the core runs with tol = 0, so every bin gets its exact
+// dC at every needed integer. The real-space early exit (freeze a bin once
+// |dC/C^limber| < tol and take Limber from there) is a truncation error of
+// that size, and at the band centers it is visible: with tol = 0.01 it
+// moved the roman_kl 3x2pt chi2 by 1.9 and roman_fourier's by 0.10
+// (delta^T C^-1 delta, measured 2026-10-01). With ~2 integers per band
+// center below LMAX_NOLIMBER, computing them all costs little.
 //
 // Band centers with l < 1 or l >= LMAX_NOLIMBER - 1 keep the Limber value.
 //
 // Parameters:
 //   ells  - multipole values, length nell (band centers; need not be integers)
 //   nell  - number of multipole values
-//   NSIZE - number of gg power spectra (= redshift.clustering_nbin)
-//   out   - output [NSIZE][nell], indexed out[nz][i] (auto pair nz-nz)
+//   NSIZE - number of gg power spectra (= clustering_nbin)
+//   out   - output [NSIZE][nell], indexed out[nz][i]
 //
 // Returns:
 //   nothing; the result is written into out
@@ -9295,36 +9369,60 @@ void C_gg_tomo_ells(
     double** out         // output [NSIZE][nell]
   )
 {
-  const int LNL = limits.LMAX_NOLIMBER;
+  const int LNL   = limits.LMAX_NOLIMBER;
+  const int BLOCK = 16; // C_cl_tomo_core's per-block arrays
   C_gg_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
 
-  double** Cnl  = (double**) malloc2d(NSIZE, LNL);
-  double** Clim = (double**) malloc2d(NSIZE, LNL);
-
-  C_cl_tomo(Cnl, 0.01);
-
-  C_gg_tomo_limber_nointerp_batch(1, limits.LMIN_tab + 1, NSIZE, Clim);
-  for (int nz=0; nz<NSIZE; nz++) {
-    Clim[nz][0] = 0.0;
-    for (int k=limits.LMIN_tab + 1; k<LNL; k++) {
-      Clim[nz][k] = C_gg_tomo_limber(k, nz, nz);
+  // the integers next to every corrected band center, as runs of
+  // consecutive multipoles no longer than a block
+  int need[LNL];
+  for (int l=0; l<LNL; l++) {
+    need[l] = 0;
+  }
+  for (int i=0; i<nell; i++) {
+    if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
+      const int l0 = (int) floor(ells[i]);
+      need[l0] = 1;
+      need[l0 + 1] = 1;
     }
   }
+  int runs[2*LNL];
+  int nruns = 0;
+  for (int l=0; l<LNL; l++) {
+    if (!need[l]) continue;
+    if (nruns > 0 && runs[2*nruns-1] == l &&
+        runs[2*nruns-1] - runs[2*nruns-2] < BLOCK) {
+      runs[2*nruns-1] = l + 1;  // extends the open run
+    }
+    else {
+      runs[2*nruns]   = l;
+      runs[2*nruns+1] = l + 1;
+      nruns++;
+    }
+  }
+  if (0 == nruns) {
+    return;
+  }
+
+  double** Cnl = (double**) malloc2d(NSIZE, LNL);
+  int LMAX[NSIZE];
+  double** CLnl = C_cl_tomo_core(Cnl, LMAX, 0.0, runs, nruns);
 
   for (int nz=0; nz<NSIZE; nz++) {
     for (int i=0; i<nell; i++) {
       if (ells[i] >= 1.0 && ells[i] < LNL - 1.0) {
         const int l0 = (int) floor(ells[i]);
         const double t = ells[i] - l0;
-        const double d0 = Cnl[nz][l0] - Clim[nz][l0];
-        const double d1 = Cnl[nz][l0 + 1] - Clim[nz][l0 + 1];
+        // (tol = 0: no bin freezes, LMAX[nz] = LMAX_NOLIMBER)
+        const double d0 = (l0 < LMAX[nz]) ?
+          Cnl[nz][l0] - CLnl[nz][l0] : 0.0;
+        const double d1 = (l0 + 1 < LMAX[nz]) ?
+          Cnl[nz][l0 + 1] - CLnl[nz][l0 + 1] : 0.0;
         out[nz][i] += (1.0 - t)*d0 + t*d1;
       }
     }
   }
-
   free((void*) Cnl);
-  free((void*) Clim);
 }
 
 // ---------------------------------------------------------------------------
@@ -9380,10 +9478,10 @@ void C_gg_tomo_ells(
 //      magnification, as in C_cl_tomo); rows nlens..nlens+nsrc-1 are the
 //      source bins (slot 2 only; slots 0 and 1 stay zero).
 //   2. The two Limber terms at l = 0..LMAX_NOLIMBER-1 with the batched
-//      integrator of the Limber path, C_gs_tomo_limber_linpsopt_nointerp_ells
-//      (use_linear_ps = 0 for P_delta, 1 for the separable linear spectrum).
-//      The P_delta term is therefore bit-identical to what w_gammat_tomo uses
-//      when like.adopt_limber[LIMBER_GS] = 1.
+//      integrator of the Limber path, one pass for both
+//      (C_gs_tomo_limber_nl_lin_nointerp_ells: P_delta and the separable
+//      linear spectrum). The P_delta term is therefore bit-identical to what
+//      w_gammat_tomo uses when like.adopt_limber[LIMBER_GS] = 1.
 //   3. cfftlog_ells_p1: forward FFT of every row (independent of l, done once).
 //   4. Blocks of BLOCK = 16 multipoles: cfftlog_ells_p2 computes the Hankel
 //      transforms of every active row; k^3 P_lin(k) and 1/y^2 are tabulated
@@ -9395,6 +9493,11 @@ void C_gg_tomo_ells(
 //   6. The multipoles of a frozen pair, from its freeze point up to
 //      LMAX_NOLIMBER - 1, take the Limber-path values: the batch below
 //      LMIN_tab, the interpolation table (C_gs_tomo_limber_fill) above.
+//
+//   Steps 1-5 live in C_gs_tomo_core, which works on runs of integer
+//   multipoles: this function hands it blocks of 16 from 0 to
+//   LMAX_NOLIMBER - 1 (the loop above), the Fourier-space C_gs_tomo_ells
+//   only the integers next to its band centers.
 //
 //   Example (lsst_y1 3x2pt fiducial, 25 pairs, tol = 0.01): the 10 pairs with
 //   the lens bin in front of the source bin freeze at l = 16 or 32; the 5
@@ -9435,14 +9538,42 @@ void C_gg_tomo_ells(
 // Returns:
 //   nothing; the result is written into Cl
 // ---------------------------------------------------------------------------
-void C_gs_tomo(
-    double* const* const Cl,
-    double tol
+// ---------------------------------------------------------------------------
+// The FFTLog machinery of C_gs_tomo (steps 1-5 of its header) on runs of
+// integer multipoles: run r covers l = runs[2r] .. runs[2r+1] - 1, the runs
+// ascend, and none is longer than the block of 16 the per-block arrays
+// hold. The early-exit test runs at the last multipole of each run, and the
+// loop stops once every pair has converged.
+//
+// C_gs_tomo hands it blocks of 16 from 0 to LMAX_NOLIMBER - 1; the
+// Fourier-space C_gs_tomo_ells only the integers next to its band centers,
+// so the Limber terms, the inverse transforms and the y-sums run at those
+// few multipoles instead of all of them.
+//
+// Parameters:
+//   Cl    - output [ggl_Npowerspectra][>= LMAX_NOLIMBER]: the non-Limber C_l
+//           at the run multipoles a pair reached before converging
+//   LMAX  - output [ggl_Npowerspectra]: the end of the run in which the pair
+//           converged (its freeze point), LMAX_NOLIMBER if it never did
+//   tol   - early-exit tolerance on |C_l / C_l^limber(P_delta) - 1|;
+//           tol <= 0 disables the exit (every run is computed)
+//   runs  - the runs, [2*nruns] (see above)
+//   nruns - number of runs
+//
+// Returns:
+//   CLnl, the Limber C_l(P_delta) at the run multipoles, indexed
+//   CLnl[nz][l] (static: valid until the next call)
+// ---------------------------------------------------------------------------
+static double** C_gs_tomo_core(
+    double* const* const Cl,  // output [NSIZE][>= LMAX_NOLIMBER]
+    int* const LMAX,          // output [NSIZE], the freeze points
+    const double tol,         // early-exit tolerance
+    const int* const runs,    // runs of multipoles [2*nruns]
+    const int nruns           // number of runs
   )
 {
   halo_IA_unsupported("C_gs_tomo");
   static uint64_t cache[MAX_SIZE_ARRAYS];
-  static int* LMAX = NULL;
   static double* x = NULL;
   static double*** fx = NULL;
   static double*** y = NULL;
@@ -9450,7 +9581,6 @@ void C_gs_tomo(
   static double** CLnl = NULL;
   static double** CLlin = NULL;
   static double* lx = NULL;
-  static double* lnell = NULL;
   static config cfg[3];
 
   const int nlens = redshift.clustering_nbin;
@@ -9465,8 +9595,7 @@ void C_gs_tomo(
     log_fatal("ggl requested but tomo.ggl_Npowerspectra == %d", NSIZE);
     exit(1);
   }
-  if (NULL == LMAX ||
-      NULL == x ||
+  if (NULL == x ||
       NULL == y ||
       NULL == Fy ||
       NULL == fx ||
@@ -9474,8 +9603,6 @@ void C_gs_tomo(
       cache[1] != (uint64_t) SIZE1 ||
       cache[2] != (uint64_t) NSIZE)
   {
-    if (LMAX != NULL) free((void*) LMAX);
-    LMAX = (int*) malloc1d_int(NSIZE);
     if (x != NULL) free((void*) x);
     x = (double*) malloc1d(nchi);
     if (y != NULL) free((void*) y);
@@ -9490,12 +9617,6 @@ void C_gs_tomo(
     CLlin = (double**) malloc2d(NSIZE, LNL);
     if (lx != NULL) free((void*) lx);
     lx = (double*) malloc1d(LNL);
-    if (lnell != NULL) free((void*) lnell);
-    lnell = (double*) malloc1d(LNL);
-    for (int l=0; l<LNL; l++) {
-      lx[l] = (double) l;
-      lnell[l] = (l > 0) ? log((double) l) : 0.0;
-    }
     // The same three configurations as C_cl_tomo, so the p1/p2 plan
     // caches are shared with the gg calls. N_pad scales with nchi because
     // the circular FFT is periodic and the zero-padded guard band absorbs
@@ -9552,14 +9673,32 @@ void C_gs_tomo(
     (void) p_lin(0.1, 1.0);
     (void) ZL(0);
     (void) ZS(0);
-    (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
   }
 
-  // Limber terms at every l < LMAX_NOLIMBER, in one pass: full model
+  // Limber terms at the multipoles of the runs, in one pass: full model
   // (P_delta) and the linear counterpart of the FFTLog term (P_lin), which
   // share the nodes, the weights and the RSD kernel. Indexed CLnl[nz][l],
-  // CLlin[nz][l].
-  C_gs_tomo_limber_nl_lin_nointerp_ells(lx, LNL, NSIZE, CLnl, CLlin);
+  // CLlin[nz][l] (entries of other l are not written).
+  int nlx = 0;
+  for (int r=0; r<nruns; r++) {
+    for (int l=runs[2*r]; l<runs[2*r+1]; l++) {
+      lx[nlx++] = (double) l;
+    }
+  }
+  {
+    double** tnl  = (double**) malloc2d(NSIZE, nlx);
+    double** tlin = (double**) malloc2d(NSIZE, nlx);
+    C_gs_tomo_limber_nl_lin_nointerp_ells(lx, nlx, NSIZE, tnl, tlin);
+    for (int nz=0; nz<NSIZE; nz++) {
+      for (int m=0; m<nlx; m++) {
+        const int l = (int) lx[m];
+        CLnl[nz][l]  = tnl[nz][m];
+        CLlin[nz][l] = tlin[nz][m];
+      }
+    }
+    free((void*) tnl);
+    free((void*) tlin);
+  }
 
   double zlo[nlens]; // Limber lens range (see the header comment)
   double zhi[nlens];
@@ -9663,6 +9802,14 @@ void C_gs_tomo(
                   SIZE2);
 
   const int BLOCK = 16;
+  for (int r=0; r<nruns; r++) {
+    if (runs[2*r] < 0 || runs[2*r+1] > LNL || runs[2*r+1] <= runs[2*r] ||
+        runs[2*r+1] - runs[2*r] > BLOCK ||
+        (r > 0 && runs[2*r] < runs[2*r-1])) {
+      log_fatal("bad multipole run %d: [%d, %d)", r, runs[2*r], runs[2*r+1]);
+      exit(1);
+    }
+  }
   double*** PK = (double***) malloc3d(redshift.clustering_nbin, BLOCK,
                                       nchi); // per lens bin (pivot spectrum)
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
@@ -9686,11 +9833,11 @@ void C_gs_tomo(
     LMAX[nz] = LNL;
   }
   int all_done = 0;
-  int ks = 0;
 
-  while (!all_done && ks < LNL)
+  for (int r=0; r<nruns && !all_done; r++)
   {
-    const int ke = (ks + BLOCK < LNL) ? ks + BLOCK : LNL;
+    const int ks = runs[2*r];
+    const int ke = runs[2*r+1];
 
     for (int i=0; i<SIZE1; i++) {
       row_done[i] = 1;
@@ -9786,11 +9933,49 @@ void C_gs_tomo(
     for (int nz=0; nz<NSIZE; nz++) {
       if (!converged[nz]) all_done = 0;
     }
-    ks = ke;
   }
 
+  free((void*) active);
+  free((void*) toutfwd);
+  free((void*) eta_m);
+  free((void*) PK);
+  free((void*) IY2);
+  return CLnl;
+}
+
+// ---------------------------------------------------------------------------
+void C_gs_tomo(
+    double* const* const Cl,
+    double tol
+  )
+{
+  const int LNL   = limits.LMAX_NOLIMBER;
+  const int NSIZE = tomo.ggl_Npowerspectra;
+  const int BLOCK = 16; // C_gs_tomo_core's per-block arrays
+  static double* lnell = NULL;
+  static int lnell_n = 0;
+  if (NULL == lnell || lnell_n != LNL) {
+    if (lnell != NULL) free((void*) lnell);
+    lnell = (double*) malloc1d(LNL);
+    for (int l=0; l<LNL; l++) {
+      lnell[l] = (l > 0) ? log((double) l) : 0.0;
+    }
+    lnell_n = LNL;
+  }
+  const int nruns = (LNL + BLOCK - 1)/BLOCK;
+  int runs[2*nruns];
+  for (int r=0; r<nruns; r++) {
+    runs[2*r]   = r*BLOCK;
+    runs[2*r+1] = ((r + 1)*BLOCK < LNL) ? (r + 1)*BLOCK : LNL;
+  }
+  int LMAX[NSIZE];
+  double** CLnl = C_gs_tomo_core(Cl, LMAX, tol, runs, nruns);
+
   // Limber continuation of converged pairs: the same values the Limber path
-  // of w_gammat_tomo writes (batch below LMIN_tab, table above).
+  // of w_gammat_tomo writes (batch below LMIN_tab, table above). The
+  // table is built here, single-threaded, before the parallel region reads
+  // it.
+  (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
   #pragma omp parallel for schedule(static)
   for (int nz=0; nz<NSIZE; nz++) {
     const int lo = (LMAX[nz] > limits.LMIN_tab) ? LMAX[nz] : limits.LMIN_tab;
@@ -9801,31 +9986,29 @@ void C_gs_tomo(
       C_gs_tomo_limber_fill(nz, lo, LNL, lnell, Cl[nz]);
     }
   }
-
-  free((void*) active);
-  free((void*) toutfwd);
-  free((void*) eta_m);
-  free((void*) PK);
-  free((void*) IY2);
 }
 
 // ---------------------------------------------------------------------------
 // Galaxy-galaxy lensing C_l^gs at arbitrary multipoles, with the non-Limber
-// correction of C_gs_tomo below limits.LMAX_NOLIMBER. The Fourier-space
-// data vectors call it (generic_interface.hpp, like.adopt_limber[LIMBER_GS] = 0):
-// their multipoles like.ell are band centers, not integers.
+// correction below limits.LMAX_NOLIMBER. The Fourier-space data vectors call
+// it (generic_interface.hpp, like.adopt_limber[LIMBER_GS] = 0): their
+// multipoles like.ell are band centers, not integers.
 //
-// C_gs_tomo works at integer multipoles only. At a band center l this
-// function returns the Limber value at l plus the non-Limber correction
-// interpolated linearly between the two integers around l:
+// At a band center l this function returns the exact Limber value at l plus
+// the non-Limber correction interpolated linearly between the two integers
+// around l:
 //
 //   C(l)  = C^limber(l) + (1 - t)*dC(l0) + t*dC(l0 + 1)
-//   dC(n) = C_gs_tomo(n) - C^limber(n),   l0 = floor(l),  t = l - l0
+//   dC(n) = C^nonlimber(n) - C^limber(n),   l0 = floor(l),  t = l - l0
 //
-// C^limber(n) at the integers is built exactly as C_gs_tomo continues a
-// converged pair (the batch below LMIN_tab, the interpolation table above),
-// so dC(n) is zero wherever a pair has converged to Limber, and the band
-// value there is the plain Limber value.
+// Everything is computed at the multipoles it is needed, never tabulated:
+// C^limber at the band centers (C_gs_tomo_limber_nointerp_ells), and
+// C^nonlimber and C^limber at the integers l0, l0 + 1 only, through
+// C_gs_tomo_core (its Limber P_delta values there are exact too).
+//
+// No early exit: the core runs with tol = 0, so every pair gets its exact
+// dC at every needed integer (see C_gg_tomo_ells for why: the real-space
+// early exit is a truncation error that the band centers see).
 //
 // Example: l = 35.4 gives l0 = 35, t = 0.4 and
 //   C(35.4) = C^limber(35.4) + 0.6*dC(35) + 0.4*dC(36).
@@ -9849,37 +10032,58 @@ void C_gs_tomo_ells(
     double** out         // output [NSIZE][nell]
   )
 {
-  const int LNL = limits.LMAX_NOLIMBER;
+  const int LNL   = limits.LMAX_NOLIMBER;
+  const int BLOCK = 16; // C_gs_tomo_core's per-block arrays
   C_gs_tomo_limber_nointerp_ells(ells, nell, NSIZE, out);
 
-  double** Cnl  = (double**) malloc2d(NSIZE, LNL);
-  double** Clim = (double**) malloc2d(NSIZE, LNL);
-  double* lnell = (double*) malloc1d(LNL);
+  // the integers next to every corrected band center, as runs of
+  // consecutive multipoles no longer than a block
+  int need[LNL];
   for (int l=0; l<LNL; l++) {
-    lnell[l] = (l > 0) ? log((double) l) : 0.0;
+    need[l] = 0;
+  }
+  for (int i=0; i<nell; i++) {
+    if (ells[i] >= 2.0 && ells[i] < LNL - 1.0) {
+      const int l0 = (int) floor(ells[i]);
+      need[l0] = 1;
+      need[l0 + 1] = 1;
+    }
+  }
+  int runs[2*LNL];
+  int nruns = 0;
+  for (int l=0; l<LNL; l++) {
+    if (!need[l]) continue;
+    if (nruns > 0 && runs[2*nruns-1] == l &&
+        runs[2*nruns-1] - runs[2*nruns-2] < BLOCK) {
+      runs[2*nruns-1] = l + 1;  // extends the open run
+    }
+    else {
+      runs[2*nruns]   = l;
+      runs[2*nruns+1] = l + 1;
+      nruns++;
+    }
+  }
+  if (0 == nruns) {
+    return;
   }
 
-  C_gs_tomo(Cnl, 0.01);
-
-  C_gs_tomo_limber_nointerp_batch(1, limits.LMIN_tab, NSIZE, Clim);
-  for (int nz=0; nz<NSIZE; nz++) {
-    Clim[nz][0] = 0.0;
-    C_gs_tomo_limber_fill(nz, limits.LMIN_tab, LNL, lnell, Clim[nz]);
-  }
+  double** Cnl = (double**) malloc2d(NSIZE, LNL);
+  int LMAX[NSIZE];
+  double** CLnl = C_gs_tomo_core(Cnl, LMAX, 0.0, runs, nruns);
 
   for (int nz=0; nz<NSIZE; nz++) {
     for (int i=0; i<nell; i++) {
       if (ells[i] >= 2.0 && ells[i] < LNL - 1.0) {
         const int l0 = (int) floor(ells[i]);
         const double t = ells[i] - l0;
-        const double d0 = Cnl[nz][l0] - Clim[nz][l0];
-        const double d1 = Cnl[nz][l0 + 1] - Clim[nz][l0 + 1];
+        // (tol = 0: no pair freezes, LMAX[nz] = LMAX_NOLIMBER)
+        const double d0 = (l0 < LMAX[nz]) ?
+          Cnl[nz][l0] - CLnl[nz][l0] : 0.0;
+        const double d1 = (l0 + 1 < LMAX[nz]) ?
+          Cnl[nz][l0 + 1] - CLnl[nz][l0 + 1] : 0.0;
         out[nz][i] += (1.0 - t)*d0 + t*d1;
       }
     }
   }
-
   free((void*) Cnl);
-  free((void*) Clim);
-  free((void*) lnell);
 }
