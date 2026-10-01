@@ -5337,8 +5337,19 @@ static void C_gg_tomo_limber_work(
     }
     // -----------------------------------------------------------------------
     // Precompute: P(k,a), RSD kernel and its support, one-loop kernels
+    //
+    // schedule(dynamic): the iterations cost very different amounts - a
+    // padding node returns at once, a node the RSD mask drops skips
+    // a_chi and W_RSD, a full node pays for all of them - so the static
+    // split left threads idle at this loop's barrier (~4% of all cycles
+    // of a des_cluster 6x2pt+N evaluation, perf on amypond, v5.00), and
+    // one thread preempted by another process stalled the whole team.
+    // Each iteration writes only its own (bin, ell, node) slots, so the
+    // order the chunks run in cannot change a bit of the result. A chunk
+    // of 128 iterations is ~50 us of work, far above the cost of taking
+    // it from the shared counter.
     // -----------------------------------------------------------------------
-    #pragma omp for collapse(3) schedule(static)
+    #pragma omp for collapse(3) schedule(dynamic, 128)
     for (int zl=0; zl<nbin; zl++) {
       for (int i=0; i<nell; i++) {
         for (int p=0; p<npts_max; p++) {
