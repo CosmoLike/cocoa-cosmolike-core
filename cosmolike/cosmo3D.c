@@ -1446,13 +1446,140 @@ double p_nonlin(const double k, const double a)
 // ----------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// P_lin at ONE scale factor and n wavenumbers: out[m] = p_lin(k[m], a).
+//
+// Why it exists: the Limber fills evaluate P on a (node, multipole) grid,
+// and a node fixes a. p_lin recomputes the z half of its bilinear read
+// (z = 1/a - 1, the z bracket j, the weight dy) at every call; here that
+// half runs once per node and only the k half (log10 k, its bracket i,
+// dx, the four table reads, exp) runs per wavenumber.
+//
+// Every out[m] is bitwise p_lin(k[m], a): the k half and the bilinear
+// combination are p_lin's expressions verbatim, and the hoisted z half
+// computes the same values from the same a. The fallback build (binary
+// searches, no COSMO3D_ASSUME_PIECEWISE_UNIFORM) and
+// COSMO3D_NOT_USE_PK_BATCH simply call p_lin per entry.
+//
+// Parameters:
+//   a   - scale factor
+//   k   - wavenumbers in (c/H0)^-1 units, length n
+//   n   - number of wavenumbers
+//   out - output, length n
+//
+// Returns:
+//   nothing; P_lin(k[m], a) in (c/H0)^3 units into out[m]
+// ---------------------------------------------------------------------------
+void p_lin_at_a(const double a, const double* k, const int n, double* out)
+{
+#if defined(COSMO3D_ASSUME_PIECEWISE_UNIFORM) && !defined(COSMO3D_NOT_USE_PK_BATCH)
+  const double z = 1.0 / a - 1.0;
+  const int j = piecewise_index(z, cosmology.lnPL_z_nseg,
+                                cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
+                                cosmology.lnPL_z_seg_xmin,  cosmology.lnPL_z_seg_inv_dx,
+                                cosmology.lnPL_nz);
+  const double zj  = cosmology.lnPL[cosmology.lnPL_nk][j  ];
+  const double zj1 = cosmology.lnPL[cosmology.lnPL_nk][j+1];
+  const double dy = (z      - zj) / (zj1 - zj);
+  for (int m=0; m<n; m++) {
+    const double log10k = log10(k[m] / cosmology.coverH0);
+    int i = (int)((log10k - cosmology.lnPL_log10k_min) * cosmology.lnPL_log10k_inv_dx);
+    if (i < 0)                       i = 0;
+    if (i > cosmology.lnPL_nk - 2)   i = cosmology.lnPL_nk - 2;
+    const double xi  = cosmology.lnPL[i  ][cosmology.lnPL_nz];
+    const double xi1 = cosmology.lnPL[i+1][cosmology.lnPL_nz];
+    const double dx = (log10k - xi) / (xi1 - xi);
+    const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnPL[i  ][j  ]
+                           + (1-dx)*   dy  * cosmology.lnPL[i  ][j+1]
+                           +    dx *(1-dy) * cosmology.lnPL[i+1][j  ]
+                           +    dx *   dy  * cosmology.lnPL[i+1][j+1];
+    out[m] = exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
+  }
+#else
+  for (int m=0; m<n; m++) {
+    out[m] = p_lin(k[m], a);
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// P_nl at ONE scale factor and n wavenumbers: out[m] = p_nonlin(k[m], a).
+// The z half of the bilinear read runs once, the k half per wavenumber,
+// with p_nonlin's expressions verbatim: every out[m] is bitwise
+// p_nonlin(k[m], a) (see p_lin_at_a for the reasoning and the fallback).
+//
+// Parameters:
+//   a   - scale factor
+//   k   - wavenumbers in (c/H0)^-1 units, length n
+//   n   - number of wavenumbers
+//   out - output, length n
+//
+// Returns:
+//   nothing; P_nl(k[m], a) in (c/H0)^3 units (times the baryonic ratio
+//   when enabled) into out[m]
+// ---------------------------------------------------------------------------
+void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
+{
+#if defined(COSMO3D_ASSUME_PIECEWISE_UNIFORM) && !defined(COSMO3D_NOT_USE_PK_BATCH)
+  const double coverH0 = cosmology.coverH0;
+  const double z      = 1.0 / a - 1.0;
+  const int j = piecewise_index(z, cosmology.lnP_z_nseg,
+                                cosmology.lnP_z_seg_start, cosmology.lnP_z_seg_len,
+                                cosmology.lnP_z_seg_xmin,  cosmology.lnP_z_seg_inv_dx,
+                                cosmology.lnP_nz);
+  const double zj  = cosmology.lnP[cosmology.lnP_nk][j  ];
+  const double zj1 = cosmology.lnP[cosmology.lnP_nk][j+1];
+  const double dy = (z      - zj) / (zj1 - zj);
+  for (int m=0; m<n; m++) {
+    const double log10k = log10(k[m] / coverH0);
+    int i = (int)((log10k - cosmology.lnP_log10k_min) * cosmology.lnP_log10k_inv_dx);
+    if (i < 0)                     i = 0;
+    if (i > cosmology.lnP_nk - 2)  i = cosmology.lnP_nk - 2;
+    const double xi  = cosmology.lnP[i  ][cosmology.lnP_nz];
+    const double xi1 = cosmology.lnP[i+1][cosmology.lnP_nz];
+    const double dx = (log10k - xi) / (xi1 - xi);
+    const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnP[i  ][j  ]
+                           + (1-dx)*   dy  * cosmology.lnP[i  ][j+1]
+                           +    dx *(1-dy) * cosmology.lnP[i+1][j  ]
+                           +    dx *   dy  * cosmology.lnP[i+1][j+1];
+    const double ans = exp(out_lnP) / (coverH0 * coverH0 * coverH0);
+    out[m] = (bary.is_Pk_bary == 1) ? ans * PkRatio_baryons(k[m], a) : ans;
+  }
+#else
+  for (int m=0; m<n; m++) {
+    out[m] = p_nonlin(k[m], a);
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// The dispatch of Pdelta, shared with Pdelta_at_a so the two can never
+// disagree: 3 (p_lin) is latched the first time pdeltaparams.runmode reads
+// "linear"; -1 means p_nonlin and is checked again on every call (the
+// latch only ever moves to 3).
+// ---------------------------------------------------------------------------
+static int pdelta_type = -1;
+
+static inline int pdelta_dispatch(void)
+{
+  if (pdelta_type == -1)
+  {
+    if (strcmp(pdeltaparams.runmode,"linear") == 0)
+    {
+      pdelta_type = 3;
+    }
+  }
+  return pdelta_type;
+}
+
+// ---------------------------------------------------------------------------
 // Matter power spectrum dispatch: p_lin when pdeltaparams.runmode is
-// "linear", p_nonlin otherwise. The choice is latched in a static on the
-// first call and reused for the rest of the process, so the run mode
+// "linear", p_nonlin otherwise. The linear choice is latched in a static
+// (pdelta_dispatch, shared with Pdelta_at_a) the first time the run mode
+// reads "linear" and reused for the rest of the process, so the run mode
 // must be set before the first evaluation.
 //
 // Cache invalidation:
-// none. The static P_type latch never rebuilds; only
+// none. The static latch never rebuilds; only
 // the tables read by p_lin/p_nonlin refresh (see those headers).
 //
 // Parameters:
@@ -1465,14 +1592,7 @@ double p_nonlin(const double k, const double a)
 double Pdelta(double io_kNL, double io_a)
 {
   double out_PK;
-  static int P_type = -1;
-  if (P_type == -1) 
-  {
-    if (strcmp(pdeltaparams.runmode,"linear") == 0) 
-    {
-      P_type = 3;
-    }
-  }
+  const int P_type = pdelta_dispatch();
   // P_type encoding: 3 = linear (latched above when runmode is
   // "linear"); every other value - including the -1 "unset" latch -
   // falls through to p_nonlin
@@ -1486,6 +1606,34 @@ double Pdelta(double io_kNL, double io_a)
       break;
   }
   return out_PK;
+}
+
+// ---------------------------------------------------------------------------
+// Pdelta at ONE scale factor and n wavenumbers: out[m] = Pdelta(k[m], a),
+// bitwise (Pdelta's dispatch, then p_lin_at_a or p_nonlin_at_a). The
+// Limber fills call it once per quadrature node with the node's Limber
+// wavenumbers k = (l + 1/2)/f_K of every multipole.
+//
+// Parameters:
+//   a   - scale factor
+//   k   - wavenumbers in (c/H0)^-1 units, length n
+//   n   - number of wavenumbers
+//   out - output, length n
+//
+// Returns:
+//   nothing; P(k[m], a) in (c/H0)^3 units into out[m]
+// ---------------------------------------------------------------------------
+void Pdelta_at_a(const double a, const double* k, const int n, double* out)
+{
+  switch (pdelta_dispatch())
+  {
+    case 3:
+      p_lin_at_a(a, k, n, out);
+      break;
+    default:
+      p_nonlin_at_a(a, k, n, out);
+      break;
+  }
 }
 
 // ----------------------------------------------------------------------

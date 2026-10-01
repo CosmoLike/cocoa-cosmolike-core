@@ -2662,6 +2662,10 @@ static void C_ss_tomo_limber_work(
   // Precompute: radial weights per (bin, quadrature point) and
   //             P(k,a) + TATT kernels per (ell, quadrature point)
   // -----------------------------------------------------------------------
+  // per-thread scratch of the batched P reads (Pdelta_at_a: one call per
+  // node, the z half of the table read once per node instead of once per
+  // multipole): KPN[2t] = the node's Limber wavenumbers, KPN[2t+1] = P
+  double** KPN = (double**) malloc2d(2*omp_get_max_threads(), nell);
   #pragma omp parallel for schedule(static)
   for (int p = 0; p < cn->npts; p++) {
     const double a    = cn->data[CN_A][p];
@@ -2676,11 +2680,17 @@ static void C_ss_tomo_limber_work(
       WC[3][b][p] = IA_A2_Z1(a, gf, b);
       WC[4][b][p] = IA_BTA_Z1(a, gf, b);
     }
+    double* restrict kn = KPN[2*omp_get_thread_num()];
+    double* restrict pn = KPN[2*omp_get_thread_num() + 1];
+    for (int i = 0; i<nell; i++) {
+      kn[i] = (lx[i] + 0.5) / fK;
+    }
+    Pdelta_at_a(a, kn, nell, pn);
     for (int i = 0; i<nell; i++) {
       const double ell = lx[i] + 0.5;
       const double k = ell / fK;
       const double lnk = log(k);
-      KIA[10][i][p] = Pdelta(k, a);
+      KIA[10][i][p] = pn[i];
       if (nuisance.IA_MODEL == IA_MODEL_TATT) {
         // Hold-last-node clamp (the idiom of every FPTIA/FPTbias LERP
         // read in this file): the table spacing is limTATT[2] =
@@ -2820,6 +2830,7 @@ static void C_ss_tomo_limber_work(
   }
   free(WC);
   free(KIA);
+  free(KPN);
   if (KHI != NULL) {
     free(KHI);
     free(FRC);
@@ -4157,6 +4168,10 @@ static void C_gs_tomo_limber_work(
     }
   }
 
+  // per-thread scratch of the batched P reads (Pdelta_at_a: one call per
+  // node, the z half of the table read once per node instead of once per
+  // multipole): KPN[2t] = the node's Limber wavenumbers, KPN[2t+1] = P
+  double** KPN = (double**) malloc2d(2*omp_get_max_threads(), nell);
   #pragma omp parallel
   {
     // -----------------------------------------------------------------------
@@ -4193,15 +4208,30 @@ static void C_gs_tomo_limber_work(
     }
     // -----------------------------------------------------------------------
     // Precompute: P(k,a), RSD, TATT kernels, one-loop bias kernels
+    //
+    // Threaded over (bin, node), the multipoles in the inner loop: one
+    // batched P read per node (see KPN).
     // -----------------------------------------------------------------------
-    #pragma omp for collapse(3) schedule(static)
+    #pragma omp for collapse(2) schedule(static)
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
       for (int p = 0; p < npts_max; p++) {
+        const cosmo_nodes* cn = &cn_all[zl];
+        if (p >= cn->npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
+        // P_delta, or the P_lin(k, a_piv) of the separable linear term
+        double* restrict kn = KPN[2*omp_get_thread_num()];
+        double* restrict pn = KPN[2*omp_get_thread_num() + 1];
         for (int i = 0; i < nell; i++) {
-          const cosmo_nodes* cn = &cn_all[zl];
-          if (p >= cn->npts) {
-            continue; // padding node: bin zl has fewer nodes
-          }
+          kn[i] = (lx[i] + 0.5) / cn->data[CN_FK][p];
+        }
+        if (0 == use_linear_ps) {
+          Pdelta_at_a(cn->data[CN_A][p], kn, nell, pn);
+        }
+        else {
+          p_lin_at_a(apivw[zl], kn, nell, pn);
+        }
+        for (int i = 0; i < nell; i++) {
           const double a  = cn->data[CN_A][p];
           const double fK = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
@@ -4216,9 +4246,8 @@ static void C_gs_tomo_limber_work(
           // scale-dependent part lives in the Limber P_delta term,
           // where the FKEM split puts it.
           const double gf = cn->data[CN_GROWFAC][p];
-          KIA[0][zl][i][p] = (0 == use_linear_ps) ? Pdelta(k, a) :
-                                                    gf*gf*invgf2w[zl]*
-                                       p_lin(k, apivw[zl]);
+          KIA[0][zl][i][p] = (0 == use_linear_ps) ? pn[i] :
+                                                    gf*gf*invgf2w[zl]*pn[i];
           if (1 == hod) {
             KH[0][zl][i][p] = p_gm(k, a, zl);
           }
@@ -4409,7 +4438,7 @@ static void C_gs_tomo_limber_work(
       table[j][i] = sum;
     }
   }
-  free(WB); free(WC); free(KIA);
+  free(WB); free(WC); free(KIA); free(KPN);
   if (KH != NULL) {
     free(KH);
   }
@@ -5322,6 +5351,10 @@ static void C_gg_tomo_limber_work(
     }
   }
 
+  // per-thread scratch of the batched P reads (Pdelta_at_a: one call per
+  // node, the z half of the table read once per node instead of once per
+  // multipole): KPN[2t] = the node's Limber wavenumbers, KPN[2t+1] = P
+  double** KPN = (double**) malloc2d(2*omp_get_max_threads(), nell);
   #pragma omp parallel
   {
     // -----------------------------------------------------------------------
@@ -5349,7 +5382,49 @@ static void C_gg_tomo_limber_work(
       }
     }
     // -----------------------------------------------------------------------
-    // Precompute: P(k,a), RSD kernel and its support, one-loop kernels
+    // Precompute: P(k,a) of every node at every multipole, one batched read
+    // per node (see KPN). Its own loop over (bin, node), since the fill
+    // below runs over (bin, ell, node); nowait, because the two write
+    // disjoint slots: a thread done here starts on the fill at once.
+    // -----------------------------------------------------------------------
+    #pragma omp for collapse(2) schedule(static) nowait
+    for (int zl=0; zl<nbin; zl++) {
+      for (int p=0; p<npts_max; p++) {
+        const cosmo_nodes* cn = &cn_all[zl];
+        if (p >= cn->npts) {
+          continue; // padding node: bin zl has fewer nodes
+        }
+        double* restrict kn = KPN[2*omp_get_thread_num()];
+        double* restrict pn = KPN[2*omp_get_thread_num() + 1];
+        for (int i=0; i<nell; i++) {
+          kn[i] = (lx[i] + 0.5)/cn->data[CN_FK][p];
+        }
+        if (NULL != table) {
+          Pdelta_at_a(cn->data[CN_A][p], kn, nell, pn);
+          for (int i=0; i<nell; i++) {
+            KG[0][zl][i][p] = pn[i];
+          }
+        }
+        if (NULL != table_lin) {
+          // Linear term: the separable spectrum of the FFTLog term of
+          // C_cl_tomo, (D(a)/D(a_piv))^2 * P_lin(k, a_piv) anchored per
+          // lens bin, never p_lin(k,a): only an identical separable
+          // form on both sides lets the FFTLog/Limber pair cancel at
+          // high l.
+          //
+          // CAMB's growth is scale dependent (massive neutrinos); the
+          // scale-dependent part lives in the Limber P_delta term,
+          // where the FKEM split puts it.
+          const double gf = cn->data[CN_GROWFAC][p];
+          p_lin_at_a(apivw[zl], kn, nell, pn);
+          for (int i=0; i<nell; i++) {
+            KG[3][zl][i][p] = gf*gf*invgf2w[zl]*pn[i];
+          }
+        }
+      }
+    }
+    // -----------------------------------------------------------------------
+    // Precompute: RSD kernel and its support, one-loop kernels
     //
     // schedule(dynamic): the iterations cost very different amounts - a
     // padding node returns at once, a node the RSD mask drops skips
@@ -5374,22 +5449,6 @@ static void C_gg_tomo_limber_work(
           const double fK  = cn->data[CN_FK][p];
           const double ell = lx[i] + 0.5;
           const double k   = ell/fK;
-          // Linear term: the separable spectrum of the FFTLog term of
-          // C_cl_tomo, (D(a)/D(a_piv))^2 * P_lin(k, a_piv) anchored per
-          // lens bin, never p_lin(k,a): only an identical separable
-          // form on both sides lets the FFTLog/Limber pair cancel at
-          // high l.
-          //
-          // CAMB's growth is scale dependent (massive neutrinos); the
-          // scale-dependent part lives in the Limber P_delta term,
-          // where the FKEM split puts it.
-          const double gf = cn->data[CN_GROWFAC][p];
-          if (NULL != table) {
-            KG[0][zl][i][p] = Pdelta(k, a);
-          }
-          if (NULL != table_lin) {
-            KG[3][zl][i][p] = gf*gf*invgf2w[zl]*p_lin(k, apivw[zl]);
-          }
           KG[1][zl][i][p] = 0.0;
           KG[2][zl][i][p] = 1.0;
           if (1 == hod) {
@@ -5537,7 +5596,7 @@ static void C_gg_tomo_limber_work(
       }
     }
   }
-  free(WB); free(KG);
+  free(WB); free(KG); free(KPN);
   if (WO != NULL) free(WO);
   if (KB != NULL) free(KB);
   if (KH != NULL) {
