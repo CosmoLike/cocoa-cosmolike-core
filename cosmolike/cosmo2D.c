@@ -3949,7 +3949,7 @@ double C_gs_tomo_limber_nointerp(
 //     KIA[1]   = W_RSD(ell, a0, a1, nl) (0 if RSD disabled)
 //     KIA[2..5] = TATT IA kernels (mixA, mixB, ta_dE1, ta_dE2), via GS_IA_SRC
 //     KIA[6..8] = one-loop bias kernels (d1d2, d1s2, d1p3), via GS_BIAS_SRC
-//     KIA[9]   = unused
+//     KIA[9]   = the separable P_lin of the linear term (table_lin)
 //
 // One-loop consistency: the inner loop calls _tatt_core which ensures
 //   - tree-level galaxy (b1*PK) multiplies the full IA (C1*PK + TATT terms)
@@ -3968,15 +3968,22 @@ double C_gs_tomo_limber_nointerp(
 //   ell_prefactor  - l*(l+1)/(l+0.5)^2 per ell (magnification)
 //   ell_prefactor2 - sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2 per ell (shear)
 //   nell   - number of multipole values
-//   use_linear_ps - 1: the linear counterpart of the FFTLog term of
-//                   C_gs_tomo ((D(a)/D(a_piv))^2 P_lin(k, a_piv)
-//                   per lens bin, no one-loop
-//                   bias, IA through C1 only); 0: the full model (Limber
-//                   path)
-//   table  - output array [ggl_Npowerspectra][nell]
+//   table  - output array [ggl_Npowerspectra][nell], the full model
+//            (Limber path; NULL: not computed)
+//   table_lin - output array [ggl_Npowerspectra][nell], the linear
+//            counterpart of the FFTLog term of C_gs_tomo ((D(a)/D(a_piv))^2
+//            P_lin(k, a_piv) per lens bin, no one-loop bias, IA through C1
+//            only; NULL: not computed)
+//
+// Why one call can fill both: the non-Limber C_gs_tomo needs both terms
+// at the same multipoles. The nodes, the lens and source weights, the IA
+// amplitudes and the RSD kernel are computed once; the sum runs once per
+// output, the linear one reading the one-loop bias and TATT inputs at
+// zero (their values in a linear-only call), so filling both at once is
+// bitwise two separate calls.
 //
 // Returns:
-//   nothing; the result is written into table
+//   nothing; the results are written into table and table_lin
 // ---------------------------------------------------------------------------
 static void C_gs_tomo_limber_work(
     const cosmo_nodes* cn_all,  // quadrature nodes per lens bin [clustering_nbin]
@@ -3984,17 +3991,17 @@ static void C_gs_tomo_limber_work(
     const double* ell_prefactor,  // l*(l+1)/(l+0.5)^2 per ell (magnification)
     const double* ell_prefactor2, // sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2 per ell
     const int nell,             // number of multipole values
-    const int use_linear_ps,    // 1 = P_lin + linear kernels, 0 = full model
-    double** table             // output [ggl_Npowerspectra][nell]
+    double** table,             // output [ggl_Npowerspectra][nell], full model (or NULL)
+    double** table_lin          // output [ggl_Npowerspectra][nell], linear term (or NULL)
   )
 {
   // -----------------------------------------------------------------------
   // Warm up all functions that lazily initialize internal static tables.
   // Must be called single-threaded before any parallel region touches them.
   // -----------------------------------------------------------------------
-  // With use_linear_ps = 1 the one-loop bias (WB[4..7], KIA[6..8]) and the
-  // TATT kernels (KIA[2..5]) stay zero, so the cores reduce to b1*P_lin
-  // times (WK - WS*C1): exactly the physics of the FFTLog term.
+  // The linear term (table_lin) reads the one-loop bias and the TATT
+  // kernels at zero (ZERO below), so the cores reduce to b1*P_lin times
+  // (WK - WS*C1): exactly the physics of the FFTLog term.
   // -------------------------------------------------------------------------
   // HOD mode (include_HOD_GX = 1): the lens galaxies are the halo-model
   // occupation field. The density leg's power with matter is p_gm, and
@@ -4015,18 +4022,18 @@ static void C_gs_tomo_limber_work(
   // P_delta f_2h + P_1h,dI (see C_ss_tomo_limber_work); Limber, NLA and
   // perturbative-bias galaxies only in this version
   const int halo_ia = include_halo_IA;
-  if (1 == halo_ia && (1 == hod || 1 == use_linear_ps)) {
+  if (1 == halo_ia && (1 == hod || NULL != table_lin)) {
     log_fatal("include_halo_IA: needs include_HOD_GX = 0 and the "
               "Limber gs (adopt_limber_gs = 1)");
     exit(1);
   }
-  if (1 == hod && 1 == use_linear_ps) {
+  if (1 == hod && NULL != table_lin) {
     log_fatal("HOD C_l^gs is Limber-only: set adopt_limber_gs = 1");
     exit(1);
   }
 
   int nonlinear_bias = 0;
-  if (0 == use_linear_ps && 0 == hod) {
+  if (NULL != table && 0 == hod) {
     nonlinear_bias = has_b2_galaxies();
   }
 
@@ -4050,7 +4057,7 @@ static void C_gs_tomo_limber_work(
     (void) IA_A2_Z1(a, gf, 0);
     (void) IA_BTA_Z1(a, gf, 0);
     (void) Pdelta(ell/fK, a);
-    if (1 == use_linear_ps) {
+    if (NULL != table_lin) {
       (void) p_lin(ell/fK, a);
     }
     (void) gb1(0.1, 0);
@@ -4076,7 +4083,7 @@ static void C_gs_tomo_limber_work(
       (void) a_chi(0.9);
       (void) W_RSD(100, 0.9, 0.95, 0);
     }
-    if (nuisance.IA_MODEL == IA_MODEL_TATT && 0 == use_linear_ps) {
+    if (nuisance.IA_MODEL == IA_MODEL_TATT && NULL != table) {
       if (0 == nuisance.IA_code) get_FPT_IA();
     }
     if (1 == nonlinear_bias) {
@@ -4129,7 +4136,7 @@ static void C_gs_tomo_limber_work(
 
   double limTATT[3];
   double limbias[3];
-  const int tatt = (nuisance.IA_MODEL == IA_MODEL_TATT && 0 == use_linear_ps);
+  const int tatt = (nuisance.IA_MODEL == IA_MODEL_TATT && NULL != table);
   if (1 == halo_ia && 1 == tatt) {
     log_fatal("include_halo_IA supports the NLA model only");
     exit(1);
@@ -4156,7 +4163,7 @@ static void C_gs_tomo_limber_work(
   // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
   double apivw[MAX_SIZE_ARRAYS];
   double invgf2w[MAX_SIZE_ARRAYS];
-  if (1 == use_linear_ps) {
+  if (NULL != table_lin) {
     for (int i=0; i<redshift.clustering_nbin; i++) {
 #ifdef COSMO2D_FKEM_PIVOT_Z0
       apivw[i] = 1.0;
@@ -4170,8 +4177,15 @@ static void C_gs_tomo_limber_work(
 
   // per-thread scratch of the batched P reads (Pdelta_at_a: one call per
   // node, the z half of the table read once per node instead of once per
-  // multipole): KPN[2t] = the node's Limber wavenumbers, KPN[2t+1] = P
-  double** KPN = (double**) malloc2d(2*omp_get_max_threads(), nell);
+  // multipole): KPN[3t] = the node's Limber wavenumbers, KPN[3t+1] =
+  // P_delta, KPN[3t+2] = P_lin(k, a_piv) of the linear term
+  double** KPN = (double**) malloc2d(3*omp_get_max_threads(), nell);
+  // the one-loop bias and TATT inputs of the linear term's sum: zero, as
+  // in a linear-only call
+  double* ZERO = (double*) malloc1d(npts_max);
+  for (int p=0; p<npts_max; p++) {
+    ZERO[p] = 0.0;
+  }
   #pragma omp parallel
   {
     // -----------------------------------------------------------------------
@@ -4219,17 +4233,18 @@ static void C_gs_tomo_limber_work(
         if (p >= cn->npts) {
           continue; // padding node: bin zl has fewer nodes
         }
-        // P_delta, or the P_lin(k, a_piv) of the separable linear term
-        double* restrict kn = KPN[2*omp_get_thread_num()];
-        double* restrict pn = KPN[2*omp_get_thread_num() + 1];
+        // P_delta, and the P_lin(k, a_piv) of the separable linear term
+        double* restrict kn = KPN[3*omp_get_thread_num()];
+        double* restrict pn = KPN[3*omp_get_thread_num() + 1];
+        double* restrict pl = KPN[3*omp_get_thread_num() + 2];
         for (int i = 0; i < nell; i++) {
           kn[i] = (lx[i] + 0.5) / cn->data[CN_FK][p];
         }
-        if (0 == use_linear_ps) {
+        if (NULL != table) {
           Pdelta_at_a(cn->data[CN_A][p], kn, nell, pn);
         }
-        else {
-          p_lin_at_a(apivw[zl], kn, nell, pn);
+        if (NULL != table_lin) {
+          p_lin_at_a(apivw[zl], kn, nell, pl);
         }
         for (int i = 0; i < nell; i++) {
           const double a  = cn->data[CN_A][p];
@@ -4246,8 +4261,12 @@ static void C_gs_tomo_limber_work(
           // scale-dependent part lives in the Limber P_delta term,
           // where the FKEM split puts it.
           const double gf = cn->data[CN_GROWFAC][p];
-          KIA[0][zl][i][p] = (0 == use_linear_ps) ? pn[i] :
-                                                    gf*gf*invgf2w[zl]*pn[i];
+          if (NULL != table) {
+            KIA[0][zl][i][p] = pn[i];
+          }
+          if (NULL != table_lin) {
+            KIA[9][zl][i][p] = gf*gf*invgf2w[zl]*pl[i];
+          }
           if (1 == hod) {
             KH[0][zl][i][p] = p_gm(k, a, zl);
           }
@@ -4362,83 +4381,93 @@ static void C_gs_tomo_limber_work(
       const double* restrict WMAG    = WB[1][ZLNZ];
       const double* restrict b1      = WB[2][ZLNZ];
       const double* restrict bmag    = WB[3][ZLNZ];
-      const double* restrict b2      = WB[4][ZLNZ];
-      const double* restrict bs2     = WB[5][ZLNZ];
-      const double* restrict b3      = WB[6][ZLNZ];
-      const double* restrict bk      = WB[7][ZLNZ];
 
-      const double* restrict PK      = KIA[0][ZLNZ][i];
-      const double* restrict mixA    = KIA[2][ZLNZ][i];
-      const double* restrict mixB    = KIA[3][ZLNZ][i];
-      const double* restrict ta_dE1  = KIA[4][ZLNZ][i];
-      const double* restrict ta_dE2  = KIA[5][ZLNZ][i];
-      const double* restrict d1d2    = KIA[6][ZLNZ][i];
-      const double* restrict d1s2    = KIA[7][ZLNZ][i];
-      const double* restrict d1p3    = KIA[8][ZLNZ][i];
+      // o = 0: the full model into table; o = 1: the linear term into
+      // table_lin (PK = the separable P_lin, the one-loop bias and TATT
+      // inputs at zero; no HOD and no halo IA, so always the plain sum)
+      for (int o=0; o<2; o++) {
+        double** out = (0 == o) ? table : table_lin;
+        if (NULL == out) {
+          continue;
+        }
+        const double* restrict b2      = (0 == o) ? WB[4][ZLNZ] : ZERO;
+        const double* restrict bs2     = (0 == o) ? WB[5][ZLNZ] : ZERO;
+        const double* restrict b3      = (0 == o) ? WB[6][ZLNZ] : ZERO;
+        const double* restrict bk      = (0 == o) ? WB[7][ZLNZ] : ZERO;
 
-      double sum = 0.0;
-      if (1 == hod) {
-        /* PHYSICAL DERIVATION & LOGIC FLOW
-           1. lens leg = W_gal p_gm + W_mag ell_prefactor b_mag P_delta
-              (bias inside p_gm; magnification traces matter)
-           2. source leg = W_kappa - W_source C1           (NLA only)
-           3. C_l^gs = sum_p lens x source x (dchi/da) ep2 w_p / f_K^2 */
-        const double* restrict PGM = KH[0][ZLNZ][i];
-        #pragma omp simd reduction(+:sum)
-        for (int p = 0; p < npts; p++) {
-          const double amp  = (dchida[p]/(fK[p]*fK[p]))*ep2;
-          const double lens = WGAL[p]*PGM[p] + WMAG[p]*ep*bmag[p]*PK[p];
-          const double ans  = lens*(WK[p] - WS[p]*C1[p]);
-          sum += ans*amp*wt[p];
+        const double* restrict PK      = (0 == o) ? KIA[0][ZLNZ][i] : KIA[9][ZLNZ][i];
+        const double* restrict mixA    = (0 == o) ? KIA[2][ZLNZ][i] : ZERO;
+        const double* restrict mixB    = (0 == o) ? KIA[3][ZLNZ][i] : ZERO;
+        const double* restrict ta_dE1  = (0 == o) ? KIA[4][ZLNZ][i] : ZERO;
+        const double* restrict ta_dE2  = (0 == o) ? KIA[5][ZLNZ][i] : ZERO;
+        const double* restrict d1d2    = (0 == o) ? KIA[6][ZLNZ][i] : ZERO;
+        const double* restrict d1s2    = (0 == o) ? KIA[7][ZLNZ][i] : ZERO;
+        const double* restrict d1p3    = (0 == o) ? KIA[8][ZLNZ][i] : ZERO;
+
+        double sum = 0.0;
+        if (0 == o && 1 == hod) {
+          /* PHYSICAL DERIVATION & LOGIC FLOW
+             1. lens leg = W_gal p_gm + W_mag ell_prefactor b_mag P_delta
+                (bias inside p_gm; magnification traces matter)
+             2. source leg = W_kappa - W_source C1           (NLA only)
+             3. C_l^gs = sum_p lens x source x (dchi/da) ep2 w_p / f_K^2 */
+          const double* restrict PGM = KH[0][ZLNZ][i];
+          #pragma omp simd reduction(+:sum)
+          for (int p = 0; p < npts; p++) {
+            const double amp  = (dchida[p]/(fK[p]*fK[p]))*ep2;
+            const double lens = WGAL[p]*PGM[p] + WMAG[p]*ep*bmag[p]*PK[p];
+            const double ans  = lens*(WK[p] - WS[p]*C1[p]);
+            sum += ans*amp*wt[p];
+          }
         }
-      }
-      else if (1 == halo_ia) {
-        /* PHYSICAL DERIVATION & LOGIC FLOW (Fortuna et al. 2021)
-           1. lens leg = WGAL b1 + WMAG ep bmag + WRSD (perturbative)
-           2. source leg = WK P - WS (f_rc C1 P f_2h + P_1h,dI)
-           3. C_l^gs = sum_p [lens x source + WGAL oneloop (WK - WS f_rc
-              C1)] (dchi/da) ep2 w_p / f_K^2 - the one-loop bias meets
-              the tree-level IA only, as in the NLA core               */
-        const double* restrict PKT  = KHI[0][ZLNZ][i];
-        const double* restrict P1DI = KHI[1][ZLNZ][i];
-        const double* restrict frc  = FRC[ZLNZ];
-        #pragma omp simd reduction(+:sum)
-        for (int p = 0; p < npts; p++) {
-          const double g4  = growfac[p]*growfac[p]*growfac[p]*growfac[p];
-          const double k   = ell / fK[p];
-          const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
-          const double b1l =
-              int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
-                b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
-          const double ia     = frc[p]*C1[p]*PKT[p] + P1DI[p];
-          const double lens   = WGAL[p]*b1[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
-          const double source = WK[p]*PK[p] - WS[p]*ia;
-          const double ans    = lens*source
-                                + WGAL[p]*b1l*(WK[p] - WS[p]*frc[p]*C1[p]);
-          sum += ans*amp*wt[p];
+        else if (0 == o && 1 == halo_ia) {
+          /* PHYSICAL DERIVATION & LOGIC FLOW (Fortuna et al. 2021)
+             1. lens leg = WGAL b1 + WMAG ep bmag + WRSD (perturbative)
+             2. source leg = WK P - WS (f_rc C1 P f_2h + P_1h,dI)
+             3. C_l^gs = sum_p [lens x source + WGAL oneloop (WK - WS f_rc
+                C1)] (dchi/da) ep2 w_p / f_K^2 - the one-loop bias meets
+                the tree-level IA only, as in the NLA core               */
+          const double* restrict PKT  = KHI[0][ZLNZ][i];
+          const double* restrict P1DI = KHI[1][ZLNZ][i];
+          const double* restrict frc  = FRC[ZLNZ];
+          #pragma omp simd reduction(+:sum)
+          for (int p = 0; p < npts; p++) {
+            const double g4  = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+            const double k   = ell / fK[p];
+            const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
+            const double b1l =
+                int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
+                  b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
+            const double ia     = frc[p]*C1[p]*PKT[p] + P1DI[p];
+            const double lens   = WGAL[p]*b1[p] + WMAG[p]*ep*bmag[p] + WRSD[p];
+            const double source = WK[p]*PK[p] - WS[p]*ia;
+            const double ans    = lens*source
+                                  + WGAL[p]*b1l*(WK[p] - WS[p]*frc[p]*C1[p]);
+            sum += ans*amp*wt[p];
+          }
         }
-      }
-      else {
-        #pragma omp simd reduction(+:sum)
-        for (int p = 0; p < npts; p++) {
-          const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
-          const double k = ell / fK[p];
-          const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
-          const double b1l =
-              int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
-                b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
-          const double ans =
-              int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
-                WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
-                g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
-                b1[p],bmag[p],b1l,ep);
-          sum += ans*amp*wt[p];
+        else {
+          #pragma omp simd reduction(+:sum)
+          for (int p = 0; p < npts; p++) {
+            const double g4 = growfac[p]*growfac[p]*growfac[p]*growfac[p];
+            const double k = ell / fK[p];
+            const double amp = (dchida[p]/(fK[p]*fK[p]))*ep2;
+            const double b1l =
+                int_for_C_gs_tomo_limber_bias_oneloop_core(k,PK[p],g4,
+                  b2[p],bs2[p],b3[p],bk[p],d1d2[p],d1s2[p],d1p3[p]);
+            const double ans =
+                int_for_C_gs_tomo_limber_tatt_core(PK[p],WK[p],WS[p],
+                  WGAL[p],WMAG[p],WRSD[p],C1[p],C2[p],BTA[p],
+                  g4*ta_dE1[p],g4*ta_dE2[p],g4*mixA[p],g4*mixB[p],
+                  b1[p],bmag[p],b1l,ep);
+            sum += ans*amp*wt[p];
+          }
         }
+        out[j][i] = sum;
       }
-      table[j][i] = sum;
     }
   }
-  free(WB); free(WC); free(KIA); free(KPN);
+  free(WB); free(WC); free(KIA); free(KPN); free(ZERO);
   if (KH != NULL) {
     free(KH);
   }
@@ -4463,17 +4492,19 @@ static void C_gs_tomo_limber_work(
 //
 // and hands everything to C_gs_tomo_limber_work.
 //
-// use_linear_ps selects the power spectrum and the physics content:
-//   0 - the full model (P_delta, one-loop galaxy bias, NLA or TATT): the
-//       Limber C_l of the likelihood (C_gs_tomo_limber_nointerp_ells);
-//   1 - the linear term that the non-Limber C_gs_tomo subtracts:
-//       (D(a)/D(a_piv))^2 * P_lin(k, a_piv) per lens bin, b1 only,
-//       IA through C1 only (the exact
-//       content of the FFTLog term).
+// Two outputs, either may be NULL:
+//   out     - the full model (P_delta, one-loop galaxy bias, NLA or TATT):
+//             the Limber C_l of the likelihood
+//             (C_gs_tomo_limber_nointerp_ells);
+//   out_lin - the linear term that the non-Limber C_gs_tomo subtracts:
+//             (D(a)/D(a_piv))^2 * P_lin(k, a_piv) per lens bin, b1 only,
+//             IA through C1 only (the exact content of the FFTLog term).
+// With both, one pass shares the nodes, the weights and the RSD kernel
+// between them (see C_gs_tomo_limber_work), bitwise two separate calls.
 //
 // Example: w_gammat_tomo with like.adopt_limber[LIMBER_GS] = 0 calls C_gs_tomo,
-// which calls this function twice with ells = 0, 1, ..., 149 (use_linear_ps
-// = 0 and 1) to get both Limber terms of the non-Limber split at once.
+// which calls this function once with ells = 0, 1, ..., 149 and both
+// outputs to get both Limber terms of the non-Limber split at once.
 //
 // Cache invalidation:
 // the static Gauss-Legendre table w (64/128/256/512/
@@ -4485,18 +4516,19 @@ static void C_gs_tomo_limber_work(
 //   ells  - multipole values, length nell (need not be integers)
 //   nell  - number of multipole values
 //   NSIZE - number of ggl power spectra (= tomo.ggl_Npowerspectra)
-//   use_linear_ps - 1 = linear term of the non-Limber split, 0 = full model
-//   out   - output [NSIZE][nell], indexed out[nz][i]; pair nz is (ZL(nz), ZS(nz))
+//   out     - output [NSIZE][nell], the full model, indexed out[nz][i];
+//             pair nz is (ZL(nz), ZS(nz)) (NULL: not computed)
+//   out_lin - output [NSIZE][nell], the linear term (NULL: not computed)
 //
 // Returns:
-//   nothing; the result is written into out
+//   nothing; the results are written into out and out_lin
 // ---------------------------------------------------------------------------
-void C_gs_tomo_limber_linpsopt_nointerp_ells(
+void C_gs_tomo_limber_nl_lin_nointerp_ells(
     const double* ells,      // array of multipole values (length nell)
     const int nell,          // number of multipole values
     const int NSIZE,         // number of ggl power spectra
-    const int use_linear_ps, // 1 = P_lin + linear kernels, 0 = full model
-    double** out             // output [NSIZE][nell]
+    double** out,            // output [NSIZE][nell], full model (or NULL)
+    double** out_lin         // output [NSIZE][nell], linear term (or NULL)
   )
 {
   static gsl_integration_glfixed_table* w = NULL;
@@ -4519,9 +4551,20 @@ void C_gs_tomo_limber_linpsopt_nointerp_ells(
   if (nell <= 0) {
     log_fatal("nell = %d <= 0", nell); exit(1);
   }
+  if (NULL == out && NULL == out_lin) {
+    log_fatal("no output requested"); exit(1);
+  }
 
-  double** tmp_table = (double**) malloc2d(NSIZE, nell);
-  zero2d(tmp_table, NSIZE, nell);
+  double** tmp_table = NULL;
+  if (NULL != out) {
+    tmp_table = (double**) malloc2d(NSIZE, nell);
+    zero2d(tmp_table, NSIZE, nell);
+  }
+  double** tmp_lin = NULL;
+  if (NULL != out_lin) {
+    tmp_lin = (double**) malloc2d(NSIZE, nell);
+    zero2d(tmp_lin, NSIZE, nell);
+  }
 
   double* ep1  = (double*) malloc1d(nell);
   double* ep2 = (double*) malloc1d(nell);
@@ -4532,21 +4575,63 @@ void C_gs_tomo_limber_linpsopt_nointerp_ells(
     ep2[i] = (tmp > 0) ? sqrt(tmp)/((ells[i] + 0.5)*(ells[i] + 0.5)) : 0.0;
   }
 
-  C_gs_tomo_limber_work(cn_all, ells, ep1, ep2, nell, use_linear_ps, tmp_table);
+  C_gs_tomo_limber_work(cn_all, ells, ep1, ep2, nell, tmp_table, tmp_lin);
 
   for (int k = 0; k < NSIZE; k++) {
     for (int i = 0; i < nell; i++) {
-      out[k][i] = tmp_table[k][i];
+      if (NULL != out) {
+        out[k][i] = tmp_table[k][i];
+      }
+      if (NULL != out_lin) {
+        out_lin[k][i] = tmp_lin[k][i];
+      }
     }
   }
-  
-  free(tmp_table); free(ep1); free(ep2);
+
+  if (NULL != tmp_table) {
+    free(tmp_table);
+  }
+  if (NULL != tmp_lin) {
+    free(tmp_lin);
+  }
+  free(ep1); free(ep2);
 
   for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
     free_cosmo_nodes(&cn_all[zl]);
   }
 
   return;
+}
+
+// ---------------------------------------------------------------------------
+// One of the two outputs of C_gs_tomo_limber_nl_lin_nointerp_ells:
+// use_linear_ps = 0 the full model, 1 the linear term of the non-Limber
+// split.
+//
+// Parameters:
+//   ells  - multipole values, length nell (need not be integers)
+//   nell  - number of multipole values
+//   NSIZE - number of ggl power spectra (= tomo.ggl_Npowerspectra)
+//   use_linear_ps - 1 = linear term of the non-Limber split, 0 = full model
+//   out   - output [NSIZE][nell], indexed out[nz][i]
+//
+// Returns:
+//   nothing; the result is written into out
+// ---------------------------------------------------------------------------
+void C_gs_tomo_limber_linpsopt_nointerp_ells(
+    const double* ells,      // array of multipole values (length nell)
+    const int nell,          // number of multipole values
+    const int NSIZE,         // number of ggl power spectra
+    const int use_linear_ps, // 1 = P_lin + linear kernels, 0 = full model
+    double** out             // output [NSIZE][nell]
+  )
+{
+  if (0 == use_linear_ps) {
+    C_gs_tomo_limber_nl_lin_nointerp_ells(ells, nell, NSIZE, out, NULL);
+  }
+  else {
+    C_gs_tomo_limber_nl_lin_nointerp_ells(ells, nell, NSIZE, NULL, out);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4891,7 +4976,7 @@ double C_gs_tomo_limber(
       // ---------------------------------------------------------------
       zero2d(tabc, tomo.ggl_Npowerspectra, ncoarse);
 
-      C_gs_tomo_limber_work(cn_all, lxc, epc, ep2c, ncoarse, 0, tabc);
+      C_gs_tomo_limber_work(cn_all, lxc, epc, ep2c, ncoarse, tabc, NULL);
 
       const double hc = dlnc;
       const double inv_hc = 1.0/dlnc;
@@ -4932,7 +5017,7 @@ double C_gs_tomo_limber(
       }
     }
     else {
-      C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, 0, table);
+      C_gs_tomo_limber_work(cn_all, lx, ep, ep2, nell, table, NULL);
     }
 
     for (int zl = 0; zl < redshift.clustering_nbin; zl++) {
@@ -9444,10 +9529,11 @@ void C_gs_tomo(
     (void) C_gs_tomo_limber((double) limits.LMIN_tab + 1, ZL(0), ZS(0));
   }
 
-  // Limber terms at every l < LMAX_NOLIMBER: full model (P_delta) and the
-  // linear counterpart of the FFTLog term (P_lin). Indexed CLnl[nz][l].
-  C_gs_tomo_limber_linpsopt_nointerp_ells(lx, LNL, NSIZE, 0, CLnl);
-  C_gs_tomo_limber_linpsopt_nointerp_ells(lx, LNL, NSIZE, 1, CLlin);
+  // Limber terms at every l < LMAX_NOLIMBER, in one pass: full model
+  // (P_delta) and the linear counterpart of the FFTLog term (P_lin), which
+  // share the nodes, the weights and the RSD kernel. Indexed CLnl[nz][l],
+  // CLlin[nz][l].
+  C_gs_tomo_limber_nl_lin_nointerp_ells(lx, LNL, NSIZE, CLnl, CLlin);
 
   double zlo[nlens]; // Limber lens range (see the header comment)
   double zhi[nlens];

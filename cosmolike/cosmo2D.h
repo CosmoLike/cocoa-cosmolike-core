@@ -210,6 +210,16 @@ void C_gs_tomo_limber_linpsopt_nointerp_ells(
     double** out             // output [NSIZE][nell]
   );
 
+// Both at once (either output may be NULL): one pass shares the nodes,
+// the weights and the RSD kernel; bitwise two separate calls.
+void C_gs_tomo_limber_nl_lin_nointerp_ells(
+    const double* ells,      // array of multipole values (length nell)
+    const int nell,          // number of multipole values
+    const int NSIZE,         // number of ggl power spectra
+    double** out,            // output [NSIZE][nell], full model (or NULL)
+    double** out_lin         // output [NSIZE][nell], linear term (or NULL)
+  );
+
 // Batch computation at integer multipoles lmin..lmax-1.
 // Thin wrapper around C_gs_tomo_limber_nointerp_ells.
 void C_gs_tomo_limber_nointerp_batch(
