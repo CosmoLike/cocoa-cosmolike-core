@@ -44,6 +44,10 @@ double hoverh0v2(const double a, const double dchida);
 
 double a_chi(const double io_chi);
 
+// (re)build a_chi's bucket index from cosmology.chi; set_distances calls
+// it after every refill of the table
+void set_chi_bucket_index(void);
+
 // ----------------------------------------------------------------------
 // ----------------------------------------------------------------------
 

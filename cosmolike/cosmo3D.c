@@ -378,18 +378,87 @@ double hoverh0v2(const double a, const double dchida)
 }
 
 // ---------------------------------------------------------------------------
-// Inverse distance lookup a(chi): binary search on the chi column of
-// cosmology.chi, then linear inverse interpolation of z in the bracket,
+// Bucket index of the chi column for a_chi.
+//
+// Why it exists: a_chi runs millions of times per likelihood evaluation
+// (the two-radius RSD kernel of the Limber C_gg calls it twice per lens
+// bin, multipole and node), and its binary search, with branches the
+// CPU cannot predict, made it ~8% of all cycles of a des_cluster 6x2pt+N
+// evaluation (perf, amypond, v5.00). The chi column is not uniform, so
+// the direct-index trick of the z axes does not apply; instead the chi
+// range is cut into equal buckets, and each bucket stores the bracket of
+// its lower edge:
+//
+//   chi_bucket[b] = largest j <= chi_nz-2 with chi_j <= chi_min + b*dx
+//
+// a_chi then starts at chi_bucket[b] and walks the few nodes to the
+// bracket (see the exactness note there). Two buckets per node keep the
+// walk at a step or two.
+//
+// A chi column that is not strictly increasing has no unique bracket;
+// chi_nbucket = 0 then sends a_chi to the binary search.
+//
+// Cache invalidation:
+// set_distances calls this after every refill of cosmology.chi (always
+// serially, from Python, before any parallel region reads a_chi).
+//
+// Returns:
+//   nothing; fills the chi_bucket fields of cosmology
+// ---------------------------------------------------------------------------
+void set_chi_bucket_index(void)
+{
+  free(cosmology.chi_bucket);
+  cosmology.chi_bucket = NULL;
+  cosmology.chi_nbucket = 0;
+  const int nz = cosmology.chi_nz;
+  if (NULL == cosmology.chi || nz < 3) {
+    return;
+  }
+  const double* x = cosmology.chi[1];
+  for (int j=0; j<nz-1; j++) {
+    if (!(x[j] < x[j+1])) {
+      return; // not strictly increasing (or NaN): binary search
+    }
+  }
+  const int nb = 2*nz;
+  int* idx = (int*) malloc(nb*sizeof(int));
+  if (NULL == idx) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  const double dx = (x[nz-1] - x[0])/((double) nb);
+  int j = 0;
+  for (int b=0; b<nb; b++) {
+    const double lo = x[0] + b*dx;
+    while (j < nz-2 && x[j+1] <= lo) {
+      j++;
+    }
+    idx[b] = j;
+  }
+  cosmology.chi_bucket = idx;
+  cosmology.chi_bucket_min = x[0];
+  cosmology.chi_bucket_inv_dx = 1.0/dx;
+  cosmology.chi_nbucket = nb;
+}
+
+// ---------------------------------------------------------------------------
+// Inverse distance lookup a(chi): the bracket j of chi on the chi column
+// of cosmology.chi, then linear inverse interpolation of z in it,
 //
 //   z = z_j + dy*(z_{j+1} - z_j),  dy = (chi - chi_j)/(chi_{j+1} - chi_j),
 //
 // and a = 1/(1+z). The input is converted from c/H0 units to the table's
-// Mpc/h (io_chi * coverH0). The chi column is not uniformly spaced, so
-// this direction keeps the binary search even in the piecewise-uniform
-// build.
+// Mpc/h (io_chi * coverH0).
+//
+// The bracket comes from the bucket index (set_chi_bucket_index) and is
+// exactly the binary search's: inside [chi_0, chi_{nz-1}) both return the
+// unique j with chi_j <= chi < chi_{j+1}; below chi_0 both return 0; at
+// or above chi_{nz-1}, and for NaN, both return nz-2 (the binary search
+// never moves ihi there). The interpolation below is untouched, so a_chi
+// is bitwise the binary-search version. COSMO3D_NOT_USE_CHI_BUCKETS
+// restores the binary search.
 //
 // Cache invalidation:
-// no static state; the table is maintained by
+// no static state; the table and its bucket index are maintained by
 // set_distances (see chi_all).
 //
 // Parameters:
@@ -405,6 +474,34 @@ double a_chi(const double io_chi)
   const double chi = io_chi*cosmology.coverH0;
 
   int j = 0;
+#ifndef COSMO3D_NOT_USE_CHI_BUCKETS
+  if (cosmology.chi_nbucket > 0)
+  {
+    const double* restrict x = cosmology.chi[1];
+    const int nz = cosmology.chi_nz;
+    if (chi >= x[0] && chi < x[nz-1]) // false for NaN
+    {
+      int b = (int) ((chi - cosmology.chi_bucket_min)*
+                     cosmology.chi_bucket_inv_dx);
+      if (b > cosmology.chi_nbucket - 1) {
+        b = cosmology.chi_nbucket - 1;
+      }
+      j = cosmology.chi_bucket[b];
+      // b can be one bucket off where chi sits on a bucket edge (the
+      // product above rounds), so walk both ways to the bracket
+      while (j > 0 && x[j] > chi) {
+        j--;
+      }
+      while (j < nz-2 && x[j+1] <= chi) {
+        j++;
+      }
+    }
+    else {
+      j = (chi < x[0]) ? 0 : nz-2;
+    }
+  }
+  else
+#endif
   {
     size_t ilo = 0;
     size_t ihi = cosmology.chi_nz-1;

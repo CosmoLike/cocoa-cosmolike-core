@@ -2276,7 +2276,8 @@ void set_bias_PS(
 // When the size or any entry changed (fdiff scan): writes cosmology.chi
 // (row 0 = z, row 1 = chi) and cosmology.chi_nz, precomputes the
 // direct-index segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// (detect_uniform_segments), NaN-scans during the parallel fill, and bumps
+// (detect_uniform_segments), NaN-scans during the parallel fill, rebuilds
+// a_chi's bucket index (set_chi_bucket_index), and bumps
 // cosmology.random. Unchanged input leaves the cache key alone.
 //
 // Validation: equal input sizes and at least 5 points, else critical() +
@@ -2348,6 +2349,7 @@ void set_distances(vector io_z, vector io_chi)
       cosmology.chi[0][i] = io_z(i);
       cosmology.chi[1][i] = io_chi(i);
     }
+    set_chi_bucket_index(); // a_chi's bracket lookup (cosmo3D.c)
     cosmology.random = RandomNumber::get_instance().get();
   }
   debug("{}: Ends", "set_distances");

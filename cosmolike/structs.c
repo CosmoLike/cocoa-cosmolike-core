@@ -116,6 +116,10 @@ void reset_cosmology_struct(void)
   cosmology.lnPL_cb = NULL;
   cosmology.chi_nz = 0;
   cosmology.chi = NULL;
+  // the bucket index belongs to the chi table (structs.h)
+  free(cosmology.chi_bucket);
+  cosmology.chi_bucket = NULL;
+  cosmology.chi_nbucket = 0;
   cosmology.G_nz = 0;
   cosmology.G = NULL;
 }
