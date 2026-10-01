@@ -252,9 +252,7 @@ typedef struct
   // Bucket index of the chi column for a_chi (built by
   // set_chi_bucket_index, which set_distances calls): the range
   // [chi[1][0], chi[1][chi_nz-1]] cut into chi_nbucket equal buckets;
-  // chi_bucket[b] is the bracket of bucket b's lower edge. chi_nbucket
-  // = 0 (no table, or a chi column that is not strictly increasing)
-  // sends a_chi to the binary search.
+  // chi_bucket[b] is the bracket of bucket b's lower edge.
   int     chi_nbucket;
   int*    chi_bucket;
   double  chi_bucket_min;

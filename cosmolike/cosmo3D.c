@@ -52,7 +52,8 @@
 // checked: a table filled without it, or with a grid that is not
 // piecewise-uniform, makes the lookups land in wrong brackets and
 // return silently wrong interpolants. Without the macro every lookup
-// binary-searches and needs no metadata.
+// but a_chi's binary-searches and needs no metadata; a_chi uses its own
+// bucket index in both builds (set_chi_bucket_index).
 // ---------------------------------------------------------------------------
 
 #ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
@@ -395,8 +396,8 @@ double hoverh0v2(const double a, const double dchida)
 // bracket (see the exactness note there). Two buckets per node keep the
 // walk at a step or two.
 //
-// A chi column that is not strictly increasing has no unique bracket;
-// chi_nbucket = 0 then sends a_chi to the binary search.
+// A chi column that is not strictly increasing has no unique bracket (and
+// a zero-width interval would divide by zero in a_chi): abort.
 //
 // Cache invalidation:
 // set_distances calls this after every refill of cosmology.chi (always
@@ -411,13 +412,12 @@ void set_chi_bucket_index(void)
   cosmology.chi_bucket = NULL;
   cosmology.chi_nbucket = 0;
   const int nz = cosmology.chi_nz;
-  if (NULL == cosmology.chi || nz < 3) {
-    return;
-  }
   const double* x = cosmology.chi[1];
   for (int j=0; j<nz-1; j++) {
     if (!(x[j] < x[j+1])) {
-      return; // not strictly increasing (or NaN): binary search
+      log_fatal("chi(z) is not strictly increasing at z = %g",
+                cosmology.chi[0][j]);
+      exit(1);
     }
   }
   const int nb = 2*nz;
@@ -450,12 +450,11 @@ void set_chi_bucket_index(void)
 // Mpc/h (io_chi * coverH0).
 //
 // The bracket comes from the bucket index (set_chi_bucket_index) and is
-// exactly the binary search's: inside [chi_0, chi_{nz-1}) both return the
-// unique j with chi_j <= chi < chi_{j+1}; below chi_0 both return 0; at
-// or above chi_{nz-1}, and for NaN, both return nz-2 (the binary search
-// never moves ihi there). The interpolation below is untouched, so a_chi
-// is bitwise the binary-search version. COSMO3D_NOT_USE_CHI_BUCKETS
-// restores the binary search.
+// exactly the one of the binary search a_chi used before: inside
+// [chi_0, chi_{nz-1}) the unique j with chi_j <= chi < chi_{j+1}; 0 below
+// chi_0; nz-2 at or above chi_{nz-1}, and for NaN (the binary search never
+// moved ihi there). The interpolation is unchanged, so a_chi is bitwise
+// the binary-search version.
 //
 // Cache invalidation:
 // no static state; the table and its bucket index are maintained by
@@ -473,47 +472,28 @@ double a_chi(const double io_chi)
   // c/H0 in Mpc/h = 2997.92458)
   const double chi = io_chi*cosmology.coverH0;
 
+  const double* restrict x = cosmology.chi[1];
+  const int nz = cosmology.chi_nz;
   int j = 0;
-#ifndef COSMO3D_NOT_USE_CHI_BUCKETS
-  if (cosmology.chi_nbucket > 0)
+  if (chi >= x[0] && chi < x[nz-1]) // false for NaN
   {
-    const double* restrict x = cosmology.chi[1];
-    const int nz = cosmology.chi_nz;
-    if (chi >= x[0] && chi < x[nz-1]) // false for NaN
-    {
-      int b = (int) ((chi - cosmology.chi_bucket_min)*
-                     cosmology.chi_bucket_inv_dx);
-      if (b > cosmology.chi_nbucket - 1) {
-        b = cosmology.chi_nbucket - 1;
-      }
-      j = cosmology.chi_bucket[b];
-      // b can be one bucket off where chi sits on a bucket edge (the
-      // product above rounds), so walk both ways to the bracket
-      while (j > 0 && x[j] > chi) {
-        j--;
-      }
-      while (j < nz-2 && x[j+1] <= chi) {
-        j++;
-      }
+    int b = (int) ((chi - cosmology.chi_bucket_min)*
+                   cosmology.chi_bucket_inv_dx);
+    if (b > cosmology.chi_nbucket - 1) {
+      b = cosmology.chi_nbucket - 1;
     }
-    else {
-      j = (chi < x[0]) ? 0 : nz-2;
+    j = cosmology.chi_bucket[b];
+    // b can be one bucket off where chi sits on a bucket edge (the
+    // product above rounds), so walk both ways to the bracket
+    while (j > 0 && x[j] > chi) {
+      j--;
+    }
+    while (j < nz-2 && x[j+1] <= chi) {
+      j++;
     }
   }
-  else
-#endif
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.chi_nz-1;
-    while (ihi > ilo + 1)
-    {
-      size_t ll = (ihi + ilo)/2;
-      if (cosmology.chi[1][ll] > chi)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
+  else {
+    j = (chi < x[0]) ? 0 : nz-2;
   }
 
   const double dy = (chi                   - cosmology.chi[1][j])/
@@ -1457,8 +1437,7 @@ double p_nonlin(const double k, const double a)
 // Every out[m] is bitwise p_lin(k[m], a): the k half and the bilinear
 // combination are p_lin's expressions verbatim, and the hoisted z half
 // computes the same values from the same a. The fallback build (binary
-// searches, no COSMO3D_ASSUME_PIECEWISE_UNIFORM) and
-// COSMO3D_NOT_USE_PK_BATCH simply call p_lin per entry.
+// searches, no COSMO3D_ASSUME_PIECEWISE_UNIFORM) calls p_lin per entry.
 //
 // Parameters:
 //   a   - scale factor
@@ -1471,7 +1450,7 @@ double p_nonlin(const double k, const double a)
 // ---------------------------------------------------------------------------
 void p_lin_at_a(const double a, const double* k, const int n, double* out)
 {
-#if defined(COSMO3D_ASSUME_PIECEWISE_UNIFORM) && !defined(COSMO3D_NOT_USE_PK_BATCH)
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   const double z = 1.0 / a - 1.0;
   const int j = piecewise_index(z, cosmology.lnPL_z_nseg,
                                 cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
@@ -1519,7 +1498,7 @@ void p_lin_at_a(const double a, const double* k, const int n, double* out)
 // ---------------------------------------------------------------------------
 void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
 {
-#if defined(COSMO3D_ASSUME_PIECEWISE_UNIFORM) && !defined(COSMO3D_NOT_USE_PK_BATCH)
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   const double coverH0 = cosmology.coverH0;
   const double z      = 1.0 / a - 1.0;
   const int j = piecewise_index(z, cosmology.lnP_z_nseg,
