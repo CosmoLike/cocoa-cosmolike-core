@@ -237,6 +237,16 @@ void C_gg_tomo_limber_linpsopt_nointerp_ells(
     double** out             // output [NSIZE][nell]
   );
 
+// Both at once (either output may be NULL): one pass shares the nodes,
+// the radial weights and the RSD kernel; bitwise two separate calls.
+void C_gg_tomo_limber_nl_lin_nointerp_ells(
+    const double* ells,      // array of multipole values (length nell)
+    const int nell,          // number of multipole values
+    const int NSIZE,         // number of gg power spectra (= clustering_nbin)
+    double** out,            // output [NSIZE][nell], full model (or NULL)
+    double** out_lin         // output [NSIZE][nell], linear term (or NULL)
+  );
+
 void C_gg_tomo_limber_nointerp_ells(
     const double* ells,  // array of multipole values (length nell)
     const int nell,      // number of multipole values
