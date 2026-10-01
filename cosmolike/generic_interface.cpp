@@ -378,8 +378,8 @@ void initial_setup()
   }
 
   like.Ncl = 0;
-  like.lmin = 0;
-  like.lmax = 0;
+  like.lrange[RANGE_MIN] = 0;
+  like.lrange[RANGE_MAX] = 0;
 
   // reset bias - pretty important to setup variables to zero or 1 via reset
   reset_redshift_struct();
@@ -1201,8 +1201,8 @@ void init_bias(vector bias_z_evol_model)
 // ---------------------------------------------------------------------------
 // Define the Fourier-space band powers of the data vector.
 //
-// Writes like.Ncl, like.lmin, like.lmax, like.lmax_shear and reallocates
-// like.ell with the Ncl log-spaced bin centers
+// Writes like.Ncl, like.lrange[RANGE_MIN, RANGE_MAX], like.lmax_shear and
+// reallocates like.ell with the Ncl log-spaced bin centers
 //   ell_i = exp(ln(lmin) + (i + 0.5) dlnl),  dlnl = ln(lmax/lmin)/Ncl.
 // No cache key is bumped, and none is needed (unlike the real-space
 // binning below): no cached table holds values at the band powers. The
@@ -1213,8 +1213,8 @@ void init_bias(vector bias_z_evol_model)
 //
 // Parameters:
 //   nells      - number of band powers (> 0), written to like.Ncl
-//   lmin       - lowest multipole (like.lmin)
-//   lmax       - highest multipole (like.lmax)
+//   lmin       - lowest multipole (like.lrange[RANGE_MIN])
+//   lmax       - highest multipole (like.lrange[RANGE_MAX])
 //   lmax_shear - highest shear-shear multipole (like.lmax_shear)
 //
 // Returns:
@@ -1239,8 +1239,8 @@ void init_binning_fourier(
   debug(debugsel, fname, "l_max_shear", lmax_shear);
 
   like.Ncl = nells;
-  like.lmin = lmin;
-  like.lmax = lmax;
+  like.lrange[RANGE_MIN] = lmin;
+  like.lrange[RANGE_MAX] = lmax;
   like.lmax_shear = lmax_shear;
   
   const double logdl = (std::log(lmax) - std::log(lmin))/ (double) like.Ncl;
@@ -1250,7 +1250,7 @@ void init_binning_fourier(
   like.ell = (double*) malloc(sizeof(double)*like.Ncl);
   
   for (int i=0; i<like.Ncl; i++) {
-    like.ell[i] = std::exp(std::log(like.lmin) + (i + 0.5)*logdl);
+    like.ell[i] = std::exp(std::log(like.lrange[RANGE_MIN]) + (i + 0.5)*logdl);
     /*debug(
         "{}: Bin {:d}, {} = {:d}, {} = {:d} and {} = {:d}",
         "init_binning_fourier",
@@ -2135,8 +2135,8 @@ void set_IA_PS(
   int cache_update = 0;
   if (NULL == FPTIA.tab ||
       FPTIA.N != N ||
-      fdiff(FPTIA.k_min, kmin * coverH0 ) || 
-      fdiff(FPTIA.k_max, kmax * coverH0) || 
+      fdiff(FPTIA.krange[RANGE_MIN], kmin * coverH0 ) || 
+      fdiff(FPTIA.krange[RANGE_MAX], kmax * coverH0) || 
       fdiff(FPTIA.k_cutoff, cutoff * coverH0)) {
     cache_update = 1;
   }
@@ -2159,8 +2159,8 @@ void set_IA_PS(
     }
   }
   if (1 == cache_update || 1 == force_cache_update_test) { 
-    FPTIA.k_min  = kmin * coverH0;     // input in units of h/Mpc
-    FPTIA.k_max  = kmax * coverH0;     // input in units of h/Mpc
+    FPTIA.krange[RANGE_MIN]  = kmin * coverH0;     // input in units of h/Mpc
+    FPTIA.krange[RANGE_MAX]  = kmax * coverH0;     // input in units of h/Mpc
     FPTIA.N      = N;
     FPTIA.sigma4 = 0.0;                // Not relevant for IA
     FPTIA.k_cutoff = cutoff * coverH0; // input in units of h/Mpc
@@ -2266,8 +2266,8 @@ void set_bias_PS(
   int cache_update = 0;
   if (NULL == FPTbias.tab ||
       FPTbias.N != N ||
-      fdiff(FPTbias.k_min, kmin * coverH0) || 
-      fdiff(FPTbias.k_max, kmax * coverH0) || 
+      fdiff(FPTbias.krange[RANGE_MIN], kmin * coverH0) || 
+      fdiff(FPTbias.krange[RANGE_MAX], kmax * coverH0) || 
       fdiff(FPTbias.k_cutoff, cutoff * coverH0) ||
       fdiff(FPTbias.sigma4, sigma4 / (coverH0cube))) {
     cache_update = 1;
@@ -2293,8 +2293,8 @@ void set_bias_PS(
 
   if (1 == cache_update || 1 == force_cache_update_test) { 
     FPTbias.N        = N;
-    FPTbias.k_min    = kmin * coverH0;    // input in units of h/Mpc
-    FPTbias.k_max    = kmax * coverH0;    // input in units of h/Mpc
+    FPTbias.krange[RANGE_MIN]    = kmin * coverH0;    // input in units of h/Mpc
+    FPTbias.krange[RANGE_MAX]    = kmax * coverH0;    // input in units of h/Mpc
     FPTbias.k_cutoff = cutoff *coverH0; // input in units of h/Mpc
     FPTbias.sigma4   = sigma4 / (coverH0cube);
     // FPTbias.tab_int aliases FPTbias.tab after a cfastpt call at the default

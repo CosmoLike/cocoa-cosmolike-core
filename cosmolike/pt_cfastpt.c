@@ -160,8 +160,8 @@ void get_FPT_bias(void)
  
   if (new_tables)
   {
-    FPTbias.k_min    = 0.05;
-    FPTbias.k_max    = 1.0e+6;
+    FPTbias.krange[RANGE_MIN]    = 0.05;
+    FPTbias.krange[RANGE_MAX]    = 1.0e+6;
     FPTbias.k_cutoff = 1.0e+4;
     FPTbias.N        = 1100 + 200 * Ntable.FPTboost;
     // internal (convolution) grid, rounded up to even (the FFTLog engine
@@ -202,8 +202,8 @@ void get_FPT_bias(void)
     const long Nout = FPTbias.N;
     const long Nk = FPTbias.N_int;
     double** tab_int = FPTbias.tab_int; // aliases FPTbias.tab when Nk == Nout
-    const double lnkmin = log(FPTbias.k_min);
-    const double lnspan = log(FPTbias.k_max) - lnkmin;
+    const double lnkmin = log(FPTbias.krange[RANGE_MIN]);
+    const double lnspan = log(FPTbias.krange[RANGE_MAX]) - lnkmin;
     const double dlogk = lnspan / Nk;
  
     // --- build k grid and linear P(k) ---
@@ -365,8 +365,8 @@ void get_FPT_IA(void)
                           FPTIA.tab != owned_tab);
   if (new_tables)
   {
-    FPTIA.k_min    = 0.05;
-    FPTIA.k_max    = 1.0e+6;
+    FPTIA.krange[RANGE_MIN]    = 0.05;
+    FPTIA.krange[RANGE_MAX]    = 1.0e+6;
     FPTIA.k_cutoff = 1.0e+4;
     FPTIA.sigma4   = 0.0;
     FPTIA.N        = 1100 + 200 * Ntable.FPTboost;
@@ -405,8 +405,8 @@ void get_FPT_IA(void)
     double *Pin = tab_int[11];
 
     double lim[3];
-    lim[0] = log(FPTIA.k_min);
-    lim[1] = log(FPTIA.k_max);
+    lim[0] = log(FPTIA.krange[RANGE_MIN]);
+    lim[1] = log(FPTIA.krange[RANGE_MAX]);
     lim[2] = (lim[1] - lim[0]) / Nk;
 
     #pragma omp parallel for schedule(static)

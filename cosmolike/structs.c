@@ -61,8 +61,8 @@ void reset_like_struct(void)
   like.Ncl = 0;
   like.Ncos = 0;
   like.Ndata = 0;
-  like.lmin = 0;
-  like.lmax = 0;
+  like.lrange[RANGE_MIN] = 0;
+  like.lrange[RANGE_MAX] = 0;
   if((like.ell != NULL) == 1)
   {
     free(like.ell);

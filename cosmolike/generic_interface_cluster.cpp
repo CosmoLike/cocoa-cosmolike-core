@@ -1,5 +1,9 @@
 #include "cosmolike/generic_interface_cluster.hpp"
 #include <algorithm>
+#include <bit>
+#include <cctype>
+#include <cstring>
+#include <fstream>
 #include <string_view>
 #include <unordered_map>
 using namespace std::literals; // enables "sv" literal
@@ -1514,13 +1518,131 @@ void IPCluster::set_data(std::string datavector_filename)
 
 
 // ---------------------------------------------------------------------------
+// True when the file starts with the NumPy .npy magic string.
+// ---------------------------------------------------------------------------
+static bool is_npy_file(const std::string& file_name)
+{
+  std::ifstream input_file(file_name, std::ios::binary);
+  char magic[6] = {0};
+  input_file.read(magic, 6);
+  return (6 == input_file.gcount()) && (0 == std::memcmp(magic, "\x93NUMPY", 6));
+}
+
+// ---------------------------------------------------------------------------
+// Read a covariance stored as a NumPy .npy file: the packed upper triangle
+// (diagonal included) of the n x n matrix, row by row (row i holds columns
+// j = i ... n-1; numpy: C[np.triu_indices(n)]), as little-endian float64.
+// Returns the (i, j, cov) table that read_table returns for the 3-column
+// text format, so both formats share every later stage of set_inv_cov.
+//
+// Why: the joint covariance of the cluster data set (n = 2812) is 124 MB as
+// text and 32 MB in this form, and every regeneration of it adds a Git LFS
+// object. The doubles are stored exactly (scripts/make_synthetic_data.py
+// writes them), so the inverse and every chi2 are bitwise those of the
+// text file holding the same numbers.
+//
+// Validation: critical() + exit(1) unless the file holds an .npy header of
+// version 1-3 describing a C-ordered 1-D '<f8' array of n(n+1)/2 entries,
+// followed by exactly that many doubles.
+//
+// Parameters:
+//   file_name - the .npy file
+//   n         - size of the joint vector (the covariance is n x n)
+//
+// Returns:
+//   (n(n+1)/2 x 3) matrix of (i, j, cov) rows, i <= j
+// ---------------------------------------------------------------------------
+static matrix read_npy_packed_upper_cov(const std::string& file_name, const int n)
+{
+  static constexpr std::string_view fname = "read_npy_packed_upper_cov"sv;
+  if constexpr (std::endian::native != std::endian::little) {
+    critical("{}: {} holds little-endian doubles; this host is big-endian",
+      fname, file_name);
+    exit(1);
+  }
+  std::ifstream input_file(file_name, std::ios::binary);
+  if (!input_file.is_open()) [[unlikely]] {
+    critical("{}: file {} cannot be opened", fname, file_name);
+    exit(1);
+  }
+  // magic (6 bytes), major and minor version, header length: 2 bytes
+  // (version 1) or 4 bytes (versions 2 and 3), little-endian
+  unsigned char lead[10] = {0};
+  input_file.read(reinterpret_cast<char*>(lead), 8);
+  const int major = lead[6];
+  size_t hlen = 0;
+  if (1 == major) {
+    input_file.read(reinterpret_cast<char*>(lead + 8), 2);
+    hlen = static_cast<size_t>(lead[8]) | (static_cast<size_t>(lead[9]) << 8);
+  }
+  else if (2 == major || 3 == major) {
+    unsigned char b[4] = {0};
+    input_file.read(reinterpret_cast<char*>(b), 4);
+    hlen = static_cast<size_t>(b[0])         | (static_cast<size_t>(b[1]) << 8) |
+           (static_cast<size_t>(b[2]) << 16) | (static_cast<size_t>(b[3]) << 24);
+  }
+  else {
+    critical("{}: {}: unsupported .npy version {}", fname, file_name, major);
+    exit(1);
+  }
+  std::string header(hlen, ' ');
+  input_file.read(&header[0], static_cast<std::streamsize>(hlen));
+  if (!input_file) [[unlikely]] {
+    critical("{}: {}: truncated .npy header", fname, file_name);
+    exit(1);
+  }
+  // the header is a python dict literal; compare it without whitespace
+  std::string h;
+  for (const char c : header) {
+    if (!std::isspace(static_cast<unsigned char>(c))) {
+      h += c;
+    }
+  }
+  const size_t npacked = static_cast<size_t>(n)*static_cast<size_t>(n + 1)/2;
+  const std::string shape = fmt::format("'shape':({},)", npacked);
+  if (std::string::npos == h.find("'descr':'<f8'") ||
+      std::string::npos == h.find("'fortran_order':False") ||
+      std::string::npos == h.find(shape)) [[unlikely]] {
+    critical("{}: {}: header {} is not a 1-D '<f8' array of {} entries "
+      "(the packed upper triangle of the {} x {} covariance)",
+      fname, file_name, header, npacked, n, n);
+    exit(1);
+  }
+  std::vector<double> packed(npacked);
+  input_file.read(reinterpret_cast<char*>(packed.data()),
+                  static_cast<std::streamsize>(npacked*sizeof(double)));
+  if (!input_file) [[unlikely]] {
+    critical("{}: {}: fewer than {} doubles after the header",
+      fname, file_name, npacked);
+    exit(1);
+  }
+  if (std::char_traits<char>::eof() != input_file.peek()) [[unlikely]] {
+    critical("{}: {}: bytes left after {} doubles", fname, file_name, npacked);
+    exit(1);
+  }
+  matrix table(npacked, 3);
+  size_t r = 0;
+  for (int i=0; i<n; i++) {
+    for (int j=i; j<n; j++) {
+      table(r,0) = i;
+      table(r,1) = j;
+      table(r,2) = packed[r];
+      r++;
+    }
+  }
+  return table;
+}
+
+// ---------------------------------------------------------------------------
 // Load, mask and invert the covariance of the joint vector.
 //
 // Accepted formats (read_table columns): 3 = (i, j, cov); 4 = (i, j,
-// gauss, non-gauss), summed; 10 = CosmoCov, cov = col 8 + col 9. Each
-// stored element is mirrored; off-diagonal elements are zeroed when either
-// index is masked, masked diagonals are kept (the IP recipe, so
-// get_cov_masked shows the file's variances).
+// gauss, non-gauss), summed; 10 = CosmoCov, cov = col 8 + col 9. A NumPy
+// .npy file (recognized by its magic string, not its name) holds the
+// packed upper triangle in binary and is read as the 3-column format (see
+// read_npy_packed_upper_cov). Each stored element is mirrored; off-diagonal
+// elements are zeroed when either index is masked, masked diagonals are
+// kept (the IP recipe, so get_cov_masked shows the file's variances).
 //
 // Stages after assembly (see the class header for why the squeezed
 // matrix is the one inverted):
@@ -1538,7 +1660,9 @@ void IPCluster::set_inv_cov(std::string cov_filename)
     exit(1);
   }
   this->cov_filename_ = cov_filename;
-  matrix table = read_table(cov_filename);
+  matrix table = is_npy_file(cov_filename) ?
+    read_npy_packed_upper_cov(cov_filename, this->ndata_) :
+    read_table(cov_filename);
 
   // --- 1. COLUMNS OF THE FILE FORMAT ---
 
