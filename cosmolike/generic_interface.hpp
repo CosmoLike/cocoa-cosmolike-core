@@ -615,6 +615,10 @@ void init_fpt_internal_boost(
     const double internal_boost
   );
 
+void init_nonlimber_accuracy_boost(
+    const double nonlimber_boost
+  );
+
 void init_adopt_limber_gs(
     const int adopt_limber_gs
   );
