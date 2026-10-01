@@ -2654,8 +2654,8 @@ static void C_ss_tomo_limber_work(
   double limTATT[3];
   if (nuisance.IA_MODEL == IA_MODEL_TATT) {
     if (0 == nuisance.IA_code) get_FPT_IA();
-    limTATT[0] = log(FPTIA.k_min);
-    limTATT[1] = log(FPTIA.k_max);
+    limTATT[0] = log(FPTIA.krange[RANGE_MIN]);
+    limTATT[1] = log(FPTIA.krange[RANGE_MAX]);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
   }
   // -----------------------------------------------------------------------
@@ -3074,8 +3074,8 @@ void dC_ss_dlnk_tomo_limber_work(
   double limTATT[3];
   if (nuisance.IA_MODEL == IA_MODEL_TATT) {
     if (0 == nuisance.IA_code) get_FPT_IA();
-    limTATT[0] = log(FPTIA.k_min);
-    limTATT[1] = log(FPTIA.k_max);
+    limTATT[0] = log(FPTIA.krange[RANGE_MIN]);
+    limTATT[1] = log(FPTIA.krange[RANGE_MAX]);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
   }
 
@@ -4148,14 +4148,14 @@ static void C_gs_tomo_limber_work(
   }
   if (tatt) {
     if (0 == nuisance.IA_code) get_FPT_IA();
-    limTATT[0] = log(FPTIA.k_min);
-    limTATT[1] = log(FPTIA.k_max);
+    limTATT[0] = log(FPTIA.krange[RANGE_MIN]);
+    limTATT[1] = log(FPTIA.krange[RANGE_MAX]);
     limTATT[2] = (limTATT[1] - limTATT[0])/FPTIA.N;
   }
   if (1 == nonlinear_bias) {
     if (0 == nuisance.IA_code) get_FPT_bias();
-    limbias[0] = log(FPTbias.k_min);
-    limbias[1] = log(FPTbias.k_max);
+    limbias[0] = log(FPTbias.krange[RANGE_MIN]);
+    limbias[1] = log(FPTbias.krange[RANGE_MAX]);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
   }
   
@@ -5394,8 +5394,8 @@ static void C_gg_tomo_limber_work(
   double limbias[3] = {0.0, 0.0, 0.0};
   double s4 = 0.0;
   if (1 == nonlinear_bias) {
-    limbias[0] = log(FPTbias.k_min);
-    limbias[1] = log(FPTbias.k_max);
+    limbias[0] = log(FPTbias.krange[RANGE_MIN]);
+    limbias[1] = log(FPTbias.krange[RANGE_MAX]);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
     s4 = FPTbias.sigma4;
   }
@@ -6179,8 +6179,8 @@ static void C_gk_tomo_limber_work(
   const double chi_a_min = (1 == include_RSD_GK) ? chi(limits.a_min) : 0.0;
   double limbias[3] = {0.0, 0.0, 0.0};
   if (1 == nonlinear_bias) {
-    limbias[0] = log(FPTbias.k_min);
-    limbias[1] = log(FPTbias.k_max);
+    limbias[0] = log(FPTbias.krange[RANGE_MIN]);
+    limbias[1] = log(FPTbias.krange[RANGE_MAX]);
     limbias[2] = (limbias[1] - limbias[0])/FPTbias.N;
   }
 

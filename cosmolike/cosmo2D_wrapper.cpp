@@ -103,12 +103,13 @@ arma::Col<double> get_binning_real_space()
 // ---------------------------------------------------------------------------
 // Log-spaced bin-center multipoles of the Ncl fourier-space bins:
 //
-//   ell_i = exp(ln(like.lmin) + (i + 1/2) dlnl), dlnl = ln(lmax/lmin)/Ncl,
+//   ell_i = exp(ln(lmin) + (i + 1/2) dlnl), dlnl = ln(lmax/lmin)/Ncl,
+//   [lmin, lmax] = like.lrange[RANGE_MIN, RANGE_MAX],
 //
 // the log-space midpoint (geometric center) of each bin.
 //
 // Parameters:
-//   none (reads like.Ncl, like.lmin, like.lmax)
+//   none (reads like.Ncl, like.lrange[RANGE_MIN], like.lrange[RANGE_MAX])
 //
 // Returns:
 //   arma::Col of length like.Ncl: the bin-center multipoles
@@ -116,9 +117,10 @@ arma::Col<double> get_binning_real_space()
 arma::Col<double> get_binning_fourier_space()
 {  
   arma::Col<double> result(like.Ncl, arma::fill::none);
-  const double logdl = (std::log(like.lmax) - std::log(like.lmin))/like.Ncl;
+  const double logdl = (std::log(like.lrange[RANGE_MAX]) -
+                        std::log(like.lrange[RANGE_MIN]))/like.Ncl;
   for (int i = 0; i < like.Ncl; i++) {  
-    result(i) = std::exp(std::log(like.lmin) + (i + 0.5)*logdl);
+    result(i) = std::exp(std::log(like.lrange[RANGE_MIN]) + (i + 0.5)*logdl);
   }
   return result;
 }

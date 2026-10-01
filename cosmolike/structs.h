@@ -293,8 +293,7 @@ typedef struct
 { // parameters for power spectrum passed to FASTPT
   int N;      // output grid points (what the likelihood interpolates)
   int N_int;  // internal (convolution) grid points; == N: single grid
-  double k_min;
-  double k_max;
+  double krange[2]; // k range [RANGE_MIN, RANGE_MAX] (units of H0/c)
   double k_cutoff;
   double sigma4;
   double** tab;     // output tables
@@ -428,8 +427,8 @@ typedef struct
   int Ncl;
   int Ncos;
   int Ndata;
-  int lmin;
-  int lmax;
+  int lrange[2];         // multipole range [RANGE_MIN, RANGE_MAX] of the
+                         // Fourier bands (like.ell: Ncl log-spaced centers)
   double* ell;
   double cosmax;
   double Rmin_bias;
