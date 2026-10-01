@@ -1110,9 +1110,16 @@ static void nonlinear_power_at_nodes(
     double*** p_nonlinear        // out [nbin_cluster][nell][npts_max]
   )
 {
-  #pragma omp parallel for collapse(3) schedule(static)
-  for (int ni = 0; ni < nbin_cluster; ni++) {
-    for (int i = 0; i < nell; i++) {
+  // One batched read per node (Pdelta_at_a: the z half of the table read
+  // once per node instead of once per multipole), so the threads split
+  // the (bin, node) pairs and each walks the multipoles of its node;
+  // kn and pn are the thread's scratch for the node's wavenumbers and P.
+  #pragma omp parallel
+  {
+    double* kn = (double*) malloc1d(nell);
+    double* pn = (double*) malloc1d(nell);
+    #pragma omp for collapse(2) schedule(static)
+    for (int ni = 0; ni < nbin_cluster; ni++) {
       for (int p = 0; p < npts_max; p++) {
         const cosmo_nodes* cn = &cn_all[ni];
         if (p >= cn->npts) {
@@ -1120,11 +1127,17 @@ static void nonlinear_power_at_nodes(
         }
         const double a  = cn->data[CN_A][p];
         const double fK = cn->data[CN_FK][p];
-        const double k  = (lx[i] + 0.5)/fK;
-
-        p_nonlinear[ni][i][p] = Pdelta(k, a);
+        for (int i = 0; i < nell; i++) {
+          kn[i] = (lx[i] + 0.5)/fK;
+        }
+        Pdelta_at_a(a, kn, nell, pn);
+        for (int i = 0; i < nell; i++) {
+          p_nonlinear[ni][i][p] = pn[i];
+        }
       }
     }
+    free(kn);
+    free(pn);
   }
 }
 

@@ -52,7 +52,8 @@
 // checked: a table filled without it, or with a grid that is not
 // piecewise-uniform, makes the lookups land in wrong brackets and
 // return silently wrong interpolants. Without the macro every lookup
-// binary-searches and needs no metadata.
+// but a_chi's binary-searches and needs no metadata; a_chi uses its own
+// bucket index in both builds (set_chi_bucket_index).
 // ---------------------------------------------------------------------------
 
 #ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
@@ -378,18 +379,85 @@ double hoverh0v2(const double a, const double dchida)
 }
 
 // ---------------------------------------------------------------------------
-// Inverse distance lookup a(chi): binary search on the chi column of
-// cosmology.chi, then linear inverse interpolation of z in the bracket,
+// Bucket index of the chi column for a_chi.
+//
+// Why it exists: a_chi runs millions of times per likelihood evaluation
+// (the two-radius RSD kernel of the Limber C_gg calls it twice per lens
+// bin, multipole and node), and its binary search, with branches the
+// CPU cannot predict, made it ~8% of all cycles of a des_cluster 6x2pt+N
+// evaluation (perf, amypond, v5.00). The chi column is not uniform, so
+// the direct-index trick of the z axes does not apply; instead the chi
+// range is cut into equal buckets, and each bucket stores the bracket of
+// its lower edge:
+//
+//   chi_bucket[b] = largest j <= chi_nz-2 with chi_j <= chi_min + b*dx
+//
+// a_chi then starts at chi_bucket[b] and walks the few nodes to the
+// bracket (see the exactness note there). Two buckets per node keep the
+// walk at a step or two.
+//
+// A chi column that is not strictly increasing has no unique bracket (and
+// a zero-width interval would divide by zero in a_chi): abort.
+//
+// Cache invalidation:
+// set_distances calls this after every refill of cosmology.chi (always
+// serially, from Python, before any parallel region reads a_chi).
+//
+// Returns:
+//   nothing; fills the chi_bucket fields of cosmology
+// ---------------------------------------------------------------------------
+void set_chi_bucket_index(void)
+{
+  free(cosmology.chi_bucket);
+  cosmology.chi_bucket = NULL;
+  cosmology.chi_nbucket = 0;
+  const int nz = cosmology.chi_nz;
+  const double* x = cosmology.chi[1];
+  for (int j=0; j<nz-1; j++) {
+    if (!(x[j] < x[j+1])) {
+      log_fatal("chi(z) is not strictly increasing at z = %g",
+                cosmology.chi[0][j]);
+      exit(1);
+    }
+  }
+  const int nb = 2*nz;
+  int* idx = (int*) malloc(nb*sizeof(int));
+  if (NULL == idx) {
+    log_fatal("array allocation failed"); exit(1);
+  }
+  const double dx = (x[nz-1] - x[0])/((double) nb);
+  int j = 0;
+  for (int b=0; b<nb; b++) {
+    const double lo = x[0] + b*dx;
+    while (j < nz-2 && x[j+1] <= lo) {
+      j++;
+    }
+    idx[b] = j;
+  }
+  cosmology.chi_bucket = idx;
+  cosmology.chi_bucket_min = x[0];
+  cosmology.chi_bucket_inv_dx = 1.0/dx;
+  cosmology.chi_nbucket = nb;
+}
+
+// ---------------------------------------------------------------------------
+// Inverse distance lookup a(chi): the bracket j of chi on the chi column
+// of cosmology.chi, then linear inverse interpolation of z in it,
 //
 //   z = z_j + dy*(z_{j+1} - z_j),  dy = (chi - chi_j)/(chi_{j+1} - chi_j),
 //
 // and a = 1/(1+z). The input is converted from c/H0 units to the table's
-// Mpc/h (io_chi * coverH0). The chi column is not uniformly spaced, so
-// this direction keeps the binary search even in the piecewise-uniform
-// build.
+// Mpc/h (io_chi * coverH0).
+//
+// The bracket comes from the bucket index (set_chi_bucket_index) and is
+// exactly the one of the binary search a_chi used before: inside
+// [chi_0, chi_{nz-1}) the unique j with chi_j <= chi < chi_{j+1}; 0 below
+// chi_0; nz-2 at or above chi_{nz-1}, and for NaN (the binary search never
+// moved ihi there). The interpolation is unchanged, so a_chi is bitwise
+// the binary-search version.
 //
 // Cache invalidation:
-// no static state; the table is maintained by
+// no static state; the table and its bucket index are maintained by
 // set_distances (see chi_all).
 //
 // Parameters:
@@ -404,19 +472,28 @@ double a_chi(const double io_chi)
   // c/H0 in Mpc/h = 2997.92458)
   const double chi = io_chi*cosmology.coverH0;
 
+  const double* restrict x = cosmology.chi[1];
+  const int nz = cosmology.chi_nz;
   int j = 0;
+  if (chi >= x[0] && chi < x[nz-1]) // false for NaN
   {
-    size_t ilo = 0;
-    size_t ihi = cosmology.chi_nz-1;
-    while (ihi > ilo + 1)
-    {
-      size_t ll = (ihi + ilo)/2;
-      if (cosmology.chi[1][ll] > chi)
-        ihi = ll;
-      else
-        ilo = ll;
+    int b = (int) ((chi - cosmology.chi_bucket_min)*
+                   cosmology.chi_bucket_inv_dx);
+    if (b > cosmology.chi_nbucket - 1) {
+      b = cosmology.chi_nbucket - 1;
     }
-    j = ilo;
+    j = cosmology.chi_bucket[b];
+    // b can be one bucket off where chi sits on a bucket edge (the
+    // product above rounds), so walk both ways to the bracket
+    while (j > 0 && x[j] > chi) {
+      j--;
+    }
+    while (j < nz-2 && x[j+1] <= chi) {
+      j++;
+    }
+  }
+  else {
+    j = (chi < x[0]) ? 0 : nz-2;
   }
 
   const double dy = (chi                   - cosmology.chi[1][j])/
@@ -1349,13 +1426,139 @@ double p_nonlin(const double k, const double a)
 // ----------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// P_lin at ONE scale factor and n wavenumbers: out[m] = p_lin(k[m], a).
+//
+// Why it exists: the Limber fills evaluate P on a (node, multipole) grid,
+// and a node fixes a. p_lin recomputes the z half of its bilinear read
+// (z = 1/a - 1, the z bracket j, the weight dy) at every call; here that
+// half runs once per node and only the k half (log10 k, its bracket i,
+// dx, the four table reads, exp) runs per wavenumber.
+//
+// Every out[m] is bitwise p_lin(k[m], a): the k half and the bilinear
+// combination are p_lin's expressions verbatim, and the hoisted z half
+// computes the same values from the same a. The fallback build (binary
+// searches, no COSMO3D_ASSUME_PIECEWISE_UNIFORM) calls p_lin per entry.
+//
+// Parameters:
+//   a   - scale factor
+//   k   - wavenumbers in (c/H0)^-1 units, length n
+//   n   - number of wavenumbers
+//   out - output, length n
+//
+// Returns:
+//   nothing; P_lin(k[m], a) in (c/H0)^3 units into out[m]
+// ---------------------------------------------------------------------------
+void p_lin_at_a(const double a, const double* k, const int n, double* out)
+{
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+  const double z = 1.0 / a - 1.0;
+  const int j = piecewise_index(z, cosmology.lnPL_z_nseg,
+                                cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
+                                cosmology.lnPL_z_seg_xmin,  cosmology.lnPL_z_seg_inv_dx,
+                                cosmology.lnPL_nz);
+  const double zj  = cosmology.lnPL[cosmology.lnPL_nk][j  ];
+  const double zj1 = cosmology.lnPL[cosmology.lnPL_nk][j+1];
+  const double dy = (z      - zj) / (zj1 - zj);
+  for (int m=0; m<n; m++) {
+    const double log10k = log10(k[m] / cosmology.coverH0);
+    int i = (int)((log10k - cosmology.lnPL_log10k_min) * cosmology.lnPL_log10k_inv_dx);
+    if (i < 0)                       i = 0;
+    if (i > cosmology.lnPL_nk - 2)   i = cosmology.lnPL_nk - 2;
+    const double xi  = cosmology.lnPL[i  ][cosmology.lnPL_nz];
+    const double xi1 = cosmology.lnPL[i+1][cosmology.lnPL_nz];
+    const double dx = (log10k - xi) / (xi1 - xi);
+    const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnPL[i  ][j  ]
+                           + (1-dx)*   dy  * cosmology.lnPL[i  ][j+1]
+                           +    dx *(1-dy) * cosmology.lnPL[i+1][j  ]
+                           +    dx *   dy  * cosmology.lnPL[i+1][j+1];
+    out[m] = exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
+  }
+#else
+  for (int m=0; m<n; m++) {
+    out[m] = p_lin(k[m], a);
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// P_nl at ONE scale factor and n wavenumbers: out[m] = p_nonlin(k[m], a).
+// The z half of the bilinear read runs once, the k half per wavenumber,
+// with p_nonlin's expressions verbatim: every out[m] is bitwise
+// p_nonlin(k[m], a) (see p_lin_at_a for the reasoning and the fallback).
+//
+// Parameters:
+//   a   - scale factor
+//   k   - wavenumbers in (c/H0)^-1 units, length n
+//   n   - number of wavenumbers
+//   out - output, length n
+//
+// Returns:
+//   nothing; P_nl(k[m], a) in (c/H0)^3 units (times the baryonic ratio
+//   when enabled) into out[m]
+// ---------------------------------------------------------------------------
+void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
+{
+#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
+  const double coverH0 = cosmology.coverH0;
+  const double z      = 1.0 / a - 1.0;
+  const int j = piecewise_index(z, cosmology.lnP_z_nseg,
+                                cosmology.lnP_z_seg_start, cosmology.lnP_z_seg_len,
+                                cosmology.lnP_z_seg_xmin,  cosmology.lnP_z_seg_inv_dx,
+                                cosmology.lnP_nz);
+  const double zj  = cosmology.lnP[cosmology.lnP_nk][j  ];
+  const double zj1 = cosmology.lnP[cosmology.lnP_nk][j+1];
+  const double dy = (z      - zj) / (zj1 - zj);
+  for (int m=0; m<n; m++) {
+    const double log10k = log10(k[m] / coverH0);
+    int i = (int)((log10k - cosmology.lnP_log10k_min) * cosmology.lnP_log10k_inv_dx);
+    if (i < 0)                     i = 0;
+    if (i > cosmology.lnP_nk - 2)  i = cosmology.lnP_nk - 2;
+    const double xi  = cosmology.lnP[i  ][cosmology.lnP_nz];
+    const double xi1 = cosmology.lnP[i+1][cosmology.lnP_nz];
+    const double dx = (log10k - xi) / (xi1 - xi);
+    const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnP[i  ][j  ]
+                           + (1-dx)*   dy  * cosmology.lnP[i  ][j+1]
+                           +    dx *(1-dy) * cosmology.lnP[i+1][j  ]
+                           +    dx *   dy  * cosmology.lnP[i+1][j+1];
+    const double ans = exp(out_lnP) / (coverH0 * coverH0 * coverH0);
+    out[m] = (bary.is_Pk_bary == 1) ? ans * PkRatio_baryons(k[m], a) : ans;
+  }
+#else
+  for (int m=0; m<n; m++) {
+    out[m] = p_nonlin(k[m], a);
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// The dispatch of Pdelta, shared with Pdelta_at_a so the two can never
+// disagree: 3 (p_lin) is latched the first time pdeltaparams.runmode reads
+// "linear"; -1 means p_nonlin and is checked again on every call (the
+// latch only ever moves to 3).
+// ---------------------------------------------------------------------------
+static int pdelta_type = -1;
+
+static inline int pdelta_dispatch(void)
+{
+  if (pdelta_type == -1)
+  {
+    if (strcmp(pdeltaparams.runmode,"linear") == 0)
+    {
+      pdelta_type = 3;
+    }
+  }
+  return pdelta_type;
+}
+
+// ---------------------------------------------------------------------------
 // Matter power spectrum dispatch: p_lin when pdeltaparams.runmode is
-// "linear", p_nonlin otherwise. The choice is latched in a static on the
-// first call and reused for the rest of the process, so the run mode
+// "linear", p_nonlin otherwise. The linear choice is latched in a static
+// (pdelta_dispatch, shared with Pdelta_at_a) the first time the run mode
+// reads "linear" and reused for the rest of the process, so the run mode
 // must be set before the first evaluation.
 //
 // Cache invalidation:
-// none. The static P_type latch never rebuilds; only
+// none. The static latch never rebuilds; only
 // the tables read by p_lin/p_nonlin refresh (see those headers).
 //
 // Parameters:
@@ -1368,14 +1571,7 @@ double p_nonlin(const double k, const double a)
 double Pdelta(double io_kNL, double io_a)
 {
   double out_PK;
-  static int P_type = -1;
-  if (P_type == -1) 
-  {
-    if (strcmp(pdeltaparams.runmode,"linear") == 0) 
-    {
-      P_type = 3;
-    }
-  }
+  const int P_type = pdelta_dispatch();
   // P_type encoding: 3 = linear (latched above when runmode is
   // "linear"); every other value - including the -1 "unset" latch -
   // falls through to p_nonlin
@@ -1389,6 +1585,34 @@ double Pdelta(double io_kNL, double io_a)
       break;
   }
   return out_PK;
+}
+
+// ---------------------------------------------------------------------------
+// Pdelta at ONE scale factor and n wavenumbers: out[m] = Pdelta(k[m], a),
+// bitwise (Pdelta's dispatch, then p_lin_at_a or p_nonlin_at_a). The
+// Limber fills call it once per quadrature node with the node's Limber
+// wavenumbers k = (l + 1/2)/f_K of every multipole.
+//
+// Parameters:
+//   a   - scale factor
+//   k   - wavenumbers in (c/H0)^-1 units, length n
+//   n   - number of wavenumbers
+//   out - output, length n
+//
+// Returns:
+//   nothing; P(k[m], a) in (c/H0)^3 units into out[m]
+// ---------------------------------------------------------------------------
+void Pdelta_at_a(const double a, const double* k, const int n, double* out)
+{
+  switch (pdelta_dispatch())
+  {
+    case 3:
+      p_lin_at_a(a, k, n, out);
+      break;
+    default:
+      p_nonlin_at_a(a, k, n, out);
+      break;
+  }
 }
 
 // ----------------------------------------------------------------------

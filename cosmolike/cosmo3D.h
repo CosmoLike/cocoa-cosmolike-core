@@ -44,6 +44,10 @@ double hoverh0v2(const double a, const double dchida);
 
 double a_chi(const double io_chi);
 
+// (re)build a_chi's bucket index from cosmology.chi; set_distances calls
+// it after every refill of the table
+void set_chi_bucket_index(void);
+
 // ----------------------------------------------------------------------
 // ----------------------------------------------------------------------
 
@@ -63,6 +67,15 @@ double omega_halo_field(void);
 double p_nonlin(const double k, const double a);
 
 double Pdelta(double k_NL, double a); // k in coverH0 units
+
+// at one scale factor a and n wavenumbers: out[m] = p_lin(k[m], a),
+// p_nonlin(k[m], a), Pdelta(k[m], a), bitwise the per-call functions (the
+// z half of the table read runs once per call, not once per wavenumber)
+void p_lin_at_a(const double a, const double* k, const int n, double* out);
+
+void p_nonlin_at_a(const double a, const double* k, const int n, double* out);
+
+void Pdelta_at_a(const double a, const double* k, const int n, double* out);
 
 double MG_Sigma(double a);
 
