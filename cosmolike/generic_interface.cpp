@@ -954,7 +954,10 @@ void init_halo_matter_field(const int halo_matter_field)
 // a static cache; every call rescales from those baselines, so
 // repeated calls do not compound:
 //
-//   Ntable.N_a                     -> ceil(baseline * boost)
+//   Ntable.N_a                     -> (baseline - 1) * m + 1, m =
+//                                     2^ceil(log2(boost)) <= 16 (nested,
+//                                     see below); ceil(baseline * boost)
+//                                     at boost <= 1
 //   Ntable.N_ell[NODES_DENSE]                   -> ceil(baseline * boost)
 //   Ntable.N_ell[NODES_COARSE]          -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk[NODES_DENSE]           -> ceil(baseline * boost)
@@ -1002,8 +1005,26 @@ void init_accuracy_boost(
   static double fptcache = 0.0; // FPT_internal_accuracy_boost baseline
   debug("{}: {}", fname, errbegins);
 
+  // N_a: the a grid of the lensing-efficiency tables (g_tomo and its
+  // relatives in redshift_spline.c, read by linear interpolation) and of
+  // the halo-model tables. Above boost 1 it refines dyadically with
+  // nested nodes, N_a - 1 = (baseline - 1)*m, so every coarser grid's
+  // nodes are a subset of every finer grid's and a higher boost tightens
+  // the same interpolation (the scheme of the P(k) z nodes in the
+  // likelihoods). ceil(baseline*boost) re-phased the nodes at every
+  // boost: desy1xplanck's 6x2pt chi2 (real data, far from its best fit)
+  // jumped between +0.28 and -0.17 from boost 2 to 5 with no trend, for
+  // data-vector changes of delta^T C^-1 delta <= 1e-4 (2026-10-01).
+  // Boost <= 1 (the emulator path asks for 0.35) keeps ceil(baseline*boost).
   if (0 == cache[0]) cache[0] = Ntable.N_a;
-  Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
+  if (accuracy_boost > 1.0) {
+    const int m = static_cast<int>(
+      fmin(pow(2.0, ceil(log2(accuracy_boost))), 16.0));
+    Ntable.N_a = (cache[0] - 1)*m + 1;
+  }
+  else {
+    Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
+  }
   
   if (0 == cache[1]) cache[1] = Ntable.N_ell[NODES_DENSE];
   Ntable.N_ell[NODES_DENSE] = static_cast<int>(ceil(cache[1]*accuracy_boost));
