@@ -345,7 +345,9 @@ figures of different probes look alike and notebooks can swap them.
   `<quantity>_ref`, then `param` and `colorbarlabel` for a parameter sweep.
 - **Without a reference** each panel shows the quantity with its own
   y-range; **with a reference** it shows `value/reference - 1` on one
-  shared linear band with the panels glued edge to edge.
+  shared linear band with the panels glued edge to edge, or, when `ylim`
+  is a list of one `[lo, hi]` per row (`plot_xi`,
+  `plot_gammat_tomo_limber`), on one band per row (`sharey="row"`).
 - **`rescale = 1`** glues the absolute panels: each panel is multiplied by
   its own power of ten, annotated inside the panel as alpha.
 - **Shared option set**, with the same names and defaults style: `marker`,
