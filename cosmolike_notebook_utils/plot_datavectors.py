@@ -462,7 +462,10 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                (points instead of lines), or None for lines.
       linestyle, linewidth = lists cycled across curves, or None.
       ylim   = without xi_ref, multipliers on each panel's min/max;
-               with it, the band around 1 (drawn as ylim - 1).
+               with it, the band around 1 (drawn as ylim - 1), or one
+               such [lo, hi] band per row (a list of n_bins pairs,
+               ylim[j] for row j): each row then keeps its own
+               y-range.
       thetashow = x-axis range in arcmin.
       legend = one label per curve, or None. legendloc = None (the
                  default) puts the legend inside the empty upper
@@ -509,6 +512,12 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
         print("Bad Input (theta)")
         return 0
 
+    # with a reference, ylim may hold one band per row of panels
+    rowylim = not (xi_ref is None) and np.ndim(ylim) == 2
+    if rowylim and len(ylim) != ntomo:
+        print("Bad Input (ylim)")
+        return 0
+
     # rescale=1: alpha[i,j] holds the log10 of the per-panel factor;
     # multiplied in, every panel's maximum lands in [1, 10), so one
     # common y-range (yglued) serves the whole glued grid. The
@@ -548,7 +557,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
             ncols = ntomo, 
             figsize = figsize, 
             sharex = True, 
-            sharey = True, 
+            sharey = "row" if rowylim else True, 
             gridspec_kw = {'wspace': 0.0, 'hspace': 0.0}
         )    
 
@@ -626,7 +635,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 else:
                     # with a reference every curve is value/reference - 1, so ylim
                     # (multipliers around 1) is drawn as the band ylim - 1 around 0
-                    tmp = np.array(ylim) - 1
+                    tmp = np.array(ylim[j] if rowylim else ylim) - 1
                     axes[j,i].set_ylim(tmp.tolist())
                 axes[j,i].set_xscale('log')
                 axes[j,i].set_yscale('linear')
@@ -743,9 +752,14 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
     if not (xi_ref is None):
         # the ratio triangle is glued too: same boundary-label
         # pruning, on the shared linear range ylim - 1
-        _hide_glued_edge_ticklabels(
-            [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
-            ylim[0]-1.0, ylim[1]-1.0, log = False)
+        if rowylim:
+            for j in range(ntomo):
+                _hide_glued_edge_ticklabels([(axes[j,0], j == ntomo-1, j == 0)],
+                    ylim[j][0]-1.0, ylim[j][1]-1.0, log = False)
+        else:
+            _hide_glued_edge_ticklabels(
+                [(axes[j,0], j == ntomo-1, j == 0) for j in range(ntomo)],
+                ylim[0]-1.0, ylim[1]-1.0, log = False)
 
     if not (legend is None):
         if len(legend) != len(xi):
@@ -1428,7 +1442,9 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
       the *size arguments (yaxislabelsize,
       xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
       bintextpos, bintextsize, figsize = layout knobs as in
-      plot_C_ss_tomo_limber.
+      plot_C_ss_tomo_limber. With gammat_ref, ylim may also be one
+      [lo, hi] band per row (a list of n_source pairs, ylim[j] for
+      source row j): each row then keeps its own y-range.
       legendloc = None (the default) lays one legend row right
                  above the panels, centered on them; an (x, y) pair
                  in figure fractions places its lower-left corner
@@ -1479,6 +1495,12 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             print(f"Nsource = {nsource}, Nsource_REF = {nsource2}")
             print(f"Ntheta = {ntheta}, Ntheta_REF = {ntheta2}")
             return 0   
+
+    # with a reference, ylim may hold one band per row of panels
+    rowylim = not (gammat_ref is None) and np.ndim(ylim) == 2
+    if rowylim and len(ylim) != nsource:
+        print("Bad Input (ylim)")
+        return 0
         
     # rescale=1: alpha[i,j] holds the log10 of the per-panel factor;
     # multiplied in, every panel's maximum lands in [1, 10), so one
@@ -1521,7 +1543,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             ncols = nlens, 
             figsize = figsize, 
             sharex = True, 
-            sharey = True, 
+            sharey = "row" if rowylim else True, 
             gridspec_kw = {'wspace': 0, 'hspace': 0})
     
     cm = plt.get_cmap(cmap)
@@ -1603,7 +1625,7 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
             else:
                 # with a reference every curve is value/reference - 1, so ylim
                 # (multipliers around 1) is drawn as the band ylim - 1 around 0
-                tmp = np.array(ylim) - 1
+                tmp = np.array(ylim[j] if rowylim else ylim) - 1
                 axes[j,i].set_ylim(tmp.tolist())
                 axes[j,i].set_yscale('linear')
                 
@@ -1687,9 +1709,14 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
     if not (gammat_ref is None):
         # the ratio grid is glued too: same boundary-label pruning,
         # on the shared linear range ylim - 1
-        _hide_glued_edge_ticklabels(
-            [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
-            ylim[0]-1.0, ylim[1]-1.0, log = False)
+        if rowylim:
+            for j in range(nsource):
+                _hide_glued_edge_ticklabels([(axes[j,0], j == nsource-1, j == 0)],
+                    ylim[j][0]-1.0, ylim[j][1]-1.0, log = False)
+        else:
+            _hide_glued_edge_ticklabels(
+                [(axes[j,0], j == nsource-1, j == 0) for j in range(nsource)],
+                ylim[0]-1.0, ylim[1]-1.0, log = False)
 
     if not (legend is None):
         if len(legend) != len(theta_gammat):
