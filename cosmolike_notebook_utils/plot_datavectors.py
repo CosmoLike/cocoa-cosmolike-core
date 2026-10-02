@@ -359,7 +359,7 @@ def plot_C_ss_tomo_limber(ell, C_ss, C_ss_ref = None, param = None, colorbarlabe
                 # transform=transAxes puts the text in panel fractions: (0, 0)
                 # is the panel's lower-left corner, (1, 1) its upper-right
                 axes[j,i].text(bintextpos[0], bintextpos[1], 
-                    "$(" +  str(i) + "," +  str(j) + ")$", 
+                    "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
                     horizontalalignment = 'center', 
                     verticalalignment = 'center',
                     fontsize = bintextsize,
@@ -669,7 +669,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 if pm > 0:
                     axes[j,i].text(bintextpos[0][0], 
                                    bintextpos[0][1], 
-                                   "$(" +  str(i) + "," +  str(j) + ")$", 
+                                   "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
                                    horizontalalignment='center', 
                                    verticalalignment='center',
                                    fontsize=bintextsize,
@@ -678,10 +678,10 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
                 else:
                     axes[j,i].text(bintextpos[1][0], 
                                    bintextpos[1][1], 
-                                   "$(" +  str(i) + "," +  str(j) + ")$", 
+                                   "$(" +  str(i+1) + "," +  str(j+1) + ")$", 
                                    horizontalalignment='center', 
                                    verticalalignment='center',
-                                   fontsize=15,
+                                   fontsize=bintextsize,
                                    usetex=True,
                                    transform=axes[j,i].transAxes)
 
