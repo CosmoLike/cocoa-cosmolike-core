@@ -8,7 +8,7 @@ the one function that produces them, together with the two
 massive-neutrino inputs of the halo model: omega_nu h^2 and the linear
 power spectrum of cold dark matter + baryons (P_cb, CAMB's delta_nonu),
 which cosmolike reads when the halo field is cb
-(ci.init_halo_matter_field(1)). It talks only to CAMB (and,
+(cold dark matter + baryons). It talks only to CAMB (and,
 optionally, to the EuclidEmulator2 boost); it never imports a
 project's compiled cosmolike interface, so every project shares it.
 
@@ -107,8 +107,7 @@ def get_camb_cosmology(omegam,
                            CAMB computed it (pars.omnuh2).
         lnPL_cb          = ln of the linear P_cb (cold dark matter +
                            baryons) in (Mpc/h)^3, laid out as lnPL.
-      Under ci.init_halo_matter_field(0) cosmolike reads neither of
-      the last two, and handing them over changes no number.
+      Halo statistics require both of the last two quantities.
       G_growth is not on the z_2D nodes: it must go to set_cosmology
       together with z_G = z_growth (set_cosmology without z_G pairs G
       with z_2D, and the size mismatch aborts the process).
@@ -272,7 +271,9 @@ def get_camb_cosmology(omegam,
     log10k_interp_2D = log10k_interp_2D - np.log10(H0/100.)
 
     # growth factor G(z) = D(z) (1 + z) from the linear P(k) at one
-    # large scale (k = 5e-4/Mpc), where P grows as D^2. It is sampled
+    # sub-horizon scale (k = 0.05/Mpc; at 5e-4/Mpc, about 2 H0/c, CAMB's
+    # dark-energy perturbations change the growth at w != -1, see the
+    # likelihoods' comment), where P grows as D^2. It is sampled
     # on the dense 1D grid, cut where the 2D grid (the z range of PKL)
     # ends: cosmolike reads G linearly in z, and on the 2D grid
     # (dz ~ 0.03) that read misses D by up to 9e-5 and the growth rate
@@ -281,13 +282,13 @@ def get_camb_cosmology(omegam,
     # extra redshifts. Same expression as the likelihoods
     # (likelihood/_cosmolike_prototype_base.py).
     z_growth = z_interp_1D[z_interp_1D <= z_interp_2D[-1]]
-    power_ratio = PKL.P(z_growth, 0.0005)/PKL.P(0, 0.0005)
+    power_ratio = PKL.P(z_growth, 0.05)/PKL.P(0, 0.05)
     G_growth = np.sqrt(power_ratio)*(1 + z_growth)
     # the table is divided by G at the last 2D node (z = 49.99), just
     # above the last z_growth node; cosmolike divides by G(z = 0) on
     # its side, so D(z = 0) = 1 whatever this constant is
     z_norm = z_interp_2D[-1]
-    power_ratio_norm = PKL.P(z_norm, 0.0005)/PKL.P(0, 0.0005)
+    power_ratio_norm = PKL.P(z_norm, 0.05)/PKL.P(0, 0.05)
     G_growth = G_growth/(np.sqrt(power_ratio_norm)*(1 + z_norm))
 
     chi = results.comoving_radial_distance(z_interp_1D) * (H0/100.)

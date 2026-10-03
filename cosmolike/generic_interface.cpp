@@ -1,4 +1,5 @@
 #include "cosmolike/generic_interface.hpp"
+#include <dlfcn.h>
 #include <string_view>
 using namespace std::literals; // enables "sv" literal
 
@@ -48,6 +49,47 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Keep BLAS matrix operations serial while CosmoLike's explicit OpenMP
+// loops use the requested number of workers.
+//
+// Armadillo sends matrix products, eigenvalue calculations and inversions
+// to BLAS/LAPACK. OpenBLAS can start its own workers there, independently
+// of our parallel loops. Besides oversubscribing the machine, its threaded
+// factorization has produced incorrect cluster covariance inverses.
+//
+// Set the OpenBLAS limit directly: an OpenMP build of OpenBLAS need not
+// obey OPENBLAS_NUM_THREADS. The setting stays at one after this call.
+// dlsym finds the function in the loaded libraries without requiring an
+// OpenBLAS-specific link symbol when another BLAS backend is used.
+//
+// Called during interface initialization, when choosing the OpenMP team,
+// and before either covariance inversion. The latter call reasserts the
+// limit if another library has changed it since initialization.
+//
+// Cache invalidation:
+// the function address is looked up once; loaded BLAS libraries remain
+// installed for the lifetime of the interface.
+//
+// Parameters / returns:
+// none; changes the linked OpenBLAS thread limit, when available.
+// ---------------------------------------------------------------------------
+void set_blas_single_threaded()
+{
+  // The address returned by dlsym is callable as a function taking one
+  // integer (the thread limit) and returning no value.
+  using blas_thread_setter = void (*)(int);
+  static const blas_thread_setter set_threads =
+    reinterpret_cast<blas_thread_setter>(
+      dlsym(RTLD_DEFAULT, "openblas_set_num_threads"));
+
+  // A different BLAS backend need not provide this OpenBLAS entry point.
+  if (set_threads != nullptr) {
+    set_threads(1);
+  }
+}
+
+
 // ---------------------------------------------------------------------------
 // Parse one whitespace-trimmed token as a double, accepting underflow and
 // rejecting overflow.
@@ -369,6 +411,7 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 void initial_setup()
 {
   static constexpr std::string_view fname = "initial_setup"sv;
+  set_blas_single_threaded();
   spdlog::cfg::load_env_levels();
   debug("{}: {}", fname, errbegins);
 
@@ -579,9 +622,10 @@ void init_ntable_halo_ia_lmax(const int halo_ia_lmax) {
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostic read of the halo-model mass variance sigma^2(M) at a = 1:
-// the cached table (lobe-summed, and coarse-M upsampled when
-// Ntable.N_M[NODES_COARSE] is active). M in M_sun/h.
+// Diagnostic read of the smoothed linear variance sigma_field^2(M,a).
+// The FFTLog tables in cosmo3D.c integrate each field's spectrum at
+// each scale factor. The field also chooses the mean density in the
+// Lagrangian relation M = (4 pi/3) rho_field R^3.
 //
 // Cache invalidation:
 // none here; the cached table rebuilds on cosmology.random /
@@ -589,13 +633,20 @@ void init_ntable_halo_ia_lmax(const int halo_ia_lmax) {
 //
 // Parameters:
 //   M - halo mass in M_sun/h
+//   a - scale factor in [limits.a_min, 1]
+//   field - 0 for total matter; 1 for cold dark matter plus baryons
 //
 // Returns:
-//   sigma^2(M)
+//   sigma_field^2(M,a), dimensionless. This diagnostic selection does
+//   not change halo statistics, which always use the cb field.
 // ---------------------------------------------------------------------------
-double compute_sigma2(const double M)
+double compute_sigma2(
+    const double M,   // mass in M_sun/h
+    const double a,   // scale factor
+    const int field  // total matter (0) or cold dark matter + baryons (1)
+  )
 {
-  return sigma2(M);
+  return sigma2_field(M, a, field);
 }
 
 
@@ -896,49 +947,6 @@ void init_include_halo_IA(const int include_halo_IA)
 }
 
 // ---------------------------------------------------------------------------
-// Select the density field of the halo model's peak height, writing
-// like.halo_model[4] (halo.h): 0 = HALO_FIELD_MATTER, total matter (the
-// default); 1 = HALO_FIELD_CB, cold dark matter + baryons. Under 1,
-// sigma^2(M) integrates the linear P_cb of set_linear_power_spectrum_cb
-// and the Lagrangian radius and the rho/M of dn/dlnM use
-// rho_crit (Omega_m - Omega_nu) (Omega_nu from set_cosmological_parameters);
-// r_Delta, the matter windows M/rho_m, the lensing kernels and the 2-halo
-// spectra stay total matter. One switch for every consumer: sigma2 and
-// dlognudlogm (cosmo3D.c, halo.c), the HOD tables, p_gm, p_gg, the
-// halo-model IA and the cluster mass tables (halo_cluster.c). p_mm, p_my
-// and p_yy abort under 1 (their 2-halo term is total-matter only).
-// Likelihood yaml key: halo_matter_field.
-//
-// Cache invalidation:
-// a flip redraws cosmology.random, the tag sigma2 and every halo table
-// key on, so no table serves a value of the other field.
-//
-// Validation: the value must be 0 or 1, else critical() + exit(1).
-//
-// Parameters:
-//   halo_matter_field - 0 = total matter, 1 = cold dark matter + baryons
-//
-// Returns:
-//   void
-// ---------------------------------------------------------------------------
-void init_halo_matter_field(const int halo_matter_field)
-{
-  static constexpr std::string_view fname = "init_halo_matter_field"sv;
-  debug("{}: {}", fname, errbegins);
-  if (halo_matter_field != HALO_FIELD_MATTER &&
-      halo_matter_field != HALO_FIELD_CB) {
-    critical("{}: invalid halo_matter_field = {} (0 = total matter, "
-             "1 = cold dark matter + baryons)", fname, halo_matter_field);
-    exit(1);
-  }
-  if (like.halo_model[4] != halo_matter_field) {
-    like.halo_model[4] = halo_matter_field;
-    cosmology.random = RandomNumber::get_instance().get();
-  }
-  debug("{}: {}", fname, errends);
-  return;
-}
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -954,14 +962,17 @@ void init_halo_matter_field(const int halo_matter_field)
 // a static cache; every call rescales from those baselines, so
 // repeated calls do not compound:
 //
-//   Ntable.N_a                     -> ceil(baseline * boost)
+//   Ntable.N_a                     -> (baseline - 1) * m + 1, m =
+//                                     2^ceil(log2(boost)) <= 16 (nested,
+//                                     see below); ceil(baseline * boost)
+//                                     at boost <= 1
 //   Ntable.N_ell[NODES_DENSE]                   -> ceil(baseline * boost)
 //   Ntable.N_ell[NODES_COARSE]          -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk[NODES_DENSE]           -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk[NODES_COARSE]  -> ceil(baseline * boost)
 //   Ntable.N_M[NODES_COARSE]            -> ceil(baseline * boost)
-//   Ntable.halo_uks_n[UKS_N_LNC]   -> ceil(baseline * boost)
-//   Ntable.halo_uks_n[UKS_N_LNZ]   -> ceil(baseline * boost)
+//   Ntable.halo_uks_n[UKS_N_LNC]   -> ceil(baseline * boost) (u_KS, not
+//   Ntable.halo_uks_n[UKS_N_LNZ]   -> ceil(baseline * boost)  compiled)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.halo_ia_na              -> ceil(baseline * boost)
@@ -1002,8 +1013,26 @@ void init_accuracy_boost(
   static double fptcache = 0.0; // FPT_internal_accuracy_boost baseline
   debug("{}: {}", fname, errbegins);
 
+  // N_a: the a grid of the lensing-efficiency tables (g_tomo and its
+  // relatives in redshift_spline.c, read by linear interpolation) and of
+  // the halo-model tables. Above boost 1 it refines dyadically with
+  // nested nodes, N_a - 1 = (baseline - 1)*m, so every coarser grid's
+  // nodes are a subset of every finer grid's and a higher boost tightens
+  // the same interpolation (the scheme of the P(k) z nodes in the
+  // likelihoods). ceil(baseline*boost) re-phased the nodes at every
+  // boost: desy1xplanck's 6x2pt chi2 (real data, far from its best fit)
+  // jumped between +0.28 and -0.17 from boost 2 to 5 with no trend, for
+  // data-vector changes of delta^T C^-1 delta <= 1e-4 (2026-10-01).
+  // Boost <= 1 (the emulator path asks for 0.35) keeps ceil(baseline*boost).
   if (0 == cache[0]) cache[0] = Ntable.N_a;
-  Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
+  if (accuracy_boost > 1.0) {
+    const int m = static_cast<int>(
+      fmin(pow(2.0, ceil(log2(accuracy_boost))), 16.0));
+    Ntable.N_a = (cache[0] - 1)*m + 1;
+  }
+  else {
+    Ntable.N_a = static_cast<int>(ceil(cache[0]*accuracy_boost));
+  }
   
   if (0 == cache[1]) cache[1] = Ntable.N_ell[NODES_DENSE];
   Ntable.N_ell[NODES_DENSE] = static_cast<int>(ceil(cache[1]*accuracy_boost));
@@ -2001,10 +2030,8 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 // distances and growth through the other set_ functions).
 //
 // When any input changed (fdiff): writes cosmology.Omega_m,
-// Omega_v = 1 - Omega_m, Omega_b (the Compton-y halo-model sector reads
-// it; the y spectra abort while it is 0), Omega_nu = omega_nu_h2/h^2
-// (part of Omega_m; the halo model reads it under
-// like.halo_model[4] = HALO_FIELD_CB, init_halo_matter_field),
+// Omega_v = 1 - Omega_m, Omega_b, Omega_nu = omega_nu_h2/h^2
+// (part of Omega_m; halo statistics use Omega_m - Omega_nu),
 // h0 = hubble/100 (input H0 in km/s/Mpc) and MGSigma = MGmu = 0, and
 // bumps cosmology.random so every table keyed on the cosmology
 // rebuilds. Unchanged inputs leave the cache key alone.
@@ -2014,8 +2041,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 //
 // Parameters:
 //   omega_matter - Omega_m today, massive neutrinos included
-//   omega_baryon - Omega_b today (0 = not provided; only the
-//                  Compton-y sector demands it)
+//   omega_baryon - Omega_b today (0 = not provided)
 //   hubble       - H0 (km/s/Mpc)
 //   omega_nu_h2  - omega_nu h^2 = Omega_nu h^2 of the massive neutrinos
 //                  today (CAMB's omnuh2; 0 = none; the default of the
@@ -2340,7 +2366,7 @@ void set_bias_PS(
 //
 // When the size or any entry changed (fdiff scan): writes cosmology.chi
 // (row 0 = z, row 1 = chi) and cosmology.chi_nz, precomputes the
-// direct-index segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM
+// direct-index segment metadata
 // (detect_uniform_segments), NaN-scans during the parallel fill, rebuilds
 // a_chi's bucket index (set_chi_bucket_index), and bumps
 // cosmology.random. Unchanged input leaves the cache key alone.
@@ -2397,13 +2423,11 @@ void set_distances(vector io_z, vector io_chi)
     }
     cosmology.chi = (double**) malloc2d(2, cosmology.chi_nz);
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
     cosmology.chi_z_nseg = detect_uniform_segments(
         io_z.memptr(), cosmology.chi_nz, 1e-9, MAX_GRID_SEGMENTS,
         cosmology.chi_z_seg_start, cosmology.chi_z_seg_len,
         cosmology.chi_z_seg_xmin,  cosmology.chi_z_seg_inv_dx,
         "chi z");
-#endif
 
     #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.chi_nz; i++) {
@@ -2432,7 +2456,7 @@ void set_distances(vector io_z, vector io_chi)
 //
 // When the size or any entry changed (fdiff scan): writes cosmology.G
 // (row 0 = z, row 1 = G) and cosmology.G_nz, precomputes the direct-index
-// segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM (consumed by
+// segment metadata (consumed by
 // f_growth/growfac and friends), NaN-scans during the parallel fill, and
 // bumps cosmology.random. Unchanged input leaves the cache key alone.
 //
@@ -2470,7 +2494,6 @@ void set_growth(vector io_z, vector io_G)
   {
     cosmology.G_nz = static_cast<int>(io_z.n_elem);
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM    
     // -----------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
     // f_growth, growfac, norm_growfac, norm_growfac_all use these
@@ -2481,7 +2504,6 @@ void set_growth(vector io_z, vector io_G)
         cosmology.G_z_seg_start, cosmology.G_z_seg_len,
         cosmology.G_z_seg_xmin,  cosmology.G_z_seg_inv_dx,
         "G z");
-#endif
 
     if (cosmology.G != NULL) { free(cosmology.G); }
     cosmology.G = (double**) malloc2d(2, cosmology.G_nz);
@@ -2518,7 +2540,7 @@ void set_growth(vector io_z, vector io_G)
 // installs the new one) and bumps cosmology.random. Unchanged input
 // leaves the cache key and the P_cb table alone.
 //
-// Under COSMO3D_ASSUME_PIECEWISE_UNIFORM the log10k axis must be one
+// The log10k axis must be one
 // uniform segment (critical() otherwise) and the z axis may be piecewise
 // uniform; p_lin uses the stored metadata for direct indexing.
 //
@@ -2576,7 +2598,6 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   {
     cosmology.lnPL_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnPL_nz = static_cast<int>(io_z.n_elem);
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
     // -------------------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
     // p_lin uses these fields to skip the per-call binary search on log10k & z
@@ -2606,7 +2627,6 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
           cosmology.lnPL_z_seg_xmin,  cosmology.lnPL_z_seg_inv_dx,
           "lnPL z");
     }
-#endif
     if (cosmology.lnPL != NULL) { free(cosmology.lnPL); }
     cosmology.lnPL = (double**) malloc2d(cosmology.lnPL_nk+1,cosmology.lnPL_nz+1);
 
@@ -2651,8 +2671,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 // ---------------------------------------------------------------------------
 // Install ln P_cb(log10k, z), the linear power spectrum of cold dark
 // matter plus baryons (CAMB's delta_nonu), on the grid of the linear
-// P_lin table. sigma2 reads it (p_lin_cb) when like.halo_model[4] =
-// HALO_FIELD_CB; nothing reads it otherwise.
+// P_lin table. Its evolving variance supplies all halo statistics.
 //
 // Order: after set_linear_power_spectrum of the same cosmology, which
 // drops the P_cb table of the previous spectrum. The table stores values
@@ -2755,7 +2774,7 @@ void set_linear_power_spectrum_cb(vector io_log10k, vector io_z, vector io_lnP)
 // ---------------------------------------------------------------------------
 // Remove the P_cb table (cosmology.lnPL_cb): the call of a caller that
 // has no cold dark matter + baryon spectrum to hand over. sigma2 aborts
-// under like.halo_model[4] = HALO_FIELD_CB while no table is installed.
+// if a halo calculation is requested while no table is installed.
 //
 // Cache invalidation:
 // bumps cosmology.random when a table was installed; a call with none
@@ -2787,8 +2806,8 @@ void clear_linear_power_spectrum_cb()
 // Install ln P_nonlin(log10k, z) from Cobaya.
 //
 // Same machinery as set_linear_power_spectrum, applied to cosmology.lnP /
-// lnP_nk / lnP_nz: fdiff change scans, uniform-grid metadata under
-// COSMO3D_ASSUME_PIECEWISE_UNIFORM (consumed by p_nonlin), NaN scan during
+// lnP_nk / lnP_nz: fdiff change scans, uniform-grid metadata for
+// direct indexing (consumed by p_nonlin), NaN scan during
 // the parallel fill, and a cosmology.random bump on update.
 //
 // Validation: io_lnP size must equal nk * nz, else critical() + exit(1).
@@ -2846,7 +2865,6 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   {
     cosmology.lnP_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnP_nz = static_cast<int>(io_z.n_elem);
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
     // -----------------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
     // p_nonlin uses these fields to skip the per-call binary search on
@@ -2877,7 +2895,6 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
           cosmology.lnP_z_seg_xmin,  cosmology.lnP_z_seg_inv_dx,
           "lnP z");
     }
-#endif
     if (cosmology.lnP != NULL) { free(cosmology.lnP); }
     cosmology.lnP = (double**) malloc2d(cosmology.lnP_nk+1,cosmology.lnP_nz+1);
 
@@ -4132,7 +4149,8 @@ void IP::set_data(std::string datavector_filename)
 // by alpha after the joint inversion.
 //
 // Stages after assembly: eigenvalue scan (any negative eigenvalue is
-// critical() + exit(1)), arma::inv, re-masking of the inverse (masked
+// critical() + exit(1)), arma::inv, an inverse residual check in
+// correlation units, re-masking of the inverse (masked
 // rows/columns zeroed, diagonal included, so they cannot leak into chi2),
 // then compaction of covariance and inverse into the ndata_sqzd_ square
 // matrices. Sets is_inv_cov_set_.
@@ -4236,6 +4254,9 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
+  // Matrix algebra stays serial; subsequent explicit OpenMP loops keep
+  // their own requested team size. Do not restore a larger BLAS team.
+  set_blas_single_threaded();
   vector eigvals = arma::eig_sym(this->cov_masked_);
   for(int i=0; i<this->ndata_; i++) {
     if(eigvals(i) < 0) [[unlikely]] {
@@ -4244,6 +4265,22 @@ void IP::set_inv_cov(std::string cov_filename)
   }
 
   this->inv_cov_masked_ = arma::inv(this->cov_masked_);
+
+  // Test the inverse before masking it. Divide out each data entry's
+  // standard deviation so xi, gamma_t and other probes are compared on
+  // the same scale: R_ij = C_ij/(sigma_i sigma_j) has unit diagonal,
+  // and (R^-1)_ij = (C^-1)_ij sigma_i sigma_j. Their product must be I.
+  const vector sigma = arma::sqrt(this->cov_masked_.diag());
+  const matrix sigma_pair = sigma*sigma.t();
+  const matrix corr = this->cov_masked_/sigma_pair;
+  const matrix inv_corr = this->inv_cov_masked_ % sigma_pair;
+  const double residual = arma::abs(corr*inv_corr
+    - arma::eye<matrix>(this->ndata_, this->ndata_)).max();
+  if (!(residual < 1.0e-8)) [[unlikely]] {
+    critical("{}: the inverse of the masked correlation matrix is wrong "
+      "(max |R R^-1 - I| = {})", fname, residual);
+    exit(1);
+  }
 
   // apply mask again to make sure numerical errors in matrix inversion don't 
   // cause problems. Also, set diagonal elements corresponding to datavector

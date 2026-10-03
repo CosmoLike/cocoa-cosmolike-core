@@ -22,6 +22,39 @@ wrapper, a notebook cell, a likelihood method, a test, a script — read
 repositories and holds the conventions of the data-vector plotting
 functions.
 
+Before changing or explaining the growth factor (growfac, f_growth, the
+G_growth table the likelihoods build), the IA amplitudes (1/D, 1/D^2), the
+one-loop D^4 factors or sigma(M, z) = D sigma(M, 0), read
+`references/fable_review_growth_factor.md` (Fable 5, 2026-10-02): where
+each D comes from physically, every consumer with file:line, and why the
+table's sampling k (5e-4/Mpc, a horizon scale) matters at w != -1.
+The measurements behind it (dark-energy perturbations on/off, the k
+scan, neutrino mass dependence vs Eisenstein & Hu 1999) are in
+`references/growth_factor_measurements.md`.
+Before changing sigma^2(M), the halo-model consumers (mass function,
+bias, concentration, HOD, cluster counts) or anything
+that chooses P_cb vs P_mm, read `references/fable_review_neutrino_halos.md`
+(Fable 5, literature verified with arXiv section/figure): which field each
+consumer needs with massive neutrinos, and the state of the halo.c fits.
+Which growth factor the D^1.15 of the Bhattacharya concentration takes with
+neutrinos (no paper says; recommended: the cb growth at halo scales in both
+the prefactor and nu): `references/fable_review_concentration_growth.md`.
+
+**Neutrino halo model (owner approved Phases 2 and 3, 2026-10-03).**
+Plan and decisions: `references/neutrino_growth_plan.md`. Implementation
+and measured checks: `references/sigma_fftlog_implementation.md`.
+The C FFTLog tables expose both matter and cb variances and mass slopes
+at (M,a). Halo statistics always use cb; `halo_matter_field` is retired.
+Concentration uses D_cb(M,a) = sigma_cb(M,a)/sigma_cb(M,1). The M200m
+radius and lensing mass weight retain total matter. Serial FFTW planning,
+reused plans, and complete (field,a) rows follow the non-Limber design;
+a split collapse(3) experiment was slower at 1, 4 and 8 threads.
+The independent DES reference retains its external non-halo growth
+convention; changing that convention and the future CosmoCov halo
+implementation remain separate decisions. p_mm/p_my/p_yy remain outside
+the compiled code. The cfastpt frequency-window comments already describe
+the tapered top fraction correctly.
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 
@@ -54,9 +87,23 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
 6. **Preserve existing conventions.** Keep the file's variable naming, struct
    layout, and code structure when modifying. Renames happen only as their own
    dedicated, mechanical commits (e.g. `zdistr_photoz` → `nz_source_photoz`).
+   Before adding a grid lookup, read and reuse the existing indexing helpers.
+   In cosmo3D.c, use `piecewise_index` and the setter-provided segment metadata
+   for piecewise-uniform redshift grids, and direct arithmetic for uniform
+   grids. Do not reintroduce binary searches into these optimized paths:
+   they add branches and scattered table reads that the existing metadata
+   was designed to avoid. This applies to every build, including debug:
+   the owner retired COSMO3D_ASSUME_PIECEWISE_UNIFORM and its binary-search
+   alternatives. Setters always construct and validate the metadata.
 7. **Determinism is a correctness test.** If chi2 varies run-to-run or with
    `OMP_NUM_THREADS`, there is a race or uninitialized memory. Full stop. Do
    not proceed until it is found.
+8. **OpenBLAS always uses one thread.** Parallelism belongs to the explicit
+   CosmoLike OpenMP loops. Pin OpenBLAS directly at interface initialization
+   and before both normal and cluster covariance checks/inversions; do not
+   restore a larger BLAS team afterward. Environment variables alone are
+   insufficient for an OpenMP-built OpenBLAS. Keep the inverse residual
+   checks so a corrupted inverse stops initialization.
 
 ## The change loop (mandatory workflow)
 
@@ -100,16 +147,20 @@ Run all of these before declaring a change correct:
 - **Determinism sweep:** repeat the evaluation several times within one
   process and across processes, at `OMP_NUM_THREADS=1` and a high count
   (e.g. 8 or node-width). Any variation = race / uninitialized memory.
-- **All three build modes** (Makefile):
+- **Both supported build modes** (Makefile):
   - `COSMOLIKE_DEBUG_MODE`: `-O0` + sanitizers. Catches linkage bugs
     (`inline` vs `static inline`), out-of-bounds writes, double frees.
   - default: strict IEEE-754 (`-fno-fast-math -frounding-math
     -ftrapping-math -fsignaling-nans`) with LTO + unrolling. This is the
     bit-reproducibility reference.
-  - `COSMOLIKE_AGGRESSIVE_MODE`: `-ffast-math -flto -funroll-loops`. chi2 may
-    differ in late digits; posteriors must be statistically identical (this
-    was verified for one full model — re-verify if your change touches
-    summation order).
+  - Aggressive mode is retired (owner decision, 2026-10-03). Makefiles
+    reject `COSMOLIKE_AGGRESSIVE_MODE`: the fast-math build produced incorrect
+    covariance inverses even with OpenBLAS at one thread. Do not reintroduce
+    it or enable `-ffast-math`, `-Ofast`, `-funsafe-math-optimizations`,
+    `-fassociative-math`, `-ffinite-math-only`, `-freciprocal-math`,
+    `-fno-signed-zeros`, or `-fno-trapping-math`. These flags relax the
+    floating-point contract; the failing bundle was tested, not each flag
+    independently. Retain the optimized strict-IEEE default and debug mode.
 - **Both Limber paths** (C_ss and C_gs), **both real-space projections**
   touched (xi_pm, gammat, w_gg), **both theory paths** (emulator and exact
   CAMB), and **both IA branches** (NLA and TATT) when relevant.
@@ -150,7 +201,8 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
   nothing about it: check `-Rpass=loop-vectorize` /
   `-Rpass-missed=loop-vectorize` remarks before believing a loop is
   vectorized. SIMDe intrinsics do compile to vector instructions (verify
-  by disassembly; `u_KS` S/Q sums: `v4d` mul then add). SIMDe and scalar
+  by disassembly; the `u_KS` S/Q sums, now in `future_port_unfinished/`:
+  `v4d` mul then add). SIMDe and scalar
   agree to ~1e-12, not bitwise; `COSMO2D_NOT_USE_SIMD` selects the
   scalar path.
 - Mind IPC interpretation: this workload is memory-bound (~1.1 IPC, ~25% LLC
@@ -189,9 +241,17 @@ syntax.
 3. **Assignment Alignment:** Where clear and practical, vertically align
    consecutive `=` assignment operators to keep variable declarations
    neat and organized.
+   Declare one variable per line, including struct members and FFTW
+   plans. Give each struct member a short trailing `//` explanation;
+   document array dimensions and index meanings as well. Do not pack
+   several declarations onto one line: the reader should process one
+   quantity at a time.
 4. **No Dense Logic Chains:** Break down complex multi-conditional
    statements or ternary operators into individual, well-named temporary
    variables or multi-line structures.
+   For cache reuse/reallocation, follow cosmo2D.c: put the cache-change
+   conditions directly in the `if`, one logical group per line. Do not
+   introduce a single-use `rebuild` flag for that condition.
 5. **Guided Context:** Add bite-sized, purposeful inline comments before
    mathematical equations or data-transformation loops explaining *why*
    the code is performing that action, not just *what* it is doing.
@@ -235,6 +295,21 @@ Naming temporaries never changes the operation graph: bitwise safe.
 
 ### Equation-to-Code Blueprinting
 
+Write for an advanced undergraduate physics student. Introduce the physical
+quantity, derive the change of variables, define each new symbol, and only
+then explain the numerical operation. Separate those steps into paragraphs
+and displayed equations in the comment. A compressed formula plus labels
+such as "Mellin kernel", "house spline", or "FFT-friendly tail" is not an
+explanation. Describe what is integrated, what an array holds, where extra
+nodes are placed, and why the calculation needs them. Use the detailed
+function headers in `halo.c` as the documentation model, including inputs,
+outputs, units, cache ownership, and a map from equations to code.
+This applies to numerical helpers too: explain the algorithm and define
+its terminology. For example, an FFT-size helper must explain transform
+factorization, what a radix is, why the selected small factors help FFTW,
+and what the returned padded length changes. Two lines naming the
+algorithm are not sufficient documentation for a student.
+
 Before any complex mathematical loop or physics derivation, insert a
 comment block titled `/* PHYSICAL DERIVATION & LOGIC FLOW */` mapping
 the code's math back to the textbook formulas:
@@ -251,6 +326,14 @@ the code's math back to the textbook formulas:
 
 Assume the reader is a physics student who knows the math and needs
 absolute clarity on how variables map to formulas.
+
+- **Do not overengineer or add code bloat for obscure failures.** When
+  a rare unsupported condition can be checked with a simple `if` guard,
+  check it and stop with a clear error. Do not build recovery machinery,
+  retry paths, compatibility layers or speculative fallbacks for cases
+  that almost never occur. Keep the implementation focused on the
+  supported scientific calculation. This does not remove the numerical
+  reference paths required to validate an algorithm change.
 
 - No nested ternary operators; explicit `if / else` blocks.
 - No single-line blocks: always braces `{}` on loops and conditionals.
@@ -295,6 +378,12 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
   64-byte cache-line padded rows). Each returns one block, pointer rows
   included: one `free` per table. Zero only through `zero1d/2d/3d/4d`.
   **Never** a flat `memset` over a padded multi-dim allocation (see pitfalls).
+- Combine work arrays with matching dimensions and lifetimes into one
+  higher-dimensional allocation. For example, the real FFT input, variance
+  output and derivative output belong in `malloc3d(threads, 3, nfft)`;
+  document the role index and use named local pointers inside the loop.
+  Keep arrays with different shapes separate; do not add an allocator
+  abstraction merely to combine them.
 - Every SIMD/fast-path block is wrapped in a preprocessor guard with the slow
   reference path in the `#else`/guarded branch.
 - Fortran (custom CAMB): all modifications fenced with `!VM BEGINS` /
@@ -326,9 +415,11 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
 - `cfftlog/` — non-Limber pipeline; `cfftlog_ells_cocoa0` hoists the
   ell-independent forward FFT out of the convergence loop.
 - `halo.c` — halo model: Tinker multiplicity and bias (`tinker_alpha`,
-  `fnu`, `hb1nu`, `bias_norm`), NFW and KS gas profiles (`u_nfw_c` on the
-  f/G table; `u_KS` on `ks_upsample1d` tables), HOD tables (`hod_tables`:
-  `ngal`, `bgal`), spectra `p_mm`/`p_gm`/`p_gg`. Every lazily built table
+  `fnu`, `hb1nu`, `bias_norm`), the NFW profile (`u_nfw_c` on the f/G
+  table), HOD tables (`hod_tables`: `ngal`, `bgal`), spectra `p_gm`/`p_gg`
+  (`p_mm`, `p_my`, `p_yy`, the KS gas profiles `u_KS`, `frac_bnd`,
+  `frac_ejc`, `u_y_ejc` and `u_c` are kept, not compiled, in
+  `future_port_unfinished/`). Every lazily built table
   is warmed by `halo_warmup`. Numerics: "halo.c numerics" below.
 - `basics.c` — allocators, `zero*d`, interpolation utilities
   (`spline_coeffs_uniform` + direct-index Horner is the house spline;
@@ -441,8 +532,8 @@ integral family:
   M_min / M_0 does not help. The linear read in a (<= 1.4e-5) dominates
   at 128 nodes: raising hdi buys nothing for `ngal` / `bgal` until
   `N_a` is raised.
-- Mass integrals of the spectra (`p_mm`, `p_my`, `p_yy`, `p_gm`,
-  `p_gg`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
+- Mass integrals of the spectra (`p_gm`, `p_gg`; `p_mm` measured too
+  before it moved to `future_port_unfinished/`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
   0 / 1 / 2 / >= 3. Chi2 ladder at 64 nodes vs 1024 (2026-09-29, HOD
   gg+gs 3x2pt, per-point fiducial): roman_real 8.6e-6, lsst_y1 8.2e-11;
   spectrum builds at 64 nodes: p_mm 0.04 s, p_gm 0.06 s, p_gg 0.05 s
@@ -468,9 +559,9 @@ integral family:
   1024-node build, per-point generated fiducial): 512 -> 4.4e-11,
   256 -> 5.4e-10, 128 -> 2.1e-8; largest single datavector entry moves
   by 1.2e-8 (256) / 8.6e-8 (128) relative. 256 is therefore also
-  viable if the builds must halve again; keep any y-probe (p_my/p_yy)
-  likelihood in mind before dropping further - their chi2-level
-  tolerance is untested. The integrands read `sigma2` and
+  viable if the builds must halve again. The y spectra (p_my/p_yy) are
+  kept, not compiled, in future_port_unfinished/halo_tsz.c; restoring
+  them needs their own chi2-level tolerance check. The integrands read `sigma2` and
   `dlognudlogm` by linear interpolation in ln M (a kink per cell,
   algebraic GL convergence); the gather bullet above is the way to
   make a small rule exact at every k.
@@ -503,7 +594,7 @@ Trapezoid rules, uniform in a log variable:
   switch gap), ~1e-10 elsewhere.
 - Refill cost ~15-40 ms at 4 threads for l <= 6 (M2); 10-15 ms for l = 2.
 - Mass nodes below the IA HOD's M_0 carry no red satellites and are
-  skipped in the kernel sums (about half at the p_mm mass range);
+  skipped in the kernel sums (about half of the spectra's mass range);
   mapping the rule from M_0 upward (as p_gm) is an open improvement.
 
 ### Tables and splines

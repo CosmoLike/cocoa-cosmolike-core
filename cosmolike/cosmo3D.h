@@ -60,8 +60,7 @@ double p_lin(const double k, const double a);
 // linear cold dark matter + baryon spectrum (cosmology.lnPL_cb)
 double p_lin_cb(const double k, const double a);
 
-// Omega of the halo field of like.halo_model[4]: Omega_m or
-// Omega_m - Omega_nu
+// Cold dark matter + baryon density fraction, Omega_m - Omega_nu
 double omega_halo_field(void);
 
 double p_nonlin(const double k, const double a);
@@ -81,7 +80,12 @@ double MG_Sigma(double a);
 
 double PkRatio_baryons(double k_NL, double a);
 
-double sigma2(const double M);
+double sigma2(const double M, const double a);
+
+// Variance and logarithmic rms slope at scale factor a. field is
+// HALO_FIELD_MATTER or HALO_FIELD_CB; M is in M_sun/h.
+double sigma2_field(const double M, const double a, const int field);
+double dlnsigma_dlnm_field(const double M, const double a, const int field);
 
 #ifdef __cplusplus
 }

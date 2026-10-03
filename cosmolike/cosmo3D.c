@@ -6,6 +6,7 @@
 #include <gsl/gsl_spline.h>
 #include <gsl/gsl_sf.h>
 #include <math.h>
+#include <omp.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -43,20 +44,15 @@
 //   k         = (c/H0)^-1 units   (k[h/Mpc]*coverH0)
 //   P(k)      = (c/H0)^3 units    (table (Mpc/h)^3, divided by coverH0^3)
 //
-// COSMO3D_ASSUME_PIECEWISE_UNIFORM contract: each setter lays its z
-// grid out as a few uniform segments and records them in the *_z_seg_*
-// metadata (lnPL/lnP additionally use one uniform segment in log10 k).
-// With the macro defined, every bracket lookup except a_chi's (the chi
-// column is not uniform) becomes a direct index computed from that
-// metadata instead of a binary search. The metadata is trusted, never
-// checked: a table filled without it, or with a grid that is not
-// piecewise-uniform, makes the lookups land in wrong brackets and
-// return silently wrong interpolants. Without the macro every lookup
-// but a_chi's binary-searches and needs no metadata; a_chi uses its own
-// bucket index in both builds (set_chi_bucket_index).
+// Grid contract: redshift axes consist of at most MAX_GRID_SEGMENTS
+// uniform segments; the power spectra also have a uniform log10 k axis.
+// The setters check this structure and record each segment's start and
+// inverse spacing. All builds use that metadata for direct indexing.
+// A caller must install tables through those setters so the grid and
+// its metadata remain consistent. The inverse distance reader a_chi
+// uses its separate bucket index because chi itself is not uniform.
 // ---------------------------------------------------------------------------
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -110,7 +106,6 @@ static inline int piecewise_index(double q,
   if (j > n_total - 2)   j = n_total - 2;
   return j;
 }
-#endif
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -175,26 +170,14 @@ double dchi_da(const double a)
 // i.e. |dchi/da|: only the magnitude |dz/da| = 1/a^2 of the Jacobian is
 // applied, so dchida is positive although chi decreases with a.
 //
-// The fast variant replaces the bracket binary search with a direct-index
-// lookup on the piecewise-uniform z grid (cosmology.chi_z_* metadata from
-// set_distances) and clamps j so the j+2 read of the "up" slope stays in
-// bounds; the fallback variant keeps the binary search.
+// A direct-index lookup uses the piecewise-uniform z grid metadata
+// populated by set_distances. Clamp j so the j+2 read of the "up" slope
+// stays within the table.
 //
 // Cache invalidation:
 // no static state. The cosmology.chi table and its
 // grid metadata are replaced by set_distances, which also bumps
 // cosmology.random so downstream caches rebuild.
-//
-// Parameters:
-//   a - scale factor (a = 1/(1+z))
-//
-// Returns:
-//   struct chis { chi = chi(a) in c/H0 units, dchida = (1/a^2) dchi/dz }
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookup on the piecewise-uniform z
-// grid (cosmology.chi_z_* metadata). Full contract: shared header above.
 //
 // Parameters:
 //   a - scale factor (a = 1/(1+z))
@@ -253,81 +236,6 @@ struct chis chi_all(const double a)
   result.dchida = dchidz / cosmology.coverH0 / (a * a);
   return result;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookup on the z grid. Full
-// contract: shared header above.
-//
-// Parameters:
-//   a - scale factor (a = 1/(1+z))
-//
-// Returns:
-//   struct chis { chi = chi(a) in c/H0 units, dchida = (1/a^2) dchi/dz }
-// ---------------------------------------------------------------------------
-struct chis chi_all(const double a)
-{
-  double out[2];
-  const double z = 1.0/a - 1.0;
-
-  // bracket the query z by binary search on the z column
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.chi_nz - 1;
-    while (ihi > ilo + 1)
-    {
-      size_t ll = (ihi + ilo)/2;
-      if (cosmology.chi[0][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-  // the "up" slope below reads j+2; clamp as the piecewise variant does
-  if (j > cosmology.chi_nz - 3) {
-    j = cosmology.chi_nz - 3;
-  }
-
-  // chi(z) by linear interpolation between nodes j and j+1
-  const double dy = (z                     - cosmology.chi[0][j])/
-                    (cosmology.chi[0][j+1] - cosmology.chi[0][j]);
-  out[0] = cosmology.chi[1][j] + dy*(cosmology.chi[1][j+1]-cosmology.chi[1][j]);
-
-  // dchi/dz by linear interpolation of the two slopes "up" (over
-  // [j, j+2]) and "down" (over [j-1, j+1]; one-sided over [j, j+1]
-  // at the j = 0 boundary)
-  if (j>0)
-  {
-    const double up = (cosmology.chi[1][j+2] - cosmology.chi[1][j])/
-                      (cosmology.chi[0][j+2] - cosmology.chi[0][j]);
-    
-    const double down = (cosmology.chi[1][j+1] - cosmology.chi[1][j-1])/
-                        (cosmology.chi[0][j+1] - cosmology.chi[0][j-1]);
-    out[1] = down + dy*(up-down);
-  }
-  else 
-  {
-    const double up = (cosmology.chi[1][j+2] - cosmology.chi[1][j])/
-                      (cosmology.chi[0][j+2] - cosmology.chi[0][j]);
-    
-    const double down = (cosmology.chi[1][j+1] - cosmology.chi[1][j])/
-                        (cosmology.chi[0][j+1] - cosmology.chi[0][j]);
-    out[1] = down + dy*(up-down);
-  }
-
-  // convert Mpc/h -> c/H0 units (divide by coverH0 = c/H0 in Mpc/h =
-  // 2997.92458)
-  out[1] = (out[1]/cosmology.coverH0);
-  // convert from d\chi/dz to d\chi/da
-  out[1] = out[1]/(a*a);
-
-  struct chis result;
-  result.chi = out[0]/cosmology.coverH0;
-  result.dchida = out[1];
-  return result;
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // dchi/dz = a^2 * dchi_da(a) in c/H0 units. Equals c/H(z) in units of
@@ -535,28 +443,14 @@ double growfac(const double a)
 //   D(a) = G(z)*a/G(0)     (normalize_z0 = true: then D(a=1) = 1,
 //                           since a = 1 at z = 0)
 //
-// G(0) comes from the same table: the fast variant uses bracket j = 0
-// directly (the grid starts at z = 0), the fallback repeats the binary
-// search. The query-z bracket is a direct-index lookup on the
-// piecewise-uniform z grid (cosmology.G_z_* metadata) in the fast
-// variant, a binary search in the fallback.
+// G(0) comes from bracket j = 0 because the grid starts at z = 0.
+// The query-z bracket comes from a direct-index lookup on the
+// piecewise-uniform z grid (cosmology.G_z_* metadata).
 //
 // Cache invalidation:
 // no static state. The cosmology.G table and its
 // grid metadata are replaced by set_growth, which also bumps
 // cosmology.random.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: divide by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   D(a), normalized per normalize_z0
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: j = 0 bracket for the G(0) normalization and direct-index
-// bracket lookup at the query z. Full contract: shared header above.
 //
 // Parameters:
 //   a            - scale factor
@@ -601,72 +495,6 @@ double norm_growfac(const double a, const bool normalize_z0)
 
   return normalize_z0 ? (G*a)/growfact1 : G*a;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups (both the G(0)
-// normalization and the query z). Full contract: shared header above.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: divide by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   D(a), normalized per normalize_z0
-// ---------------------------------------------------------------------------
-double norm_growfac(const double a, const bool normalize_z0)
-{
-  // first lookup: G(0) for the z = 0 normalization (binary search)
-  double growfact1;
-  {
-    const double z = 0.0;
-    int j = 0;
-    {
-      size_t ilo = 0;
-      size_t ihi = cosmology.G_nz-1;
-      while (ihi>ilo+1) {
-        size_t ll = (ihi+ilo)/2;
-        if(cosmology.G[0][ll]>z)
-          ihi = ll;
-        else
-          ilo = ll;
-      }
-      j = ilo;
-    }
-    const double dy = (z                   - cosmology.G[0][j])/
-                      (cosmology.G[0][j+1] - cosmology.G[0][j]);
-    
-    growfact1 = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-  }
-
-  // second lookup: G at the query redshift (binary search)
-  const double z = 1.0/a-1.0;
-
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.G_nz-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.G[0][ll]>z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  const double dy = (z                   - cosmology.G[0][j])/
-                    (cosmology.G[0][j+1] - cosmology.G[0][j]);
-
-  const double G = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-
-  if(normalize_z0)
-    return (G*a)/growfact1; // Growth D = G * a
-  else
-    return G*a; // Growth D = G * a
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // Logarithmic growth rate f(z) = dlnD/dlna for D = G*a, from the same
@@ -678,23 +506,12 @@ double norm_growfac(const double a, const bool normalize_z0)
 //   f         = 1 + dlnG/dlna
 //
 // The normalization G(0) cancels in the logarithmic derivative, so no
-// z = 0 lookup is needed. Bracket selection: direct-index lookup in the
-// fast variant, binary search in the fallback (see norm_growfac).
+// z = 0 lookup is needed. The bracket is found by direct indexing on
+// the piecewise-uniform z grid, as in norm_growfac.
 //
 // Cache invalidation:
 // no static state; the table is maintained by
 // set_growth.
-//
-// Parameters:
-//   z - redshift
-//
-// Returns:
-//   f(z) = dlnD/dlna
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookup on the piecewise-uniform z
-// grid. Full contract: shared header above.
 //
 // Parameters:
 //   z - redshift
@@ -727,75 +544,16 @@ double f_growth(const double z)
 
   return 1 + dlnGdlna; // Growth D = G * a
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookup on the z grid. Full
-// contract: shared header above.
-//
-// Parameters:
-//   z - redshift
-//
-// Returns:
-//   f(z) = dlnD/dlna
-// ---------------------------------------------------------------------------
-double f_growth(const double z)
-{
-  // bracket the query z by binary search on the z column
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.G_nz-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.G[0][ll]>z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  const double dy = (z                   - cosmology.G[0][j])/
-                    (cosmology.G[0][j+1] - cosmology.G[0][j]);
-                    
-  const double G = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-
-  const double dlnGdlnz = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-                           (cosmology.G[0][j+1] - cosmology.G[0][j]))*z/G;
-  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
-  const double dlnGdlnz_slope = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-    (cosmology.G[0][j+1] - cosmology.G[0][j]))*(1+z)/G;
-  
-  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
-                                    : -dlnGdlnz_slope;
-
-  return 1 + dlnGdlna; // Growth D = G * a
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // Growth factor D(a) and growth rate f(a) fused in one bracket lookup:
 // the formulas of norm_growfac and f_growth (see those headers) evaluated
 // from a single interpolation of the cosmology.G table at z = 1/a - 1,
-// plus the j = 0 (fast variant) or binary-search (fallback) lookup of
-// the G(0) normalization.
+// plus the j = 0 lookup of the G(0) normalization.
 //
 // Cache invalidation:
 // no static state; the table is maintained by
 // set_growth.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: D is divided by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   struct growths { D = D(a), f = dlnD/dlna at a }
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: j = 0 bracket for the G(0) normalization and direct-index
-// bracket lookup at the query z. Full contract: shared header above.
 //
 // Parameters:
 //   a            - scale factor
@@ -852,87 +610,6 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
   Gf.D = normalize_z0 ? (G*a)/growfact1 : (G*a);
   return Gf;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups (both the G(0)
-// normalization and the query z). Full contract: shared header above.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: D is divided by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   struct growths { D = D(a), f = dlnD/dlna at a }
-// ---------------------------------------------------------------------------
-struct growths norm_growfac_all(const double a, const bool normalize_z0)
-{
-  // first lookup: G(0) for the z = 0 normalization (binary search)
-  double growfact1;
-  {
-    const double z = 0.0;
-    int j = 0;
-    {
-      size_t ilo = 0;
-      size_t ihi = cosmology.G_nz-1;
-      while (ihi>ilo+1) 
-      {
-        size_t ll = (ihi+ilo)/2;
-        if(cosmology.G[0][ll]>z)
-          ihi = ll;
-        else
-          ilo = ll;
-      }
-      j = ilo;
-    }
-    const double dy = (z                   - cosmology.G[0][j])/
-                      (cosmology.G[0][j+1] - cosmology.G[0][j]);
-    
-    growfact1 = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-  }
-
-  // second lookup: G at the query redshift (binary search)
-  const double z = 1.0/a-1.0;
-
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.G_nz - 1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.G[0][ll]>z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  const double dy = (z                   - cosmology.G[0][j])/
-                    (cosmology.G[0][j+1] - cosmology.G[0][j]);
-                    
-  const double G = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-
-  const double dlnGdlnz = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-                           (cosmology.G[0][j+1] - cosmology.G[0][j]))*z/G;
-  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
-  const double dlnGdlnz_slope = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-    (cosmology.G[0][j+1] - cosmology.G[0][j]))*(1+z)/G;
-  
-  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
-                                    : -dlnGdlnz_slope;
-
-  struct growths Gf;
-  Gf.f = 1 + dlnGdlna; // Growth D = G * a
-
-  if(normalize_z0)
-    Gf.D = (G*a)/growfact1; 
-  else
-    Gf.D = (G*a);
-
-  return Gf;
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // D(a) normalized to D(1) = 1 and f(a) in one lookup: shorthand for
@@ -971,26 +648,13 @@ struct growths growfac_all(const double a)
 // (c/H0)^3 units. A query outside the grid keeps the nearest edge
 // bracket, so ln P is linearly extrapolated from that bracket.
 //
-// Bracket selection: the fast variant uses direct-index lookups (single
-// uniform segment in log10 k, piecewise-uniform z segments, via the
-// cosmology.lnPL_* metadata); the fallback uses two binary searches.
+// Bracket selection uses direct indexing: one uniform segment in
+// log10 k and piecewise-uniform z segments, via cosmology.lnPL_* metadata.
 //
 // Cache invalidation:
 // no static state. The cosmology.lnPL table and its
 // grid metadata are replaced by set_linear_power_spectrum, which also
 // bumps cosmology.random.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_lin(k, a) in (c/H0)^3 units
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookups (single uniform segment in
-// log10 k, piecewise-uniform z). Full contract: shared header above.
 //
 // Parameters:
 //   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
@@ -1043,82 +707,13 @@ double p_lin(const double k, const double a)
   // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
   return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups on both axes. Full
-// contract: shared header above.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_lin(k, a) in (c/H0)^3 units
-// ---------------------------------------------------------------------------
-double p_lin(const double k, const double a)
-{
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
-  const double log10k = log10(k/cosmology.coverH0);
-  const double z = 1.0/a-1.0;
-
-  // logk = cosmology.lnPL[0:nk,cosmology.lnPL_nz]
-  // z    = cosmology.lnPL[cosmology.lnPL_nk,0:nz]
-  
-  // bracket log10k by binary search on the k-axis row
-  int i = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nk-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[ll][cosmology.lnPL_nz] > log10k)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    i = ilo;
-  }
-
-  // bracket z by binary search on the z-axis row
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nz-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[cosmology.lnPL_nk][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  // bilinear ln P interpolation on the [i, i+1] x [j, j+1] cell
-  double dx = (log10k                                 - cosmology.lnPL[i][cosmology.lnPL_nz])/
-              (cosmology.lnPL[i+1][cosmology.lnPL_nz] - cosmology.lnPL[i][cosmology.lnPL_nz]);
-
-  double dy = (z                                     - cosmology.lnPL[cosmology.lnPL_nk][j])/
-              (cosmology.lnPL[cosmology.lnPL_nk][j+1]- cosmology.lnPL[cosmology.lnPL_nk][j]);
-
-  const double out_lnP =    (1-dx)*(1-dy)*cosmology.lnPL[i][j]
-                          + (1-dx)*dy*cosmology.lnPL[i][j+1]
-                          + dx*(1-dy)*cosmology.lnPL[i+1][j]
-                          + dx*dy*cosmology.lnPL[i+1][j+1];
-
-  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
-  return exp(out_lnP)/(cosmology.coverH0*cosmology.coverH0*cosmology.coverH0);
-}
-#endif
 
 
 
 // ---------------------------------------------------------------------------
 // Linear power spectrum of cold dark matter plus baryons, P_cb(k, a): the
 // matter field without the massive neutrinos, which free-stream out of
-// halos. Read by sigma2 when like.halo_model[4] = HALO_FIELD_CB.
+// halos. Its evolving variance is used by every halo statistic.
 //
 // Table: cosmology.lnPL_cb[i][j] = ln P_cb at (log10k_i, z_j), installed
 // by set_linear_power_spectrum_cb on the grid of cosmology.lnPL; the axes
@@ -1141,7 +736,6 @@ double p_lin(const double k, const double a)
 // Returns:
 //   P_cb(k, a) in (c/H0)^3 units
 // ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 double p_lin_cb(const double k, const double a)
 {
   // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
@@ -1176,94 +770,17 @@ double p_lin_cb(const double k, const double a)
   // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
   return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
 }
-#else
-double p_lin_cb(const double k, const double a)
-{
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
-  const double log10k = log10(k/cosmology.coverH0);
-  const double z = 1.0/a-1.0;
-
-  // bracket log10k by binary search on lnPL's k-axis row
-  int i = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nk-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[ll][cosmology.lnPL_nz] > log10k)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    i = ilo;
-  }
-
-  // bracket z by binary search on lnPL's z-axis row
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nz-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[cosmology.lnPL_nk][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  // bilinear ln P_cb interpolation on the [i, i+1] x [j, j+1] cell
-  double dx = (log10k                                 - cosmology.lnPL[i][cosmology.lnPL_nz])/
-              (cosmology.lnPL[i+1][cosmology.lnPL_nz] - cosmology.lnPL[i][cosmology.lnPL_nz]);
-
-  double dy = (z                                     - cosmology.lnPL[cosmology.lnPL_nk][j])/
-              (cosmology.lnPL[cosmology.lnPL_nk][j+1]- cosmology.lnPL[cosmology.lnPL_nk][j]);
-
-  const double out_lnP =    (1-dx)*(1-dy)*cosmology.lnPL_cb[i][j]
-                          + (1-dx)*dy*cosmology.lnPL_cb[i][j+1]
-                          + dx*(1-dy)*cosmology.lnPL_cb[i+1][j]
-                          + dx*dy*cosmology.lnPL_cb[i+1][j+1];
-
-  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
-  return exp(out_lnP)/(cosmology.coverH0*cosmology.coverH0*cosmology.coverH0);
-}
-#endif
 
 
 
 // ---------------------------------------------------------------------------
-// Density parameter of the field the halo model counts halos in, chosen
-// by like.halo_model[4] (halo.h):
-//
-//   HALO_FIELD_MATTER   Omega_m             (total matter)
-//   HALO_FIELD_CB       Omega_m - Omega_nu  (cold dark matter + baryons)
-//
-// rho_crit times this value is the mean density that ties a halo mass
-// to its Lagrangian radius in sigma2 and that sets the rho/M factor of
-// dn/dlnM in halo.c and halo_cluster.c. Under HALO_FIELD_MATTER it
-// returns cosmology.Omega_m itself, so the products it enters are
-// today's products bit for bit.
-//
-// Aborts: any other like.halo_model[4].
-//
-// Returns:
-//   Omega of the halo field, dimensionless
+// The cold matter density sets the halo mass-radius relation and the
+// rho/M factor in the mass function. Free-streaming neutrinos contribute
+// to the background and to lensing, but not to the mass in these halos.
 // ---------------------------------------------------------------------------
 double omega_halo_field(void)
 {
-  if (HALO_FIELD_MATTER == like.halo_model[4]) {
-    return cosmology.Omega_m;
-  }
-  else if (HALO_FIELD_CB == like.halo_model[4]) {
-    return cosmology.Omega_m - cosmology.Omega_nu;
-  }
-  else {
-    log_fatal("like.halo_model[4] = %d not supported", like.halo_model[4]);
-    exit(1);
-  }
+  return cosmology.Omega_m - cosmology.Omega_nu;
 }
 
 // ----------------------------------------------------------------------------
@@ -1276,7 +793,7 @@ double omega_halo_field(void)
 // ---------------------------------------------------------------------------
 // Non-linear matter power spectrum P_nl(k, a): the same bilinear ln P
 // interpolation, unit conventions, edge-bracket extrapolation and
-// direct-index/binary-search variants as p_lin (see p_lin), reading the
+// direct-index lookups as p_lin (see p_lin), reading the
 // cosmology.lnP table loaded by set_non_linear_power_spectrum. When
 // bary.is_Pk_bary == 1 the result is multiplied by the hydro-sim
 // suppression PkRatio_baryons(k, a).
@@ -1285,18 +802,6 @@ double omega_halo_field(void)
 // no static state. The cosmology.lnP table and its
 // grid metadata are replaced by set_non_linear_power_spectrum, which
 // also bumps cosmology.random.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_nl(k, a) in (c/H0)^3 units, times the baryonic ratio when enabled
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookups (single uniform segment in
-// log10 k, piecewise-uniform z). Full contract: shared header above.
 //
 // Parameters:
 //   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
@@ -1347,78 +852,6 @@ double p_nonlin(const double k, const double a)
 
   return (bary.is_Pk_bary == 1) ? ans * PkRatio_baryons(k, a) : ans;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups on both axes. Full
-// contract: shared header above.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_nl(k, a) in (c/H0)^3 units, times the baryonic ratio when enabled
-// ---------------------------------------------------------------------------
-double p_nonlin(const double k, const double a)
-{
-  const double coverH0 = cosmology.coverH0;
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
-  const double log10k = log10(k/coverH0);
-  const double z = 1.0/a-1.0;
-
-  // logk = cosmology.lnP[0:nk,cosmology.lnP_nz]
-  // z    = cosmology.lnP[cosmology.lnP_nk,0:nz]
-  
-  // bracket log10k by binary search on the k-axis row
-  int i = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnP_nk-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnP[ll][cosmology.lnP_nz] > log10k)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    i = ilo;
-  }
-
-  // bracket z by binary search on the z-axis row
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnP_nz-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnP[cosmology.lnP_nk][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  // bilinear ln P interpolation on the [i, i+1] x [j, j+1] cell
-  double dx = (log10k                               - cosmology.lnP[i][cosmology.lnP_nz])/
-              (cosmology.lnP[i+1][cosmology.lnP_nz] - cosmology.lnP[i][cosmology.lnP_nz]);
-
-
-  double dy = (z                                   - cosmology.lnP[cosmology.lnP_nk][j])/
-              (cosmology.lnP[cosmology.lnP_nk][j+1]- cosmology.lnP[cosmology.lnP_nk][j]);
-
-  const double out_lnP =  (1-dx)*(1-dy)*cosmology.lnP[i][j]
-                          + (1-dx)*dy*cosmology.lnP[i][j+1]
-                          + dx*(1-dy)*cosmology.lnP[i+1][j]
-                          + dx*dy*cosmology.lnP[i+1][j+1];
-  
-  const double ans = exp(out_lnP)/(coverH0*coverH0*coverH0);
-  
-  return (bary.is_Pk_bary==1) ? ans*PkRatio_baryons(k,a) : ans;
-}
-#endif
 
 // ----------------------------------------------------------------------
 // ----------------------------------------------------------------------
@@ -1436,8 +869,7 @@ double p_nonlin(const double k, const double a)
 //
 // Every out[m] is bitwise p_lin(k[m], a): the k half and the bilinear
 // combination are p_lin's expressions verbatim, and the hoisted z half
-// computes the same values from the same a. The fallback build (binary
-// searches, no COSMO3D_ASSUME_PIECEWISE_UNIFORM) calls p_lin per entry.
+// computes the same values from the same a.
 //
 // Parameters:
 //   a   - scale factor
@@ -1450,7 +882,6 @@ double p_nonlin(const double k, const double a)
 // ---------------------------------------------------------------------------
 void p_lin_at_a(const double a, const double* k, const int n, double* out)
 {
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   const double z = 1.0 / a - 1.0;
   const int j = piecewise_index(z, cosmology.lnPL_z_nseg,
                                 cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
@@ -1473,18 +904,13 @@ void p_lin_at_a(const double a, const double* k, const int n, double* out)
                            +    dx *   dy  * cosmology.lnPL[i+1][j+1];
     out[m] = exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
   }
-#else
-  for (int m=0; m<n; m++) {
-    out[m] = p_lin(k[m], a);
-  }
-#endif
 }
 
 // ---------------------------------------------------------------------------
 // P_nl at ONE scale factor and n wavenumbers: out[m] = p_nonlin(k[m], a).
 // The z half of the bilinear read runs once, the k half per wavenumber,
 // with p_nonlin's expressions verbatim: every out[m] is bitwise
-// p_nonlin(k[m], a) (see p_lin_at_a for the reasoning and the fallback).
+// p_nonlin(k[m], a) (see p_lin_at_a for the reasoning).
 //
 // Parameters:
 //   a   - scale factor
@@ -1498,7 +924,6 @@ void p_lin_at_a(const double a, const double* k, const int n, double* out)
 // ---------------------------------------------------------------------------
 void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
 {
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   const double coverH0 = cosmology.coverH0;
   const double z      = 1.0 / a - 1.0;
   const int j = piecewise_index(z, cosmology.lnP_z_nseg,
@@ -1523,11 +948,6 @@ void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
     const double ans = exp(out_lnP) / (coverH0 * coverH0 * coverH0);
     out[m] = (bary.is_Pk_bary == 1) ? ans * PkRatio_baryons(k[m], a) : ans;
   }
-#else
-  for (int m=0; m<n; m++) {
-    out[m] = p_nonlin(k[m], a);
-  }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1737,637 +1157,883 @@ double MG_Sigma(double a __attribute__((unused))) {
 
 
 // ---------------------------------------------------------------------------
-// Cached sigma^2(M) at a = 1: the variance of the linear density field
-// after smoothing with a top-hat sphere that holds the mass M.
+// ============================================================================
+// [SECTION] MASS VARIANCE OF TOTAL MATTER AND COLD MATTER
+// ============================================================================
 //
-// What the caller gets. A table of ln sigma^2 on Ntable.N_M[NODES_DENSE] nodes
-// uniform in ln M over [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]]
-// (by default 1024 nodes over M = 1e6..1e17 M_sun/h), read back by
-// linear interpolation in ln M and exponentiated. The table is built
-// at a = 1 once per cosmology; halo.c rescales with the growth factor
-// D(a) where it needs sigma at a < 1: nu = delta_c/(sqrt(sigma2(M)) D(a)).
+// PHYSICAL DERIVATION & LOGIC FLOW
 //
-// 1. The integral
+// 1. Associate a smoothing radius with the halo mass.
 //
-// Smoothing the density field over a sphere of radius R multiplies each
-// Fourier mode by the sphere's transform, the top-hat window W(kR); the
-// variance of the smoothed field is the power spectrum weighted by W^2
-// (Cooray & Sheth 2002, astro-ph/0206508, Sec. 3.2):
+//    Imagine spreading the halo's mass uniformly at the mean cosmic
+//    density of the chosen field. The radius of that sphere is R:
 //
-//   sigma^2(R) = 1/(2 pi^2) int_0^inf k^2 P_lin(k) W(kR)^2 dk,
-//   W(x)       = 3 (sin x - x cos x)/x^3 = 3 j1(x)/x.
+//      M = (4 pi/3) rho_field R^3,
+//      R = [3 M / (4 pi rho_field)]^(1/3).
 //
-// j1 is the spherical Bessel function of order one,
+//    Total matter uses rho_field = rho_crit Omega_m. Cold dark matter
+//    plus baryons (cb) uses rho_field = rho_crit (Omega_m - Omega_nu).
+//    R is a Lagrangian smoothing radius, not the smaller radius r_200m
+//    of the collapsed halo used in its NFW profile.
 //
-//   j1(x) = sin x/x^2 - cos x/x,    j1(x) -> x/3 as x -> 0,
+// 2. Smooth the linear density field and calculate its variance.
 //
-// so W(0) = 1 (W(0.01) = 0.99999): modes much longer than R pass
-// through untouched, modes much shorter than R average away. Mass and
-// radius are tied by the mean matter density rho_crit Omega_m (the
-// density of the smoothed field: item 10),
+//    A uniform sphere in real space has the Fourier-space window
 //
-//   M = (4 pi/3) R^3 rho_crit Omega_m,
-//   R = (3 M/(4 pi rho_crit Omega_m))^(1/3).
+//      W(x) = 3 (sin x - x cos x) / x^3,       x = k R.
 //
-// Substituting x = kR (so k = x/R and dk = dx/R) inside the integral,
+//    Squaring the smoothed density and averaging gives
 //
-//   k^2 W(kR)^2 dk = (x^2/R^2) (9 j1(x)^2/x^2) (dx/R) = 9 j1(x)^2 dx/R^3,
+//      sigma^2(R,a) = integral dlnk Delta^2(k,a) W(kR)^2,
+//      Delta^2(k,a) = k^3 P(k,a) / (2 pi^2).
 //
-//   sigma^2(M) = 1/(2 pi^2 R^3) int_0^inf P_lin(x/R) 9 j1(x)^2 dx.
+//    Delta^2 is the variance per logarithmic interval in wavenumber.
+//    For cb we integrate P_cb at this a, rather than growing a z=0
+//    variance with a single growth factor. Massive neutrinos make the
+//    growth depend on k, hence on the mass scale being smoothed.
 //
-// The x^2 of k^2 dk cancels the 1/x^2 of W^2 exactly; that is why the
-// cached weights below carry 9 j1(x)^2 and no other power of x.
+// 3. Replace a separate integral at every R by a Fourier transform.
 //
-// 2. Why the integrand is awkward, and the cure
+//    Put u = ln k. Divide Delta^2 by a smooth power law k^b before
+//    taking its Fourier transform:
 //
-// P_lin is smooth: one broad peak near k ~ 0.02 h/Mpc, a k^-3 (ln k)^2
-// fall beyond it, baryon wiggles in between. The factor 9 j1(x)^2 is
-// not: it oscillates forever, vanishing wherever j1 does. Between two
-// consecutive zeros, however, it is a single smooth bump with no
-// structure inside. The zeros of j1 are the roots of tan x = x,
+//      g(u,a) = exp(-b u) Delta^2(exp(u),a).
 //
-//   z_1 = 4.4934,  z_2 = 7.7253,  z_3 = 10.9041,  z_4 = 14.0662, ...
-//   z_n -> (n + 1/2) pi    (one root just below each pole of tan x),
+//    This division reduces the difference between the two ends of the
+//    finite input interval. The number b is called the FFTLog bias;
+//    it is a numerical choice, unrelated to the physical halo bias.
+//    The power k^b is restored analytically below.
 //
-// and they cut the x axis into segments:
+//    On an evenly spaced u grid the FFT writes g as a sum of modes
+//    exp(i eta u). Restoring k^b turns each mode into k^s, where
 //
-//   head    [0, z_1]        the main bump (W falls from 1 to 0);
-//                           holds most of sigma^2
-//   lobe n  [z_n, z_{n+1}]  one bump each, shrinking as x grows
+//      s = b + i eta.
 //
-// Integrating every segment on its own with a small quadrature rule
-// turns one hard oscillatory integral into a sum of easy ones.
+//    The variance integral of this one mode can be done analytically.
+//    Substituting x = kR gives dlnk = dx/x and k^s = x^s R^(-s):
 //
-// 3. Integrating one smooth bump with a few nodes
+//      integral dlnk k^s W(kR)^2
+//        = R^(-s) integral_0^infinity dx x^(s-1) W(x)^2
+//        = R^(-s) Mellin(s).
 //
-// A quadrature rule approximates an integral by a weighted sum of the
-// integrand at prescribed nodes x_i with prescribed weights w_i:
+//    The last integral defines the Mellin transform of W^2. Its closed
+//    form is a ratio of Gamma functions (valid for 0 < Re(s) < 4):
 //
-//   int_a^b f(x) dx  ~  sum_i w_i f(x_i).
+//                      (9 pi/2) Gamma(4-s) Gamma(s/2)
+//      Mellin(s) = ------------------------------------------------- .
+//                  2^(4-s) Gamma((5-s)/2)^2 Gamma(4-s/2)
 //
-// The rule used here picks the n nodes (the roots of the Legendre
-// polynomial P_n, mapped from [-1, 1] onto [a, b]) and the n weights
-// so that the sum is exact for every polynomial of degree <= 2n - 1:
-// 2n free numbers buy 2n conditions. The 2-node rule on [-1, 1] has
-// nodes +-1/sqrt(3) and weights 1; it returns int x^2 dx = 2/3 and
-// int x^3 dx = 0 exactly and first fails at x^4 (0.222 for 0.4). The
-// error of the n-node rule is proportional to the 2n-th derivative of
-// f, so on a function that is one smooth bump it falls exponentially
-// with n: 8 nodes per lobe reproduce the sum of all lobes to better
-// than 1e-9 of sigma^2 for every tabulated mass. This is Gauss-Legendre
-// quadrature, "GL" in the comments below.
+//    Thus we need not integrate each oscillatory mode numerically.
+//    Multiply each FFT coefficient by Mellin(s), then sum the modes
+//    at every lnR with an inverse FFT. The factor R^(-b) restores the
+//    real power removed before the forward transform.
 //
-// GSL supplies the rule as a table. malloc_gslint_glfixed(n) wraps
-// gsl_integration_glfixed_table_alloc(n): the n nodes and weights on
-// [-1, 1], stored to full precision for n = 2..20, 32, 64, 96, 100,
-// 128, 256, 512, 1024 and computed on the fly (less precisely) for any
-// other n, which is why the ladders of item 5 use only those sizes.
-// The call
+// 4. Obtain the mass slope from the same Fourier coefficients.
 //
-//   gsl_integration_glfixed_point(a, b, i, &x, &w, t)
+//    The only R dependence of a mode is R^(-s). Therefore
 //
-// writes node i of table t mapped onto [a, b] into x and its weight,
-// scaled by (b - a)/2, into w.
+//      d[R^(-s)]/dlnR = -s R^(-s).
 //
-// 4. The head in ln x
+//    A second inverse FFT, with Mellin(s) replaced by -s Mellin(s),
+//    gives d sigma^2/dlnR. No finite difference in mass is required.
+//    Since M is proportional to R^3 and sigma is sqrt(sigma^2),
 //
-// For halo-scale R the head spans an enormous range of k. At M = 1e6
-// M_sun/h with Omega_m = 0.3, R = 0.0142 Mpc/h, so x in [0, 4.49] is
-// k in [0, 316] h/Mpc: the peak of P_lin (k ~ 0.02) sits at x ~ 3e-4
-// and the baryon wiggles (k ~ 0.05-0.3) at x ~ 1e-3 to 4e-3. A rule
-// whose 256 nodes spread over [0, 4.49] would put none of them there.
-// The head is therefore integrated in s = ln x, which spreads the
-// nodes evenly over decades of x:
+//      dln sigma/dlnM = (1 / (6 sigma^2)) d sigma^2/dlnR.
 //
-//   x = e^s,  dx = x ds   ->   int f(x) dx = int f(e^s) e^s ds,
+// 5. Store the result on the grids used by the halo integrals.
 //
-// so every head weight is multiplied by its node's x. A logarithmic
-// variable needs a finite lower edge: XMIN = 1e-5. Below it the
-// integrand behaves as P(x/R) 9 j1^2 ~ x^(n_s + 2) (P ~ k^n_s at low
-// k, 9 j1^2 ~ x^2), so the dropped piece scales as XMIN^(n_s + 3):
-// about 1e-10 of the head at M = 1e6 and far less for heavier halos,
-// whose k = XMIN/R is smaller still.
+//    FFTLog returns values uniformly spaced in lnR. A cubic spline
+//    evaluates them at the desired lnM nodes. Repeat this calculation
+//    for each scale factor and each field. The public readers then
+//    interpolate these tables in lnM and a.
 //
-// 5. Node counts: the hdi ladder
+// Units throughout this calculation:
+//   k: h/Mpc; R: Mpc/h; M: M_sun/h; P: (Mpc/h)^3.
+//   The variance and its logarithmic slope are dimensionless.
 //
-// hdi = abs(Ntable.high_def_integration) is the accuracy knob the
-// Limber quadratures of cosmo2D.c also read (0 by default). A "ladder"
-// is a chain of ?: choices mapping hdi to a size:
+// The work arrays below live between calls. Arrays of the same shape
+// share one allocation, with a documented extra index for their role.
+// All rows use the aligned allocators in basics.c, including the FFTW
+// complex rows. Each thread writes only its own work rows.
+// ---------------------------------------------------------------------------
+static struct {
+  uint64_t cosmology_tag; // cosmology generation represented by the tables
+  uint64_t ntable_tag;    // numerical-settings generation used for the grids
+
+  int nfft;              // transform length, including appended zeros
+  int ninput;            // k nodes containing the continued power spectrum
+  int nradial;           // radius nodes used by the spline, including end margins
+  int nthreads;          // number of threads with allocated work buffers
+  int nmass;             // mass nodes in each output row
+  int na;                // scale-factor nodes in each output table
+  int nk;                // k nodes in the supplied power-spectrum table
+
+  double lnk0;           // natural logarithm of the first supplied k in h/Mpc
+  double dlnk;           // spacing in lnk, also the FFT output spacing in lnR
+  double lnm0;           // natural logarithm of the minimum halo mass in M_sun/h
+  double lnm1;           // natural logarithm of the maximum halo mass in M_sun/h
+  double dlnm;           // spacing between output mass nodes in lnM
+  double amin;           // smallest tabulated scale factor
+  double da;             // spacing between scale-factor nodes
+
+  // [quantity][field][a][mass]: quantity 0 = ln(sigma^2/a^2),
+  // quantity 1 = dln sigma/dlnM; field 0 = matter, field 1 = cb.
+  double**** table;      // cached variance and mass slope for both fields
+
+  // [thread][role][FFT node]: role 0 = input g, role 1 = variance,
+  // role 2 = its lnR derivative (before normalization and splining).
+  double*** fft_real;    // each thread's real input and two inverse-FFT outputs
+
+  // [thread][role][radial node]: role 0 = cubic coefficients,
+  // role 1 = temporary values for the tridiagonal spline solve.
+  double*** spline_work; // each thread's coefficients and spline-solve workspace
+
+  // [2*thread+role][frequency]: role 0 = forward FFT of g,
+  // role 1 = forward coefficients multiplied by the integration kernel.
+  fftw_complex** fft_complex; // each thread's forward FFT and kernel product
+
+  double** mellin;       // [amplitude/phase][frequency], grid-only kernel
+  fftw_complex** kernel; // [2*field+derivative][frequency], shifted kernel
+  fftw_plan plan_forward; // cached instructions for the real-to-complex FFT
+  fftw_plan plan_inverse; // cached instructions for the complex-to-real FFT
+} sigma_fields_ = {0};
+
+
+// ---------------------------------------------------------------------------
+// Choose an even transform length that FFTW can factor efficiently.
 //
-//   hdi                 0      1      2      >= 3
-//   head nodes (nph)    256    512    1024   1024
-//   lobe nodes (npl)    8      12     16     20
-//   cached nodes        4352   6656   9216   11264   (nph + 512 npl)
+// A direct discrete Fourier transform of N samples evaluates N sums,
+// each containing N terms: its work grows as N^2. An FFT reduces that
+// work by splitting the transform into smaller transforms and combining
+// their results. If N = r*m, one such step splits the problem into r
+// transforms of length m. The number r is the radix of that step.
 //
-// The head carries the error budget, so it gets the large rule; a
-// lobe is one bump and 8 nodes already saturate it. Measured at
-// hdi = 0 against an independent numpy integration of the same P_lin:
-// 6.2e-6 maximum relative error in sigma^2 and 1.9e-6 scatter between
-// neighboring masses. The scatter is what the finite difference in
-// halo.c's dlognudlogm sees; that slope stays within 1.3e-4 of the
-// reference.
+// Small radices mean each combination step handles only a few values.
+// FFTW has efficient routines for these short transforms, particularly
+// lengths 2, 3, 5 and 7. When N is a product of those factors, FFTW can
+// repeatedly split it into these small pieces. For example, 1024 = 2^10
+// permits repeated radix-2 splits. A large prime length cannot be split
+// this way and needs a different, potentially more expensive algorithm.
+// FFTW supports such lengths too; they are not invalid.
 //
-// 6. Lobe count: NLOBE = 512
+// We therefore append zeros until the length has only the chosen prime
+// factors, as in the non-Limber calculation. We also require an even N
+// so our real-FFT indexing has a Nyquist coefficient at N/2. The even
+// requirement is this implementation's convention, not an FFTW limit.
 //
-// Far out, j1(x) -> -cos x/x (at x = 50: -0.01940 against -0.01930),
-// and far above the peak P_lin ~ k^-3 (ln k)^2, so the envelope of the
-// integrand falls as
-//
-//   P(x/R) 9 j1(x)^2  ~  (R/x)^3 (ln)^2 9 cos^2(x)/x^2  ~  x^-5,
-//
-// and the lobe sums decay like z_n^-5. Lobe 512 ends at z_513 ~ 1613,
-// where the envelope is (10/1613)^5 ~ 1e-11 of its value at x = 10.
-// The stopping rule of item 8 exits long before that for every
-// tabulated mass (89 segments at most), so the cache is a ceiling,
-// not a cost.
-//
-// 7. Locating the zeros of j1
-//
-// j1(x) = 0 <=> sin x = x cos x <=> tan x = x. tan x has a pole at
-// every (n + 1/2) pi, and one root of tan x = x sits just below each
-// pole. Two steps pin it down.
-//
-// A starting guess from a series. Write x = q - e with q = (n + 1/2) pi
-// and expand tan x = x in powers of 1/q; solving for e term by term
-// gives
-//
-//   z_n = q - 1/q - 2/(3 q^3) - ...,    q = (n + 1/2) pi
-//
-// (McMahon's expansion for large Bessel zeros). The code keeps q - 1/q.
-// For n = 1: q = 3 pi/2 = 4.7124 gives 4.5002 against the exact
-// 4.4934, an error of 0.007.
-//
-// Polishing by tangent lines. From a guess z, follow the tangent line
-// of f at z down to where it crosses zero and take that as the next
-// guess:
-//
-//   z <- z - f(z)/f'(z),   f = j1,   f'(x) = j1'(x) = j0(x) - 2 j1(x)/x,
-//
-// with j0(x) = sin x/x; the derivative is the recurrence
-// j_n'(x) = j_{n-1}(x) - (n + 1) j_n(x)/x at n = 1. This is Newton's
-// method, and each step roughly squares the error: from 4.5002 the
-// first step lands at 4.49340 (1e-5 off), the second at 4.4934094579
-// (2e-11), the third at machine precision. The loop allows 8 steps
-// and stops once |step| < 1e-14 z. The start is within 0.007 of the
-// wanted root and j1 is smooth there, so the iteration cannot wander
-// to a neighboring zero.
-//
-// 8. The per-mass sum and its stopping rule
-//
-// With nodes x_q and folded weights wf_q = w_q 9 j1(x_q)^2 cached (no
-// Bessel function is evaluated per mass), one mass costs
-//
-//   s_j   = sum over q in segment j of wf_q P_lin(x_q/R),
-//   total = s_0 + s_1 + s_2 + ...    (s_0 = head, s_j = lobe j).
-//
-// Stopping. Once two consecutive lobes decrease, r = s_j/s_{j-1} < 1,
-// pretend the decay stays geometric from here on; the remaining sum
-// would then be
-//
-//   s_j r + s_j r^2 + s_j r^3 + ... = s_j r/(1 - r)
-//
-// (with s_{j-1} = 4e-9 and s_j = 2e-9: r = 1/2, estimated tail 2e-9).
-// The loop exits when this estimate falls below EPS = 1e-7 of the
-// running total. For a power-law decay the ratios creep toward 1, so
-// the true tail is somewhat larger than the estimate (1.3x for
-// s_j ~ j^-5 at j = 20): the dropped tail is of order EPS, two orders
-// below the head rule's own error. Segments used at hdi = 0: 20 at
-// M = 1e6 (the head holds about 99.9% of sigma^2 there), about 25
-// mid-range, 89 at M = 1e17 (R = 66 Mpc/h, so the head ends at
-// k = 0.068 h/Mpc and the first lobes carry the peak and wiggles of
-// P_lin, about 7% of the total).
-//
-// 9. Coarse grid and cubic upsampling
-//
-// When Ntable.N_M[NODES_COARSE] is active (192 by default) the exact sums
-// run only on that many coarse ln M nodes, and a natural cubic spline
-// of ln sigma^2 fills the 1024-node table (the spline is explained at
-// the upsampling loop). ln sigma^2 is smooth and monotone in ln M, so
-// a cubic carries far more accuracy per node than the linear reads
-// the consumers make, and those reads stay untouched. Cost per
-// refill: ~9.7e4 p_lin reads, 0.71 ms with 4 threads.
-//
-// 10. Which density field
-//
-// like.halo_model[4] (halo.h) names the field whose variance the table
-// holds:
-//
-//   HALO_FIELD_MATTER  P_lin (total matter), M = (4 pi/3) R^3 rho_crit
-//                      Omega_m: the equations above as written
-//   HALO_FIELD_CB      P_cb (cold dark matter + baryons, p_lin_cb), and
-//                      Omega_m - Omega_nu in place of Omega_m in R(M)
-//
-// Massive neutrinos free-stream out of the potential wells, so halos
-// form from the cb field (DES Y1 clusters, 2010.01138). The table is
-// P_cb at a = 1; consumers rescale by the total-matter growth D(a) as
-// they do for total matter (the DES reference code does the same).
-// omega_halo_field returns the Omega; under HALO_FIELD_MATTER it is
-// cosmology.Omega_m itself, so that path computes today's R(M).
-//
-// Cache invalidation:
-//   allocation, ln M limits, coarse-grid map and node cache: rebuilt
-//     when Ntable.random changes (hdi enters the node counts)
-//   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1]);
-//     cosmology.random is redrawn by a new P_lin, a new P_cb table
-//     (set_linear_power_spectrum_cb), a new Omega_m or Omega_nu
-//     (set_cosmological_parameters) and a flip of like.halo_model[4]
-//     (init_halo_matter_field)
+// Algorithm:
+//   Start at the first even integer >= length. Divide out every factor
+//   of 2, then 3, 5 and 7. A remainder of 1 means all prime factors were
+//   in that list. Otherwise test the next even integer.
 //
 // Parameters:
-//   M - halo mass in M_sun/h
+//   length - number of physical input samples; must be at least two
 //
 // Returns:
-//   sigma^2(M) at a = 1, linearly interpolated in ln M from the table;
-//   constant outside [limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]]
+//   the smallest qualifying even length >= length. The caller fills
+//   the added entries with zeros after continuing the physical spectrum
+//   across the chosen k range; the helper changes no sampling interval.
 // ---------------------------------------------------------------------------
-double sigma2(
-    const double M  // halo mass in M_sun/h
+static int sigma2_fft_size(
+    int length  // minimum transform length
   )
 {
-  // Static state. A static local keeps its value between calls (it
-  // lives as long as the program, not as long as one call) and starts
-  // zeroed: every pointer below is NULL and cache[] is all zeros on
-  // the first call, which is what makes that call build everything.
-  // Two blocks write the statics:
-  //
-  //   Ntable rebuild block (geometry; runs when Ntable.random changes)
-  //     table/lnMv/lim, the coarse-grid workspace (ncoarse, dlnc,
-  //     lnMc, qidx, qdel, tabc, cspl) and the node cache (nseg, off,
-  //     xs, wf). Every malloc of this function lives there.
-  //   Refill block (physics; runs when cosmology.random or
-  //     Ntable.random changes)
-  //     the values in table (and in tabc, cspl on the coarse path),
-  //     then the tags cache[0] and cache[1].
-  static uint64_t cache[MAX_SIZE_ARRAYS]; // [0] cosmology, [1] Ntable tag
-  static double* table;    // [N_M] ln sigma^2 on the dense ln M grid
-  static double* lnMv;     // [N_M] the dense ln M nodes
-  static double lim[3];    // ln M_min, ln M_max, dense spacing in ln M
-  static int ncoarse = 0;  // active internal coarse mass nodes (0 = off)
-  static double dlnc = 0.; // coarse grid spacing in ln M
-  static double* lnMc = NULL;  // coarse ln M nodes
-  static int* qidx = NULL;     // fine node -> coarse interval (uniform
-  static double* qdel = NULL;  //   grids: precomputed, no search)
-  static double* tabc = NULL;  // coarse ln sigma^2 values
-  static double* cspl = NULL;  // natural-cubic-spline c coefficients
-  static int nseg = 0;         // lobe cache: head + lobes
-  static int* off = NULL;      // [nseg + 1] segment offsets into xs/wf
-  static double* xs = NULL;    // [off[nseg]] quadrature nodes
-  static double* wf = NULL;    // [off[nseg]] GL weight x 9 j1(x)^2
-
-  // Ntable rebuild block. fdiff2(a, b) is plain uint64 inequality (1
-  // when the two tags differ). Ntable.random is a tag that changes
-  // whenever any Ntable setting changes; cache[1] holds the tag of the
-  // build this table comes from. On the first call table is NULL, so
-  // the block runs whatever the tags say.
-  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    // Dense grid: N_M nodes uniform in ln M from ln M_min to ln M_max,
-    // both endpoints included, hence N_M - 1 intervals. With the
-    // defaults lim[2] = ln(1e17/1e6)/1023 = 25.328/1023 = 0.02476.
-    if (table != NULL) free(table);
-    table = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
-    lim[0] = log(limits.halo_m[RANGE_MIN]);
-    lim[1] = log(limits.halo_m[RANGE_MAX]);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M[NODES_DENSE] - 1.0);
-    if (lnMv != NULL) free(lnMv);
-    lnMv = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
-    for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
-      lnMv[i] = lim[0] + i*lim[2];
-    }
-
-    // Coarse-grid workspace (why a coarse grid exists: item 9 of the
-    // header and the refill block below). Every allocation lives in
-    // this Ntable rebuild block; the per-cosmology refill only fills.
-    // The buffers of the last build are released first, so a changed
-    // N_M_internal can neither leak them nor reuse them at the wrong
-    // size.
-    if (lnMc != NULL) { free(lnMc); lnMc = NULL; }
-    if (qidx != NULL) { free(qidx); qidx = NULL; }
-    if (qdel != NULL) { free(qdel); qdel = NULL; }
-    if (tabc != NULL) { free(tabc); tabc = NULL; }
-    if (cspl != NULL) { free(cspl); cspl = NULL; }
-    // The coarse grid is active only when it is a real grid (more than
-    // 3 nodes, so the cubic spline has interior nodes to solve for)
-    // and really coarser than the dense one; otherwise ncoarse = 0 and
-    // the refill computes every dense node exactly.
-    const int nc = Ntable.N_M[NODES_COARSE];
-    ncoarse = (nc > 3 && nc < Ntable.N_M[NODES_DENSE]) ? nc : 0;
-    if (ncoarse > 0) {
-      // ncoarse nodes uniform in ln M over the same [lim[0], lim[1]]
-      // as the dense grid; default 192 nodes, dlnc = 25.328/191 =
-      // 0.13261 in ln M (about 5.4 dense spacings).
-      dlnc = (lim[1] - lim[0]) / ((double) ncoarse - 1.0);
-      lnMc = (double*) malloc(sizeof(double)*ncoarse);
-      for (int i=0; i<ncoarse; i++) {
-        lnMc[i] = lim[0] + i*dlnc;
-      }
-      // Fine-to-coarse map. Where does dense node i sit on the coarse
-      // grid? Both grids are uniform in ln M and share both endpoints,
-      // so the answer is arithmetic, no search:
-      //
-      //   dense node i  ->  ln M = lim[0] + i lim[2]
-      //                 ->  r = i lim[2]/dlnc     (in coarse spacings)
-      //                 ->  j = (int) r           (left node; the cast
-      //                                           truncates toward 0)
-      //                 ->  qdel = (r - j) dlnc   (offset from it, ln M)
-      //
-      // Example with the defaults, i = 100: r = 100 x 191/1023 =
-      // 18.67, j = 18, qdel = 0.67 x 0.13261 = 0.0889 in ln M.
-      //
-      // Why the clamp: the spline evaluates on interval [j, j+1], so
-      // the largest legal j is ncoarse - 2. At the top node
-      // i = N_M - 1 the ratio r is ncoarse - 1 (exactly, or one ulp
-      // off, since i lim[2] and (ncoarse - 1) dlnc are two roundings
-      // of the same length), and (int) r names an interval that does
-      // not exist. The clamp moves that node onto the last interval,
-      // at qdel = dlnc, its right endpoint.
-      qidx = (int*) malloc(sizeof(int)*Ntable.N_M[NODES_DENSE]);
-      qdel = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
-      for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
-        const double r = (double) i * lim[2] / dlnc;
-        int j = (int) r;
-        if (j > ncoarse - 2) {
-          j = ncoarse - 2;
-        }
-        qidx[i] = j;
-        qdel[i] = (r - j) * dlnc; // offset from node j, in ln M
-      }
-      tabc = (double*) malloc(sizeof(double)*ncoarse);
-      cspl = (double*) malloc(sizeof(double)*ncoarse);
-    }
-
-    // Node cache: the head segment plus NLOBE lobes, each with its own
-    // Gauss-Legendre rule, all nodes flattened into xs[] with the
-    // Bessel factor folded into wf[] (header, items 2-7). It depends
-    // on hdi only, never on the cosmology or the mass: the per-mass
-    // loop of the refill block reads it and computes nothing beyond
-    // P_lin(x_q/R) times wf_q.
-    //
-    // The two ladders read "if hdi is 0 take the first size, if 1 the
-    // second, ...", the last size covering every larger hdi:
-    //
-    //   hdi            0     1     2     >= 3
-    //   npl (lobe)     8     12    16    20
-    //   nph (head)     256   512   1024  1024
-    //
-    // All are sizes GSL stores as precomputed tables (header, item 3).
-    const int NLOBE = 512;
-    const int hdi = abs(Ntable.high_def_integration);
-    const int npl = (0 == hdi) ? 8 :
-                    (1 == hdi) ? 12 :
-                    (2 == hdi) ? 16 : 20;         // per lobe
-    const int nph = (0 == hdi) ? 256 :
-                    (1 == hdi) ? 512 : 1024;      // head, GL in ln x
-                                                  // (predefined GSL tables)
-    const double XMIN = 1e-5;                     // head lower edge in x
-    // Layout. Segment j owns the nodes q = off[j] .. off[j+1] - 1 of
-    // xs/wf, and off[nseg] is the total node count. Segment 0 is the
-    // head with nph nodes, segments 1..NLOBE the lobes with npl each:
-    //
-    //   off[0] = 0,  off[1] = nph,  off[j] = nph + (j - 1) npl,
-    //   off[nseg] = nph + NLOBE npl = 256 + 512 x 8 = 4352 at hdi = 0.
-    if (xs != NULL) {
-      free(xs);
-      free(wf);
-      free(off);
-    }
-    nseg = 1 + NLOBE;
-    off = (int*) malloc(sizeof(int)*(nseg + 1));
-    const int ntot = nph + NLOBE*npl;
-    xs = (double*) malloc(sizeof(double)*ntot);
-    wf = (double*) malloc(sizeof(double)*ntot);
-
-    // Two GL tables (nodes and weights on [-1, 1]): one of size nph for
-    // the head, one of size npl shared by every lobe.
-    gsl_integration_glfixed_table* th = malloc_gslint_glfixed(nph);
-    gsl_integration_glfixed_table* tl = malloc_gslint_glfixed(npl);
-
-    // One pass over the segments. Each iteration finds the segment's
-    // right edge (a zero of j1), maps the GL rule onto the segment,
-    // folds 9 j1^2 into the weights and advances the running count.
-    double zlo = 0.0; // left edge of the current segment
-    int q0 = 0;       // running node count
-    for (int j = 0; j < nseg; j++) {
-      // Right edge: the (j+1)-th zero of j1, found as in header item
-      // 7. Start from q - 1/q with q = (n + 1/2) pi and n = j + 1 (for
-      // j = 0: q = 4.7124, start 4.5002, exact zero 4.4934), then
-      // polish with Newton steps z <- z - j1(z)/j1'(z), where
-      // j1'(z) = j0(z) - 2 j1(z)/z. gsl_sf_bessel_j0_e and _j1_e store
-      // the function value in the .val field of a gsl_sf_result (the
-      // struct also carries an error estimate, unused here). The step
-      // shrinks quadratically (6.8e-3, 1.0e-5, 2.4e-11 for j = 0) and
-      // the loop leaves as soon as it is below 1e-14 of z.
-      const double qq = ((double) j + 1.5)*M_PI; // (n + 1/2) pi, n = j+1
-      double z = qq - 1.0/qq; // McMahon start
-      for (int it = 0; it < 8; it++) { // Newton on j1
-        gsl_sf_result J0, J1;
-        gsl_sf_bessel_j0_e(z, &J0);
-        gsl_sf_bessel_j1_e(z, &J1);
-        const double step = J1.val/(J0.val - 2.0*J1.val/z);
-        z -= step;
-        if (fabs(step) < 1e-14*z) {
-          break;
-        }
-      }
-      // Rule and size for this segment: the head takes the large table
-      // th, every lobe the small table tl.
-      const int nj = (0 == j) ? nph : npl;
-      gsl_integration_glfixed_table* tt = (0 == j) ? th : tl;
-      off[j] = q0;
-      for (int i = 0; i < nj; i++) {
-        double xi, wi;
-        if (0 == j) { // head: GL in s = ln x on [ln XMIN, ln z_1], dx = x ds
-          // The rule is laid out in s = ln x over [ln XMIN, ln z_1]:
-          // glfixed_point returns node s_i and weight w_i for that
-          // interval. The node in x is e^{s_i}, and because dx = x ds
-          // the weight for an integral over x is w_i times that x
-          // (header, item 4).
-          double si;
-          gsl_integration_glfixed_point(log(XMIN), log(z), i, &si, &wi, tt);
-          xi = exp(si);
-          wi *= xi;
-        } else {
-          // Lobe: the rule is laid out directly in x over [z_j, z_{j+1}]
-          // (zlo is the right edge of segment j - 1).
-          gsl_integration_glfixed_point(zlo, z, i, &xi, &wi, tt);
-        }
-        // Fold the window into the weight: wf = w 9 j1(x)^2, the whole
-        // cosmology-independent part of the integrand of header item 1.
-        gsl_sf_result J1;
-        gsl_sf_bessel_j1_e(xi, &J1);
-        xs[q0] = xi;
-        wf[q0] = wi*9.0*J1.val*J1.val;
-        q0++;
-      }
-      zlo = z;
-    }
-    off[nseg] = q0; // total node count, also the end of the last lobe
-    gsl_integration_glfixed_table_free(th);
-    gsl_integration_glfixed_table_free(tl);
+  if (length < 2) {
+    log_fatal("sigma2_fft_size: at least two input samples are required");
+    exit(1);
   }
-  // Refill block: runs when the cosmology tag or the Ntable tag differs
-  // from the one the table holds. set_linear_power_spectrum changes
-  // cosmology.random whenever it installs a new P_lin, so a new P_lin
-  // always lands here.
-  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    // Which masses get an exact sum. On the coarse path (ncoarse > 0)
-    // the loop runs over the ncoarse coarse nodes lnMc and writes the
-    // scratch tabc; the cubic upsampling below then fills table. On the
-    // exact path it runs over all N_M dense nodes lnMv and writes table
-    // directly. The three selectors let one loop serve both paths.
-    const double* lnm = (ncoarse > 0) ? lnMc : lnMv;
-    const int nm = (ncoarse > 0) ? ncoarse : Ntable.N_M[NODES_DENSE];
-    double* out = (ncoarse > 0) ? tabc : table;
 
-    // The smoothed field (header, item 10): total matter, or cold dark
-    // matter + baryons when like.halo_model[4] = HALO_FIELD_CB. The
-    // field fixes the spectrum of the lobe sums (p_lin or p_lin_cb) and
-    // the mean density omega_field rho_crit of the Lagrangian radius.
-    const int use_cb = (HALO_FIELD_CB == like.halo_model[4]);
-    if (use_cb && NULL == cosmology.lnPL_cb) {
-      log_fatal("sigma2: like.halo_model[4] = HALO_FIELD_CB needs the "
-                "linear P_cb table (set_linear_power_spectrum_cb, after "
-                "set_linear_power_spectrum)");
+  if (length % 2 != 0) {
+    length++;
+  }
+  // Try successive even lengths without changing the spacing in lnk.
+  for (;;) {
+    int remaining = length;
+    const int primes[4] = {2, 3, 5, 7};
+    for (int prime=0; prime<4; prime++) {
+      while (remaining % primes[prime] == 0) {
+        remaining /= primes[prime];
+      }
+    }
+    if (remaining == 1) {
+      return length;
+    }
+    length += 2;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Natural cubic spline on the evenly spaced lnR grid.
+//
+// Why a spline is needed:
+//   the inverse FFT gives sigma^2 at its own radii, while halo integrals
+//   ask for values at a different set of mass nodes. We interpolate
+//   ln(sigma^2/a^2) and dln sigma/dlnM, which vary smoothly with lnR.
+//
+// Write the polynomial in interval j as
+//
+//   S(x_j + t) = y_j + B_j t + C_j t^2 + E_j t^3,    0 <= t <= h,
+//
+// where x = lnR, h is the grid spacing, and y_j is the supplied value.
+// Matching S and its first two derivatives at neighboring nodes gives
+//
+//   C_(j-1) + 4 C_j + C_(j+1) = 3 (y_(j-1) - 2 y_j + y_(j+1)) / h^2.
+//
+// This linear system has only three nonzero diagonals. The first loop
+// eliminates the lower diagonal; the second substitutes backward to
+// obtain every C_j. The caller then constructs
+//
+//   B_j = (y_(j+1)-y_j)/h - h (C_(j+1)+2 C_j)/3,
+//   E_j = (C_(j+1)-C_j)/(3 h).
+//
+// The natural boundary condition sets C=0 at both ends (S''=0).
+// The physical variance need not have zero curvature there, so the
+// caller supplies extra radius nodes beyond both ends of the requested
+// mass range. This moves that artificial boundary away from all queried
+// masses; its effect decays rapidly through the tridiagonal equations.
+//
+// Parameters:
+//   values  - y_j on the uniform lnR grid, including extra end nodes
+//   count   - number of radial nodes
+//   spacing - h = delta lnR
+//   coeff   - output C_j = S''(x_j)/2, length count
+//   scratch - temporary reciprocal diagonal entries, length count
+//
+// Returns:
+//   nothing; fills coeff and overwrites scratch. Both arrays are
+//   supplied by the caller, so this function allocates no memory.
+//   Parallel callers must provide a separate pair for each thread.
+// ---------------------------------------------------------------------------
+static void sigma2_spline_coeffs(
+    const double* restrict values, // function on a uniform grid
+    const int count,               // number of radial nodes
+    const double spacing,          // spacing in lnR
+    double* restrict coeff,        // half the second derivative
+    double* restrict scratch       // elimination multipliers
+  )
+{
+  const double rhs_scale = 3.0/(spacing*spacing);
+
+  // Left natural boundary and forward elimination of the lower diagonal.
+  coeff[0] = 0.0;
+  scratch[0] = 0.0;
+  for (int node=1; node<count-1; node++) {
+    const double rhs = rhs_scale*(values[node-1] - 2.0*values[node]
+                                 + values[node+1]);
+    scratch[node] = 1.0/(4.0 - scratch[node-1]);
+    coeff[node] = (rhs - coeff[node-1])*scratch[node];
+  }
+
+  // Right natural boundary, then solve for the remaining coefficients.
+  coeff[count-1] = 0.0;
+
+  for (int node=count-2; node>0; node--) {
+    coeff[node] -= scratch[node]*coeff[node+1];
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Build both fields' variance and mass-slope tables at all scale factors.
+//
+// The derivation above explains the integral; this function implements
+// it in three stages:
+//
+//   1. Set the grids and allocate work arrays. Cache two FFTW plans and
+//      the Mellin transform of W^2. These depend on grid geometry, not
+//      on the amplitudes of the power spectra.
+//
+//   2. Map mass to radius for this cosmology. The two mean densities
+//      give different radius origins. Shift the cached Mellin kernel
+//      to each origin and form the derivative kernel once per field.
+//
+//   3. For each (field, a) row, read P(k,a), take one forward FFT and
+//      two inverse FFTs, then interpolate from lnR to the mass grid.
+//
+// Input range and padding are different operations:
+//   The supplied spectrum is continued to lower and higher k with its
+//   edge power laws, just as p_lin does. This retains high-k power that
+//   contributes to small halos. Only after that physical continuation
+//   do we append zeros, if necessary, to reach a transform length that
+//   FFTW can factor efficiently. The two operations must not be swapped.
+//
+// Threading and plan reuse follow cfftlog_ells_p1/p2 in cosmo2D.c:
+//   FFTW planning is done here, outside OpenMP, only when the workspace
+//   is rebuilt. Cosmology changes reuse those plans. Parallel workers
+//   execute a shared plan on their own arrays through FFTW's new-array
+//   interface. Each worker completes an entire (field, a) row, so no
+//   sum or temporary array is shared between workers.
+//
+// Cache invalidation:
+//   geometry/workspace: Ntable.random, k grid, mass/a limits, threads
+//   table values:      cosmology.random, or any geometry rebuild
+//   Mellin factors:    only a geometry rebuild; shared by both fields
+//
+// Parameters:
+//   none. Reads cosmology.lnPL and lnPL_cb, the mean densities, limits,
+//   and Ntable. The spectrum axes are lnPL[i][nz] = log10 k_i and
+//   lnPL[nk][j] = z_j; lnPL[i][j] contains ln P(k_i,z_j).
+//
+// Returns:
+//   nothing; fills sigma_fields_.table. If P_cb is absent, only the
+//   total-matter table is filled; a cb request is rejected by the reader.
+//
+// Call once outside any consumer's OpenMP loop to build the lazy cache.
+// Subsequent reads of the unchanged cache return immediately.
+// ---------------------------------------------------------------------------
+static void sigma2_fields_build(void)
+{
+  if (sigma_fields_.table != NULL
+      && !fdiff2(sigma_fields_.cosmology_tag, cosmology.random)
+      && !fdiff2(sigma_fields_.ntable_tag, Ntable.random)
+      && sigma_fields_.nthreads == omp_get_max_threads()) {
+    return;
+  }
+
+
+
+  // --- 1a. CHOOSE THE INPUT k GRID AND OUTPUT MASS/a GRIDS ---
+
+  const double bias = 1.5;        // power divided out of Delta^2 before FFT
+  const double kmin = 1.e-7;      // h/Mpc: low-k continuation
+  const double kmax = 1.e5;       // h/Mpc: retain the small-mass tail
+  const int padding = 16;        // radial spline boundary margin
+  const int nk = cosmology.lnPL_nk;
+  const int nz = cosmology.lnPL_nz;
+  const int threads = omp_get_max_threads();
+
+  if (NULL == cosmology.lnPL || nk < 2 || nz < 2) {
+    log_fatal("sigma2_field needs a linear power table with at least two "
+              "k and z nodes; call set_linear_power_spectrum first");
+    exit(1);
+  }
+
+  // The likelihood supplies uniform log10 k nodes. Convert the origin
+  // and spacing to natural logarithms, the coordinate used by FFTLog.
+  const double lnk0 = log(10.0)*cosmology.lnPL[0][nz];
+  const double dlnk = log(10.0)*(cosmology.lnPL[nk-1][nz]
+                                - cosmology.lnPL[0][nz])/(nk-1);
+
+  if (!(dlnk > 0.0)) {
+    log_fatal("sigma2_field: the input k grid must be increasing");
+    exit(1);
+  }
+
+  // Continue on the same grid until both integration bounds are covered.
+  // first/last are integer offsets relative to the first supplied k node;
+  // first may be negative when the continuation reaches lower k.
+  const int first = (int) floor((log(kmin)-lnk0)/dlnk);
+  const int last  = (int) ceil((log(kmax)-lnk0)/dlnk);
+  const int ninput = last-first+1;
+  const int nfft = sigma2_fft_size(ninput);
+
+  // The conjugate FFT grid has spacing delta lnR = delta lnk.
+  // Since lnM = 3 lnR + constant, the required radius interval spans
+  // one third of the mass interval in logarithmic coordinates.
+  // Extra radius nodes on each side protect the cubic spline from its
+  // artificial zero-curvature boundary condition.
+  const int nradial = (int) ceil(log(limits.halo_m[RANGE_MAX]
+                                     /limits.halo_m[RANGE_MIN])/(3.0*dlnk))
+                     + 2*padding+1;
+  const int nmass = Ntable.N_M[NODES_DENSE];
+  const int na = Ntable.N_a;
+  const double lnm0 = log(limits.halo_m[RANGE_MIN]);
+  const double lnm1 = log(limits.halo_m[RANGE_MAX]);
+  if (nradial > nfft || nmass < 2 || na < 2) {
+    log_fatal("sigma2_field: incompatible FFT/mass/a grid; use finer "
+              "logarithmic k sampling and at least two mass and a nodes");
+    exit(1);
+  }
+
+
+
+  // --- 1b. REUSE THE WORKSPACE, OR REBUILD IT IF ITS SHAPE CHANGED ---
+
+  if (NULL == sigma_fields_.table
+      || fdiff2(sigma_fields_.ntable_tag, Ntable.random)
+      || sigma_fields_.nk != nk
+      || sigma_fields_.lnk0 != lnk0
+      || sigma_fields_.dlnk != dlnk
+      || sigma_fields_.nthreads != threads
+      || sigma_fields_.lnm0 != lnm0
+      || sigma_fields_.lnm1 != lnm1
+      || sigma_fields_.amin != limits.a_min) {
+    // Each multidimensional allocator returns one owned block. Free it
+    // once, including its row pointers; never free the individual rows.
+    if (sigma_fields_.table != NULL) {
+      fftw_destroy_plan(sigma_fields_.plan_forward);
+      fftw_destroy_plan(sigma_fields_.plan_inverse);
+      free(sigma_fields_.table);
+      free(sigma_fields_.fft_real);
+      free(sigma_fields_.spline_work);
+      free(sigma_fields_.fft_complex);
+      free(sigma_fields_.kernel);
+      free(sigma_fields_.mellin);
+    }
+
+    sigma_fields_.table = (double****) malloc4d(2, 2, na, nmass);
+    sigma_fields_.fft_real = (double***) malloc3d(threads, 3, nfft);
+    sigma_fields_.spline_work = (double***) malloc3d(threads, 2, nradial);
+    sigma_fields_.fft_complex = (fftw_complex**) malloc2d_fftwc(2*threads, nfft/2+1);
+    sigma_fields_.kernel = (fftw_complex**) malloc2d_fftwc(4, nfft/2+1);
+    sigma_fields_.mellin = (double**) malloc2d(2, nfft/2+1);
+
+    // The plans describe transforms of length nfft, not a cosmology.
+    // Plan against thread zero's aligned arrays. During execution each
+    // thread supplies its own equally aligned rows to the same plan.
+    // FFTW_ESTIMATE chooses the transform recipe without timing trial
+    // transforms; later execute calls apply that recipe to new data.
+    sigma_fields_.plan_forward = fftw_plan_dft_r2c_1d(nfft,
+        sigma_fields_.fft_real[0][0], sigma_fields_.fft_complex[0], FFTW_ESTIMATE);
+    sigma_fields_.plan_inverse = fftw_plan_dft_c2r_1d(nfft,
+        sigma_fields_.fft_complex[1], sigma_fields_.fft_real[0][1], FFTW_ESTIMATE);
+
+    sigma_fields_.nfft = nfft;
+    sigma_fields_.ninput = ninput;
+    sigma_fields_.nradial = nradial;
+    sigma_fields_.nthreads = threads;
+    sigma_fields_.nmass = nmass;
+    sigma_fields_.na = na;
+    sigma_fields_.nk = nk;
+    sigma_fields_.lnk0 = lnk0;
+    sigma_fields_.dlnk = dlnk;
+    sigma_fields_.lnm0 = lnm0;
+    sigma_fields_.lnm1 = lnm1;
+    sigma_fields_.dlnm = (lnm1-lnm0)/(nmass-1);
+    sigma_fields_.amin = limits.a_min;
+    sigma_fields_.da = (1.0-limits.a_min)/(na-1);
+
+
+
+    // --- 1c. INTEGRATE EACH FOURIER MODE ANALYTICALLY ---
+
+    // Like the non-Limber c-window cache, the Mellin factors depend on
+    // the FFT grid, not the cosmology. Evaluate the Gamma functions
+    // once here; both fields and every a row reuse them below.
+    for (int mode=0; mode<=nfft/2; mode++) {
+      const double eta = 2.0*M_PI*mode/(nfft*dlnk);
+
+      // GSL returns ln|Gamma| and arg(Gamma), so products and ratios
+      // of potentially enormous Gamma values become sums of logarithms.
+      // With s = bias + i eta, the four entries are the Gamma factors
+      // in Mellin(s), in the order written in the derivation above.
+      gsl_sf_result amplitude[4]; // logarithms of the four Gamma magnitudes
+      gsl_sf_result phase[4];     // complex arguments of the four Gamma factors
+      gsl_sf_lngamma_complex_e(4.0-bias, -eta, &amplitude[0], &phase[0]);
+      gsl_sf_lngamma_complex_e(bias/2.0, eta/2.0, &amplitude[1], &phase[1]);
+      gsl_sf_lngamma_complex_e((5.0-bias)/2.0, -eta/2.0,
+                               &amplitude[2], &phase[2]);
+      gsl_sf_lngamma_complex_e(4.0-bias/2.0, -eta/2.0,
+                               &amplitude[3], &phase[3]);
+
+      // Numerator factors add; denominator factors subtract. Gamma
+      // ((5-s)/2) is squared, hence its coefficient of two below.
+      const double lnamp = log(4.5*M_PI) + amplitude[0].val + amplitude[1].val
+          -(4.0-bias)*log(2.0)-2.0*amplitude[2].val-amplitude[3].val;
+      const double angle = phase[0].val+phase[1].val+eta*log(2.0)
+          -2.0*phase[2].val-phase[3].val;
+
+      // A finite FFT treats its input as periodically repeating. The
+      // meeting of the two distant k endpoints can create oscillations
+      // in the result. Reduce the highest-frequency coefficients with
+      // a smooth window, leaving the lower-frequency modes untouched.
+      // The window t-sin(2 pi t)/(2 pi) joins 0 and 1 with zero slope.
+      const double fraction = 2.0*mode/nfft;
+      double window = 1.0;
+      if (fraction > 0.75) {
+        const double taper = (1.0-fraction)/0.25;
+        window = taper-sin(2.0*M_PI*taper)/(2.0*M_PI);
+      }
+
+      sigma_fields_.mellin[0][mode] = exp(lnamp)*window;
+      sigma_fields_.mellin[1][mode] = angle;
+    }
+  }
+
+
+
+  // --- 2. THIS COSMOLOGY: MASS-RADIUS MAPS AND THE TWO KERNELS ---
+
+  const int nfields = (cosmology.lnPL_cb == NULL) ? 1 : 2;
+  double lnR0[2];
+  const double lnkin = lnk0+first*dlnk;
+
+  // rho_crit is stored per (c/H0)^3. Convert to the Mpc/h volume unit
+  // before solving M = (4 pi/3) rho_field R^3 for the smoothing radius.
+  const double rho_unit = cosmology.rho_crit/pow(cosmology.coverH0, 3.0);
+
+  for (int field=0; field<nfields; field++) {
+    double omega = cosmology.Omega_m;
+    if (field == HALO_FIELD_CB) {
+      omega -= cosmology.Omega_nu;
+    }
+
+    if (omega <= 0.0) {
+      log_fatal("sigma2_field: Omega_field = %g must be positive", omega);
       exit(1);
     }
-    const double omega_field = omega_halo_field();
 
-    const double EPS = 1e-7; // relative tail tolerance of the lobe sum
-    // restrict copies of the node cache. restrict is a promise to the
-    // compiler that, while these pointers are in scope, the memory they
-    // point to is reached only through them; the store to out[m] can
-    // then not have changed xq[q], wq[q] or oq[j], and the compiler
-    // need not reload them after every store. The promise is honored
-    // only on accesses made through the qualified pointer: the loop
-    // body must index xq/wq/oq, not the statics xs/wf/off, for it to
-    // take effect.
-    const double* restrict xq = xs;
-    const double* restrict wq = wf;
-    const int* restrict oq = off;
-    // One thread per chunk of masses. schedule(static) splits the m
-    // range into contiguous chunks whose bounds depend on the thread
-    // count alone, and each mass's sum is a serial loop inside one
-    // thread over the same nodes in the same order every time: the
-    // floating-point result for a given mass is bit-identical from run
-    // to run and independent of the thread count. Nothing is reduced
-    // across threads.
-    #pragma omp parallel for schedule(static)
-    for (int m = 0; m < nm; m++) {
-      // R from M through M = (4 pi/3) R^3 rho_crit Omega (header,
-      // item 1; Omega = omega_field, Omega_m for total matter);
-      // 0.75/pi is 3/(4 pi). cosmology.rho_crit = 7.4775e21 is
-      // the critical density in M_sun/h per (c/H0)^3, so R comes out in
-      // c/H0 units and k = x/R in (c/H0)^-1 units, the units p_lin
-      // expects (the unit conventions at the top of this file). At
-      // M = 1e6 with Omega_m = 0.3: R = 4.74e-6 c/H0 = 0.0142 Mpc/h.
-      const double Mm = exp(lnm[m]);
-      const double R =
-          pow(0.75*Mm/(M_PI*cosmology.rho_crit*omega_field), 1./3.);
-      const double invR = 1.0/R;
+    // Radius of the minimum tabulated mass, then move left by the
+    // extra spline nodes. Different mean densities shift this origin.
+    lnR0[field] = (lnm0-log(4.0*M_PI*rho_unit*omega/3.0))/3.0-padding*dlnk;
 
-      // Segment sums s_j in order, head first (header, item 8). Per
-      // node one P_lin read and one multiply-add: p_lin(k, 1.0) is the
-      // linear spectrum at k = x_q/R and at scale factor a = 1 (the
-      // second argument); the Bessel factor already sits in wq[q].
-      // p_lin_cb reads the P_cb table with p_lin's arithmetic.
-      double total = 0.0;
-      double sprev = 0.0;
-      for (int j = 0; j < nseg; j++) {
-        double s = 0.0;
-        if (use_cb) {
-          for (int q = oq[j]; q < oq[j+1]; q++) {
-            s += wq[q]*p_lin_cb(xq[q]*invR, 1.0);
-          }
-        }
-        else {
-          for (int q = oq[j]; q < oq[j+1]; q++) {
-            s += wq[q]*p_lin(xq[q]*invR, 1.0);
-          }
-        }
-        total += s;
-        // Stopping rule (header, item 8): with r = s_j/s_{j-1} the
-        // geometric estimate of everything not yet summed is
-        // s_j r/(1 - r); leave once it is below EPS of the total.
-        // j = 0 is the head and j = 1 the first lobe: the ratio test
-        // needs two consecutive lobes, so it starts at j = 2 (the head
-        // is a different kind of segment and never enters a ratio).
-        // The guards sprev > 0 and s < sprev keep the formula
-        // meaningful: r must lie in (0, 1) for the series to converge.
-        if (j > 1 && sprev > 0.0 && s < sprev) {
-          const double r = s/sprev;
-          if (s*r/(1.0 - r) < EPS*total) {
-            break;
-          }
-        }
-        sprev = s;
-      }
-      // Normalization 1/(2 pi^2 R^3) of header item 1. R^3 in (c/H0)^3
-      // cancels the (c/H0)^3 of P_lin, leaving sigma^2 dimensionless.
-      out[m] = total/(R*R*R*2.0*M_PI*M_PI);
-    }
+    // Fourier coefficients refer to samples starting at lnkin, whereas
+    // the output must start at lnR0. Account for both nonzero origins
+    // with exp[-i eta (lnkin+lnR0)] multiplying Mellin(s).
+    for (int mode=0; mode<=nfft/2; mode++) {
+      const double eta = 2.0*M_PI*mode/(nfft*dlnk);
+      const double angle = sigma_fields_.mellin[1][mode]
+          -eta*(lnkin+lnR0[field]);
+      const double amplitude = sigma_fields_.mellin[0][mode];
 
-    if (ncoarse > 0) {
-      // The spline runs through ln sigma^2, not sigma^2: sigma^2 spans
-      // orders of magnitude over the mass range while its log is close
-      // to a straight line in ln M, the friendliest shape for a cubic.
-      // The table stores the log on both paths.
-      for (int i=0; i<ncoarse; i++) {
-        tabc[i] = log(tabc[i]);
-      }
-      // Upsampling with the house natural cubic spline. A cubic spline
-      // is a chain of cubic polynomials, one per interval between
-      // nodes, joined so that value, first and second derivative are
-      // continuous at every node; "natural" adds S'' = 0 at both ends.
-      // On interval [x_j, x_j + h] the piece is
-      //
-      //   S(x_j + t) = y_j + b t + c_j t^2 + d t^3,     0 <= t <= h,
-      //
-      // where c_j = S''(x_j)/2 is what spline_coeffs_uniform returns (a
-      // tridiagonal solve, see basics.c) with c_0 = c_{n-1} = 0. The
-      // other two coefficients follow from two conditions:
-      //
-      //   S'' runs linearly from 2 c_j to 2 c_{j+1} across the interval
-      //     ->  d = (c_{j+1} - c_j)/(3 h)
-      //   S hits the right node, S(x_{j+1}) = y_{j+1}
-      //     ->  b = (y_{j+1} - y_j)/h - h (c_{j+1} + 2 c_j)/3
-      //
-      // Tiny check with three nodes y = (0, 1, 0) and h = 1: the solve
-      // gives c = (0, -1.5, 0); on the first interval b = 1.5 and
-      // d = -0.5, so S(1) = 0 + 1.5 - 0.5 = 1 reproduces the middle
-      // node and S(0.5) = 0.6875. The polynomial is evaluated in Horner
-      // form, y + t (b + t (c + t d)), at the precomputed offset qdel[i]
-      // from node qidx[i] of every dense node.
-      spline_coeffs_uniform(tabc, ncoarse, dlnc, cspl);
-      const double hc = dlnc;
-      const double inv_hc = 1.0/dlnc;
-      #pragma omp parallel for schedule(static)
-      for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
-        const int j = qidx[i];
-        const double b = (tabc[j+1] - tabc[j])*inv_hc
-                         - hc*(cspl[j+1] + 2.0*cspl[j])/3.0;
-        const double d = (cspl[j+1] - cspl[j])/(3.0*hc);
-        table[i] = tabc[j] + qdel[i]*(b + qdel[i]*(cspl[j] + qdel[i]*d));
-      }
+      // FFTW's inverse uses exp(+i eta lnR), while the integrated mode
+      // varies as exp(-i eta lnR). Conjugate both the kernel here and
+      // the forward coefficient below to obtain the required real sum.
+      const double real_kernel = amplitude*cos(angle);
+      const double imag_kernel = -amplitude*sin(angle);
+      sigma_fields_.kernel[2*field][mode][0] = real_kernel;
+      sigma_fields_.kernel[2*field][mode][1] = imag_kernel;
+
+      // Differentiating R^(-bias-i*eta) gives -(bias+i*eta).
+      // Conjugation reverses that sign of i in the inverse-FFT kernel.
+      sigma_fields_.kernel[2*field+1][mode][0] = -bias*real_kernel-eta*imag_kernel;
+      sigma_fields_.kernel[2*field+1][mode][1] = -bias*imag_kernel+eta*real_kernel;
     }
-    else {
-      // Exact path: every dense node holds its own sum; store the log.
-      for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
-        table[i] = log(table[i]);
-      }
-    }
-    // Record the tags the table now corresponds to; the next call
-    // compares against them.
-    cache[0] = cosmology.random;
-    cache[1] = Ntable.random;
   }
-  // Read-out. interpol1d(f, n, a, b, dx, x) is the house linear
-  // interpolation on a uniform grid: with r = (x - a)/dx and
-  // i = floor(r) it returns f[i] + (r - i) (f[i+1] - f[i]); below a it
-  // returns f[0], and at or beyond the last node f[n-1] (constant
-  // extrapolation, so a mass outside [halo_m[RANGE_MIN], halo_m[RANGE_MAX]] gets the
-  // edge value). Here f = table (ln sigma^2), a = lim[0], dx = lim[2],
-  // x = ln M; b = lim[1] is accepted for symmetry and unused. Example
-  // with the defaults, M = 3e10: r = ln(3e4)/0.02476 = 416.37, so the
-  // value is read 37% of the way from node 416 to node 417. exp undoes
-  // the stored log.
-  return exp(interpol1d(table, Ntable.N_M[NODES_DENSE], lim[0], lim[1], lim[2], log(M)));
+
+
+
+  // --- 3. TRANSFORM EACH (FIELD, a) ROW INDEPENDENTLY ---
+
+  // collapse(2) treats the (field,row) pairs as one list of independent
+  // jobs. schedule(static) divides that list among the workers. A worker
+  // finishes a row before reusing its scratch arrays for the next one.
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int field=0; field<nfields; field++) {
+    for (int row=0; row<na; row++) {
+      const int thread = omp_get_thread_num();
+
+      // Each work/output row occupies a separate region of memory.
+      // restrict promises that stores through one local pointer cannot
+      // change values read through another, so the compiler need not
+      // reload them to account for possible overlap. The calculations
+      // below use these local pointers to make that promise effective.
+      // The thread index also gives each worker its own scratch rows;
+      // workers share no writable data during the row calculation.
+      double* restrict input = sigma_fields_.fft_real[thread][0];
+      double* restrict radial = sigma_fields_.fft_real[thread][1];
+      double* restrict derivative = sigma_fields_.fft_real[thread][2];
+
+      double* restrict coeff = sigma_fields_.spline_work[thread][0];
+      double* restrict scratch = sigma_fields_.spline_work[thread][1];
+
+      double* restrict variance = sigma_fields_.table[0][field][row];
+      double* restrict slope = sigma_fields_.table[1][field][row];
+
+      fftw_complex* restrict forward = sigma_fields_.fft_complex[2*thread];
+      fftw_complex* restrict product = sigma_fields_.fft_complex[2*thread+1];
+
+
+      // --- 3a. READ THE POWER SPECTRUM AT THIS SCALE FACTOR ---
+
+      const double a = limits.a_min+row*sigma_fields_.da;
+      const double redshift = 1.0/a-1.0;
+
+      // Locate the two input redshifts surrounding this scale factor.
+      // The setter records the few uniform segments of the z grid.
+      // Within one segment, (z-z_start)/dz gives the node directly;
+      // piecewise_index adds the segment's starting index and keeps
+      // the result in [0,nz-2], so both lower and lower+1 exist.
+      // Both fields share this grid and its metadata, as in p_lin_cb.
+      const int lower = piecewise_index(redshift, cosmology.lnPL_z_nseg,
+          cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
+          cosmology.lnPL_z_seg_xmin, cosmology.lnPL_z_seg_inv_dx, nz);
+
+      // Keep the edge bracket for z outside the supplied range. The
+      // fraction can then lie outside [0,1]: this continues lnP linearly
+      // in z, matching the power-spectrum readers' edge behavior.
+      const double fraction_z = (redshift-cosmology.lnPL[nk][lower])
+          /(cosmology.lnPL[nk][lower+1]-cosmology.lnPL[nk][lower]);
+
+      double** power = cosmology.lnPL;
+      if (field == HALO_FIELD_CB) {
+        power = cosmology.lnPL_cb;
+      }
+
+      // Each extended k node is an integer step from the supplied grid.
+      // Use its two neighboring k nodes, or the first/last pair outside
+      // the input range. Continuing lnP linearly in lnk is a power-law
+      // continuation of P, not a constant or a zero beyond the table.
+      for (int node=0; node<ninput; node++) {
+        const int source = node+first;
+        const int bracket = (int) fmin(fmax(source, 0), nk-2);
+
+        // Interpolate lnP in redshift at each end of the k interval.
+        const double left = power[bracket][lower]
+            +fraction_z*(power[bracket][lower+1]-power[bracket][lower]);
+        const double right = power[bracket+1][lower]
+            +fraction_z*(power[bracket+1][lower+1]-power[bracket+1][lower]);
+
+        // Then interpolate (or continue) along lnk, and form
+        // g = k^(-bias) Delta^2 = k^(3-bias) P / (2 pi^2).
+        const double lnP = left+(source-bracket)*(right-left);
+        const double lnk = lnkin+node*dlnk;
+        input[node] = exp(lnP+(3.0-bias)*lnk)/(2.0*M_PI*M_PI);
+      }
+
+      // ninput covers the entire chosen physical k range. nfft may be
+      // slightly larger because FFTW is faster at lengths whose prime
+      // factors are small. The remaining entries are numerical padding:
+      // set them to zero so they add no power to the integral. They lie
+      // after the high-k power-law continuation, never inside it.
+      for (int node=ninput; node<nfft; node++) {
+        input[node] = 0.0;
+      }
+
+
+      // --- 3b. ONE FORWARD FFT, TWO INVERSE FFTS ---
+
+      fftw_execute_dft_r2c(sigma_fields_.plan_forward, input, forward);
+
+      // Reuse the one forward FFT for sigma^2 and its mass derivative.
+      // Only the inverse FFT differs, just as non-Limber p2 reuses p1.
+      for (int derivative_order=0; derivative_order<2; derivative_order++) {
+        const fftw_complex* restrict kernel =
+            sigma_fields_.kernel[2*field+derivative_order];
+
+        for (int mode=0; mode<=nfft/2; mode++) {
+          const double real_kernel = kernel[mode][0];
+          const double imag_kernel = kernel[mode][1];
+
+          // conj(forward) times the conjugated Mellin/phase kernel.
+          const double real_product = forward[mode][0]*real_kernel
+                                      +forward[mode][1]*imag_kernel;
+          const double imag_product = forward[mode][0]*imag_kernel
+                                      -forward[mode][1]*real_kernel;
+
+          product[mode][0] = real_product;
+          product[mode][1] = imag_product;
+        }
+
+        double* output = radial;
+        if (derivative_order == 1) {
+          output = derivative;
+        }
+
+        // The shared plan is executed on this thread's arrays. The
+        // forward coefficients remain intact for the second inverse.
+        fftw_execute_dft_c2r(sigma_fields_.plan_inverse, product, output);
+      }
+
+
+      // --- 3c. RESTORE NORMALIZATION AND FORM THE MASS SLOPE ---
+
+      // FFTW leaves its inverse transform unnormalized. Divide by nfft
+      // and multiply by R^(-bias) to recover sigma^2. Those two factors
+      // cancel in the derivative/variance ratio; the factor 1/6 converts
+      // d sigma^2/dlnR into dln sigma/dlnM (derivation above).
+      for (int node=0; node<nradial; node++) {
+        const double lnR = lnR0[field]+node*dlnk;
+        if (!(radial[node] > 0.0)) {
+          log_fatal("sigma2_field: nonpositive FFTLog variance at field=%d a=%g", field, a);
+          exit(1);
+        }
+
+        derivative[node] /= 6.0*radial[node];
+
+        // Divide out a^2 before the linear a interpolation: in matter
+        // domination sigma^2 is nearly proportional to a^2. Removing
+        // that curvature keeps the early-time interpolation accurate.
+        radial[node] = log(radial[node]/nfft)-bias*lnR-2.0*log(a);
+      }
+
+
+      // --- 3d. FROM FFT RADIUS NODES TO THE HALO MASS NODES ---
+
+      for (int quantity=0; quantity<2; quantity++) {
+        const double* values = radial;
+        double* output = variance;
+        if (quantity == 1) {
+          values = derivative;
+          output = slope;
+        }
+
+        sigma2_spline_coeffs(values, nradial, dlnk, coeff, scratch);
+
+        // lnR-lnR0 = padding*dlnk + (lnM-lnMmin)/3. This directly
+        // locates each requested mass in the uniform radial grid.
+        for (int mass=0; mass<nmass; mass++) {
+          const double position = padding+mass*sigma_fields_.dlnm/(3.0*dlnk);
+          const int node = (int) floor(position);
+          const double offset = (position-node)*dlnk;
+
+          // S(t) = y + B t + C t^2 + E t^3 in this interval. The spline
+          // solve supplied C; form B and E from the two end values.
+          const double linear = (values[node+1]-values[node])/dlnk
+              -dlnk*(coeff[node+1]+2.0*coeff[node])/3.0;
+          const double cubic = (coeff[node+1]-coeff[node])/(3.0*dlnk);
+
+          output[mass] = values[node]+offset*(linear
+                          +offset*(coeff[node]+offset*cubic));
+        }
+      }
+    }
+  }
+
+  // Publish the cache tags only after every parallel row is complete.
+  sigma_fields_.cosmology_tag = cosmology.random;
+  sigma_fields_.ntable_tag = Ntable.random;
+}
+
+
+// ---------------------------------------------------------------------------
+// Read a variance or slope from the cached (lnM, a) table.
+//
+// First interpolate between neighboring masses in each of the two
+// neighboring a rows, then interpolate between those two results in a.
+// The variance table stores ln(sigma^2/a^2); sigma2_field restores a^2
+// after this interpolation. The mass-slope table needs no rescaling.
+//
+// Parameters:
+//   M          - positive halo mass in M_sun/h
+//   a          - scale factor in [limits.a_min, 1]
+//   field      - HALO_FIELD_MATTER or HALO_FIELD_CB
+//   derivative - 0 reads ln(sigma^2/a^2); 1 reads dln sigma/dlnM
+//
+// Returns:
+//   the requested dimensionless table value. Masses outside the halo
+//   interval use the nearest mass endpoint. Invalid scale factors and
+//   a missing cb spectrum are errors; neither has an implicit substitute.
+// ---------------------------------------------------------------------------
+static double sigma2_field_read(
+    const double M,      // mass in M_sun/h
+    const double a,      // scale factor
+    const int field,     // HALO_FIELD_MATTER or HALO_FIELD_CB
+    const int derivative // 0: ln(sigma^2/a^2), 1: dln sigma/dlnM
+  )
+{
+  if (!isfinite(M) || M <= 0.0 || !isfinite(a) || a < limits.a_min || a > 1.0
+      || (field != HALO_FIELD_MATTER && field != HALO_FIELD_CB)) {
+    log_fatal("sigma2_field: M=%g a=%g field=%d; require positive M, "
+              "a in [%g,1], field 0 or 1", M, a, field, limits.a_min);
+    exit(1);
+  }
+  if (field == HALO_FIELD_CB && cosmology.lnPL_cb == NULL) {
+    log_fatal("sigma2_field: cb variance needs P_cb; request delta_nonu "
+              "and call set_linear_power_spectrum_cb");
+    exit(1);
+  }
+
+  sigma2_fields_build();
+
+  // --- 1. LOCATE THE MASS AND SCALE FACTOR IN THE TABLE ---
+
+  // The table is uniform in lnM, not M: neighboring nodes have a fixed
+  // mass ratio, rather than a fixed mass difference. Convert M to lnM
+  // and keep out-of-range queries at the nearest tabulated endpoint.
+  double lnM = log(M);
+  if (lnM < sigma_fields_.lnm0) {
+    lnM = sigma_fields_.lnm0;
+  } else if (lnM > sigma_fields_.lnm1) {
+    lnM = sigma_fields_.lnm1;
+  }
+
+  // Subtract the grid origin and divide by the spacing to measure the
+  // location in units of table intervals. For example, position 12.25
+  // lies one quarter of the way from node 12 to node 13. The same rule
+  // applies to a, whose valid range was checked above.
+  const double mass_position = (lnM-sigma_fields_.lnm0)/sigma_fields_.dlnm;
+  const double a_position = (a-sigma_fields_.amin)/sigma_fields_.da;
+
+  // Both positions are nonnegative, so conversion to int takes their
+  // integer part: the node on the left of the interpolation interval.
+  int mass_node = (int) mass_position;
+  int a_node = (int) a_position;
+
+  // A table with N nodes has intervals starting at 0,...,N-2. At the
+  // final node, position N-1 must use interval [N-2,N-1]; there is no
+  // node N to read. Moving the left index back makes the fraction below
+  // equal to 1, which returns the final node's value exactly.
+  if (mass_node >= sigma_fields_.nmass-1) {
+    mass_node = sigma_fields_.nmass-2;
+  }
+  if (a_node >= sigma_fields_.na-1) {
+    a_node = sigma_fields_.na-2;
+  }
+
+  // These are distances from the left nodes, measured as fractions of
+  // one interval: 0 selects the left endpoint, 1 the right endpoint.
+  const double mass_fraction = mass_position-mass_node;
+  const double a_fraction = a_position-a_node;
+
+
+  // --- 2. SELECT THE PHYSICAL QUANTITY AND DENSITY FIELD ---
+
+  // The first two indices of table select quantity and field. Fixing
+  // them leaves a two-dimensional view values[a_node][mass_node]:
+  //   quantity 0: ln(sigma_field^2/a^2), for the variance reader;
+  //   quantity 1: dln sigma_field/dlnM, for the mass-slope reader.
+  // field 0 selects total matter; field 1 selects cold matter+baryons.
+  // Only the view changes here; no table is copied or allocated.
+  double** values = sigma_fields_.table[0][field];
+  if (derivative) {
+    values = sigma_fields_.table[1][field];
+  }
+
+
+  // --- 3. INTERPOLATE BETWEEN THE FOUR SURROUNDING VALUES ---
+
+  // For one interval, linear interpolation is y = y_left + f*(y_right
+  // - y_left). Apply it in mass at each of the two bounding a values:
+  // lower is the mass-interpolated value at a_node; upper is the same
+  // at a_node+1. Finally interpolate these two numbers to the requested
+  // a. These two linear steps are called bilinear interpolation.
+  const double lower = values[a_node][mass_node]+mass_fraction
+      *(values[a_node][mass_node+1]-values[a_node][mass_node]);
+  const double upper = values[a_node+1][mass_node]+mass_fraction
+      *(values[a_node+1][mass_node+1]-values[a_node+1][mass_node]);
+
+  return lower+a_fraction*(upper-lower);
+}
+
+
+// ---------------------------------------------------------------------------
+// Variance of the smoothed linear matter or cb density at (M,a).
+// Parameters: M in M_sun/h, a the scale factor, field as in the reader.
+// Returns: sigma_field^2(M,a), dimensionless.
+// ---------------------------------------------------------------------------
+double sigma2_field(
+    const double M, // halo mass in M_sun/h
+    const double a, // scale factor
+    const int field // HALO_FIELD_MATTER or HALO_FIELD_CB
+  )
+{
+  return exp(sigma2_field_read(M, a, field, 0))*a*a;
+}
+
+
+// ---------------------------------------------------------------------------
+// Logarithmic mass slope of the linear rms density fluctuation.
+// Parameters: M in M_sun/h, a the scale factor, field as in the reader.
+// Returns: dln sigma_field(M,a)/dlnM, dimensionless (usually negative).
+// ---------------------------------------------------------------------------
+double dlnsigma_dlnm_field(
+    const double M, // halo mass in M_sun/h
+    const double a, // scale factor
+    const int field // HALO_FIELD_MATTER or HALO_FIELD_CB
+  )
+{
+  return sigma2_field_read(M, a, field, 1);
+}
+
+
+// Halo consumers use the cold variance at the requested scale factor.
+// The separate sigma2_field reader also exposes total-matter variance.
+double sigma2(
+    const double M, // halo mass in M_sun/h
+    const double a  // scale factor
+  )
+{
+  return sigma2_field(M, a, HALO_FIELD_CB);
 }

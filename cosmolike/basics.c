@@ -26,7 +26,6 @@
 #include "log.c/src/log.h"
 #include <complex.h>
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 
 // ---------------------------------------------------------------------------
 // Detect uniform or piecewise-uniform structure in a 1D grid.
@@ -111,7 +110,6 @@ int detect_uniform_segments(const double *x, int n, double rtol, int max_seg,
 
   return nseg;
 }
-#endif
 
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------

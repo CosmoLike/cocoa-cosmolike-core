@@ -600,7 +600,7 @@ void init_ntable_ell_internal(const int nell_internal);
 
 void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal);
 
-double compute_sigma2(const double M);
+double compute_sigma2(const double M, const double a, const int field);
 
 void init_ntable_nm_internal(const int nm_internal);
 
@@ -633,10 +633,6 @@ void init_include_HOD_GX(
 
 void init_include_halo_IA(
     const int include_halo_IA
-  );
-
-void init_halo_matter_field(
-    const int halo_matter_field
   );
 
 void init_accuracy_boost(
@@ -697,6 +693,11 @@ void init_probes(
   );
 
 void initial_setup();
+
+// Keep the linked OpenBLAS at one thread. Explicit CosmoLike OpenMP
+// loops own parallelism; this setting is not restored after inversion.
+// Has no effect when the linked BLAS does not export the OpenBLAS API.
+void set_blas_single_threaded();
 
 py::tuple read_redshift_distributions_from_files(
     std::string lens_multihisto_file, 

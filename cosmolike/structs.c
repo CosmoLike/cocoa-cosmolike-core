@@ -41,7 +41,7 @@ lim limits =
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
   .halo_m = {1.0e+6, 1.0e+17},  // halo.c mass range (M_sun/h)
-  .halo_uks_c = {0.05, 100.0}   // halo.c u_KS concentration range (queries
+  .halo_uks_c = {0.05, 100.0}   // u_KS concentration range (not compiled; queries
                                 //   outside are clamped to it)
 };
 
@@ -81,13 +81,12 @@ void reset_like_struct(void)
   like.adopt_limber[LIMBER_GS] = 1;
   // halo.c model choices (halo.h macros, all 0): HMF_TINKER_2010,
   // HALO_BIAS_TINKER_2010, CONCENTRATION_BHATTACHARYA_2013,
-  // HALO_PROFILE_NFW, HALO_FIELD_MATTER - set explicitly so the
+  // HALO_PROFILE_NFW - set explicitly so the
   // defaults are deliberate
   like.halo_model[0] = 0;
   like.halo_model[1] = 0;
   like.halo_model[2] = 0;
   like.halo_model[3] = 0;
-  like.halo_model[4] = 0;
 }
 
 void reset_cosmology_struct(void)
@@ -261,8 +260,8 @@ void reset_Ntable_struct(void)
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
   Ntable.N_M[NODES_DENSE]      = 1024;  // N_M, M = mass (Halo Model)
   Ntable.N_M[NODES_COARSE] = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
-  Ntable.halo_uks_n[UKS_N_LNC] = 40;       // u_KS coarse ln c nodes (upsampled; halo.c)
-  Ntable.halo_uks_n[UKS_N_LNZ] = 64;       // u_KS coarse ln z nodes (upsampled; halo.c)
+  Ntable.halo_uks_n[UKS_N_LNC] = 40;       // u_KS coarse ln c nodes (u_KS not compiled)
+  Ntable.halo_uks_n[UKS_N_LNZ] = 64;       // u_KS coarse ln z nodes (u_KS not compiled)
   Ntable.halo_nfw_n = 131072; // u_nfw_c exact dense ln t nodes (halo.c)
   Ntable.halo_spline_pad = 6; // halo.c coarse spline padding nodes
   Ntable.halo_uks_m[UKS_M_LNC2D] = 12;     // u_KS dense refinement: ln c (2D)

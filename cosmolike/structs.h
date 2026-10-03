@@ -7,10 +7,8 @@
 extern "C" {
 #endif
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 // Maximum number of piecewise-uniform segments tracked for grid metadata
 #define MAX_GRID_SEGMENTS 10
-#endif
 
 #define CHAR_MAX_SIZE 1024
 #define MAX_SIZE_ARRAYS 20
@@ -44,17 +42,19 @@ typedef struct
   // --------------------------------------------------- 
   double halo_m[2];       // halo.c mass range [RANGE_MIN, RANGE_MAX]
                           // (M_sun/h)
-  double halo_uks_c[2];   // halo.c u_KS concentration range [RANGE_MIN,
+  double halo_uks_c[2];   // u_KS concentration range [RANGE_MIN,
                           // RANGE_MAX]; queries outside are clamped to it
+                          // (u_KS: future_port_unfinished/halo_tsz.c, not compiled)
 } lim;
 
-// Slots of Ntable.halo_uks_n[]: coarse node counts of the u_KS tables of
-// halo.c (both scaled by init_accuracy_boost)
+// Slots of Ntable.halo_uks_n[]: coarse node counts of the u_KS tables
+// (both scaled by init_accuracy_boost; u_KS is in
+// future_port_unfinished/halo_tsz.c, not compiled)
 #define UKS_N_LNC 0     // ln c axis
 #define UKS_N_LNZ 1     // ln z axis
 #define NUKS_N 2
 // Slots of Ntable.halo_uks_m[]: dense refinement factors of the u_KS
-// coarse -> dense splines of halo.c
+// coarse -> dense splines (future_port_unfinished/halo_tsz.c)
 #define UKS_M_LNC2D 0   // ln c axis of the 2D table
 #define UKS_M_W 1       // w axis
 #define UKS_M_LNZ 2     // ln z axis
@@ -127,12 +127,12 @@ typedef struct
   // HALO MODEL
   // ---------------------------------------------------
   // ---------------------------------------------------  
-  int halo_uks_n[NUKS_N];  // u_KS coarse nodes (halo.c; boosted); slots
+  int halo_uks_n[NUKS_N];  // u_KS coarse nodes (not compiled; boosted); slots
                            // UKS_N_* (above Ntab)
   int halo_nfw_n;   // u_nfw_c dense ln t nodes (halo.c; boosted)
   int halo_spline_pad; // exact coarse nodes beyond each end of every
-                       // halo.c coarse -> dense spline (u_KS axes,
-                       // tinker_alpha, coarse ln k of p_gm/p_gg)
+                       // halo.c coarse -> dense spline (tinker_alpha,
+                       // coarse ln k of p_gm/p_gg; the u_KS axes)
   int halo_uks_m[NUKS_M];  // u_KS dense refinement factors; slots UKS_M_*
   // mass-function table sizes, one entry per like.halo_model[0] option
   // (HMF_TINKER_2010: the tinker_alpha normalization table)
@@ -193,7 +193,6 @@ typedef struct
   int lnP_nk;
   int lnP_nz;
   double** lnP;
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   // Direct-index lookup metadata
   // log10k axis is required to be a single uniform segment.
   // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
@@ -204,7 +203,6 @@ typedef struct
   int     lnP_z_seg_len[MAX_GRID_SEGMENTS];
   double  lnP_z_seg_xmin[MAX_GRID_SEGMENTS];
   double  lnP_z_seg_inv_dx[MAX_GRID_SEGMENTS];
-#endif
   // ---------------------------------------------------
   // ---------------------------------------------------
   // LINEAR MATTER POWER SPECTRUM
@@ -216,7 +214,6 @@ typedef struct
   int lnPL_nk;
   int lnPL_nz;
   double** lnPL;
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
   // Direct-index lookup metadata.
   // log10k axis is required to be a single uniform segment.
   // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
@@ -227,12 +224,10 @@ typedef struct
   int     lnPL_z_seg_len   [MAX_GRID_SEGMENTS];
   double  lnPL_z_seg_xmin  [MAX_GRID_SEGMENTS];
   double  lnPL_z_seg_inv_dx[MAX_GRID_SEGMENTS];
-#endif
   // ---------------------------------------------------
   // ---------------------------------------------------
   // LINEAR CDM + BARYON POWER SPECTRUM P_cb (the matter
-  // without the massive neutrinos; read when
-  // like.halo_model[4] = HALO_FIELD_CB)
+  // without the massive neutrinos; required by all halo statistics)
   // size = (lnPL_nk, lnPL_nz), values only:
   // lnPL_cb[i][j] = ln P_cb at (log10k_i, z_j) of lnPL,
   // whose axes and direct-index metadata p_lin_cb reads.
@@ -259,7 +254,6 @@ typedef struct
   int*    chi_bucket;
   double  chi_bucket_min;
   double  chi_bucket_inv_dx;
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   // Direct-index lookup metadata for the z axis (chi[0]).
   // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
   int     chi_z_nseg;
@@ -267,7 +261,6 @@ typedef struct
   int     chi_z_seg_len   [MAX_GRID_SEGMENTS];
   double  chi_z_seg_xmin  [MAX_GRID_SEGMENTS];
   double  chi_z_seg_inv_dx[MAX_GRID_SEGMENTS];
-#endif
   // ---------------------------------------------------
   // ---------------------------------------------------
   // GROWTH FACTOR
@@ -277,7 +270,6 @@ typedef struct
   // G = G[1,j<chi_nz]
   int G_nz;
   double** G;
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
   // Direct-index lookup metadata for the z axis (G[0]).
   // z axis may be piecewise-uniform with up to MAX_GRID_SEGMENTS segments.
   // Used by f_growth, growfac, norm_growfac, norm_growfac_all.
@@ -286,7 +278,6 @@ typedef struct
   int     G_z_seg_len   [MAX_GRID_SEGMENTS];
   double  G_z_seg_xmin  [MAX_GRID_SEGMENTS];
   double  G_z_seg_inv_dx[MAX_GRID_SEGMENTS];
-#endif
 } cosmopara;
 
 typedef struct
@@ -311,7 +302,7 @@ typedef struct
   uint64_t random_photoz_clustering;
   uint64_t random_ia;
   uint64_t random_galaxy_bias;
-  uint64_t random_gas;
+  uint64_t random_gas;      // gas parameters (u_KS, not compiled)
   uint64_t random_ia_halo;  // halo-model IA parameters (below)
   // ---------------------------------------------------
   // ---------------------------------------------------
@@ -385,7 +376,8 @@ typedef struct
   //gas[8] = gas_sigma_star;
   //gas[9] = gas_lgT_w;
   //gas[10] = gas_f_H;
-  double gas[MAX_SIZE_ARRAYS]; // Compton-Y related variables
+  double gas[MAX_SIZE_ARRAYS]; // Compton-Y related variables (read only by
+                               // future_port_unfinished/halo_tsz.c, not compiled)
   // ---------------------------------------------------
   // HALO-MODEL INTRINSIC ALIGNMENT (Fortuna et al. 2021; halo.c)
   // ---------------------------------------------------
@@ -454,9 +446,6 @@ typedef struct
                                    // [1] = BIAS,
                                    // [2] = CONCENTRATION
                                    // [3] = HALO PROFILE
-                                   // [4] = DENSITY FIELD of sigma(M)
-                                   //       and of the mass function
-                                   //       (halo.h: HALO_FIELD_*)
 } likepara;
 
 typedef struct

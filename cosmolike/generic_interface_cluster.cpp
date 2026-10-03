@@ -1647,9 +1647,10 @@ static matrix read_npy_packed_upper_cov(const std::string& file_name, const int 
 // Stages after assembly (see the class header for why the squeezed
 // matrix is the one inverted):
 //   squeeze to the unmasked entries -> positive diagonal check -> eig_sym
-//   check of the CORRELATION matrix (every eigenvalue > 0) -> invert it and
-//   rescale by the standard deviations -> expand the inverse to the
-//   full layout (zero rows and columns at masked entries).
+//   check of the CORRELATION matrix (every eigenvalue > 0) -> invert it by
+//   solve(R, I) and check the residual R R^-1 - I -> rescale by the
+//   standard deviations -> expand the inverse to the full layout (zero rows
+//   and columns at masked entries).
 // ---------------------------------------------------------------------------
 void IPCluster::set_inv_cov(std::string cov_filename)
 {
@@ -1738,6 +1739,11 @@ void IPCluster::set_inv_cov(std::string cov_filename)
 
   // --- 4. CHECK AND INVERT THE SQUEEZED MATRIX ---
 
+  // Pin OpenBLAS itself before any matrix check or factorization. This
+  // stays at one after initialization; only explicit CosmoLike OpenMP
+  // loops use multiple threads.
+  set_blas_single_threaded();
+
   for (int a=0; a<this->ndata_sqzd_; a++) {
     if (!(this->cov_masked_sqzd_(a,a) > 0.0)) [[unlikely]] {
       critical("{}: non-positive variance {} at unmasked squeezed entry {}",
@@ -1761,9 +1767,20 @@ void IPCluster::set_inv_cov(std::string cov_filename)
       exit(1);
     }
   }
+  // Solve R X = I: each column of X is the solution for one unit vector
+  // on the right-hand side, so X is R^-1. Keep OpenBLAS at one thread
+  // for both the solve and the product checking R X = I. A wrong inverse
+  // would change every chi2; stop here if the residual exceeds tolerance.
+  const matrix ident = arma::eye<matrix>(this->ndata_sqzd_, this->ndata_sqzd_);
   matrix inv_corr;
-  if (!arma::inv(inv_corr, corr)) [[unlikely]] {
+  if (!arma::solve(inv_corr, corr, ident)) [[unlikely]] {
     critical("{}: inversion of the masked correlation matrix failed", fname);
+    exit(1);
+  }
+  const double residual = arma::abs(corr*inv_corr - ident).max();
+  if (!(residual < 1.0e-8)) [[unlikely]] {
+    critical("{}: the inverse of the masked correlation matrix is wrong "
+      "(max |R R^-1 - I| = {})", fname, residual);
     exit(1);
   }
   this->inv_cov_masked_sqzd_ = inv_corr % (inv_sigma*inv_sigma.t());

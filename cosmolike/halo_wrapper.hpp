@@ -19,25 +19,25 @@ namespace cosmolike_interface
 //
 // halo.c computes the halo model: the halo mass function and halo bias
 // (Tinker et al. 2010 fits), the halo concentration and density profile
-// (NFW), the gas pressure profile (Komatsu-Seljak), the HOD galaxy
-// counts, and the power spectra assembled from them. Its functions are
+// (NFW), the HOD galaxy counts, and the power spectra assembled from
+// them. Its functions are
 // plain C. This layer makes them callable from Python, so the unit
 // tests (projects/roman_real/tests/test_halo.py) and notebooks can
 // evaluate them one number at a time.
 //
 // One Python call travels
 //
-//   ci.p_mm(k, a)                         (Python)
-//     -> m.def("p_mm", ...)               (project interface.cpp)
-//     -> p_mm_cpp(k, a)                   (this layer: checks the input,
+//   ci.p_gm(k, a, ni)                     (Python)
+//     -> m.def("p_gm", ...)               (project interface.cpp)
+//     -> p_gm_cpp(k, a, ni)               (this layer: checks the input,
 //                                          loops over arrays)
-//     -> p_mm(k, a)                       (halo.c: reads a cached table)
+//     -> p_gm(k, a, ni)                   (halo.c: reads a cached table)
 //     -> on first use, or after a cache key changed: the table is
 //        refilled (the halo-model mass integrals at every (a, ln k) node)
 //
 // Names: each function below is the C function's name plus _cpp, and
 // its Python name is the C name itself (as for the sigma2 and
-// scale-cut bindings): halo.c p_mm -> p_mm_cpp -> ci.p_mm.
+// scale-cut bindings): halo.c p_gm -> p_gm_cpp -> ci.p_gm.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ namespace cosmolike_interface
 //            halo.c requires 0 < a < 1 (a = 1 aborts)
 //   ni, nj = lens (clustering) tomographic bins, counted from 0
 //
-// Dimensionless: u_nfw_c, u_KS, conc, hb1nu, fnu, dlognudlogm,
+// Dimensionless: u_nfw_c, conc, hb1nu, fnu, dlognudlogm,
 // bias_norm, bgal, ia_f_red_central, ia_window_2h.
 // ---------------------------------------------------------------------------
 
@@ -87,16 +87,16 @@ double hb1nu_cpp(const double nu, const double a);
 double fnu_cpp(const double nu, const double a);
 
 // halo concentration c(m) (Bhattacharya et al. 2013, Delta = 200 mean)
-double conc_cpp(const double m, const double growfac_a);
+double conc_cpp(const double m, const double a);
 
 // d ln nu / d ln M at a = 1 (cached table)
-double dlognudlogm_cpp(const double M);
+double dlognudlogm_cpp(const double M, const double a);
 
 // -----------------------------------------------------------------------------
 
 // integral of b(nu) f(nu) over the tabulated mass range; 1 - bias_norm is
-// the HMx additive 2-halo correction of the I11 sums of halo.c p_mm,
-// p_my, p_yy (table in a)
+// the HMx additive 2-halo correction of a halo-model I11 sum
+// (future_port_unfinished/halo_pmm.c; table in a)
 double bias_norm_cpp(const double a);
 
 // ---------------------------------------------------------------------------
@@ -110,9 +110,6 @@ double bias_norm_cpp(const double a);
 // Fourier transform of the NFW density profile, normalized to 1 at k = 0
 double u_nfw_c_cpp(const double c, const double k, const double m,
                    const double a);
-
-// Fourier transform of the Komatsu-Seljak gas pressure profile (table)
-double u_KS_cpp(const double c, const double k, const double rv);
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -133,29 +130,11 @@ double bgal_cpp(const int ni, const double a);
 // ---------------------------------------------------------------------------
 // HALO-MODEL POWER SPECTRA (cached 2D tables in (a, ln k))
 //
-// m = matter, y = Compton-y (thermal SZ), g = galaxies. Scalar overloads
+// m = matter, g = galaxies. Scalar overloads
 // return one value; array overloads batch over k at one a.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-
-double p_mm_cpp(const double k, const double a);
-
-arma::Col<double> p_mm_cpp(const arma::Col<double> k, const double a);
-
-// -----------------------------------------------------------------------------
-
-double p_my_cpp(const double k, const double a);
-
-arma::Col<double> p_my_cpp(const arma::Col<double> k, const double a);
-
-// -----------------------------------------------------------------------------
-
-double p_yy_cpp(const double k, const double a);
-
-arma::Col<double> p_yy_cpp(const arma::Col<double> k, const double a);
-
-// -----------------------------------------------------------------------------
 
 double p_gm_cpp(const double k, const double a, const int ni);
 
@@ -188,7 +167,7 @@ arma::Col<double> p_gg_cpp(
 // linear growth factor D(a), D(1) = 1
 double growfac_cpp(const double a);
 
-// linear matter power spectrum (the 2-halo term of p_mm multiplies it)
+// linear matter power spectrum
 double p_lin_cpp(const double k, const double a);
 
 // nonlinear matter power spectrum (the 2-halo term of p_gm/p_gg uses it)
@@ -211,9 +190,6 @@ void set_nuisance_hod_cpp(
     const arma::Col<double> hod,
     const double gc
   );
-
-// gas (Compton-y) parameters nuisance.gas[0..n-1]
-void set_nuisance_gas_cpp(const arma::Col<double> gas);
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

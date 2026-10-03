@@ -84,8 +84,7 @@ $\sigma^2(M)$ integrates $P_{cb}$, and the Lagrangian radius and the
 $\rho/M$ factor of $dn/d\ln M$ use
 $\rho_{crit}(\Omega_m - \Omega_\nu)$; the NFW truncation radius, the
 matter window $M/\rho_m$, the lensing kernels and the two-halo spectra
-stay total matter, and `p_mm`, `p_my`, `p_yy` stop with an error (their
-two-halo term has no neutrino form). The default 0 is the total-matter
+stay total matter. The default 0 is the total-matter
 halo model, and nothing reads the two inputs. The likelihoods always
 send $\Omega_\nu h^2$ and send $P_{cb}$ under 1; the notebook helper
 `cosmolike_notebook_utils.get_camb_cosmology` returns both.
