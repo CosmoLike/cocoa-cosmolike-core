@@ -170,9 +170,38 @@ rows explicit; vector names follow the existing `v2d`/`v` convention.
 
 ## Next gates, before a survey covariance can be used
 
-1. Pin the study's 2-lens/2-source configuration, overlapping lens bins,
-   signed magnification, per-bin noise, and input dump. The current matrix
-   tests validate algebra, not cosmological spectra or their convergence.
+The first survey-input ticket now has its own
+[implementation, validation and didactic-review record](covariance_survey_inputs.md).
+It supplies all-pairs Limber spectra and covariance-owned efficiencies;
+the full non-Limber and Phase-0 accuracy gates below remain open.
+The [SSC mask/shell-response ticket](covariance_ssc.md) adds independently
+tested mask normalization and response projection, including a general
+correlated-radial-kernel path through the existing SIMDe contraction.
+Its supplied response can now come from the explicit halo prescriptions below.
+The [cNG angular ticket](covariance_perturbation.md) now checks reduced
+SIMDe tree averages against explicit Wick diagrams and high-precision
+corner integrals.
+The subsequent [halo-moment ticket](covariance_halo.md) and
+[response/trispectrum assembly ticket](covariance_non_gaussian.md) now
+implement and independently test those node-level ingredients. Full
+survey integration and the Phase-0 physics/accuracy gates remain open.
+The external [projection diagnostic](covariance_projection_measurements.md)
+connects these ingredients on the pinned survey without replacing a project
+covariance or claiming that band centers are exact band averages.
+
+After these five tickets, all seven project suites passed: 405 tests with
+21 external-library skips. Enabling every isolated covariance library
+passed all 34 focused tests, including those 21, for **426 distinct passing
+tests**. The 27 new focused tests also pass with debug instrumentation;
+the isolated debug LSST interface passes ten existing example/non-Limber
+regressions as well. No references were refrozen. Component timing and
+accuracy measurements are recorded with each ticket, including failures
+of the full survey refinement gate.
+
+1. Complete the pinned 2-lens/2-source configuration's convergence study.
+   The overlapping samples, signed magnification, per-bin noise, CAMB dump
+   and raw spherical-cap mask are available outside git. The preliminary
+   projected diagnostic does not yet meet the full numerical contract.
 2. Implement and validate covariance-owned all-pairs spectra: cross-bin
    gg, excluded gs, non-Limber gg and gamma_t, full magnification foreground,
    and consistent matched linear Limber subtraction. Keep every field pair.

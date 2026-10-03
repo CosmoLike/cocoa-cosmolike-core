@@ -23,10 +23,39 @@ core commit `6f055d0` with an explicit scalar `fma` sum. OpenBLAS is never
 called here. Bitwise scalar/SIMDe agreement is checked on native FMA/NEON;
 SIMDe targets that emulate FMA need their own rounding comparison.
 
-This is **not yet a survey covariance generator**. All-pairs spectra,
-production spin kernels, masks, SSC, connected non-Gaussian covariance,
-dataset inputs, file output and project bindings remain to be integrated
-and independently validated. The full module contract is not frozen.
+`spectra_cov.c` now supplies covariance-owned radial snapshots and all
+lens/source Limber spectra, with a small LSST Python binding. See the
+[survey-input record](../../.claude/skills/cosmolike-dev/references/covariance_survey_inputs.md)
+for the input contract, tests, numerical limits and measured threading.
+
+`ssc_cov.c` adds raw-mask background variance and shell responses for
+supplied matter-response tables. Its
+[physics and validation record](../../.claude/skills/cosmolike-dev/references/covariance_ssc.md)
+explains the long-mode Limber approximation, survey-mean subtraction and
+general radial covariance projection. The halo response choices are supplied
+by `non_gaussian_cov.c`; their survey accuracy remains to be established.
+
+`perturbation_cov.c` computes the planar P/B/T tree averages from supplied
+linear-power samples and angular nodes. See its
+[diagram checks and didactic review](../../.claude/skills/cosmolike-dev/references/covariance_perturbation.md).
+The survey projection and full cNG validation remain separate work.
+
+`halo_cov.c` now supplies shared cb halo moments using covariance-owned
+mass rules and public core physics readers. The
+[mass-integration record](../../.claude/skills/cosmolike-dev/references/covariance_halo.md)
+records high-k convergence and the separate didactic review.
+
+`non_gaussian_cov.c` assembles explicit response choices and the five
+halo trispectrum contributions. Its
+[independent partition checks](../../.claude/skills/cosmolike-dev/references/covariance_non_gaussian.md)
+distinguish node-level validation from the remaining survey-level gates.
+An external [survey projection diagnostic](../../.claude/skills/cosmolike-dev/references/covariance_projection_measurements.md)
+combines these ingredients and records units, eigenvalues and model changes.
+
+This is **not yet a survey covariance generator**. All-pairs non-Limber
+spectra, production spin kernels, masks, SSC, connected non-Gaussian
+covariance, dataset inputs and file output remain to be integrated and
+independently validated. The full module contract is not frozen.
 
 The [rewrite record](../../.claude/skills/cosmolike-dev/references/covariance_rewrite.md)
 contains the paper references, measured loop comparisons, and remaining
@@ -37,7 +66,7 @@ physics gates. The detailed external study is
 
 The independent NumPy/mpmath reference lives outside git, at the owner's
 requested `test/covariance_reference/`. Its `build_primitives.sh` compiles
-these production C functions into an isolated library without relinking
+the Gaussian production functions into an isolated library without relinking
 any project. From `test/`, with the Cocoa conda environment active on macOS:
 
 ```bash
