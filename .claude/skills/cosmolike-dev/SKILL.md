@@ -22,6 +22,13 @@ wrapper, a notebook cell, a likelihood method, a test, a script — read
 repositories and holds the conventions of the data-vector plotting
 functions.
 
+Before changing or explaining the growth factor (growfac, f_growth, the
+G_growth table the likelihoods build), the IA amplitudes (1/D, 1/D^2), the
+one-loop D^4 factors or sigma(M, z) = D sigma(M, 0), read
+`references/fable_review_growth_factor.md` (Fable 5, 2026-10-02): where
+each D comes from physically, every consumer with file:line, and why the
+table's sampling k (5e-4/Mpc, a horizon scale) matters at w != -1.
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 
