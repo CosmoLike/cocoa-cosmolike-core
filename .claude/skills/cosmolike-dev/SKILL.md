@@ -40,6 +40,25 @@ Which growth factor the D^1.15 of the Bhattacharya concentration takes with
 neutrinos (no paper says; recommended: the cb growth at halo scales in both
 the prefactor and nu): `references/fable_review_concentration_growth.md`.
 
+**TODO (owner stopped here 2026-10-02; do not start without the owner):
+the neutrino-aware halo model.** Plan and decisions:
+`references/neutrino_growth_plan.md` (working copy:
+test/neutrino_growth_study/PLAN.md). Phase 1 (the likelihoods' growth table
+sampled at k = 0.05/Mpc) is done. Open:
+1. Phase 2: sigma^2_m(M, a) and sigma^2_cb(M, a) tables by FFTLog, threaded
+   per a node as cosmo2D.c threads the non-Limber FFTLog; settings and
+   accuracy (1.9e-9 in sigma^2) in `references/sigma_fftlog_study.md`
+   (scripts: test/neutrino_growth_study/sigma_fftlog/). Request P_cb
+   whenever a run has halo consumers.
+2. Phase 3: every halo statistic (Tinker f and b, bias_norm, conc, HOD,
+   cluster counts and bias, halo-model IA) on nu = delta_c/sigma_cb(M, a),
+   M-R through rho_cb; the D^1.15 of conc = the cb growth (recommended).
+3. Decide: des_cluster tests/reference/*.py keep k0 = 5e-4 (DES reference
+   code) or follow Phase 1; the CosmoCov rewrite's halo field default
+   (cb) and its use of the new sigma2 interface.
+4. cfastpt/cfastpt.c comments near lines 297 and 1064 misdescribe
+   c_window_width (the code tapers the top fraction of frequencies).
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 
