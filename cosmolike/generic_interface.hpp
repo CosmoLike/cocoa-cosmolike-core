@@ -694,6 +694,11 @@ void init_probes(
 
 void initial_setup();
 
+// Keep the linked OpenBLAS at one thread. Explicit CosmoLike OpenMP
+// loops own parallelism; this setting is not restored after inversion.
+// Has no effect when the linked BLAS does not export the OpenBLAS API.
+void set_blas_single_threaded();
+
 py::tuple read_redshift_distributions_from_files(
     std::string lens_multihisto_file, 
     const int lens_ntomo,

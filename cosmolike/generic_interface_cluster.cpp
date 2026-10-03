@@ -1739,6 +1739,11 @@ void IPCluster::set_inv_cov(std::string cov_filename)
 
   // --- 4. CHECK AND INVERT THE SQUEEZED MATRIX ---
 
+  // Pin OpenBLAS itself before any matrix check or factorization. This
+  // stays at one after initialization; only explicit CosmoLike OpenMP
+  // loops use multiple threads.
+  set_blas_single_threaded();
+
   for (int a=0; a<this->ndata_sqzd_; a++) {
     if (!(this->cov_masked_sqzd_(a,a) > 0.0)) [[unlikely]] {
       critical("{}: non-positive variance {} at unmasked squeezed entry {}",
@@ -1762,15 +1767,10 @@ void IPCluster::set_inv_cov(std::string cov_filename)
       exit(1);
     }
   }
-  // R^-1 = solve(R, I), not inv(R): with Armadillo 12.8.4 and OpenBLAS
-  // 0.3.29 (conda-forge, Apple arm64), arma::inv and arma::inv_sympd of
-  // the joint correlation matrix (889 x 889 for 4x2pt + N) returned a
-  // wrong inverse in more than half of the calls, single-threaded too
-  // (rows of the cluster blocks wrong, max |R R^-1 - I| from 0.05 to 41),
-  // while solve(R, I) and LAPACK's getri / potri called directly were
-  // right every time; the projects' 3x2pt covariances invert correctly
-  // with arma::inv. The residual check stops a wrong inverse here instead
-  // of letting it enter every chi2.
+  // Solve R X = I: each column of X is the solution for one unit vector
+  // on the right-hand side, so X is R^-1. Keep OpenBLAS at one thread
+  // for both the solve and the product checking R X = I. A wrong inverse
+  // would change every chi2; stop here if the residual exceeds tolerance.
   const matrix ident = arma::eye<matrix>(this->ndata_sqzd_, this->ndata_sqzd_);
   matrix inv_corr;
   if (!arma::solve(inv_corr, corr, ident)) [[unlikely]] {

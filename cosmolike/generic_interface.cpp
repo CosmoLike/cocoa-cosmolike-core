@@ -1,4 +1,5 @@
 #include "cosmolike/generic_interface.hpp"
+#include <dlfcn.h>
 #include <string_view>
 using namespace std::literals; // enables "sv" literal
 
@@ -48,6 +49,47 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Keep BLAS matrix operations serial while CosmoLike's explicit OpenMP
+// loops use the requested number of workers.
+//
+// Armadillo sends matrix products, eigenvalue calculations and inversions
+// to BLAS/LAPACK. OpenBLAS can start its own workers there, independently
+// of our parallel loops. Besides oversubscribing the machine, its threaded
+// factorization has produced incorrect cluster covariance inverses.
+//
+// Set the OpenBLAS limit directly: an OpenMP build of OpenBLAS need not
+// obey OPENBLAS_NUM_THREADS. The setting stays at one after this call.
+// dlsym finds the function in the loaded libraries without requiring an
+// OpenBLAS-specific link symbol when another BLAS backend is used.
+//
+// Called during interface initialization, when choosing the OpenMP team,
+// and before either covariance inversion. The latter call reasserts the
+// limit if another library has changed it since initialization.
+//
+// Cache invalidation:
+// the function address is looked up once; loaded BLAS libraries remain
+// installed for the lifetime of the interface.
+//
+// Parameters / returns:
+// none; changes the linked OpenBLAS thread limit, when available.
+// ---------------------------------------------------------------------------
+void set_blas_single_threaded()
+{
+  // The address returned by dlsym is callable as a function taking one
+  // integer (the thread limit) and returning no value.
+  using blas_thread_setter = void (*)(int);
+  static const blas_thread_setter set_threads =
+    reinterpret_cast<blas_thread_setter>(
+      dlsym(RTLD_DEFAULT, "openblas_set_num_threads"));
+
+  // A different BLAS backend need not provide this OpenBLAS entry point.
+  if (set_threads != nullptr) {
+    set_threads(1);
+  }
+}
+
+
 // ---------------------------------------------------------------------------
 // Parse one whitespace-trimmed token as a double, accepting underflow and
 // rejecting overflow.
@@ -369,6 +411,7 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 void initial_setup()
 {
   static constexpr std::string_view fname = "initial_setup"sv;
+  set_blas_single_threaded();
   spdlog::cfg::load_env_levels();
   debug("{}: {}", fname, errbegins);
 
@@ -2763,7 +2806,7 @@ void clear_linear_power_spectrum_cb()
 // Install ln P_nonlin(log10k, z) from Cobaya.
 //
 // Same machinery as set_linear_power_spectrum, applied to cosmology.lnP /
-// lnP_nk / lnP_nz: fdiff change scans, uniform-grid metadata under
+// lnP_nk / lnP_nz: fdiff change scans, uniform-grid metadata for
 // direct indexing (consumed by p_nonlin), NaN scan during
 // the parallel fill, and a cosmology.random bump on update.
 //
@@ -4106,7 +4149,8 @@ void IP::set_data(std::string datavector_filename)
 // by alpha after the joint inversion.
 //
 // Stages after assembly: eigenvalue scan (any negative eigenvalue is
-// critical() + exit(1)), arma::inv, re-masking of the inverse (masked
+// critical() + exit(1)), arma::inv, an inverse residual check in
+// correlation units, re-masking of the inverse (masked
 // rows/columns zeroed, diagonal included, so they cannot leak into chi2),
 // then compaction of covariance and inverse into the ndata_sqzd_ square
 // matrices. Sets is_inv_cov_set_.
@@ -4210,6 +4254,9 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
+  // Matrix algebra stays serial; subsequent explicit OpenMP loops keep
+  // their own requested team size. Do not restore a larger BLAS team.
+  set_blas_single_threaded();
   vector eigvals = arma::eig_sym(this->cov_masked_);
   for(int i=0; i<this->ndata_; i++) {
     if(eigvals(i) < 0) [[unlikely]] {
@@ -4218,6 +4265,22 @@ void IP::set_inv_cov(std::string cov_filename)
   }
 
   this->inv_cov_masked_ = arma::inv(this->cov_masked_);
+
+  // Test the inverse before masking it. Divide out each data entry's
+  // standard deviation so xi, gamma_t and other probes are compared on
+  // the same scale: R_ij = C_ij/(sigma_i sigma_j) has unit diagonal,
+  // and (R^-1)_ij = (C^-1)_ij sigma_i sigma_j. Their product must be I.
+  const vector sigma = arma::sqrt(this->cov_masked_.diag());
+  const matrix sigma_pair = sigma*sigma.t();
+  const matrix corr = this->cov_masked_/sigma_pair;
+  const matrix inv_corr = this->inv_cov_masked_ % sigma_pair;
+  const double residual = arma::abs(corr*inv_corr
+    - arma::eye<matrix>(this->ndata_, this->ndata_)).max();
+  if (!(residual < 1.0e-8)) [[unlikely]] {
+    critical("{}: the inverse of the masked correlation matrix is wrong "
+      "(max |R R^-1 - I| = {})", fname, residual);
+    exit(1);
+  }
 
   // apply mask again to make sure numerical errors in matrix inversion don't 
   // cause problems. Also, set diagonal elements corresponding to datavector
