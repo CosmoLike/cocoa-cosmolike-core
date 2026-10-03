@@ -54,7 +54,6 @@ extern "C" {
 #endif
 
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 // ---------------------------------------------------------------------------
 // Detect contiguous segments of a sorted array that are each uniformly
 // spaced to within a relative tolerance.
@@ -83,7 +82,6 @@ int detect_uniform_segments(
     double* inv_dx,    // output array [max_seg]: reciprocal spacing of each segment
     const char* name   // descriptive label used in error messages
   );
-#endif
 
 // ---------------------------------------------------------------------------
 // Precomputed Legendre polynomial data at the edges of a single angular

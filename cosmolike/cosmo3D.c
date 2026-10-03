@@ -44,20 +44,15 @@
 //   k         = (c/H0)^-1 units   (k[h/Mpc]*coverH0)
 //   P(k)      = (c/H0)^3 units    (table (Mpc/h)^3, divided by coverH0^3)
 //
-// COSMO3D_ASSUME_PIECEWISE_UNIFORM contract: each setter lays its z
-// grid out as a few uniform segments and records them in the *_z_seg_*
-// metadata (lnPL/lnP additionally use one uniform segment in log10 k).
-// With the macro defined, every bracket lookup except a_chi's (the chi
-// column is not uniform) becomes a direct index computed from that
-// metadata instead of a binary search. The metadata is trusted, never
-// checked: a table filled without it, or with a grid that is not
-// piecewise-uniform, makes the lookups land in wrong brackets and
-// return silently wrong interpolants. Without the macro every lookup
-// but a_chi's binary-searches and needs no metadata; a_chi uses its own
-// bucket index in both builds (set_chi_bucket_index).
+// Grid contract: redshift axes consist of at most MAX_GRID_SEGMENTS
+// uniform segments; the power spectra also have a uniform log10 k axis.
+// The setters check this structure and record each segment's start and
+// inverse spacing. All builds use that metadata for direct indexing.
+// A caller must install tables through those setters so the grid and
+// its metadata remain consistent. The inverse distance reader a_chi
+// uses its separate bucket index because chi itself is not uniform.
 // ---------------------------------------------------------------------------
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -111,7 +106,6 @@ static inline int piecewise_index(double q,
   if (j > n_total - 2)   j = n_total - 2;
   return j;
 }
-#endif
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -176,26 +170,14 @@ double dchi_da(const double a)
 // i.e. |dchi/da|: only the magnitude |dz/da| = 1/a^2 of the Jacobian is
 // applied, so dchida is positive although chi decreases with a.
 //
-// The fast variant replaces the bracket binary search with a direct-index
-// lookup on the piecewise-uniform z grid (cosmology.chi_z_* metadata from
-// set_distances) and clamps j so the j+2 read of the "up" slope stays in
-// bounds; the fallback variant keeps the binary search.
+// A direct-index lookup uses the piecewise-uniform z grid metadata
+// populated by set_distances. Clamp j so the j+2 read of the "up" slope
+// stays within the table.
 //
 // Cache invalidation:
 // no static state. The cosmology.chi table and its
 // grid metadata are replaced by set_distances, which also bumps
 // cosmology.random so downstream caches rebuild.
-//
-// Parameters:
-//   a - scale factor (a = 1/(1+z))
-//
-// Returns:
-//   struct chis { chi = chi(a) in c/H0 units, dchida = (1/a^2) dchi/dz }
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookup on the piecewise-uniform z
-// grid (cosmology.chi_z_* metadata). Full contract: shared header above.
 //
 // Parameters:
 //   a - scale factor (a = 1/(1+z))
@@ -254,81 +236,6 @@ struct chis chi_all(const double a)
   result.dchida = dchidz / cosmology.coverH0 / (a * a);
   return result;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookup on the z grid. Full
-// contract: shared header above.
-//
-// Parameters:
-//   a - scale factor (a = 1/(1+z))
-//
-// Returns:
-//   struct chis { chi = chi(a) in c/H0 units, dchida = (1/a^2) dchi/dz }
-// ---------------------------------------------------------------------------
-struct chis chi_all(const double a)
-{
-  double out[2];
-  const double z = 1.0/a - 1.0;
-
-  // bracket the query z by binary search on the z column
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.chi_nz - 1;
-    while (ihi > ilo + 1)
-    {
-      size_t ll = (ihi + ilo)/2;
-      if (cosmology.chi[0][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-  // the "up" slope below reads j+2; clamp as the piecewise variant does
-  if (j > cosmology.chi_nz - 3) {
-    j = cosmology.chi_nz - 3;
-  }
-
-  // chi(z) by linear interpolation between nodes j and j+1
-  const double dy = (z                     - cosmology.chi[0][j])/
-                    (cosmology.chi[0][j+1] - cosmology.chi[0][j]);
-  out[0] = cosmology.chi[1][j] + dy*(cosmology.chi[1][j+1]-cosmology.chi[1][j]);
-
-  // dchi/dz by linear interpolation of the two slopes "up" (over
-  // [j, j+2]) and "down" (over [j-1, j+1]; one-sided over [j, j+1]
-  // at the j = 0 boundary)
-  if (j>0)
-  {
-    const double up = (cosmology.chi[1][j+2] - cosmology.chi[1][j])/
-                      (cosmology.chi[0][j+2] - cosmology.chi[0][j]);
-    
-    const double down = (cosmology.chi[1][j+1] - cosmology.chi[1][j-1])/
-                        (cosmology.chi[0][j+1] - cosmology.chi[0][j-1]);
-    out[1] = down + dy*(up-down);
-  }
-  else 
-  {
-    const double up = (cosmology.chi[1][j+2] - cosmology.chi[1][j])/
-                      (cosmology.chi[0][j+2] - cosmology.chi[0][j]);
-    
-    const double down = (cosmology.chi[1][j+1] - cosmology.chi[1][j])/
-                        (cosmology.chi[0][j+1] - cosmology.chi[0][j]);
-    out[1] = down + dy*(up-down);
-  }
-
-  // convert Mpc/h -> c/H0 units (divide by coverH0 = c/H0 in Mpc/h =
-  // 2997.92458)
-  out[1] = (out[1]/cosmology.coverH0);
-  // convert from d\chi/dz to d\chi/da
-  out[1] = out[1]/(a*a);
-
-  struct chis result;
-  result.chi = out[0]/cosmology.coverH0;
-  result.dchida = out[1];
-  return result;
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // dchi/dz = a^2 * dchi_da(a) in c/H0 units. Equals c/H(z) in units of
@@ -536,28 +443,14 @@ double growfac(const double a)
 //   D(a) = G(z)*a/G(0)     (normalize_z0 = true: then D(a=1) = 1,
 //                           since a = 1 at z = 0)
 //
-// G(0) comes from the same table: the fast variant uses bracket j = 0
-// directly (the grid starts at z = 0), the fallback repeats the binary
-// search. The query-z bracket is a direct-index lookup on the
-// piecewise-uniform z grid (cosmology.G_z_* metadata) in the fast
-// variant, a binary search in the fallback.
+// G(0) comes from bracket j = 0 because the grid starts at z = 0.
+// The query-z bracket comes from a direct-index lookup on the
+// piecewise-uniform z grid (cosmology.G_z_* metadata).
 //
 // Cache invalidation:
 // no static state. The cosmology.G table and its
 // grid metadata are replaced by set_growth, which also bumps
 // cosmology.random.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: divide by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   D(a), normalized per normalize_z0
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: j = 0 bracket for the G(0) normalization and direct-index
-// bracket lookup at the query z. Full contract: shared header above.
 //
 // Parameters:
 //   a            - scale factor
@@ -602,72 +495,6 @@ double norm_growfac(const double a, const bool normalize_z0)
 
   return normalize_z0 ? (G*a)/growfact1 : G*a;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups (both the G(0)
-// normalization and the query z). Full contract: shared header above.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: divide by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   D(a), normalized per normalize_z0
-// ---------------------------------------------------------------------------
-double norm_growfac(const double a, const bool normalize_z0)
-{
-  // first lookup: G(0) for the z = 0 normalization (binary search)
-  double growfact1;
-  {
-    const double z = 0.0;
-    int j = 0;
-    {
-      size_t ilo = 0;
-      size_t ihi = cosmology.G_nz-1;
-      while (ihi>ilo+1) {
-        size_t ll = (ihi+ilo)/2;
-        if(cosmology.G[0][ll]>z)
-          ihi = ll;
-        else
-          ilo = ll;
-      }
-      j = ilo;
-    }
-    const double dy = (z                   - cosmology.G[0][j])/
-                      (cosmology.G[0][j+1] - cosmology.G[0][j]);
-    
-    growfact1 = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-  }
-
-  // second lookup: G at the query redshift (binary search)
-  const double z = 1.0/a-1.0;
-
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.G_nz-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.G[0][ll]>z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  const double dy = (z                   - cosmology.G[0][j])/
-                    (cosmology.G[0][j+1] - cosmology.G[0][j]);
-
-  const double G = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-
-  if(normalize_z0)
-    return (G*a)/growfact1; // Growth D = G * a
-  else
-    return G*a; // Growth D = G * a
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // Logarithmic growth rate f(z) = dlnD/dlna for D = G*a, from the same
@@ -679,23 +506,12 @@ double norm_growfac(const double a, const bool normalize_z0)
 //   f         = 1 + dlnG/dlna
 //
 // The normalization G(0) cancels in the logarithmic derivative, so no
-// z = 0 lookup is needed. Bracket selection: direct-index lookup in the
-// fast variant, binary search in the fallback (see norm_growfac).
+// z = 0 lookup is needed. The bracket is found by direct indexing on
+// the piecewise-uniform z grid, as in norm_growfac.
 //
 // Cache invalidation:
 // no static state; the table is maintained by
 // set_growth.
-//
-// Parameters:
-//   z - redshift
-//
-// Returns:
-//   f(z) = dlnD/dlna
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookup on the piecewise-uniform z
-// grid. Full contract: shared header above.
 //
 // Parameters:
 //   z - redshift
@@ -728,75 +544,16 @@ double f_growth(const double z)
 
   return 1 + dlnGdlna; // Growth D = G * a
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookup on the z grid. Full
-// contract: shared header above.
-//
-// Parameters:
-//   z - redshift
-//
-// Returns:
-//   f(z) = dlnD/dlna
-// ---------------------------------------------------------------------------
-double f_growth(const double z)
-{
-  // bracket the query z by binary search on the z column
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.G_nz-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.G[0][ll]>z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  const double dy = (z                   - cosmology.G[0][j])/
-                    (cosmology.G[0][j+1] - cosmology.G[0][j]);
-                    
-  const double G = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-
-  const double dlnGdlnz = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-                           (cosmology.G[0][j+1] - cosmology.G[0][j]))*z/G;
-  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
-  const double dlnGdlnz_slope = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-    (cosmology.G[0][j+1] - cosmology.G[0][j]))*(1+z)/G;
-  
-  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
-                                    : -dlnGdlnz_slope;
-
-  return 1 + dlnGdlna; // Growth D = G * a
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // Growth factor D(a) and growth rate f(a) fused in one bracket lookup:
 // the formulas of norm_growfac and f_growth (see those headers) evaluated
 // from a single interpolation of the cosmology.G table at z = 1/a - 1,
-// plus the j = 0 (fast variant) or binary-search (fallback) lookup of
-// the G(0) normalization.
+// plus the j = 0 lookup of the G(0) normalization.
 //
 // Cache invalidation:
 // no static state; the table is maintained by
 // set_growth.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: D is divided by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   struct growths { D = D(a), f = dlnD/dlna at a }
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: j = 0 bracket for the G(0) normalization and direct-index
-// bracket lookup at the query z. Full contract: shared header above.
 //
 // Parameters:
 //   a            - scale factor
@@ -853,87 +610,6 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
   Gf.D = normalize_z0 ? (G*a)/growfact1 : (G*a);
   return Gf;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups (both the G(0)
-// normalization and the query z). Full contract: shared header above.
-//
-// Parameters:
-//   a            - scale factor
-//   normalize_z0 - true: D is divided by G(0) so that D(a=1) = 1
-//
-// Returns:
-//   struct growths { D = D(a), f = dlnD/dlna at a }
-// ---------------------------------------------------------------------------
-struct growths norm_growfac_all(const double a, const bool normalize_z0)
-{
-  // first lookup: G(0) for the z = 0 normalization (binary search)
-  double growfact1;
-  {
-    const double z = 0.0;
-    int j = 0;
-    {
-      size_t ilo = 0;
-      size_t ihi = cosmology.G_nz-1;
-      while (ihi>ilo+1) 
-      {
-        size_t ll = (ihi+ilo)/2;
-        if(cosmology.G[0][ll]>z)
-          ihi = ll;
-        else
-          ilo = ll;
-      }
-      j = ilo;
-    }
-    const double dy = (z                   - cosmology.G[0][j])/
-                      (cosmology.G[0][j+1] - cosmology.G[0][j]);
-    
-    growfact1 = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-  }
-
-  // second lookup: G at the query redshift (binary search)
-  const double z = 1.0/a-1.0;
-
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.G_nz - 1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.G[0][ll]>z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  const double dy = (z                   - cosmology.G[0][j])/
-                    (cosmology.G[0][j+1] - cosmology.G[0][j]);
-                    
-  const double G = cosmology.G[1][j] + dy*(cosmology.G[1][j+1] - cosmology.G[1][j]);
-
-  const double dlnGdlnz = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-                           (cosmology.G[0][j+1] - cosmology.G[0][j]))*z/G;
-  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
-  const double dlnGdlnz_slope = ((cosmology.G[1][j+1] - cosmology.G[1][j])/
-    (cosmology.G[0][j+1] - cosmology.G[0][j]))*(1+z)/G;
-  
-  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
-                                    : -dlnGdlnz_slope;
-
-  struct growths Gf;
-  Gf.f = 1 + dlnGdlna; // Growth D = G * a
-
-  if(normalize_z0)
-    Gf.D = (G*a)/growfact1; 
-  else
-    Gf.D = (G*a);
-
-  return Gf;
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // D(a) normalized to D(1) = 1 and f(a) in one lookup: shorthand for
@@ -972,26 +648,13 @@ struct growths growfac_all(const double a)
 // (c/H0)^3 units. A query outside the grid keeps the nearest edge
 // bracket, so ln P is linearly extrapolated from that bracket.
 //
-// Bracket selection: the fast variant uses direct-index lookups (single
-// uniform segment in log10 k, piecewise-uniform z segments, via the
-// cosmology.lnPL_* metadata); the fallback uses two binary searches.
+// Bracket selection uses direct indexing: one uniform segment in
+// log10 k and piecewise-uniform z segments, via cosmology.lnPL_* metadata.
 //
 // Cache invalidation:
 // no static state. The cosmology.lnPL table and its
 // grid metadata are replaced by set_linear_power_spectrum, which also
 // bumps cosmology.random.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_lin(k, a) in (c/H0)^3 units
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookups (single uniform segment in
-// log10 k, piecewise-uniform z). Full contract: shared header above.
 //
 // Parameters:
 //   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
@@ -1044,75 +707,6 @@ double p_lin(const double k, const double a)
   // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
   return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups on both axes. Full
-// contract: shared header above.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_lin(k, a) in (c/H0)^3 units
-// ---------------------------------------------------------------------------
-double p_lin(const double k, const double a)
-{
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
-  const double log10k = log10(k/cosmology.coverH0);
-  const double z = 1.0/a-1.0;
-
-  // logk = cosmology.lnPL[0:nk,cosmology.lnPL_nz]
-  // z    = cosmology.lnPL[cosmology.lnPL_nk,0:nz]
-  
-  // bracket log10k by binary search on the k-axis row
-  int i = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nk-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[ll][cosmology.lnPL_nz] > log10k)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    i = ilo;
-  }
-
-  // bracket z by binary search on the z-axis row
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nz-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[cosmology.lnPL_nk][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  // bilinear ln P interpolation on the [i, i+1] x [j, j+1] cell
-  double dx = (log10k                                 - cosmology.lnPL[i][cosmology.lnPL_nz])/
-              (cosmology.lnPL[i+1][cosmology.lnPL_nz] - cosmology.lnPL[i][cosmology.lnPL_nz]);
-
-  double dy = (z                                     - cosmology.lnPL[cosmology.lnPL_nk][j])/
-              (cosmology.lnPL[cosmology.lnPL_nk][j+1]- cosmology.lnPL[cosmology.lnPL_nk][j]);
-
-  const double out_lnP =    (1-dx)*(1-dy)*cosmology.lnPL[i][j]
-                          + (1-dx)*dy*cosmology.lnPL[i][j+1]
-                          + dx*(1-dy)*cosmology.lnPL[i+1][j]
-                          + dx*dy*cosmology.lnPL[i+1][j+1];
-
-  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
-  return exp(out_lnP)/(cosmology.coverH0*cosmology.coverH0*cosmology.coverH0);
-}
-#endif
 
 
 
@@ -1142,7 +736,6 @@ double p_lin(const double k, const double a)
 // Returns:
 //   P_cb(k, a) in (c/H0)^3 units
 // ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
 double p_lin_cb(const double k, const double a)
 {
   // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
@@ -1177,61 +770,6 @@ double p_lin_cb(const double k, const double a)
   // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
   return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
 }
-#else
-double p_lin_cb(const double k, const double a)
-{
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
-  const double log10k = log10(k/cosmology.coverH0);
-  const double z = 1.0/a-1.0;
-
-  // bracket log10k by binary search on lnPL's k-axis row
-  int i = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nk-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[ll][cosmology.lnPL_nz] > log10k)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    i = ilo;
-  }
-
-  // bracket z by binary search on lnPL's z-axis row
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnPL_nz-1;
-    while (ihi>ilo+1)
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnPL[cosmology.lnPL_nk][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  // bilinear ln P_cb interpolation on the [i, i+1] x [j, j+1] cell
-  double dx = (log10k                                 - cosmology.lnPL[i][cosmology.lnPL_nz])/
-              (cosmology.lnPL[i+1][cosmology.lnPL_nz] - cosmology.lnPL[i][cosmology.lnPL_nz]);
-
-  double dy = (z                                     - cosmology.lnPL[cosmology.lnPL_nk][j])/
-              (cosmology.lnPL[cosmology.lnPL_nk][j+1]- cosmology.lnPL[cosmology.lnPL_nk][j]);
-
-  const double out_lnP =    (1-dx)*(1-dy)*cosmology.lnPL_cb[i][j]
-                          + (1-dx)*dy*cosmology.lnPL_cb[i][j+1]
-                          + dx*(1-dy)*cosmology.lnPL_cb[i+1][j]
-                          + dx*dy*cosmology.lnPL_cb[i+1][j+1];
-
-  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
-  return exp(out_lnP)/(cosmology.coverH0*cosmology.coverH0*cosmology.coverH0);
-}
-#endif
 
 
 
@@ -1255,7 +793,7 @@ double omega_halo_field(void)
 // ---------------------------------------------------------------------------
 // Non-linear matter power spectrum P_nl(k, a): the same bilinear ln P
 // interpolation, unit conventions, edge-bracket extrapolation and
-// direct-index/binary-search variants as p_lin (see p_lin), reading the
+// direct-index lookups as p_lin (see p_lin), reading the
 // cosmology.lnP table loaded by set_non_linear_power_spectrum. When
 // bary.is_Pk_bary == 1 the result is multiplied by the hydro-sim
 // suppression PkRatio_baryons(k, a).
@@ -1264,18 +802,6 @@ double omega_halo_field(void)
 // no static state. The cosmology.lnP table and its
 // grid metadata are replaced by set_non_linear_power_spectrum, which
 // also bumps cosmology.random.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_nl(k, a) in (c/H0)^3 units, times the baryonic ratio when enabled
-// ---------------------------------------------------------------------------
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
-// ---------------------------------------------------------------------------
-// Fast variant: direct-index bracket lookups (single uniform segment in
-// log10 k, piecewise-uniform z). Full contract: shared header above.
 //
 // Parameters:
 //   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
@@ -1326,78 +852,6 @@ double p_nonlin(const double k, const double a)
 
   return (bary.is_Pk_bary == 1) ? ans * PkRatio_baryons(k, a) : ans;
 }
-#else
-// ---------------------------------------------------------------------------
-// Fallback variant: binary-search bracket lookups on both axes. Full
-// contract: shared header above.
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1 units (k = k[h/Mpc]*coverH0)
-//   a - scale factor
-//
-// Returns:
-//   P_nl(k, a) in (c/H0)^3 units, times the baryonic ratio when enabled
-// ---------------------------------------------------------------------------
-double p_nonlin(const double k, const double a)
-{
-  const double coverH0 = cosmology.coverH0;
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
-  const double log10k = log10(k/coverH0);
-  const double z = 1.0/a-1.0;
-
-  // logk = cosmology.lnP[0:nk,cosmology.lnP_nz]
-  // z    = cosmology.lnP[cosmology.lnP_nk,0:nz]
-  
-  // bracket log10k by binary search on the k-axis row
-  int i = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnP_nk-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnP[ll][cosmology.lnP_nz] > log10k)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    i = ilo;
-  }
-
-  // bracket z by binary search on the z-axis row
-  int j = 0;
-  {
-    size_t ilo = 0;
-    size_t ihi = cosmology.lnP_nz-1;
-    while (ihi>ilo+1) 
-    {
-      size_t ll = (ihi+ilo)/2;
-      if(cosmology.lnP[cosmology.lnP_nk][ll] > z)
-        ihi = ll;
-      else
-        ilo = ll;
-    }
-    j = ilo;
-  }
-
-  // bilinear ln P interpolation on the [i, i+1] x [j, j+1] cell
-  double dx = (log10k                               - cosmology.lnP[i][cosmology.lnP_nz])/
-              (cosmology.lnP[i+1][cosmology.lnP_nz] - cosmology.lnP[i][cosmology.lnP_nz]);
-
-
-  double dy = (z                                   - cosmology.lnP[cosmology.lnP_nk][j])/
-              (cosmology.lnP[cosmology.lnP_nk][j+1]- cosmology.lnP[cosmology.lnP_nk][j]);
-
-  const double out_lnP =  (1-dx)*(1-dy)*cosmology.lnP[i][j]
-                          + (1-dx)*dy*cosmology.lnP[i][j+1]
-                          + dx*(1-dy)*cosmology.lnP[i+1][j]
-                          + dx*dy*cosmology.lnP[i+1][j+1];
-  
-  const double ans = exp(out_lnP)/(coverH0*coverH0*coverH0);
-  
-  return (bary.is_Pk_bary==1) ? ans*PkRatio_baryons(k,a) : ans;
-}
-#endif
 
 // ----------------------------------------------------------------------
 // ----------------------------------------------------------------------
@@ -1415,8 +869,7 @@ double p_nonlin(const double k, const double a)
 //
 // Every out[m] is bitwise p_lin(k[m], a): the k half and the bilinear
 // combination are p_lin's expressions verbatim, and the hoisted z half
-// computes the same values from the same a. The fallback build (binary
-// searches, no COSMO3D_ASSUME_PIECEWISE_UNIFORM) calls p_lin per entry.
+// computes the same values from the same a.
 //
 // Parameters:
 //   a   - scale factor
@@ -1429,7 +882,6 @@ double p_nonlin(const double k, const double a)
 // ---------------------------------------------------------------------------
 void p_lin_at_a(const double a, const double* k, const int n, double* out)
 {
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   const double z = 1.0 / a - 1.0;
   const int j = piecewise_index(z, cosmology.lnPL_z_nseg,
                                 cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
@@ -1452,18 +904,13 @@ void p_lin_at_a(const double a, const double* k, const int n, double* out)
                            +    dx *   dy  * cosmology.lnPL[i+1][j+1];
     out[m] = exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
   }
-#else
-  for (int m=0; m<n; m++) {
-    out[m] = p_lin(k[m], a);
-  }
-#endif
 }
 
 // ---------------------------------------------------------------------------
 // P_nl at ONE scale factor and n wavenumbers: out[m] = p_nonlin(k[m], a).
 // The z half of the bilinear read runs once, the k half per wavenumber,
 // with p_nonlin's expressions verbatim: every out[m] is bitwise
-// p_nonlin(k[m], a) (see p_lin_at_a for the reasoning and the fallback).
+// p_nonlin(k[m], a) (see p_lin_at_a for the reasoning).
 //
 // Parameters:
 //   a   - scale factor
@@ -1477,7 +924,6 @@ void p_lin_at_a(const double a, const double* k, const int n, double* out)
 // ---------------------------------------------------------------------------
 void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
 {
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
   const double coverH0 = cosmology.coverH0;
   const double z      = 1.0 / a - 1.0;
   const int j = piecewise_index(z, cosmology.lnP_z_nseg,
@@ -1502,11 +948,6 @@ void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
     const double ans = exp(out_lnP) / (coverH0 * coverH0 * coverH0);
     out[m] = (bary.is_Pk_bary == 1) ? ans * PkRatio_baryons(k[m], a) : ans;
   }
-#else
-  for (int m=0; m<n; m++) {
-    out[m] = p_nonlin(k[m], a);
-  }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -2079,7 +1520,7 @@ static void sigma2_fields_build(void)
     exit(1);
   }
 
-  // Continue on the SAME grid until both integration bounds are covered.
+  // Continue on the same grid until both integration bounds are covered.
   // first/last are integer offsets relative to the first supplied k node;
   // first may be negative when the continuation reaches lower k.
   const int first = (int) floor((log(kmin)-lnk0)/dlnk);
@@ -2141,6 +1582,8 @@ static void sigma2_fields_build(void)
     // The plans describe transforms of length nfft, not a cosmology.
     // Plan against thread zero's aligned arrays. During execution each
     // thread supplies its own equally aligned rows to the same plan.
+    // FFTW_ESTIMATE chooses the transform recipe without timing trial
+    // transforms; later execute calls apply that recipe to new data.
     sigma_fields_.plan_forward = fftw_plan_dft_r2c_1d(nfft,
         sigma_fields_.fft_real[0][0], sigma_fields_.fft_complex[0], FFTW_ESTIMATE);
     sigma_fields_.plan_inverse = fftw_plan_dft_c2r_1d(nfft,
@@ -2263,13 +1706,21 @@ static void sigma2_fields_build(void)
 
   // --- 3. TRANSFORM EACH (FIELD, a) ROW INDEPENDENTLY ---
 
+  // collapse(2) treats the (field,row) pairs as one list of independent
+  // jobs. schedule(static) divides that list among the workers. A worker
+  // finishes a row before reusing its scratch arrays for the next one.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int field=0; field<nfields; field++) {
     for (int row=0; row<na; row++) {
       const int thread = omp_get_thread_num();
 
-      // A thread only writes its own work arrays and one output row.
-      // These pointers therefore cannot alias another thread's stores.
+      // Each work/output row occupies a separate region of memory.
+      // restrict promises that stores through one local pointer cannot
+      // change values read through another, so the compiler need not
+      // reload them to account for possible overlap. The calculations
+      // below use these local pointers to make that promise effective.
+      // The thread index also gives each worker its own scratch rows;
+      // workers share no writable data during the row calculation.
       double* restrict input = sigma_fields_.fft_real[thread][0];
       double* restrict radial = sigma_fields_.fft_real[thread][1];
       double* restrict derivative = sigma_fields_.fft_real[thread][2];
@@ -2295,24 +1746,9 @@ static void sigma2_fields_build(void)
       // piecewise_index adds the segment's starting index and keeps
       // the result in [0,nz-2], so both lower and lower+1 exist.
       // Both fields share this grid and its metadata, as in p_lin_cb.
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
       const int lower = piecewise_index(redshift, cosmology.lnPL_z_nseg,
           cosmology.lnPL_z_seg_start, cosmology.lnPL_z_seg_len,
           cosmology.lnPL_z_seg_xmin, cosmology.lnPL_z_seg_inv_dx, nz);
-#else
-      // The reference build omits the piecewise-grid assumption, just
-      // as p_lin does. Its bracket search supplies the same two nodes.
-      int lower = 0;
-      int upper = nz-1;
-      while (upper-lower > 1) {
-        const int middle = (lower+upper)/2;
-        if (cosmology.lnPL[nk][middle] > redshift) {
-          upper = middle;
-        } else {
-          lower = middle;
-        }
-      }
-#endif
 
       // Keep the edge bracket for z outside the supplied range. The
       // fraction can then lie outside [0,1]: this continues lnP linearly
@@ -2350,7 +1786,7 @@ static void sigma2_fields_build(void)
       // slightly larger because FFTW is faster at lengths whose prime
       // factors are small. The remaining entries are numerical padding:
       // set them to zero so they add no power to the integral. They lie
-      // AFTER the high-k power-law continuation, never inside it.
+      // after the high-k power-law continuation, never inside it.
       for (int node=ninput; node<nfft; node++) {
         input[node] = 0.0;
       }

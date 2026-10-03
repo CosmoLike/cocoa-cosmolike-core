@@ -2323,7 +2323,7 @@ void set_bias_PS(
 //
 // When the size or any entry changed (fdiff scan): writes cosmology.chi
 // (row 0 = z, row 1 = chi) and cosmology.chi_nz, precomputes the
-// direct-index segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM
+// direct-index segment metadata
 // (detect_uniform_segments), NaN-scans during the parallel fill, rebuilds
 // a_chi's bucket index (set_chi_bucket_index), and bumps
 // cosmology.random. Unchanged input leaves the cache key alone.
@@ -2380,13 +2380,11 @@ void set_distances(vector io_z, vector io_chi)
     }
     cosmology.chi = (double**) malloc2d(2, cosmology.chi_nz);
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM 
     cosmology.chi_z_nseg = detect_uniform_segments(
         io_z.memptr(), cosmology.chi_nz, 1e-9, MAX_GRID_SEGMENTS,
         cosmology.chi_z_seg_start, cosmology.chi_z_seg_len,
         cosmology.chi_z_seg_xmin,  cosmology.chi_z_seg_inv_dx,
         "chi z");
-#endif
 
     #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.chi_nz; i++) {
@@ -2415,7 +2413,7 @@ void set_distances(vector io_z, vector io_chi)
 //
 // When the size or any entry changed (fdiff scan): writes cosmology.G
 // (row 0 = z, row 1 = G) and cosmology.G_nz, precomputes the direct-index
-// segment metadata under COSMO3D_ASSUME_PIECEWISE_UNIFORM (consumed by
+// segment metadata (consumed by
 // f_growth/growfac and friends), NaN-scans during the parallel fill, and
 // bumps cosmology.random. Unchanged input leaves the cache key alone.
 //
@@ -2453,7 +2451,6 @@ void set_growth(vector io_z, vector io_G)
   {
     cosmology.G_nz = static_cast<int>(io_z.n_elem);
 
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM    
     // -----------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
     // f_growth, growfac, norm_growfac, norm_growfac_all use these
@@ -2464,7 +2461,6 @@ void set_growth(vector io_z, vector io_G)
         cosmology.G_z_seg_start, cosmology.G_z_seg_len,
         cosmology.G_z_seg_xmin,  cosmology.G_z_seg_inv_dx,
         "G z");
-#endif
 
     if (cosmology.G != NULL) { free(cosmology.G); }
     cosmology.G = (double**) malloc2d(2, cosmology.G_nz);
@@ -2501,7 +2497,7 @@ void set_growth(vector io_z, vector io_G)
 // installs the new one) and bumps cosmology.random. Unchanged input
 // leaves the cache key and the P_cb table alone.
 //
-// Under COSMO3D_ASSUME_PIECEWISE_UNIFORM the log10k axis must be one
+// The log10k axis must be one
 // uniform segment (critical() otherwise) and the z axis may be piecewise
 // uniform; p_lin uses the stored metadata for direct indexing.
 //
@@ -2559,7 +2555,6 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   {
     cosmology.lnPL_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnPL_nz = static_cast<int>(io_z.n_elem);
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
     // -------------------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
     // p_lin uses these fields to skip the per-call binary search on log10k & z
@@ -2589,7 +2584,6 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
           cosmology.lnPL_z_seg_xmin,  cosmology.lnPL_z_seg_inv_dx,
           "lnPL z");
     }
-#endif
     if (cosmology.lnPL != NULL) { free(cosmology.lnPL); }
     cosmology.lnPL = (double**) malloc2d(cosmology.lnPL_nk+1,cosmology.lnPL_nz+1);
 
@@ -2770,7 +2764,7 @@ void clear_linear_power_spectrum_cb()
 //
 // Same machinery as set_linear_power_spectrum, applied to cosmology.lnP /
 // lnP_nk / lnP_nz: fdiff change scans, uniform-grid metadata under
-// COSMO3D_ASSUME_PIECEWISE_UNIFORM (consumed by p_nonlin), NaN scan during
+// direct indexing (consumed by p_nonlin), NaN scan during
 // the parallel fill, and a cosmology.random bump on update.
 //
 // Validation: io_lnP size must equal nk * nz, else critical() + exit(1).
@@ -2828,7 +2822,6 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
   {
     cosmology.lnP_nk = static_cast<int>(io_log10k.n_elem);
     cosmology.lnP_nz = static_cast<int>(io_z.n_elem);
-#ifdef COSMO3D_ASSUME_PIECEWISE_UNIFORM
     // -----------------------------------------------------------------------
     // Validate grid uniformity and precompute direct-index metadata.
     // p_nonlin uses these fields to skip the per-call binary search on
@@ -2859,7 +2852,6 @@ void set_non_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
           cosmology.lnP_z_seg_xmin,  cosmology.lnP_z_seg_inv_dx,
           "lnP z");
     }
-#endif
     if (cosmology.lnP != NULL) { free(cosmology.lnP); }
     cosmology.lnP = (double**) malloc2d(cosmology.lnP_nk+1,cosmology.lnP_nz+1);
 
