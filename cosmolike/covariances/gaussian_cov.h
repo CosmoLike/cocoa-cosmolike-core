@@ -33,7 +33,7 @@ void gaussian_project_cov(
     const int nright,                   // number of rows of the right operator
     const int nell,                     // shared number of multipoles
     const double* const* kernel_left,   // [nleft][nell], includes normalization
-    const double* const* kernel_right,  // [nright][nell], includes normalization
+    const double* const* kernel_right,  // [nright][nell], normalized operator
     const double* gaussian,             // [nell], harmonic covariance
     double* const* weighted_left,       // scratch [nleft][nell], caller owned
     double* const* covariance           // output [nleft][nright], overwritten

@@ -110,12 +110,13 @@ preprocessor-guard fallback path.
 
 - **Symptom:** wrong interpolation values after copying the n(z) direct-index
   trick to another table.
-- **Cause:** the `idx = (x - x0)*inv_dx` lookup assumes a uniform grid. The
-  chi(a) grid is only piecewise uniform — that's why `a_chi` was deliberately
-  left on binary search.
-- **Fix/rule:** before converting a lookup, verify grid uniformity; if it's
-  piecewise, either build the multi-segment dispatch or leave it alone and
-  write down why.
+- **Cause:** the `idx = (x - x0)*inv_dx` lookup assumes a uniform grid.
+  The inverse-distance chi column is nonuniform, so one such index does
+  not identify its interpolation bracket.
+- **Fix/rule:** use the current setter-validated segment metadata and
+  `piecewise_index` on piecewise-uniform redshift axes. For `a_chi`, reuse
+  its bucket index and short local walk. The binary-search alternatives
+  have been retired; do not restore them in a covariance copy.
 
 ## 11. Trusting single-evaluation timings
 

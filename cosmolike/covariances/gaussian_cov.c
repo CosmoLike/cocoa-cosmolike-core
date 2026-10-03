@@ -5,6 +5,9 @@
 #include "gaussian_cov.h"
 #include "log.c/src/log.h"
 
+#include "simde/x86/sse2.h"
+#include "simde/x86/fma.h"
+
 // ============================================================================
 // GAUSSIAN COVARIANCE AT INTEGER MULTIPOLES
 // ============================================================================
@@ -63,9 +66,13 @@ void gaussian_wick_cov(
     double* gaussian                    // output harmonic covariance
   )
 {
-  if (ell_min < 0 || nell < 1 || !isfinite(fsky)
-      || fsky <= 0.0 || fsky > 1.0
-      || (include_noise_noise != 0 && include_noise_noise != 1)) {
+  if (ell_min < 0
+      || nell < 1
+      || !isfinite(fsky)
+      || fsky <= 0.0
+      || fsky > 1.0
+      || (include_noise_noise != 0
+          && include_noise_noise != 1)) {
     log_fatal("gaussian_wick_cov needs ell_min >= 0, nell > 0, "
               "finite 0 < fsky <= 1, and include_noise_noise = 0 or 1");
     exit(1);
@@ -150,10 +157,14 @@ void gaussian_project_cov(
     double* const* covariance           // output block
   )
 {
-  if (nleft < 1 || nright < 1 || nell < 1) {
+  if (nleft < 1
+      || nright < 1
+      || nell < 1) {
     log_fatal("gaussian_project_cov needs positive nleft, nright and nell");
     exit(1);
   }
+
+  // --- 1. WEIGHT EACH LEFT OPERATOR ONCE ---
 
   #pragma omp parallel for schedule(static)
   for (int left=0; left<nleft; left++) {
@@ -165,19 +176,80 @@ void gaussian_project_cov(
     }
   }
 
-  // Local pointers tell the compiler that writes cannot change a kernel.
-  // Access through these pointers also walks adjacent ell values in memory.
+  // --- 2. PROJECT GROUPS OF FOUR LEFT AND FOUR RIGHT BINS ---
+
+  // A four-by-four group shares kernel reads among sixteen outputs. Each
+  // vector holds two right-bin results, not pieces of a single ell sum.
+  // Thus every result still adds ell=0,1,2,... in the scalar order. There
+  // is no sum across vector lanes and no reduction across OpenMP workers.
+  enum { tile_rows = 4 }; // rows per group; columns are two pairs of lanes
   #pragma omp parallel for collapse(2) schedule(static)
-  for (int left=0; left<nleft; left++) {
-    for (int right=0; right<nright; right++) {
-      const double* restrict weighted = weighted_left[left];
-      const double* restrict kernel = kernel_right[right];
-      double total = 0.0;
+  for (int left=0; left<nleft; left+=tile_rows) {
+    for (int right=0; right<nright; right+=4) {
+      // The last group can have fewer than four columns. Repeating its
+      // final valid kernel keeps every read in bounds; unused results are
+      // discarded below. The same rule covers a partial group of rows.
+      const int right1 = right+1 < nright ? right+1 : nright-1;
+      const int right2 = right+2 < nright ? right+2 : nright-1;
+      const int right3 = right+3 < nright ? right+3 : nright-1;
+      const double* restrict kernel0 = kernel_right[right];
+      const double* restrict kernel1 = kernel_right[right1];
+      const double* restrict kernel2 = kernel_right[right2];
+      const double* restrict kernel3 = kernel_right[right3];
+      const double* weighted_rows[tile_rows];
+      simde__m128d totals_low[tile_rows];
+      simde__m128d totals_high[tile_rows];
+
+      for (int row=0; row<tile_rows; row++) {
+        const int index = left+row < nleft ? left+row : nleft-1;
+        weighted_rows[row] = weighted_left[index];
+        // setzero_pd starts two independent output sums at zero.
+        totals_low[row] = simde_mm_setzero_pd();
+        totals_high[row] = simde_mm_setzero_pd();
+      }
 
       for (int node=0; node<nell; node++) {
-        total += weighted[node]*kernel[node];
+        // Each 128-bit vector holds two doubles. set_pd puts its last
+        // argument in lane 0: low holds columns 0,1 and high holds 2,3.
+        // Keeping the pairs separate also avoids repeatedly splitting and
+        // joining a 256-bit value on machines with 128-bit vector registers.
+        const simde__m128d kernels_low = simde_mm_set_pd(
+          kernel1[node], kernel0[node]);
+        const simde__m128d kernels_high = simde_mm_set_pd(
+          kernel3[node], kernel2[node]);
+
+        for (int row=0; row<tile_rows; row++) {
+          const double* restrict weighted = weighted_rows[row];
+          // Scalar equation, once for each right bin:
+          //   total += weighted_left[left+row][ell] * kernel_right[right][ell].
+          // set1_pd repeats the left-bin weight on both lanes.
+          const simde__m128d weight = simde_mm_set1_pd(weighted[node]);
+          // fmadd evaluates weight*kernel + total with one rounding on
+          // native FMA/NEON, matching the scalar fma rather than rounding
+          // the product first. No lane is added to a different lane.
+          totals_low[row] = simde_mm_fmadd_pd(
+            weight, kernels_low, totals_low[row]);
+          totals_high[row] = simde_mm_fmadd_pd(
+            weight, kernels_high, totals_high[row]);
+        }
       }
-      covariance[left][right] = total;
+
+      for (int row=0;
+           row<tile_rows
+           && left+row<nleft;
+           row++) {
+        double results[4];
+        // storeu_pd copies two lanes to ordinary doubles without an
+        // alignment requirement. The second pair fills columns 2 and 3.
+        simde_mm_storeu_pd(results, totals_low[row]);
+        simde_mm_storeu_pd(results+2, totals_high[row]);
+        for (int column=0;
+             column<4
+             && right+column<nright;
+             column++) {
+          covariance[left+row][right+column] = results[column];
+        }
+      }
     }
   }
 }
@@ -213,9 +285,13 @@ double annulus_pair_area_cov(
     const double theta_high_rad         // upper separation in radians
   )
 {
-  if (!isfinite(area_sr) || area_sr <= 0.0 || area_sr > 4.0*M_PI
-      || !isfinite(theta_low_rad) || !isfinite(theta_high_rad)
-      || theta_low_rad < 0.0 || theta_high_rad > M_PI
+  if (!isfinite(area_sr)
+      || area_sr <= 0.0
+      || area_sr > 4.0*M_PI
+      || !isfinite(theta_low_rad)
+      || !isfinite(theta_high_rad)
+      || theta_low_rad < 0.0
+      || theta_high_rad > M_PI
       || theta_high_rad <= theta_low_rad) {
     log_fatal("annulus_pair_area_cov needs finite 0 < area_sr <= 4 pi "
               "and 0 <= theta_low_rad < theta_high_rad <= pi");
@@ -232,8 +308,10 @@ double annulus_pair_area_cov(
 // Pure-noise covariance of two correlation estimators in the same theta bin.
 //
 // Catalogs are independent, though their redshift distributions can overlap.
-// fields[] contains globally distinct catalog IDs in order A,B,C,D. For
-// gamma_t, A and C must be lens catalogs and B and D source catalogs.
+// fields[] contains catalog IDs in order A,B,C,D. Give each catalog one
+// unique ID across both lens and source samples; reuse that ID whenever
+// the same catalog appears again. For gamma_t, A and C must be lens
+// catalogs and B and D source catalogs.
 // N_g = 1/n_g and N_s = sigma_component^2/n_s, with densities per sr.
 //
 // For w_AB and w_CD the two surviving noise pairings give
@@ -267,12 +345,20 @@ double gaussian_noise_pair_cov(
     const double pair_area_sr2          // angular ordered-pair area
   )
 {
-  if (probe_left < XI_PLUS_COV || probe_left > W_THETA_COV
-      || probe_right < XI_PLUS_COV || probe_right > W_THETA_COV
-      || !isfinite(pair_area_sr2) || pair_area_sr2 <= 0.0
-      || !isfinite(noise_ab[0]) || !isfinite(noise_ab[1])
-      || noise_ab[0] < 0.0 || noise_ab[1] < 0.0
-      || fields[0] < 0 || fields[1] < 0 || fields[2] < 0 || fields[3] < 0) {
+  if (probe_left < XI_PLUS_COV
+      || probe_left > W_THETA_COV
+      || probe_right < XI_PLUS_COV
+      || probe_right > W_THETA_COV
+      || !isfinite(pair_area_sr2)
+      || pair_area_sr2 <= 0.0
+      || !isfinite(noise_ab[0])
+      || !isfinite(noise_ab[1])
+      || noise_ab[0] < 0.0
+      || noise_ab[1] < 0.0
+      || fields[0] < 0
+      || fields[1] < 0
+      || fields[2] < 0
+      || fields[3] < 0) {
     log_fatal("gaussian_noise_pair_cov needs supported probes, nonnegative "
               "field IDs, finite nonnegative noise and positive pair area");
     exit(1);
@@ -282,8 +368,13 @@ double gaussian_noise_pair_cov(
     return 0.0;
   }
 
-  const int direct = fields[0] == fields[2] && fields[1] == fields[3];
-  const int exchanged = fields[0] == fields[3] && fields[1] == fields[2];
+  // Noise correlates repeated measurements of the same objects. Each
+  // boolean below is a product of two catalog Kronecker deltas: the
+  // direct pairing checks A=C and B=D; the exchanged one checks A=D, B=C.
+  const int direct = fields[0] == fields[2]
+                     && fields[1] == fields[3];
+  const int exchanged = fields[0] == fields[3]
+                        && fields[1] == fields[2];
   const double pair_variance = noise_ab[0]*noise_ab[1]/pair_area_sr2;
 
   if (probe_left == GAMMA_T_COV) {

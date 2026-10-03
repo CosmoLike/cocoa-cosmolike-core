@@ -55,6 +55,28 @@ implementation remain separate decisions. p_mm/p_my/p_yy remain outside
 the compiled code. The cfastpt frequency-window comments already describe
 the tapered top fraction correctly.
 
+**Covariance rewrite (owner request, 2026-10-03).** Before covariance work,
+read `references/covariance_rewrite.md` and the external study at
+`test/cosmocov_port_study/PLAN.md`. The implementation lives in the plural
+`cosmolike/covariances/` directory. Do not modify any existing C file
+outside that directory for the port. Every new covariance C filename ends
+in `_cov.c`, including future cluster extensions (`*_cluster_cov.c`).
+Data-vector and covariance numerical choices remain separately owned.
+Study the actual `cosmo2D.c`, `cosmo3D.c`, and `halo.c` implementations;
+some older study and pattern descriptions predate their current behavior.
+Carry over serial FFTW planning/reuse, precomputed node tables, direct grid
+indexing, caller-owned grouped scratch, and deterministic OpenMP loops.
+Explicitly evaluate SIMDe vectorization: do not assume an OpenMP SIMD
+pragma vectorizes strict floating-point arithmetic. Measure loop layouts,
+thread counts, precision, and generated instructions before choosing them.
+Covariance production code always uses SIMDe for its bulk arithmetic.
+Keep scalar comparisons in the external test harness, with no covariance
+preprocessor fallback or dependency on `COSMO2D_NOT_USE_SIMD`.
+Krause and Takada papers are primary physics sources; CosmoCov code and the
+study's inferred corrections are comparison targets, not a physics oracle.
+Keep the implementation simple, with short guards for unsupported cases;
+do not build elaborate recovery paths. Never push; local commits are allowed.
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 
@@ -84,6 +106,8 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    (`COSMO2D_NOT_USE_SIMD`, `DONT_NZ_FAST_SUMBSAMPLE`, ...) must allow falling
    back to the simple reference implementation. The fallback is also the
    ground truth for debugging.
+   Covariance is the owner-requested exception: SIMDe is unconditional in
+   production; scalar references belong only to the external test harness.
 6. **Preserve existing conventions.** Keep the file's variable naming, struct
    layout, and code structure when modifying. Renames happen only as their own
    dedicated, mechanical commits (e.g. `zdistr_photoz` → `nz_source_photoz`).
@@ -223,6 +247,17 @@ every Fable task.
 
 ## Clean & Human-Readable Code Style Guide
 
+**Ticket completion gate (owner clarification, 2026-10-03).** After the
+implementation and tests for each major ticket, make a separate didactic
+red-eye review pass before starting the next major ticket. A ticket is a
+substantial component, such as the Gaussian covariance foundation; it is
+not every helper function or intermediate edit. Read the complete changed
+component as an advanced undergraduate physics student: verify that the
+physics, units, array roles, numerical steps, threading and vectorization
+can be followed without unstated specialist knowledge. Fix unclear prose
+and dense code, and rerun relevant checks if the review changes behavior.
+Record the review and any remaining limitations with the ticket's results.
+
 (Vivian, 2026-09-29: "you wrote the code to be fast - you got that - but
 at the same time you wrote a code in a way only another AI understand -
 student is not AI".)
@@ -250,11 +285,17 @@ syntax.
    statements or ternary operators into individual, well-named temporary
    variables or multi-line structures.
    For cache reuse/reallocation, follow cosmo2D.c: put the cache-change
-   conditions directly in the `if`, one logical group per line. Do not
+   conditions directly in the `if`, one comparison or predicate per line.
+   This also applies to assignments combining `&&` or `||`, not only guards.
+   Use line breaks rather than unnecessary single-use boolean variables.
+   Do not
    introduce a single-use `rebuild` flag for that condition.
 5. **Guided Context:** Add bite-sized, purposeful inline comments before
    mathematical equations or data-transformation loops explaining *why*
    the code is performing that action, not just *what* it is doing.
+6. **80-Character Lines:** Keep C code and comments within 80 columns.
+   Wrap function arguments, comparisons, and intrinsic calls at natural
+   boundaries. Check line lengths during the ticket's didactic review.
 
 Also (same review): variable names say the physics (`n_gal`, `b_gal`,
 not `ng`, `bg`, `tq`, `occ`); logs are `ln<quantity>` (`lnk`, `lnx`,

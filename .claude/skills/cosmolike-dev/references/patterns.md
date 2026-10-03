@@ -14,8 +14,7 @@ tables) before the ell loop, instead of per `(ell, node)`.
 
 - Structure: a `cosmo_nodes` struct holding the tables, filled by a `_work`
   function, consumed by the per-ell integrand.
-- Applied to the C_ss and C_gs paths. **Not yet applied to C_gg** — its perf
-  share is slightly inflated because of this; it is the natural next target.
+- Applied to the C_ss, C_gs, C_gg, C_gk and C_ks Limber work functions.
 - When reviewing: any call inside an ell loop whose arguments don't contain
   ell is a candidate. Ask why it isn't hoisted.
 
@@ -36,11 +35,11 @@ for (int nz=0; nz<NSIZE; nz++) {
 nodes. But it creates the aliasing trap (pattern 3) — the two always travel
 together.
 
-## 3. Thin inner loops: `omp simd reduction` + local `restrict`
+## 3. Thin inner loops: local `restrict` and measured vectorization
 
 For dot-product-shaped inner loops (Legendre summation
-`sum += Pl[i][l]*Cl[nz][l]`), do NOT hand-write intrinsics and do NOT index
-the 2D arrays directly. The validated idiom:
+`sum += Pl[i][l]*Cl[nz][l]`), index through local row pointers. A useful
+reference implementation is:
 
 ```c
 const double* restrict pl = Pl[i];
@@ -52,7 +51,7 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
 }
 ```
 
-History, so nobody relearns it: hand-written SIMDe versions
+Historical GCC comparison: hand-written SIMDe versions
 (`simd_dot_product`, `simd_xipm_dot_product`, `simd_array_sum`,
 `simd_horizontal_sum`) were written, then deleted, once it was proven that the
 ~2x gap between intrinsics and the plain pragma was **pointer aliasing**, not
@@ -61,10 +60,15 @@ FMA latency (1-, 2-, and 3-accumulator intrinsic variants all timed identical
 locals it matched). GCC cannot prove `Pl[i]` and `Cl[nz]` don't overlap
 through pointer-to-pointer indirection inside a `collapse(2)` region.
 
-Multi-accumulator unrolling is NOT needed — the workload is memory-bound and
-the hardware hides FMA latency behind cache misses.
+That GCC result is not a ban on intrinsics or output grouping. Strict
+Clang can leave a floating-point reduction scalar; inspect compiler
+remarks and assembly. Current `legendre_sums` groups outputs to reuse
+reads, and `covariances/gaussian_cov.c` uses measured SIMDe across output
+columns while retaining scalar ell order. Its record is
+`covariance_rewrite.md`. Test layout and native fused-operation behavior
+before choosing a loop; memory traffic and arithmetic both matter.
 
-## 4. Gather-based `_fill` interpolation: the one place intrinsics survive
+## 4. Gather-based `_fill` interpolation
 
 GCC will not auto-emit gather instructions. Interpolation-table fill loops
 (`C_ss_tomo_limber_fill`, `C_gs_tomo_limber_fill`, ...) that load from
@@ -72,8 +76,10 @@ scattered indices keep hand-written SIMDe gather + FMA bodies, with a comment
 explaining the auto-vectorization blocker, a scalar tail that calls the same
 `int_for_*_core` scalar function, and a `COSMO2D_NOT_USE_SIMD` fallback.
 
-Rule of thumb: contiguous-access loop → pragma + restrict; gather-access
-loop → SIMDe intrinsics. Confirm with `-fopt-info-vec-all` either way.
+For contiguous access, start from local pointers and verify what the
+compiler emits; use SIMDe when measurement justifies it. For gathers,
+explicit SIMDe remains useful. Confirm the resulting instructions with
+compiler remarks and disassembly on the actual target.
 
 ## 5. Heavy integrand loops (TATT)
 
@@ -94,9 +100,11 @@ Two validated replacements:
   init; the hot path is then `idx = (z - z0)*inv_dz` plus **linear**
   interpolation — pure linear was tested sufficient, no spline needed.
   Fallback guard: `DONT_NZ_FAST_SUMBSAMPLE`. Caveat: this only works on
-  uniform grids. The `a_chi` lookup was deliberately NOT converted because
-  chi(a) is only piecewise uniform and the multi-segment dispatch wasn't
-  worth the 3.5% — leave it unless that calculus changes.
+  uniform grids. The current `cosmo3D.c` redshift axes use validated
+  piecewise-uniform metadata and `piecewise_index`. Its nonuniform inverse
+  distance lookup `a_chi` uses `set_chi_bucket_index`: a direct bucket
+  lookup followed by a short local walk. Reuse these designs; the old
+  binary-search branches and COSMO3D_ASSUME_PIECEWISE_UNIFORM are retired.
 - **Per-entry Gauss-Legendre quadrature → factored cumulative trapezoid.**
   Lens efficiency g(z_l) = ∫ dz_s n(z_s) (1 - chi_l/chi_s) factors (flat
   cosmology) as P(z_l) - chi(z_l)*Q(z_l) where P, Q are single cumulative
@@ -148,5 +156,6 @@ Two validated replacements:
 - Check remaining hot-spot percentages against bin combinatorics before
   declaring them "inefficient" (xi_pm: 36 pairs x 2; gammat: ~55; w_gg: ~8).
   If the ratio matches the combinatorics, the code is already balanced.
-- A rejected optimization with a documented reason (like `a_chi`) is a result.
-  Record it so it isn't re-attempted.
+- A rejected optimization with a documented reason is a result. Record its
+  actual algorithm and target, so a later source change is not mistaken
+  for the same rejected experiment.
