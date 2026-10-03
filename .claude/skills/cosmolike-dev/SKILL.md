@@ -36,6 +36,9 @@ bias, concentration, HOD, cluster counts, p_mm) or anything
 that chooses P_cb vs P_mm, read `references/fable_review_neutrino_halos.md`
 (Fable 5, literature verified with arXiv section/figure): which field each
 consumer needs with massive neutrinos, and the state of the halo.c fits.
+Which growth factor the D^1.15 of the Bhattacharya concentration takes with
+neutrinos (no paper says; recommended: the cb growth at halo scales in both
+the prefactor and nu): `references/fable_review_concentration_growth.md`.
 
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
