@@ -87,10 +87,10 @@ double hb1nu_cpp(const double nu, const double a);
 double fnu_cpp(const double nu, const double a);
 
 // halo concentration c(m) (Bhattacharya et al. 2013, Delta = 200 mean)
-double conc_cpp(const double m, const double growfac_a);
+double conc_cpp(const double m, const double a);
 
 // d ln nu / d ln M at a = 1 (cached table)
-double dlognudlogm_cpp(const double M);
+double dlognudlogm_cpp(const double M, const double a);
 
 // -----------------------------------------------------------------------------
 

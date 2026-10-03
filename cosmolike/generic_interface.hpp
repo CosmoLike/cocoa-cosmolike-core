@@ -600,7 +600,7 @@ void init_ntable_ell_internal(const int nell_internal);
 
 void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal);
 
-double compute_sigma2(const double M);
+double compute_sigma2(const double M, const double a, const int field);
 
 void init_ntable_nm_internal(const int nm_internal);
 
@@ -633,10 +633,6 @@ void init_include_HOD_GX(
 
 void init_include_halo_IA(
     const int include_halo_IA
-  );
-
-void init_halo_matter_field(
-    const int halo_matter_field
   );
 
 void init_accuracy_boost(

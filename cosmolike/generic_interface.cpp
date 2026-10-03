@@ -579,9 +579,10 @@ void init_ntable_halo_ia_lmax(const int halo_ia_lmax) {
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostic read of the halo-model mass variance sigma^2(M) at a = 1:
-// the cached table (lobe-summed, and coarse-M upsampled when
-// Ntable.N_M[NODES_COARSE] is active). M in M_sun/h.
+// Diagnostic read of the smoothed linear variance sigma_field^2(M,a).
+// The FFTLog tables in cosmo3D.c integrate each field's spectrum at
+// each scale factor. The field also chooses the mean density in the
+// Lagrangian relation M = (4 pi/3) rho_field R^3.
 //
 // Cache invalidation:
 // none here; the cached table rebuilds on cosmology.random /
@@ -589,13 +590,20 @@ void init_ntable_halo_ia_lmax(const int halo_ia_lmax) {
 //
 // Parameters:
 //   M - halo mass in M_sun/h
+//   a - scale factor in [limits.a_min, 1]
+//   field - 0 for total matter; 1 for cold dark matter plus baryons
 //
 // Returns:
-//   sigma^2(M)
+//   sigma_field^2(M,a), dimensionless. This diagnostic selection does
+//   not change halo statistics, which always use the cb field.
 // ---------------------------------------------------------------------------
-double compute_sigma2(const double M)
+double compute_sigma2(
+    const double M,   // mass in M_sun/h
+    const double a,   // scale factor
+    const int field  // total matter (0) or cold dark matter + baryons (1)
+  )
 {
-  return sigma2(M);
+  return sigma2_field(M, a, field);
 }
 
 
@@ -896,48 +904,6 @@ void init_include_halo_IA(const int include_halo_IA)
 }
 
 // ---------------------------------------------------------------------------
-// Select the density field of the halo model's peak height, writing
-// like.halo_model[4] (halo.h): 0 = HALO_FIELD_MATTER, total matter (the
-// default); 1 = HALO_FIELD_CB, cold dark matter + baryons. Under 1,
-// sigma^2(M) integrates the linear P_cb of set_linear_power_spectrum_cb
-// and the Lagrangian radius and the rho/M of dn/dlnM use
-// rho_crit (Omega_m - Omega_nu) (Omega_nu from set_cosmological_parameters);
-// r_Delta, the matter windows M/rho_m, the lensing kernels and the 2-halo
-// spectra stay total matter. One switch for every consumer: sigma2 and
-// dlognudlogm (cosmo3D.c, halo.c), the HOD tables, p_gm, p_gg, the
-// halo-model IA and the cluster mass tables (halo_cluster.c).
-// Likelihood yaml key: halo_matter_field.
-//
-// Cache invalidation:
-// a flip redraws cosmology.random, the tag sigma2 and every halo table
-// key on, so no table serves a value of the other field.
-//
-// Validation: the value must be 0 or 1, else critical() + exit(1).
-//
-// Parameters:
-//   halo_matter_field - 0 = total matter, 1 = cold dark matter + baryons
-//
-// Returns:
-//   void
-// ---------------------------------------------------------------------------
-void init_halo_matter_field(const int halo_matter_field)
-{
-  static constexpr std::string_view fname = "init_halo_matter_field"sv;
-  debug("{}: {}", fname, errbegins);
-  if (halo_matter_field != HALO_FIELD_MATTER &&
-      halo_matter_field != HALO_FIELD_CB) {
-    critical("{}: invalid halo_matter_field = {} (0 = total matter, "
-             "1 = cold dark matter + baryons)", fname, halo_matter_field);
-    exit(1);
-  }
-  if (like.halo_model[4] != halo_matter_field) {
-    like.halo_model[4] = halo_matter_field;
-    cosmology.random = RandomNumber::get_instance().get();
-  }
-  debug("{}: {}", fname, errends);
-  return;
-}
-
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -2022,8 +1988,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 //
 // When any input changed (fdiff): writes cosmology.Omega_m,
 // Omega_v = 1 - Omega_m, Omega_b, Omega_nu = omega_nu_h2/h^2
-// (part of Omega_m; the halo model reads it under
-// like.halo_model[4] = HALO_FIELD_CB, init_halo_matter_field),
+// (part of Omega_m; halo statistics use Omega_m - Omega_nu),
 // h0 = hubble/100 (input H0 in km/s/Mpc) and MGSigma = MGmu = 0, and
 // bumps cosmology.random so every table keyed on the cosmology
 // rebuilds. Unchanged inputs leave the cache key alone.
@@ -2669,8 +2634,7 @@ void set_linear_power_spectrum(vector io_log10k, vector io_z, vector io_lnP)
 // ---------------------------------------------------------------------------
 // Install ln P_cb(log10k, z), the linear power spectrum of cold dark
 // matter plus baryons (CAMB's delta_nonu), on the grid of the linear
-// P_lin table. sigma2 reads it (p_lin_cb) when like.halo_model[4] =
-// HALO_FIELD_CB; nothing reads it otherwise.
+// P_lin table. Its evolving variance supplies all halo statistics.
 //
 // Order: after set_linear_power_spectrum of the same cosmology, which
 // drops the P_cb table of the previous spectrum. The table stores values
@@ -2773,7 +2737,7 @@ void set_linear_power_spectrum_cb(vector io_log10k, vector io_z, vector io_lnP)
 // ---------------------------------------------------------------------------
 // Remove the P_cb table (cosmology.lnPL_cb): the call of a caller that
 // has no cold dark matter + baryon spectrum to hand over. sigma2 aborts
-// under like.halo_model[4] = HALO_FIELD_CB while no table is installed.
+// if a halo calculation is requested while no table is installed.
 //
 // Cache invalidation:
 // bumps cosmology.random when a table was installed; a call with none

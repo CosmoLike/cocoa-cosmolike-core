@@ -174,7 +174,7 @@ static void check_scale_factor(const char* fname, const double a)
 //
 // The halo model labels a halo of mass M by its peak height
 //
-//   nu = delta_c / sigma(M, a),   sigma(M, a) = sqrt(sigma2(M)) D(a)
+//   nu = delta_c / sigma(M, a),   sigma(M, a) = sqrt(sigma2(M,a))
 //
 // (delta_c = 1.686 the collapse threshold, sigma the rms linear density
 // fluctuation in a sphere holding mass M, D the growth factor). Rare,
@@ -255,25 +255,24 @@ double fnu_cpp(
 // Halo concentration c = r_Delta/r_s, Bhattacharya et al. 2013 Table 2
 // (Delta = 200 times the mean matter density):
 //
-//   c = 9.0 nu^-0.29 D^1.15,   nu = delta_c/(sqrt(sigma2(m)) D)
+//   c = 9.0 nu^-0.29 D^1.15,   nu = delta_c/sigma_cb(m,a)
 //
 // Calls halo.c conc (fit selected by like.halo_model[2]), which reads the
-// cached sigma2(m) table of cosmo3D.c.
+// cached sigma2(m,a) table of cosmo3D.c; D = sigma_cb(m,a)/sigma_cb(m,1).
 //
 // Parameters:
 //   m         - halo mass in M_sun/h
-//   growfac_a - linear growth factor D(a) (growfac_cpp gives it), not the
-//               scale factor itself
+//   a         - scale factor
 //
 // Returns:
 //   c(m), dimensionless
 // ---------------------------------------------------------------------------
 double conc_cpp(
     const double m,          // halo mass in M_sun/h
-    const double growfac_a   // growth factor D(a)
+    const double a          // scale factor
   )
 {
-  return conc(m, growfac_a);
+  return conc(m, a);
 }
 
 // ---------------------------------------------------------------------------
@@ -284,26 +283,28 @@ double conc_cpp(
 // ---------------------------------------------------------------------------
 // Logarithmic slope d ln nu / d ln M of the peak height.
 //
-// Because sigma(M, a) = sigma(M, 1) D(a), the slope is the same at every
-// redshift, so halo.c tabulates it once at a = 1:
+// Massive neutrinos give mass-dependent growth, so the cb slope must
+// be evaluated at the requested scale factor:
 //
-//   d ln nu/d ln M = -(1/2) d ln sigma2(M)/d ln M
+//   d ln nu/d ln M = -(1/2) d ln sigma2(M,a)/d ln M at fixed a
 //
-// Calls halo.c dlognudlogm: a cached table on Ntable.N_M[NODES_DENSE] nodes in ln M
-// over [limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]], read by linear
-// interpolation.
+// Calls halo.c dlognudlogm, which reads the FFTLog slope table by
+// bilinear interpolation in ln M and a. The mass grid contains
+// Ntable.N_M[NODES_DENSE] nodes between limits.halo_m's endpoints.
 //
 // Parameters:
 //   M - halo mass in M_sun/h
+//   a - scale factor at which the mass slope is evaluated
 //
 // Returns:
-//   d ln nu/d ln M, dimensionless
+//   d ln nu/d ln M at fixed a, dimensionless
 // ---------------------------------------------------------------------------
 double dlognudlogm_cpp(
-    const double M   // halo mass in M_sun/h
+    const double M,  // halo mass in M_sun/h
+    const double a   // scale factor
   )
 {
-  return dlognudlogm(M);
+  return dlognudlogm(M, a);
 }
 
 // ---------------------------------------------------------------------------

@@ -81,13 +81,12 @@ void reset_like_struct(void)
   like.adopt_limber[LIMBER_GS] = 1;
   // halo.c model choices (halo.h macros, all 0): HMF_TINKER_2010,
   // HALO_BIAS_TINKER_2010, CONCENTRATION_BHATTACHARYA_2013,
-  // HALO_PROFILE_NFW, HALO_FIELD_MATTER - set explicitly so the
+  // HALO_PROFILE_NFW - set explicitly so the
   // defaults are deliberate
   like.halo_model[0] = 0;
   like.halo_model[1] = 0;
   like.halo_model[2] = 0;
   like.halo_model[3] = 0;
-  like.halo_model[4] = 0;
 }
 
 void reset_cosmology_struct(void)

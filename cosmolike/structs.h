@@ -233,8 +233,7 @@ typedef struct
   // ---------------------------------------------------
   // ---------------------------------------------------
   // LINEAR CDM + BARYON POWER SPECTRUM P_cb (the matter
-  // without the massive neutrinos; read when
-  // like.halo_model[4] = HALO_FIELD_CB)
+  // without the massive neutrinos; required by all halo statistics)
   // size = (lnPL_nk, lnPL_nz), values only:
   // lnPL_cb[i][j] = ln P_cb at (log10k_i, z_j) of lnPL,
   // whose axes and direct-index metadata p_lin_cb reads.
@@ -457,9 +456,6 @@ typedef struct
                                    // [1] = BIAS,
                                    // [2] = CONCENTRATION
                                    // [3] = HALO PROFILE
-                                   // [4] = DENSITY FIELD of sigma(M)
-                                   //       and of the mass function
-                                   //       (halo.h: HALO_FIELD_*)
 } likepara;
 
 typedef struct

@@ -58,17 +58,13 @@ typedef simde__m128d v2d;
 //
 // A halo of mass M is labeled by its peak height
 //
-//   nu(M, a) = delta_c/sigma(M, a),   sigma(M, a) = sqrt(sigma2(M)) D(a)
+//   nu(M, a) = delta_c/sigma_cb(M, a).
 //
-// with sigma2(M) the a = 1 variance of cosmo3D.c (top hat of Lagrangian
-// radius R = (3M/(4 pi rho_crit Omega_m))^(1/3)) and D(a) the growth
-// factor, D(1) = 1. This is the nu of Tinker et al. 2010 (1001.3162
-// sec. 2), not the nu = delta_c^2/sigma^2 of Cooray & Sheth 2002
-// (astro-ph/0206508 Eq. 57). Rare, massive halos have nu >> 1.
-// like.halo_model[4] = HALO_FIELD_CB takes sigma and the mean density
-// of R and of the mass function from cold dark matter + baryons
-// (Omega_m - Omega_nu) instead of the total matter (HALO MODEL POWER
-// SPECTRA banner).
+// sigma2(M,a) integrates P_cb at that scale factor, with Lagrangian
+// radius R = (3M/(4 pi rho_cb))^(1/3). No single growth factor can
+// evolve all halo masses when neutrinos free-stream. This is the nu
+// of Tinker et al. 2010 (1001.3162 sec. 2), not the squared peak height
+// of Cooray & Sheth 2002 (astro-ph/0206508 Eq. 57).
 //
 // The two constants below:
 //
@@ -194,7 +190,7 @@ typedef simde__m128d v2d;
 //
 // and the mass function follows by the change of variable nu -> M:
 //
-//   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M           -> dlognudlogm
+//   dn/dlnM = (rho_cb/M) nu f(nu) dln nu/dln M           -> dlognudlogm
 //
 // bias_norm measures how much of the consistency relation int b f dnu = 1
 // the finite mass range of the halo-model integrals covers; a halo-model
@@ -287,7 +283,7 @@ static inline hb1nu_params hb1nu_params_at(
 
 
 static inline double hb1nu_core(
-    const double nu,        // peak height delta_c/(sigma(M) D(a))
+    const double nu,        // peak height delta_c/sigma_cb(M,a)
     const hb1nu_params* p   // coefficients from hb1nu_params_at
   )
 {
@@ -302,7 +298,7 @@ static inline double hb1nu_core(
 
 
 double hb1nu(
-    const double nu, // peak height delta_c/(sigma(M) D(a))
+    const double nu, // peak height delta_c/sigma_cb(M,a)
     const double a   // scale factor (unused by the Tinker bias fit)
   )
 {
@@ -319,8 +315,8 @@ double hb1nu(
 //
 // It turns into the halo mass function through
 //
-//   dn/dM = f(nu) (rho_m/M) dnu/dM
-//     ->  dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M,
+//   dn/dM = f(nu) (rho_cb/M) dnu/dM
+//     ->  dn/dlnM = (rho_cb/M) nu f(nu) dln nu/dln M,
 //
 // so nu f(nu) is the g(sigma) of Tinker et al. 2008 (1001.3162 sec. 4).
 //
@@ -400,7 +396,7 @@ static inline fnu_params fnu_shape(
 //
 //   f(nu) = alpha [1 + (beta nu)^(-2 phi)] nu^(2 eta) exp(-gamma nu^2/2)
 static inline double fnu_core(
-    const double nu,      // peak height delta_c/(sigma(M) D(a))
+    const double nu,      // peak height delta_c/sigma_cb(M,a)
     const fnu_params* p   // parameters from fnu_params_at or fnu_shape
   )
 {
@@ -630,7 +626,7 @@ static inline fnu_params fnu_params_at(
 
 
 double fnu(
-    const double nu, // peak height delta_c/(sigma(M) D(a))
+    const double nu, // peak height delta_c/sigma_cb(M,a)
     const double a   // scale factor, 0 < a < 1 (aborts otherwise)
   )
 {
@@ -644,12 +640,12 @@ double fnu(
 // al. 2013 (1112.5479 Table 2, full halo sample, Delta = 200 times the
 // mean density: the halo definition of this file):
 //
-//   c(M, z) = 9.0 nu^-0.29 D(z)^1.15,   nu = delta_c/(sigma(M) D(z))
+//   c(M,a) = 9.0 nu^-0.29 D_cb(M,a)^1.15,
+//   nu = delta_c/sigma_cb(M,a), D_cb = sigma_cb(M,a)/sigma_cb(M,1).
 //
-// with sigma(M) the a = 1 rms of the linear density field (sigma2 in
-// cosmo3D.c, sigma2 = sigma^2) and D the growth factor, D(1) = 1. At
-// fixed nu the amplitude falls with D, so at fixed mass the c-M
-// relation flattens toward high z (1112.5479 sec. 4.1-4.2).
+// The same cold variance sets both the peak height and its growth.
+// This extends the massless fit consistently to scale-dependent growth;
+// it is not a separate calibration of concentration with neutrinos.
 //
 // The fit is calibrated at z = 0-2 and group-to-cluster masses, with
 // delta_c = 1.673 where this file uses 1.686 (a -0.2% shift in c). The
@@ -658,7 +654,7 @@ double fnu(
 //
 // Parameters:
 //   m         - halo mass in M_sun/h
-//   growfac_a - growth factor D(a), D(1) = 1 (not the scale factor)
+//   a - scale factor, limits.a_min <= a <= 1
 //
 // Returns:
 //   c, dimensionless. like.halo_model[2] selects the fit;
@@ -667,7 +663,7 @@ double fnu(
 // ---------------------------------------------------------------------------
 double conc(
     const double m,         // halo mass in M_sun/h
-    const double growfac_a  // growth factor D(a), not a itself
+    const double a          // scale factor
   )
 {
   double c;
@@ -677,8 +673,10 @@ double conc(
     {
       // Bhattacharya et al. 2013, Delta = 200 rho_{mean} (Table 2, full
       // halo sample): c = 9.0 nu^-0.29 D^1.15
-      const double nu = delta_c/(sqrt(sigma2(m))*growfac_a); // nu(M, z)
-      c = 9.0*pow(nu, -0.29)*pow(growfac_a, 1.15);
+      const double variance = sigma2(m, a);
+      const double growth_cb = sqrt(variance/sigma2(m, 1.0));
+      const double nu = delta_c/sqrt(variance);
+      c = 9.0*pow(nu, -0.29)*pow(growth_cb, 1.15);
       break;
     }
     default:
@@ -696,11 +694,10 @@ double conc(
 // range,
 //
 //   bias_norm(a) = int_{nu_min(a)}^{nu_max(a)} b(nu) f(nu, a) dnu,
-//   nu(M, a)     = delta_c / (sigma(M) D(a)),
+//   nu(M, a)     = delta_c / sigma_cb(M,a),
 //
 // with b the linear halo bias (hb1nu), f the multiplicity function
-// (fnu), sigma(M) the a = 1 value (sigma2 in cosmo3D.c), D the growth
-// factor with D(1) = 1, and nu_min, nu_max the peak heights of
+// (fnu), and nu_min, nu_max the cold-field peak heights of
 // limits.halo_m[RANGE_MIN] and limits.halo_m[RANGE_MAX].
 //
 // Why the 2-halo term needs it: matter is unbiased with respect to
@@ -713,24 +710,19 @@ double conc(
 // (future_port_unfinished/halo_pmm.c) adds the missing 1 - bias_norm(a) back as halos of mass M_min; this function
 // measures the shortfall.
 //
-// One quadrature for every a: both limits scale as 1/D(a), so in
-// t = nu D(a), the peak height the same halo has at a = 1,
+// At each a, the lower and upper peak heights are read from the cb
+// variance at M_min and M_max. Growth is mass dependent, so these two
+// endpoints cannot be obtained by dividing z=0 values by one D(a).
+// Map a Gauss-Legendre rule x_q, w_q on [-1,1] to the current interval:
 //
-//   bias_norm(a) = (1/D) int_{t_min}^{t_max} b(t/D) f(t/D, a) dt,
-//   t_min = delta_c/sigma(M_min),   t_max = delta_c/sigma(M_max),
+//   mid  = (nu_max + nu_min)/2,   half = (nu_max - nu_min)/2,
+//   nu_q = mid + half x_q,
+//   bias_norm(a) = half sum_q w_q b(nu_q) f(nu_q,a).
 //
-// and a Gauss-Legendre rule on [t_min, t_max], nodes x_q and weights w_q
-// on [-1, 1], gives
-//
-//   bias_norm(a) = (h/D) sum_q w_q b(nu_q) f(nu_q, a),
-//   nu_q = (m + h x_q)/D,   m = (t_max + t_min)/2,   h = (t_max - t_min)/2.
-//
-// Code map (refill block): agrid[i] = a_i, Ntable.N_a nodes uniform in
-// a on [limits.a_min, 0.9999999];
-//   tmin, tmax, tmid, thalf = t_min, t_max, m, h
-//   x[q], w[q] = x_q, w_q on [-1, 1]
-//   D = D(a_i)                     hb1nu_core(nu, &bias_par) = b(nu)
-//   table[i] = bias_norm(a_i)      fnu_core(nu, &fnu_par) = f(nu, a_i)
+// Code map: agrid[i] is the scale factor; numin, numax, numid and
+// nuhalf are these endpoints, midpoint and half-width; x[q], w[q]
+// are the fixed Gauss-Legendre nodes and weights. Only the interval
+// changes with a; the same quadrature rule is reused for every row.
 //
 // Cache invalidation:
 //   the a grid and the Gauss-Legendre nodes: rebuilt when Ntable.random
@@ -775,7 +767,7 @@ double bias_norm(
       agrid[i] = lim[0] + i*lim[2];
     }
 
-    // x_q, w_q on [-1, 1]; the refill maps them onto [t_min, t_max].
+    // x_q, w_q on [-1, 1]; the refill maps them onto [nu_min, nu_max].
     // The node count grows with the accuracy switch.
     if (gl_node != NULL) {
       free(gl_node);
@@ -802,21 +794,10 @@ double bias_norm(
 
   // --- 2. TABLE REFILL: THE QUADRATURE AT EVERY a NODE ---
   if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    /* PHYSICAL DERIVATION & LOGIC FLOW
-       1. t = nu D(a), the a = 1 peak height: [tmin, tmax] is the same
-          range for every a
-       2. nu_q = (tmid + thalf x_q)/D(a_i), Gauss-Legendre on [-1, 1]
-       3. table[i] = (thalf/D) sum_q w_q b(nu_q) f(nu_q, a_i) */
-
-    // builds the fnu and sigma2 tables before the threads start
+    // Warm both lazy tables before the row loop. The nu bounds depend
+    // on a because neutrino growth depends on halo mass.
     (void) fnu(1.0, agrid[0]);
-
-    // tmin, tmax: a = 1 peak heights of M_min, M_max (heavy halos:
-    // small sigma, large t); tmid, thalf: midpoint and half-width
-    const double tmin  = delta_c/sqrt(sigma2(limits.halo_m[RANGE_MIN]));
-    const double tmax  = delta_c/sqrt(sigma2(limits.halo_m[RANGE_MAX]));
-    const double tmid  = 0.5*(tmax + tmin);
-    const double thalf = 0.5*(tmax - tmin);
+    (void) sigma2(limits.halo_m[RANGE_MIN], agrid[0]);
 
     const double* restrict x = gl_node;
     const double* restrict w = gl_weight;
@@ -824,20 +805,23 @@ double bias_norm(
 
     #pragma omp parallel for schedule(static)
     for (int i=0; i<Ntable.N_a; i++) {
-      // D(a_i) and the nu-independent coefficients of b and f(., a_i)
-      const double D = growfac(agrid[i]);
+      // Peak-height endpoints and nu-independent coefficients at a_i
+      const double numin = delta_c/sqrt(sigma2(limits.halo_m[RANGE_MIN], agrid[i]));
+      const double numax = delta_c/sqrt(sigma2(limits.halo_m[RANGE_MAX], agrid[i]));
+      const double numid = 0.5*(numax+numin);
+      const double nuhalf = 0.5*(numax-numin);
       const hb1nu_params bias_par = hb1nu_params_at(agrid[i]);
       const fnu_params fnu_par = fnu_params_at(agrid[i]);
 
-      // sum_q w_q b(nu_q) f(nu_q, a_i),   nu_q = (tmid + thalf x_q)/D
+      // sum_q w_q b(nu_q) f(nu_q, a_i),   nu_q = numid + nuhalf x_q
       double sum = 0.0;
       for (int q=0; q<n; q++) {
-        const double nu = (tmid + thalf*x[q])/D;
+        const double nu = numid + nuhalf*x[q];
         sum += w[q]*hb1nu_core(nu, &bias_par)*fnu_core(nu, &fnu_par);
       }
 
-      // bias_norm(a_i): thalf from dt = thalf dx, 1/D from dnu = dt/D
-      table[i] = sum*thalf/D;
+      // bias_norm(a_i): multiply by nuhalf because dnu = nuhalf dx
+      table[i] = sum*nuhalf;
     }
     cache[0] = cosmology.random;
     cache[1] = Ntable.random;
@@ -851,81 +835,18 @@ double bias_norm(
 // Logarithmic slope d ln nu/d ln M of the peak height: the Jacobian that
 // turns f(nu) dnu into dn/dlnM (section banner).
 //
-// From nu = delta_c/(sqrt(sigma2(M)) D(a)),
-//
-//   ln nu = ln delta_c - ln D(a) - (1/2) ln sigma2(M)
-//     ->  d ln nu/d ln M = -(1/2) d ln sigma2/d ln M
-//
-// delta_c and D(a) drop out, so one table at a = 1 serves every
-// redshift (sigma(M, a) = sigma(M) D(a)). sigma falls with M, so the
-// slope is positive; for a local power law P ~ k^n_eff it is
-// (n_eff + 3)/6: about 0.05 for the lightest halos (n_eff near -3) and
-// 0.3 for clusters.
-//
-// Code map: table[i] is the slope at ln M_i = lim[0] + i lim[2],
-// Ntable.N_M[NODES_DENSE] nodes uniform in ln M over [ln limits.halo_m[RANGE_MIN],
-// ln limits.halo_m[RANGE_MAX]], as the symmetric difference
-//
-//   -(1/2) [ln sigma2(M_hi) - ln sigma2(M_lo)] / (ln M_hi - ln M_lo),
-//   ln M_lo, ln M_hi = ln M_i -+ 0.05   (lnMlo, lnMhi in the code)
-//
-// pulled inside the mass range at the two edges (one-sided there): the
-// sigma2 table clamps outside it and would flatten the slope.
-//
+// dln nu/dlnM = -dln sigma_cb/dlnM at fixed a. The FFTLog derivative
+// kernel supplies this slope on the same (a, lnM) grid as sigma2;
+// finite differencing the interpolated variance would add grid noise.
 // Cache invalidation:
-//   allocation and ln M limits: rebuilt when Ntable.random changes
-//   table refill: cosmology.random (cache[0]) or Ntable.random (cache[1])
-//
-// Parameters:
-//   M - halo mass in M_sun/h
-//
-// Returns:
-//   d ln nu/d ln M, dimensionless and positive, linearly interpolated
-//   in ln M; constant outside [limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]]
+// follows the variance tables (cosmology.random and Ntable.random).
 // ---------------------------------------------------------------------------
 double dlognudlogm(
-    const double M  // halo mass in M_sun/h
+    const double M, // halo mass in M_sun/h
+    const double a  // scale factor
   )
 {
-  static uint64_t cache[MAX_SIZE_ARRAYS];
-  static double* table = NULL;
-  static double lim[3];
-
-  // --- 1. NTABLE REBUILD: ALLOCATION AND THE ln M LIMITS ---
-  if (NULL == table || fdiff2(cache[1], Ntable.random)) {
-    if (table != NULL) {
-      free(table);
-    }
-    table = (double*) malloc(sizeof(double)*Ntable.N_M[NODES_DENSE]);
-    lim[0] = log(limits.halo_m[RANGE_MIN]);
-    lim[1] = log(limits.halo_m[RANGE_MAX]);
-    lim[2] = (lim[1] - lim[0])/((double) Ntable.N_M[NODES_DENSE] - 1.0);
-  }
-
-  // --- 2. TABLE REFILL: SYMMETRIC DIFFERENCE AT EVERY MASS NODE ---
-  if (fdiff2(cache[0], cosmology.random) || fdiff2(cache[1], Ntable.random)) {
-    /* PHYSICAL DERIVATION & LOGIC FLOW
-       1. ln nu = ln delta_c - ln D(a) - (1/2) ln sigma2(M)
-       2. table[i] = -(1/2) dln sigma2/dln M at ln M_i, the symmetric
-          difference over [lnMlo, lnMhi] = ln M_i -+ half_step */
-
-    (void) sigma2(exp(lim[0])); // builds the sigma2 table before the threads
-
-    // the difference is pulled inside the mass range at the two edges
-    // (the sigma2 table clamps outside it and would flatten the slope)
-    #pragma omp parallel for schedule(static,1)
-    for (int i=0; i<Ntable.N_M[NODES_DENSE]; i++) {
-      const double half_step = 0.05;  // half-width in ln M
-      const double lnMlo = fmax(lim[0] + i*lim[2] - half_step, lim[0]);
-      const double lnMhi = fmin(lim[0] + i*lim[2] + half_step, lim[1]);
-      table[i] = -0.5*(log(sigma2(exp(lnMhi))) - log(sigma2(exp(lnMlo))))
-                 /(lnMhi - lnMlo);
-    }
-    cache[0] = cosmology.random;
-    cache[1] = Ntable.random;
-  }
-
-  return interpol1d(table, Ntable.N_M[NODES_DENSE], lim[0], lim[1], lim[2], log(M));
+  return -dlnsigma_dlnm_field(M, a, HALO_FIELD_CB);
 }
 
 
@@ -2056,10 +1977,10 @@ static struct {
   double lim[3];            // a grid: min, max, step
   double*** tab;            // [2][nbin][N_a] ngal(a_j) (0), bgal(a_j) (1)
   double*** node_data;      // [2][nbin][n_nodes] per mass node q:
-                            //   nu0_q (0), P_q (1), see hod_tables header
+                            //   M_q (0), P_q (1), see hod_tables header
   double** gauss_legendre;  // [2][n_nodes] Gauss-Legendre nodes x_q (0)
                             //   and weights w_q (1) on [-1, 1]
-  double* growth;           // [N_a] growth factor D(a_j)
+  double* a_nodes;          // [N_a] scale factors of the variance reads
   hb1nu_params* bias_pars;  // [N_a] Tinker bias b(nu) parameters at a_j
   fnu_params* mult_pars;    // [N_a] Tinker multiplicity f(nu) parameters
                             //   at a_j
@@ -2073,8 +1994,8 @@ static struct {
 //   ngal(a) = int dlnM (dn/dlnM) <N|M>                       (c/H0)^-3
 //   bgal(a) = int dlnM (dn/dlnM) <N|M> b(nu) / ngal(a)
 //
-//   dn/dlnM = (rho_m/M) nu f(nu) dln nu/dln M    halo mass function
-//   nu      = delta_c/(sigma(M) D(a))            peak height
+//   dn/dlnM = (rho_cb/M) nu f(nu) dln nu/dln M    halo mass function
+//   nu      = delta_c/sigma_cb(M,a)            peak height
 //   <N|M>   = f_c N_c(M) + N_s(M)                HOD occupation
 //   b(nu)                                        Tinker halo bias
 //
@@ -2088,20 +2009,24 @@ static struct {
 // erf tail below). Nodes x_q and weights w_q on [-1, 1] map to
 // ln M_q = mid + half_width x_q with weight half_width w_q.
 //
-// Only nu, f and b depend on a (through D(a) and the Tinker
-// parameters), so the integrand splits into an a-free factor per mass
-// node and a sum per a node. Equations to the arrays of hod_:
+// The variance, its mass slope, f and b depend on a. The occupation
+// and quadrature weight are independent of a and are stored per mass
+// node; the remaining factors are evaluated in each a row.
+//
+// Mapping these factors to the arrays of hod_:
 //
 //   gauss_legendre[0][q], [1][q]  x_q, w_q
-//   node_data[0][b][q]    nu0_q = delta_c/sigma(M_q), nu at D = 1
-//   node_data[1][b][q]    P_q = half_width w_q (rho_m/M_q)
-//                           (dln nu/dln M) <N|M_q>
-//   growth[j], mult_pars[j], bias_pars[j]
-//                         D(a_j), Tinker parameters of f and b at a_j
-//   tab[0][b][j]          ngal(a_j) = sum_q P_q nu f(nu),  nu = nu0_q/D_j
-//   tab[1][b][j]          bgal(a_j) = sum_q P_q nu f(nu) b(nu) / ngal(a_j)
+//   node_data[0][b][q]    M_q, the quadrature mass
+//   node_data[1][b][q]    P_q = half_width w_q (rho_cb/M_q)
+//                           <N|M_q>
+//   a_nodes[j], mult_pars[j], bias_pars[j]
+//                         a_j, Tinker parameters of f and b at a_j
+//   tab[0][b][j]          ngal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu),
+//                         with nu = delta_c/sigma_cb(M_q,a_j)
+//   tab[1][b][j]          bgal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu) b(nu) / ngal(a_j)
 //
-// so that P_q nu f(nu) is half_width w_q (dn/dlnM) <N|M> at mass node q.
+// Thus P_q (dlnnu/dlnM) nu f(nu) equals the quadrature weight times
+// (dn/dlnM) <N|M> at mass node q.
 //
 // The a grid: Ntable.N_a nodes uniform in a over [1/(1 + z_max),
 // 1/(1 + z_min)] of the clustering n(z), all bins, widened to every lens
@@ -2134,7 +2059,7 @@ static void hod_tables(void)
       free(hod_.tab);
       free(hod_.node_data);
       free(hod_.gauss_legendre);
-      free(hod_.growth);
+      free(hod_.a_nodes);
       free(hod_.bias_pars);
       free(hod_.mult_pars);
     }
@@ -2159,7 +2084,7 @@ static void hod_tables(void)
     hod_.tab            = (double***) malloc3d(2, hod_.nbin, Ntable.N_a);
     hod_.node_data      = (double***) malloc3d(2, hod_.nbin, hod_.n_nodes);
     hod_.gauss_legendre = (double**) malloc2d(2, hod_.n_nodes);
-    hod_.growth         = (double*) malloc1d(Ntable.N_a);
+    hod_.a_nodes         = (double*) malloc1d(Ntable.N_a);
     hod_.bias_pars      = (hb1nu_params*)
                           malloc(sizeof(hb1nu_params)*Ntable.N_a);
     hod_.mult_pars      = (fnu_params*)
@@ -2232,17 +2157,16 @@ static void hod_tables(void)
     const int n_a     = Ntable.N_a;
     const int n_nodes = hod_.n_nodes;
 
-    // mean density of the halo field (POWER SPECTRA banner): rho_m, or
-    // rho_cb under like.halo_model[4] = HALO_FIELD_CB
+    // cold matter density of the mass function (POWER SPECTRA banner)
     const double rho_hmf = cosmology.rho_crit * omega_halo_field();
 
+    (void) sigma2(limits.halo_m[RANGE_MIN], hod_.lim[0]);
+
     // --- 2. PER-REFILL PRECOMPUTATION ---
-    // nu0_q = delta_c/sigma(M_q) and P_q = half_width w_q (rho_hmf/M_q)
-    // (dln nu/dln M) <N|M_q> at the mass nodes
-    // ln M_q = mid + half_width x_q of each bin: the a-free part of the
-    // integrand. The HOD does not evolve; hod_.lim[0] is an a inside
-    // the grid for the range check of HOD_nc. Serial: sigma2 and
-    // dlognudlogm build their tables here.
+    // P_q = half_width w_q (rho_cb/M_q) <N|M_q>: the factors that
+    // do not evolve with a. The peak height and dlnnu/dlnM are read
+    // later at each (M_q,a). The HOD itself does not evolve; hod_.lim[0]
+    // supplies an a inside the allowed range for HOD_nc's range check.
     for (int b=0; b<nbin; b++) {
       // lower bound 2 dex below the HOD lg M_min (N_c is an erf tail)
       const double lnMmin = log(10.0)*(nuisance.hod[b][0] - 2.);
@@ -2262,46 +2186,46 @@ static void hod_tables(void)
         const double occupation = fc*HOD_nc(m, hod_.lim[0], b) +
                                   HOD_ns(m, hod_.lim[0], b);
 
-        hod_.node_data[0][b][q] = delta_c/sqrt(sigma2(m)); // nu0_q
+        hod_.node_data[0][b][q] = m; // mass, read at every a node
         hod_.node_data[1][b][q] = half_width*hod_.gauss_legendre[1][q]
-                                  *(rho_hmf/m)*dlognudlogm(m)*occupation; // P_q
+                                  *(rho_hmf/m)*occupation; // a-independent weight
       }
     }
 
-    // D(a_j) and the Tinker parameters of f and b at each a node.
-    // Serial: growfac and fnu_params_at build their tables here.
+    // The scale factors and Tinker parameters of f and b at each node.
+    // Serial: fnu_params_at builds its normalization table here.
     for (int j=0; j<n_a; j++) {
       const double a = hod_.lim[0] + j*hod_.lim[2];
-      hod_.growth[j]    = growfac(a);
+      hod_.a_nodes[j]    = a; // the variance is evaluated at this scale factor
       hod_.bias_pars[j] = hb1nu_params_at(a);
       hod_.mult_pars[j] = fnu_params_at(a);
     }
 
     // --- 3. TABLE FILL: THE (BIN, a) OPENMP LOOP ---
     /* PHYSICAL DERIVATION & LOGIC FLOW
-       1. nu = nu0_q/D(a_j)                    peak height at mass node q
-       2. P_q nu f(nu) = half_width w_q (dn/dlnM) <N|M_q>
-       3. ngal(a_j) = sum_q P_q nu f(nu)
+       1. nu = delta_c/sigma_cb(M_q,a_j)                    peak height at mass node q
+       2. P_q dlnnu/dlnM nu f(nu) = half_width w_q (dn/dlnM) <N|M_q>
+       3. ngal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu)
                     = int dlnM (dn/dlnM) <N|M>
-       4. bgal(a_j) = sum_q P_q nu f(nu) b(nu) / ngal(a_j)
+       4. bgal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu) b(nu) / ngal(a_j)
                     = (1/ngal) int dlnM (dn/dlnM) b(nu) <N|M>            */
     #pragma omp parallel for collapse(2) schedule(static)
     for (int b=0; b<nbin; b++) {
       for (int j=0; j<n_a; j++) {
-        const double* restrict nu0 = hod_.node_data[0][b]; // nu0_q
+        const double* restrict mass = hod_.node_data[0][b]; // M_q
         const double* restrict Pq  = hod_.node_data[1][b]; // P_q
 
-        const double D               = hod_.growth[j];
+        const double a               = hod_.a_nodes[j];
         const hb1nu_params* tinker_b = &hod_.bias_pars[j];
         const fnu_params* tinker_f   = &hod_.mult_pars[j];
 
-        double n_gal  = 0.0; // sum_q P_q nu f(nu)       -> ngal(a_j)
-        double bn_gal = 0.0; // sum_q P_q nu f(nu) b(nu) -> bgal x ngal
+        double n_gal  = 0.0; // sum_q P_q dlnnu/dlnM nu f(nu)       -> ngal(a_j)
+        double bn_gal = 0.0; // sum_q P_q dlnnu/dlnM nu f(nu) b(nu) -> bgal x ngal
 
         for (int q=0; q<n_nodes; q++) {
-          const double nu = nu0[q]/D; // nu0_q/D(a_j)
+          const double nu = delta_c/sqrt(sigma2(mass[q], a));
           // dn_gal = half_width w_q (dn/dlnM) <N|M>: node q's share
-          const double dn_gal = Pq[q]*fnu_core(nu, tinker_f)*nu;
+          const double dn_gal = Pq[q]*dlognudlogm(mass[q], a)*fnu_core(nu, tinker_f)*nu;
           n_gal  += dn_gal;
           bn_gal += dn_gal*hb1nu_core(nu, tinker_b); // times b(nu)
         }
@@ -2409,27 +2333,24 @@ double bgal(const int ni, const double a)
 //
 // (the I^0_2 and I^1_1 of the file glossary), with
 //
-//   dn/dlnM = (rho_m/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/(sigma(M) D(a))
+//   dn/dlnM = (rho_cb/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/sigma_cb(M,a)
 //
 // the mass function (fnu, dlognudlogm; sigma2 in cosmo3D.c), b the Tinker
 // bias (hb1nu) and the windows W_X the Fourier transforms of the profiles,
 // in the units of the field times a volume.
 //
-// The halo field (like.halo_model[4], halo.h). Under HALO_FIELD_CB halos
-// form from cold dark matter + baryons (the massive neutrinos
-// free-stream out of them): sigma(M) is the cb variance (sigma2) and
-// the rho/M of dn/dlnM is rho_hmf/M, rho_hmf = rho_crit (Omega_m -
-// Omega_nu), so the mass in halos is the cb mass (DES Y1 clusters,
-// 2010.01138). The code writes rho_hmf = rho_crit omega_halo_field()
-// (cosmo3D.c) at every mass-function prefactor; under the default
-// HALO_FIELD_MATTER it is rho_m. The matter window M/rho_m, r_Delta
-// and the 2-halo spectra stay total matter under both fields. The
-// halo-model matter spectrum (2-halo term I11_m P_lin; kept in
-// future_port_unfinished/halo_pmm.c) aborts under HALO_FIELD_CB: with cb halos I11_m -> 1 - f_nu, and the
-// missing neutrino terms (P_cb, P_cb,nu) are not implemented. The
-// galaxy spectra (p_gm, p_gg), the HOD tables and the halo-model IA
-// follow the switch: their 2-halo term is b_gal times the total
-// nonlinear P (the DES convention).
+// Halos are assigned to cold dark matter plus baryons: free-streaming
+// neutrinos are not included in their mass. Thus sigma2 is sigma_cb^2
+// at the requested a, and the mass-function density is
+//
+//   rho_hmf = rho_cb = rho_crit (Omega_m - Omega_nu).
+//
+// The code obtains this density through omega_halo_field(). In contrast,
+// M/rho_m in the lensing matter window and r_200m's overdensity
+// definition refer to total matter. The galaxy spectra use b_gal times
+// the total nonlinear spectrum for their 2-halo term (DES convention).
+// The uncompiled halo-model matter spectrum in future_port_unfinished/
+// still needs its separate massive-neutrino terms before it can be used.
 //
 // The matter window:
 //
@@ -2474,15 +2395,15 @@ double bgal(const int ni, const double a)
 // depends on, so the innermost loop is the NFW kernel alone (nfw_um:
 // three table reads and two sines; no pow, exp or log):
 //
-//   per refill, per node q       M_q, w_q; nu0_q = delta_c/sigma(M_q);
-//     (mass_node)                w_q (rho_m/M_q) dlnnu/dlnM; M_q/rho_m;
+//   per refill, per node q       M_q, w_q;
+//     (mass_node)                w_q (rho_cb/M_q); M_q/rho_m;
 //                                r_Delta(M_q)
-//   per a row i, threaded        D(a); Tinker f, b parameters; A(a); c(M_min)
-//   per (i, q) (a_node[i])       nu = nu0/D; c = conc(M, D); ln(1+c);
+//   per a row i, threaded        Tinker f, b parameters; A(a); c(M_min)
+//   per (i, q) (a_node[i])       nu = delta_c/sigma_cb(M,a); c = conc(M, a); ln(1+c);
 //                                m(c) = ln(1+c) - c/(1+c); r_s = r_Delta/c,
 //                                ln r_s; w1h_q = dn (M/rho_m)^2/m(c)^2;
 //                                w2h_q = dn b(nu) (M/rho_m)/m(c), with
-//                                dn = w (rho_m/M) dlnnu/dlnM f(nu) nu
+//                                dn = w (rho_cb/M) dlnnu/dlnM f(nu) nu
 //   per (i, k), sum over q       x = k r_s, ln x = ln k + ln r_s,
 //                                um = u m(c) = nfw_um(c, x, ln x, ln(1+c));
 //                                I02 = sum w1h_q um^2,
@@ -2546,8 +2467,8 @@ static void halo_warmup(
 {
   const double mmin = limits.halo_m[RANGE_MIN];
 
-  (void) sigma2(mmin);
-  (void) dlognudlogm(mmin);
+  (void) sigma2(mmin, a);
+  (void) dlognudlogm(mmin, a);
   (void) fnu_params_at(a);
   nfw_table();
 
@@ -2694,11 +2615,11 @@ static void ln_k_spline_upsample(
 // (HOD_nc, HOD_ns only range-check it: amin_lens is a placeholder):
 //
 //   per refill, per (bin, node) -> bin_tab:
-//     M, half_width w (rho_m/M) dlnnu/dlnM, nu0, r_Delta, N_s, f_c N_c
+//     M, half_width w (rho_cb/M), r_Delta, N_s, f_c N_c
 //   per bin, per a row, threaded:
-//     D(a); Tinker f parameters; ngal, bgal
+//     a; Tinker f parameters; ngal, bgal
 //   per (a, node) -> a_tab:
-//     c = conc(M, D) and c_g = gc c, each with ln(1+c), m(c), r_s, ln r_s;
+//     c = conc(M, a) and c_g = gc c, each with ln(1+c), m(c), r_s, ln r_s;
 //     w_matter = dn_halo (M/rho_m)/m(c);
 //     W1 = w_matter N_s/m(c_g), W0 = w_matter f_c N_c
 //   per (a, k), sum over nodes:
@@ -2751,9 +2672,9 @@ double p_gm(
   static int       nnode   = 0;    // Gauss-Legendre mass nodes in ln M
   static double**  gl      = NULL; // [2][nnode] GL nodes (0), weights (1)
                                    // on [-1, 1]
-  static double*** bin_tab = NULL; // [nbin][6][nnode] per (bin, mass
-                                   // node): M, half_width w (rho_m/M)
-                                   // dlnnu/dlnM, nu at D = 1, r_Delta,
+  static double*** bin_tab = NULL; // [nbin][5][nnode] per (bin, mass
+                                   // node): M, half_width w (rho_cb/M)
+                                   // r_Delta,
                                    // N_s, f_c N_c
   static double*** a_tab   = NULL; // [n_threads][10][nnode]: one (bin,
                                    // a-row) iteration's scratch: c,
@@ -2826,7 +2747,7 @@ double p_gm(
     table   = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     lim     = (double**) malloc2d(nbin+1, 3);
     gl      = (double**) malloc2d(2, nnode);
-    bin_tab = (double***) malloc3d(nbin, 6, nnode);
+    bin_tab = (double***) malloc3d(nbin, 5, nnode);
     // one scratch block per thread (the thread count of this rebuild;
     // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
     a_tab   = (double***) malloc3d(omp_get_max_threads(), 10, nnode);
@@ -2885,8 +2806,8 @@ double p_gm(
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (P_gm and GM02: header above)
        1. bin_tab, per (bin, mass node): M, weighted dn/dlnM factors,
-          nu at D = 1, r_Delta, occupation N_s and f_c N_c
-       2. per a row, threaded: D(a), Tinker f(nu) half, n_gal, b_gal
+          r_Delta, occupation N_s and f_c N_c
+       2. per a row, threaded: sigma_cb(M,a), its mass slope, Tinker f(nu) half, n_gal, b_gal
        3. thread scratch a_tab, per node of one a row: c, c_g = gc c,
           scale radii, logs, leg weights W1 (satellite), W0 (central)
        4. per k: GM02 = sum_q um (W1 ug + W0); table = ln P_gm */
@@ -2894,12 +2815,10 @@ double p_gm(
     // --- 2b. PER (BIN, MASS NODE), SERIAL ---
 
     // the GL nodes mapped onto the bin's ln M range, the a-independent
-    // factors, and the occupation at the placeholder a = amin; the
-    // sigma2 and dlognudlogm reads happen here, before the threads
+    // factors, and the occupation at the placeholder a = amin
     const double rho_m     = cosmology.rho_crit * cosmology.Omega_m;
     const double rho_delta = Delta * rho_m;
-    // mean density of the halo field in the rho/M of dn/dlnM: rho_m,
-    // or rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+    // The cb density normalizes dn/dlnM (POWER SPECTRA banner).
     const double rho_hmf   = cosmology.rho_crit * omega_halo_field();
 
     for (int l=0; l<nbin; l++) {
@@ -2919,17 +2838,16 @@ double p_gm(
 
       const double fc = HOD_fc(l);
 
-      // bin_tab rows: M | half_width w_q (rho_hmf/M) dlnnu/dlnM | nu at
-      // D = 1 | r_Delta from M = (4 pi/3) Delta rho_m r_Delta^3 |
+      // bin_tab rows: M | half_width w_q (rho_hmf/M) |
+      // r_Delta from M = (4 pi/3) Delta rho_m r_Delta^3 |
       // N_s | f_c N_c
       for (int q=0; q<nnode; q++) {
         const double m = exp(mid + half_width*gl[0][q]);
         bin_tab[l][0][q] = m;
-        bin_tab[l][1][q] = half_width*gl[1][q]*(rho_hmf/m)*dlognudlogm(m);
-        bin_tab[l][2][q] = delta_c/sqrt(sigma2(m));
-        bin_tab[l][3][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
-        bin_tab[l][4][q] = HOD_ns(m, lim[l][0], l);
-        bin_tab[l][5][q] = fc*HOD_nc(m, lim[l][0], l);
+        bin_tab[l][1][q] = half_width*gl[1][q]*(rho_hmf/m);
+        bin_tab[l][2][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+        bin_tab[l][3][q] = HOD_ns(m, lim[l][0], l);
+        bin_tab[l][4][q] = fc*HOD_nc(m, lim[l][0], l);
       }
     }
 
@@ -2944,9 +2862,8 @@ double p_gm(
 
         const double ai = lim[l][0] + i*lim[l][2];
 
-        // growth, the nu-independent Tinker f(nu) half, and the mean
+        // The nu-independent Tinker f(nu) half, and the mean
         // galaxy density and bias of this a row
-        const double     D        = growfac(ai);
         const fnu_params fnu_pars = fnu_params_at(ai);
         const double     n_gal    = ngal(l, ai);
         const double     b_gal    = bgal(l, ai);
@@ -2971,10 +2888,10 @@ double p_gm(
         // each, and the weights W1, W0 with 1/m(c), 1/m(c_g) folded in
         for (int q=0; q<nnode; q++) {
           const double m  = bin_tab[l][0][q];
-          const double nu = bin_tab[l][2][q]/D;
+          const double nu = delta_c/sqrt(sigma2(m, ai));
 
           // c and c_g = gc c, with m(c) = ln(1+c) - c/(1+c) for each
-          const double c     = conc(m, D);
+          const double c     = conc(m, ai);
           const double cg    = c*gc;
           const double ln1c  = log1p(c);
           const double ln1cg = log1p(cg);
@@ -2983,19 +2900,19 @@ double p_gm(
 
           // dn_halo = quadrature weight x dn/dlnM (Tinker);
           // w_matter carries the matter leg's (M/rho_m) and 1/m(c)
-          const double dn_halo  = bin_tab[l][1][q]*fnu_core(nu, &fnu_pars)*nu;
+          const double dn_halo  = bin_tab[l][1][q]*dlognudlogm(m, ai)*fnu_core(nu, &fnu_pars)*nu;
           const double w_matter = dn_halo*(m/rho_m)/mc;
 
           conc_halo[q] = c;
           ln1c_halo[q] = ln1c;
-          r_s[q]       = bin_tab[l][3][q]/c;
+          r_s[q]       = bin_tab[l][2][q]/c;
           lnrs[q]      = log(r_s[q]);
           conc_gal[q]  = cg;
           ln1c_gal[q]  = ln1cg;
-          r_sg[q]      = bin_tab[l][3][q]/cg;
+          r_sg[q]      = bin_tab[l][2][q]/cg;
           lnrsg[q]     = log(r_sg[q]);
-          w1[q]        = w_matter*bin_tab[l][4][q]/mcg;
-          w0[q]        = w_matter*bin_tab[l][5][q];
+          w1[q]        = w_matter*bin_tab[l][3][q]/mcg;
+          w0[q]        = w_matter*bin_tab[l][4][q];
         }
 
         // per k: the 1-halo sum on the coarse ln k grid only (the
@@ -3249,13 +3166,13 @@ double p_gm(
 // (HOD_nc, HOD_ns only range-check it: amin_lens is a placeholder):
 //
 //   per refill, per node -> mass_tab:
-//     M, w, nu0, r_Delta, w (rho_m/M) dlnnu/dlnM
+//     M, w, r_Delta, w (rho_cb/M)
 //   per refill, per (bin, node) -> occ_tab:
 //     N_s, f_c N_c
 //   per bin, per a row, threaded:
-//     D(a); Tinker f parameters; ngal, bgal
+//     a; Tinker f parameters; ngal, bgal
 //   per (a, node) -> a_tab:
-//     c_g = gc conc(M, D), ln(1+c_g), m(c_g), r_s,g = r_Delta/c_g,
+//     c_g = gc conc(M, a), ln(1+c_g), m(c_g), r_s,g = r_Delta/c_g,
 //     ln r_s,g; W2 = dn_halo (N_s/m(c_g))^2,
 //     W1 = 2 dn_halo (N_s/m(c_g)) f_c N_c
 //   per (a, k), sum over nodes:
@@ -3298,9 +3215,9 @@ double p_gg(
   static int       nbin     = 0;    // lens bins of the allocation
   static int       na       = 0;    // a nodes per bin
   static int       nnode    = 0;    // Gauss-Legendre mass nodes in ln M
-  static double**  mass_tab = NULL; // [5][nnode] per mass node: M,
-                                    // weight, nu at D = 1, r_Delta,
-                                    // weight x (rho_m/M) dlnnu/dlnM
+  static double**  mass_tab = NULL; // [4][nnode] per mass node: M,
+                                    // weight, r_Delta,
+                                    // weight x (rho_cb/M)
   static double*** occ_tab  = NULL; // [nbin][2][nnode] per (bin, mass
                                     // node): N_s, f_c N_c
   static double*** a_tab    = NULL; // [n_threads][6][nnode]: one
@@ -3373,7 +3290,7 @@ double p_gg(
 
     table    = (double***) malloc3d(nbin, na, Ntable.N_k_nlin);
     lim      = (double**) malloc2d(nbin+1, 3);
-    mass_tab = (double**) malloc2d(5, nnode);
+    mass_tab = (double**) malloc2d(4, nnode);
     occ_tab  = (double***) malloc3d(nbin, 2, nnode);
     // one scratch block per thread (the thread count of this rebuild;
     // raising OMP_NUM_THREADS afterwards requires an Ntable bump)
@@ -3439,31 +3356,28 @@ double p_gg(
     halo_warmup(lim[0][0], exp(lim[nbin][0]), 0, 1);
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (P_gg and G02: header above)
-       1. mass_tab, per mass node: M, weight, nu at D = 1, r_Delta,
+       1. mass_tab, per mass node: M, weight, r_Delta,
           weighted dn/dlnM factor
        2. occ_tab, per (bin, mass node): occupation N_s and f_c N_c
-       3. per a row, threaded: D(a), Tinker f(nu) half, n_gal, b_gal
+       3. per a row, threaded: sigma_cb(M,a), its mass slope, Tinker f(nu) half, n_gal, b_gal
        4. thread scratch a_tab, per node of one a row: c_g, r_s,g,
           logs, weights W2, W1
        5. per k: G02 = sum_q ug (W2 ug + W1); table = ln P_gg */
 
     // --- 2b. PER MASS NODE, SERIAL ---
 
-    // the a- and bin-independent factors; the sigma2 and dlognudlogm
-    // reads happen here, before the threads
+    // The factors independent of scale factor and lens bin.
     const double rho_m     = cosmology.rho_crit * cosmology.Omega_m;
     const double rho_delta = Delta * rho_m;
-    // mean density of the halo field in the rho/M of dn/dlnM: rho_m,
-    // or rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+    // The cb density normalizes dn/dlnM (POWER SPECTRA banner).
     const double rho_hmf   = cosmology.rho_crit * omega_halo_field();
 
-    // mass_tab rows 2-4: nu at D = 1 | r_Delta from
-    // M = (4 pi/3) Delta rho_m r_Delta^3 | weight (rho_hmf/M) dlnnu/dlnM
+    // mass_tab rows 2-3: r_Delta from M = (4 pi/3) Delta rho_m r_Delta^3
+    // and weight (rho_cb/M). The mass slope is evaluated at each a.
     for (int q=0; q<nnode; q++) {
       const double m = mass_tab[0][q];
-      mass_tab[2][q] = delta_c/sqrt(sigma2(m));
-      mass_tab[3][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
-      mass_tab[4][q] = mass_tab[1][q]*(rho_hmf/m)*dlognudlogm(m);
+      mass_tab[2][q] = pow(3./(4.0*M_PI)*(m/rho_delta), 1./3.);
+      mass_tab[3][q] = mass_tab[1][q]*(rho_hmf/m);
     }
 
     // --- 2c. PER (BIN, MASS NODE): OCCUPATION, SERIAL ---
@@ -3495,9 +3409,8 @@ double p_gg(
 
         const double ai = lim[l][0] + i*lim[l][2];
 
-        // growth, the nu-independent Tinker f(nu) half, and the mean
+        // The nu-independent Tinker f(nu) half, and the mean
         // galaxy density and bias of this a row
-        const double     D        = growfac(ai);
         const fnu_params fnu_pars = fnu_params_at(ai);
         const double     n_gal    = ngal(l, ai);
         const double     b_gal    = bgal(l, ai);
@@ -3518,20 +3431,20 @@ double p_gg(
         // with 1/m(c_g) folded in
         for (int q=0; q<nnode; q++) {
           const double m  = mass_tab[0][q];
-          const double nu = mass_tab[2][q]/D;
+          const double nu = delta_c/sqrt(sigma2(m, ai));
 
           // c_g = gc c, with m(c_g) = ln(1+c_g) - c_g/(1+c_g)
-          const double cg    = conc(m, D)*gc;
+          const double cg    = conc(m, ai)*gc;
           const double ln1cg = log1p(cg);
           const double mcg   = ln1cg - cg/(1.0 + cg);
 
           // dn_halo = quadrature weight x dn/dlnM (Tinker); n_sat = N_s
-          const double dn_halo = mass_tab[4][q]*fnu_core(nu, &fnu_pars)*nu;
+          const double dn_halo = mass_tab[3][q]*dlognudlogm(m, ai)*fnu_core(nu, &fnu_pars)*nu;
           const double n_sat   = occ_tab[l][0][q];
 
           conc_gal[q] = cg;
           ln1c_gal[q] = ln1cg;
-          r_sg[q]     = mass_tab[3][q]/cg;
+          r_sg[q]     = mass_tab[2][q]/cg;
           lnrsg[q]    = log(r_sg[q]);
           w2[q]       = dn_halo*(n_sat/mcg)*(n_sat/mcg);
           w1[q]       = 2.0*dn_halo*(n_sat/mcg)*occ_tab[l][1][q];
@@ -4122,11 +4035,11 @@ static struct {
   double lim[2][3];      // [0] a grid, [1] ln k grid: min, max, step
   double*** tab;         // [2][n_a][N_k_nlin] ln S_dI (0), ln S_II (1)
   double* f_red_cen;     // [n_a] f_rc(a_i)
-  double** mass_node;    // [9][n_nodes] per mass node q: M, GL weight,
-                         //   GL weight x (rho_m/M) dlnnu/dlnM, nu0,
+  double** mass_node;    // [8][n_nodes] per mass node q: M, GL weight,
+                         //   GL weight x (rho_cb/M),
                          //   r_Delta, M/rho_m, N_tot, N_rc, N_rs
   int* active;           // [n_nodes] mass-node index of each active node
-  double** row;          // [3][n_a] per a row: D(a), a_1h(a), n_g(a)
+  double** row;          // [2][n_a] per a row: a_1h(a), n_g(a)
   fnu_params* fnu_pars;  // [n_a] Tinker f(nu) parameters per a row
   double** dn;           // [n_a][n_nodes] GL weight x dn/dlnM
   ia_halo* halo;         // [block_rows x n_nodes] kernel constants
@@ -4701,7 +4614,7 @@ static inline double ia_gamma_hat_m(
 //   f_rc(a)    = int dlnM dn/dlnM N_rc / n_g(a)
 //   n_g(a)     = int dlnM dn/dlnM N_tot
 //
-//   dn/dlnM = (rho_m/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/(sigma(M) D(a))
+//   dn/dlnM = (rho_cb/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/sigma_cb(M,a)
 //
 // with the occupations of the section banner (nuisance.ia_hod, the
 // Zheng et al. form of HOD_nc, HOD_ns with the IA population's own
@@ -4726,14 +4639,14 @@ static inline double ia_gamma_hat_m(
 // 3. Loop nests (each a separate OpenMP loop, so every expensive
 // per-halo or per-k quantity is spread over all threads):
 //
-//   per refill, per mass node q (serial; sigma2 and dlognudlogm reads)
-//     -> mass_node: M, w (rho_m/M) dlnnu/dlnM, nu0 = delta_c/sigma(M),
+//   per refill, per mass node q (serial)
+//     -> mass_node: M, w (rho_cb/M),
 //        r_Delta, M/rho_m, N_tot, N_rc, N_rs; the active node list
 //   per a row i (threaded)
-//     -> row: D(a), a_1h(a); fnu_pars; dn[i][q] = w (rho_m/M)
+//     -> row: a_1h(a); fnu_pars; dn[i][q] = w (rho_cb/M)
 //        dlnnu/dlnM f(nu) nu; n_g(a_i); f_red_cen[i]
 //   per row block, collapse(2) over (row, active node) (threaded)
-//     -> halo: c = conc(M, D), ln(1+c), r_s, ln r_s, x_e, the weights
+//     -> halo: c = conc(M, a), ln(1+c), r_s, ln r_s, x_e, the weights
 //        w_dI, w_II and the kernel's edge constants (ia_edge_setup)
 //   per row block, collapse(2) over (row, coarse k) (threaded)
 //     -> ln_coarse: ln sum_q w_dI um |gamma_m|, ln sum_q w_II gamma_m^2,
@@ -4840,9 +4753,9 @@ static void ia_tables(void)
 
     ia_.tab       = (double***) malloc3d(2, n_a, Ntable.N_k_nlin);
     ia_.f_red_cen = (double*) malloc1d(n_a);
-    ia_.mass_node = (double**) malloc2d(9, n_nodes);
+    ia_.mass_node = (double**) malloc2d(8, n_nodes);
     ia_.active    = (int*) malloc1d_int(n_nodes);
-    ia_.row       = (double**) malloc2d(3, n_a);
+    ia_.row       = (double**) malloc2d(2, n_a);
     ia_.fnu_pars  = (fnu_params*) malloc(sizeof(fnu_params)*n_a);
     ia_.dn        = (double**) malloc2d(n_a, n_nodes);
     ia_.halo      = (ia_halo*)
@@ -4950,12 +4863,12 @@ static void ia_tables(void)
     halo_warmup(ia_.lim[0][0], exp(ia_.lim[1][0]), 0, 0);
 
     /* PHYSICAL DERIVATION & LOGIC FLOW (equations: header above)
-       1. node q: M, w (rho_hmf/M) dlnnu/dlnM, nu0, r_Delta, occupations
+       1. node q: M, w (rho_cb/M), r_Delta, occupations
           N_tot = f_c N_c + N_s, N_rc = f_c N_c f_red,cen,
           N_rs = N_s f_red,sat                          (section banner)
-       2. row i: D(a), a_1h(a), dn = w (rho_hmf/M) dlnnu/dlnM f(nu) nu,
+       2. row i: a_1h(a), dn = w (rho_hmf/M) dlnnu/dlnM f(nu) nu,
           n_g = sum dn N_tot, f_rc = sum dn N_rc/n_g
-       3. (row, active node): c(M, D), r_s, r_e = max(r_floor,
+       3. (row, active node): c(M, a), r_s, r_e = max(r_floor,
           r_Delta (|a_1h|/gamma_max)^(1/2)), x_e = r_e/r_s,
           w_dI = dn (M/rho_m)(N_rs/n_g)/m^2, w_II = dn (N_rs/n_g)^2/m^2,
           edge constants at x_in = min(x_e, c) and c   (F21 Eq. 20)
@@ -4970,8 +4883,7 @@ static void ia_tables(void)
 
     const double rho_m     = cosmology.rho_crit*cosmology.Omega_m;
     const double rho_delta = Delta*rho_m;
-    // mean density of the halo field in the rho/M of dn/dlnM: rho_m,
-    // or rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+    // The cb density normalizes dn/dlnM (POWER SPECTRA banner).
     const double rho_hmf   = cosmology.rho_crit*omega_halo_field();
 
     // --- 2b. PER MASS NODE, SERIAL: WEIGHTS AND OCCUPATIONS ---
@@ -5002,15 +4914,14 @@ static void ia_tables(void)
       const double f_red_cen = 0.5*(1.0 + tanh((lgM - lgM_red_cen)/width_cen));
       const double f_red_sat = 0.5*(1.0 + tanh((lgM - lgM_red_sat)/width_sat));
 
-      mass_node[2][q] = mass_node[1][q]*(rho_hmf/m)*dlognudlogm(m);
-      mass_node[3][q] = delta_c/sqrt(sigma2(m));                // nu0
-      mass_node[4][q] = pow(3.0/(4.0*M_PI)*(m/rho_delta), 1.0/3.0); // r_Delta
-      mass_node[5][q] = m/rho_m;
-      mass_node[6][q] = f_c*n_cen + n_sat;                      // N_tot
-      mass_node[7][q] = f_c*n_cen*f_red_cen;                    // N_rc
-      mass_node[8][q] = n_sat*f_red_sat;                        // N_rs
+      mass_node[2][q] = mass_node[1][q]*(rho_hmf/m);
+      mass_node[3][q] = pow(3.0/(4.0*M_PI)*(m/rho_delta), 1.0/3.0); // r_Delta
+      mass_node[4][q] = m/rho_m;
+      mass_node[5][q] = f_c*n_cen + n_sat;                      // N_tot
+      mass_node[6][q] = f_c*n_cen*f_red_cen;                    // N_rc
+      mass_node[7][q] = n_sat*f_red_sat;                        // N_rs
 
-      if (mass_node[8][q] > 0) {
+      if (mass_node[7][q] > 0) {
         ia_.active[ia_.n_active] = q;
         ia_.n_active++;
       }
@@ -5021,11 +4932,10 @@ static void ia_tables(void)
     }
     const int n_active = ia_.n_active;
 
-    // --- 2c. PER a ROW, THREADED: D, a_1h, dn, n_g, f_rc ---
+    // --- 2c. PER a ROW, THREADED: a_1h, dn, n_g, f_rc ---
     #pragma omp parallel for schedule(static)
     for (int i=0; i<n_a; i++) {
       const double ai = ia_.lim[0][0] + i*ia_.lim[0][2];
-      const double D  = growfac(ai);
       ia_.fnu_pars[i] = fnu_params_at(ai);
 
       double* restrict dn_row = ia_.dn[i];
@@ -5033,11 +4943,12 @@ static void ia_tables(void)
       double n_red_cen = 0.0;   // sum_q dn N_rc
 
       for (int q=0; q<n_nodes; q++) {
-        const double nu = mass_node[3][q]/D;
-        const double dn = mass_node[2][q]*fnu_core(nu, &ia_.fnu_pars[i])*nu;
+        const double m = mass_node[0][q];
+        const double nu = delta_c/sqrt(sigma2(m, ai));
+        const double dn = mass_node[2][q]*dlognudlogm(m, ai)*fnu_core(nu, &ia_.fnu_pars[i])*nu;
         dn_row[q] = dn;
-        n_gal     += dn*mass_node[6][q];
-        n_red_cen += dn*mass_node[7][q];
+        n_gal     += dn*mass_node[5][q];
+        n_red_cen += dn*mass_node[6][q];
       }
 
       if (!(n_gal > 0)) {
@@ -5045,9 +4956,8 @@ static void ia_tables(void)
         exit(1);
       }
 
-      ia_.row[0][i]     = D;
-      ia_.row[1][i]     = ia_a1h(ai);
-      ia_.row[2][i]     = n_gal;
+      ia_.row[0][i]     = ia_a1h(ai);
+      ia_.row[1][i]     = n_gal;
       ia_.f_red_cen[i]  = n_red_cen/n_gal;
     }
 
@@ -5071,13 +4981,13 @@ static void ia_tables(void)
           ia_halo* halo = &ia_.halo[b*n_nodes + p];
 
           const double m       = mass_node[0][q];
-          const double D       = ia_.row[0][i];
-          const double a1h_abs = fabs(ia_.row[1][i]);
-          const double n_gal   = ia_.row[2][i];
-          const double r_delta = mass_node[4][q];
+          const double ai      = ia_.lim[0][0] + i*ia_.lim[0][2];
+          const double a1h_abs = fabs(ia_.row[0][i]);
+          const double n_gal   = ia_.row[1][i];
+          const double r_delta = mass_node[3][q];
 
           // NFW: c(M, a), m(c) = ln(1 + c) - c/(1 + c), r_s = r_Delta/c
-          const double c    = conc(m, D);
+          const double c    = conc(m, ai);
           const double ln1c = log1p(c);
           const double mc   = ln1c - c/(1.0 + c);
           const double r_s  = r_delta/c;
@@ -5090,7 +5000,7 @@ static void ia_tables(void)
           const double x_in  = fmin(x_e, c);
 
           // red satellites per galaxy of the sample, N_rs/n_g
-          const double sat_per_gal = mass_node[8][q]/n_gal;
+          const double sat_per_gal = mass_node[7][q]/n_gal;
           const double dn          = ia_.dn[i][q];
 
           halo->conc      = c;
@@ -5099,7 +5009,7 @@ static void ia_tables(void)
           halo->lnrs      = log(r_s);
           halo->w_inner   = (c/x_e)*(c/x_e);
           halo->conc2     = c*c;
-          halo->w_dI      = dn*mass_node[5][q]*sat_per_gal/(mc*mc);
+          halo->w_dI      = dn*mass_node[4][q]*sat_per_gal/(mc*mc);
           halo->w_II      = dn*sat_per_gal*sat_per_gal/(mc*mc);
           halo->has_power = (x_e < c);
 
@@ -5301,7 +5211,7 @@ static double hod_bgal_direct(
   /* PHYSICAL DERIVATION & LOGIC FLOW
      b_gal = (1/n_gal) int dlnM dn/dlnM b(nu) <N|M>, one Gauss-Legendre
      sum over ln M:
-     1. nu = delta_c/(sigma(M) D(a)); occupation <N|M> = f_c N_c + N_s
+     1. nu = delta_c/sigma_cb(M,a); occupation <N|M> = f_c N_c + N_s
      2. dn_gal = weight (rho_hmf/M) dlnnu/dlnM <N|M> f(nu) nu, the node's
         share of the galaxy number density (Tinker dn/dlnM)
      3. n_gal = sum_q dn_gal; bn_gal = sum_q b(nu) dn_gal
@@ -5334,10 +5244,9 @@ static double hod_bgal_direct(
 
   // --- 2. COSMOLOGY AND HOD FACTORS AT THIS SCALE FACTOR ---
 
-  // mean density of the halo field in the rho/M of dn/dlnM: rho_m, or
-  // rho_cb under HALO_FIELD_CB (HALO MODEL POWER SPECTRA banner)
+  // Cold matter plus baryons supply the mass-function density rho_cb.
+  // The total-matter density belongs to the lensing weights instead.
   const double rho_hmf = cosmology.rho_crit * omega_halo_field();
-  const double D       = growfac(a);
 
   // the nu-independent halves of the Tinker mass function f(nu) and the
   // halo bias b(nu), frozen at this scale factor
@@ -5361,13 +5270,13 @@ static double hod_bgal_direct(
 
     // peak height and mean occupation <N|M> at this node's mass
     const double m          = exp(lnM);
-    const double nu         = delta_c/(sqrt(sigma2(m))*D);
+    const double nu         = delta_c/sqrt(sigma2(m, a));
     const double occupation = fc*HOD_nc(m, a, ni) + HOD_ns(m, a, ni);
 
     // the node's share of the galaxy number density:
     // dn_gal = weight x dn/dlnM x <N|M>
     const double dn_gal =
-        weight*(rho_hmf/m)*dlognudlogm(m)*occupation*fnu_core(nu, &fnu_pars)*nu;
+        weight*(rho_hmf/m)*dlognudlogm(m, a)*occupation*fnu_core(nu, &fnu_pars)*nu;
 
     n_gal  += dn_gal;
     bn_gal += dn_gal*hb1nu_core(nu, &hb1nu_pars);

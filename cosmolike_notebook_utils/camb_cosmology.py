@@ -8,7 +8,7 @@ the one function that produces them, together with the two
 massive-neutrino inputs of the halo model: omega_nu h^2 and the linear
 power spectrum of cold dark matter + baryons (P_cb, CAMB's delta_nonu),
 which cosmolike reads when the halo field is cb
-(ci.init_halo_matter_field(1)). It talks only to CAMB (and,
+(cold dark matter + baryons). It talks only to CAMB (and,
 optionally, to the EuclidEmulator2 boost); it never imports a
 project's compiled cosmolike interface, so every project shares it.
 
@@ -107,8 +107,7 @@ def get_camb_cosmology(omegam,
                            CAMB computed it (pars.omnuh2).
         lnPL_cb          = ln of the linear P_cb (cold dark matter +
                            baryons) in (Mpc/h)^3, laid out as lnPL.
-      Under ci.init_halo_matter_field(0) cosmolike reads neither of
-      the last two, and handing them over changes no number.
+      Halo statistics require both of the last two quantities.
       G_growth is not on the z_2D nodes: it must go to set_cosmology
       together with z_G = z_growth (set_cosmology without z_G pairs G
       with z_2D, and the size mismatch aborts the process).
