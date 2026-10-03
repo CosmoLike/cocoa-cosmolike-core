@@ -290,6 +290,14 @@ the code's math back to the textbook formulas:
 Assume the reader is a physics student who knows the math and needs
 absolute clarity on how variables map to formulas.
 
+- **Do not overengineer or add code bloat for obscure failures.** When
+  a rare unsupported condition can be checked with a simple `if` guard,
+  check it and stop with a clear error. Do not build recovery machinery,
+  retry paths, compatibility layers or speculative fallbacks for cases
+  that almost never occur. Keep the implementation focused on the
+  supported scientific calculation. This does not remove the numerical
+  reference paths required to validate an algorithm change.
+
 - No nested ternary operators; explicit `if / else` blocks.
 - No single-line blocks: always braces `{}` on loops and conditionals.
 - No unexplained magic numbers: every physical constant, integration
