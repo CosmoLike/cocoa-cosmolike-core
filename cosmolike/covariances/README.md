@@ -52,8 +52,14 @@ distinguish node-level validation from the remaining survey-level gates.
 An external [survey projection diagnostic](../../.claude/skills/cosmolike-dev/references/covariance_projection_measurements.md)
 combines these ingredients and records units, eigenvalues and model changes.
 
+`operators_cov.c` builds area-averaged full-sky spin operators and exact
+integer Fourier-band weights. Its [validation record](../../.claude/skills/cosmolike-dev/references/covariance_operators.md)
+states the observed-shear convention, angular quadrature checks and geometry
+timings. The survey driver must still validate its spectrum convention and
+multipole cutoff before using these operators for an actual covariance.
+
 This is **not yet a survey covariance generator**. All-pairs non-Limber
-spectra, production spin kernels, masks, SSC, connected non-Gaussian
+spectra, spin-operator integration, masks, SSC, connected non-Gaussian
 covariance, dataset inputs and file output remain to be integrated and
 independently validated. The full module contract is not frozen.
 

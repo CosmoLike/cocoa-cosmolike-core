@@ -198,6 +198,12 @@ regressions as well. No references were refrozen. Component timing and
 accuracy measurements are recorded with each ticket, including failures
 of the full survey refinement gate.
 
+The following [angular-operator ticket](covariance_operators.md) adds six
+optimized/debug checks, for 432 distinct passing tests including the earlier
+project run. It builds unit-normalized full-sky spin-bin averages and exact
+integer Fourier bands. This isolated library does not relink the projects;
+their survey-operator integration and accuracy gates remain open.
+
 1. Complete the pinned 2-lens/2-source configuration's convergence study.
    The overlapping samples, signed magnification, per-bin noise, CAMB dump
    and raw spherical-cap mask are available outside git. The preliminary
