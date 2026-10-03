@@ -135,8 +135,7 @@
 // points per vector (AVX2 on x86-64, NEON on arm64, from one source).
 // Both vector paths perform the scalar path's floating-point operations
 // in the scalar order on every element, so their values are bitwise the
-// scalar path's. COSMO2D_NOT_USE_SIMD (the DEBUG build; basics.h then
-// leaves SIMDe out) selects the scalar loops, the reference.
+// scalar path's. Both optimized and debug builds use these vector loops.
 // ---------------------------------------------------------------------------
 
 
@@ -588,7 +587,6 @@ static inline double cluster_nfw_um(
 }
 
 
-#ifndef COSMO2D_NOT_USE_SIMD
 // ============================================================================
 // [SECTION] SIMDe PATH OF THE NFW KERNEL (private copy of halo.c's nfw_um4)
 // ============================================================================
@@ -603,11 +601,8 @@ static inline double cluster_nfw_um(
 // the long form of every explanation below.
 //
 // SIMDe (simde/x86/avx2.h and fma.h) gives AVX2 on x86-64 and NEON on
-// arm64 from one source. basics.h includes it only when
-// COSMO2D_NOT_USE_SIMD is not defined (the DEBUG build defines it), so
-// every SIMDe type and call of this file sits inside
-// #ifndef COSMO2D_NOT_USE_SIMD, with the scalar loop, the reference, in
-// the other branch.
+// arm64 from one source. basics.h supplies it in both optimized and
+// debug builds. Scalar calls handle individual nodes and vector tails.
 //
 // A v4d holds four doubles side by side, its "lanes" 0, 1, 2, 3 (one AVX2
 // register on x86-64, two NEON registers on arm64); a v2d holds two: one
@@ -1158,7 +1153,6 @@ static inline __attribute__((always_inline)) v4d cluster_nfw_um4(
   // (fu - 1/xu) sin(c x) + the rest, fused: u m(c) on the four lanes
   return cluster_fmadd4(vf_term, vsin_full, vsum);
 }
-#endif
 
 
 // The private kernel against halo.c's u_nfw_c for a cluster-mass halo at
@@ -2089,8 +2083,7 @@ static void cluster_p1h_table(void)
           sum[nl] = 0.0;
         }
 
-#ifndef COSMO2D_NOT_USE_SIMD
-        // The reference loop (the #else branch below) with the kernel on
+        // Evaluate the kernel in sum_q W_nl*um on
         // four active nodes j, j+1, j+2, j+3 per step (one per lane of a
         // v4d; cluster_nfw_um4 = cluster_nfw_um on each lane, bitwise).
         // Only the kernel is vectorized: its four values go back to a
@@ -2160,19 +2153,6 @@ static void cluster_p1h_table(void)
             sum[nl] += w[nl]*um;
           }
         }
-#else
-        // the reference: one scalar kernel call per active node
-        for (int j=0; j<n_active; j++) {
-          // u m(c) at x = k r_s, ln x = ln k + ln r_s
-          const double um = cluster_nfw_um(conc[j], k*r_s[j], lnk + lnrs[j],
-                                           ln1c[j]);
-
-          const double* restrict w = p1h_.weight[i][j];
-          for (int nl=0; nl<nl_bins; nl++) {
-            sum[nl] += w[nl]*um;
-          }
-        }
-#endif
 
         for (int nl=0; nl<nl_bins; nl++) {
           if (isnan(sum[nl])) {
@@ -2295,7 +2275,6 @@ double pcm_1h_richness(
 }
 
 
-#ifndef COSMO2D_NOT_USE_SIMD
 // ---------------------------------------------------------------------------
 // cluster_load_pairs4: two neighbouring table values per lane, regrouped.
 //
@@ -2424,7 +2403,6 @@ static inline __attribute__((always_inline)) v4d cluster_spline_horner4(
   // y_j + t (b + t (c_j + t d))
   return cluster_fmadd4(vt, vouter, vy0);
 }
-#endif
 
 
 // ---------------------------------------------------------------------------
@@ -2473,7 +2451,6 @@ void pcm_1h_richness_fill(
 
   cluster_p1h_table();
 
-#ifndef COSMO2D_NOT_USE_SIMD
   // --- table geometry: the numbers of pcm_1h_richness, cluster_p1h_row ---
   const double a_lo     = cl_.a_lim[0];   // first a node
   const double a_hi     = cl_.a_lim[1];   // last a node
@@ -2662,14 +2639,6 @@ void pcm_1h_richness_fill(
       out[nl][q] = pcm_1h_richness(k[q], a[q], nl);
     }
   }
-#else
-  // the reference: the scalar read at every point
-  for (int q=0; q<n; q++) {
-    for (int nl=0; nl<nl_bins; nl++) {
-      out[nl][q] = pcm_1h_richness(k[q], a[q], nl);
-    }
-  }
-#endif
 }
 
 

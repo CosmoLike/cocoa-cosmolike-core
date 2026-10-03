@@ -28,10 +28,8 @@
 #include "structs.h"
 #include "log.c/src/log.h"
 
-#ifndef COSMO2D_NOT_USE_SIMD
 #include "simde/x86/avx2.h"
 #include "simde/x86/fma.h"
-#endif
 
 // Physics gates for the Limber integrands (0 or 1). include_HOD_GX is
 // runtime-switchable (set_include_HOD_GX); the RSD gates are
@@ -269,14 +267,12 @@ static int has_b2_galaxies(void) {
 //          used as index registers for AVX2 gather instructions (i32gather_pd)
 //          which load 4 non-contiguous doubles from a table in one instruction
 // ---------------------------------------------------------------------------
-#ifndef COSMO2D_NOT_USE_SIMD
 typedef simde__m256d v4d;   // 4 doubles, AVX2-width
 typedef simde__m128d v2d;   // 2 doubles (SSE2)
 typedef simde__m128i v4i;   // 4 int32s (SSE2) - used for SIMD gather indices
-#endif
 
 // ---------------------------------------------------------------------------
-// Generic Limber table interpolation with optional SIMD (AVX2) acceleration.
+// Generic Limber table interpolation with SIMDe vector arithmetic.
 //
 // Interpolates ntab precomputed C_l tables simultaneously at multipoles
 // l = lmin..lmax-1, sharing the index arithmetic (log-space position,
@@ -330,18 +326,6 @@ void limber_fill_interp(
     const int n                        // number of grid points
   )
 {
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int l = lmin; l < lmax; l++) {
-    const double r = (ln_ell[l] - a) * inv_dx;
-    const double i = floor(r);
-    const double rc = fmin(fmax(i, 0.0), (double)(n - 2));
-    const int ic = (int) rc;
-    const double t = r - rc;
-    for (int q = 0; q < ntab; q++) {
-      out[q][l] = tab[q][ic] + t * (tab[q][ic + 1] - tab[q][ic]);
-    }
-  }
-#else
   // Vector constants: one copy of each scalar, broadcast to all 4 lanes
   // of a 256-bit register (a v4d holds 4 doubles side by side)
   const v4d va       = simde_mm256_set1_pd(a);       // ln(l_min) of the grid
@@ -396,7 +380,6 @@ void limber_fill_interp(
       out[q][l] = tab[q][ic] + t * (tab[q][ic + 1] - tab[q][ic]);
     }
   }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -515,7 +498,7 @@ void C_ks_tomo_limber_fill(
 //
 // The only sum is over l: every (nz, i) has its own.
 //
-// Why the reference loop (COSMO2D_NOT_USE_SIMD) is slow: at LMAX = 75000 a
+// Why a scalar one-output loop is slow: at LMAX = 75000 a
 // C_l array and a kernel array are 600 kB each, far more than the L1 cache
 // holds. The reference loop makes one full pass over l per (nz, i), so it
 // reads the whole of Cl[nz] again for every theta bin and the whole of
@@ -552,21 +535,6 @@ void legendre_sums(
     double* w_vec
   )
 {
-#ifdef COSMO2D_NOT_USE_SIMD
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int nz=0; nz<NSIZE; nz++) {
-    for (int i=0; i<ntheta; i++) {
-      const double* restrict pl = Pl[i];
-      const double* restrict cl = Cl[nz];
-      double sum = 0.0;
-      #pragma omp simd reduction(+:sum)
-      for (int l=lmin; l<lmax; l++) {
-        sum += pl[l] * cl[l];
-      }
-      w_vec[nz*ntheta + i] = sum;
-    }
-  }
-#else
   // nz and i are the first spectrum and the first theta bin of the group,
   // which covers spectra nz .. nz+3 and theta bins i .. i+3
   #pragma omp parallel for collapse(2) schedule(static)
@@ -639,7 +607,6 @@ void legendre_sums(
       }
     }
   }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -649,7 +616,7 @@ void legendre_sums(
 //   xim[nz*ntheta + i] = sum_l Glm[i][l] * (Cl_EE[nz][l] - Cl_BB[nz][l])
 //
 // Same idea as legendre_sums (see the note there): the reference loop
-// (COSMO2D_NOT_USE_SIMD) makes one full pass over l per (nz, i), fetching
+// makes one full pass over l per (nz, i), fetching
 // four values (EE, BB, Gl+, Gl-) for two multiply-adds and recomputing
 // EE + BB and EE - BB for every theta bin. The default loop takes 2 pairs
 // and 4 theta bins in one pass: 12 values fetched per 16 multiply-adds,
@@ -688,27 +655,6 @@ void legendre_sums_xipm(
     double* xim
   )
 {
-#ifdef COSMO2D_NOT_USE_SIMD
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int nz=0; nz<NSIZE; nz++) {
-    for (int i=0; i<ntheta; i++) {
-      const int q = nz * ntheta + i;
-      const double* restrict c0 = Cl_EE[nz];
-      const double* restrict c1 = Cl_BB[nz];
-      const double* restrict gp = Glp[i];
-      const double* restrict gm = Glm[i];
-      double sum0 = 0.0;
-      double sum1 = 0.0;
-      #pragma omp simd reduction(+:sum0, sum1)
-      for (int l=lmin; l<lmax; l++) {
-        sum0 += gp[l] * (c0[l] + c1[l]);
-        sum1 += gm[l] * (c0[l] - c1[l]);
-      }
-      xip[q] = sum0;
-      xim[q] = sum1;
-    }
-  }
-#else
   // nz and i are the first pair and the first theta bin of the group,
   // which covers pairs nz, nz+1 and theta bins i .. i+3
   #pragma omp parallel for collapse(2) schedule(static)
@@ -787,7 +733,6 @@ void legendre_sums_xipm(
       }
     }
   }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -8742,7 +8687,6 @@ void cfftlog_ells_p2(
   // Per-component table of x^nu on the reversed grid, precomputed so
   // the SIMD normalization below multiplies instead of calling pow()
   // per element (y^-nu = x^nu / (k+1)^nu on this grid).
-#ifndef COSMO2D_NOT_USE_SIMD 
   double** x_pow_nu = (double**) malloc2d(SIZE2, Nx);
   #pragma omp parallel for collapse(2) schedule(static)
   for (int j=0; j<SIZE2; j++) {
@@ -8751,7 +8695,6 @@ void cfftlog_ells_p2(
       x_pow_nu[j][q] = (cfg[j].nu == 1.0) ? xr : pow(xr, cfg[j].nu);
     }
   }
-#endif
 
   for(int i=0; i<SIZE1; i++) {
     if (converged[i]) continue;
@@ -8770,20 +8713,14 @@ void cfftlog_ells_p2(
         const int id = 0;
 #endif 
         const double lnbase = log(base_j[j] * y[i][k][0]);    
-#ifndef COSMO2D_NOT_USE_SIMD 
         // Explore the fact that the phase eta_m[j][q] is linear in q
         const double delta_phase = -eta_m[j][1] * lnbase;
         double step_re, step_im;
         cosmo_sincos(delta_phase, &step_im, &step_re);
         double phasor_re = 1.0; // Phasor starts at exp(i * 0) = 1 + 0i.
         double phasor_im = 0.0; // Phasor starts at exp(i * 0) = 1 + 0i.
-#endif  
         for(int q=0; q<(N[j][2]/2+1); q++) {
           fftw_complex val = toutfwd[i*SIZE2+j][q];
-#ifdef COSMO2D_NOT_USE_SIMD 
-          const double phase = -eta_m[j][q] * lnbase;
-          val *= cos(phase) + I * sin(phase);
-#else
           if (q > 0 && (q % 1024) == 0) {
             // recompute phasor exactly to prevent drift (numerical error)
             // if N/2 becomes >> 1000 (right now is <1000)
@@ -8797,7 +8734,6 @@ void cfftlog_ells_p2(
           const double new_im = phasor_re*step_im + phasor_im*step_re;
           phasor_re = new_re;
           phasor_im = new_im;
-#endif
           val *= gl[j][k-ks][q];
           outfwd[id][q] = conj(val);
         }
@@ -8820,12 +8756,6 @@ void cfftlog_ells_p2(
         // 1/N[j][2] normalizes FFTW's unnormalized c2r, and y^-nu
         // undoes the x^nu bias applied in p1. The output is read at
         // offset N[j][0], past the front guard band (see base_j).
-#ifdef COSMO2D_NOT_USE_SIMD        
-        for(int q=0; q<Nx; q++) {
-          Fy[i][j][k][q] = outbcw[id][N[j][0]+q] * sqrtpi / 
-                           (4.*N[j][2] * pow(y[i][k][q], cfg[j].nu));
-        }
-#else
         // Using the fact that y[i][k][q] = (k + 1.) / x[Nx -1 -q];
         const double prefactor = 
                     sqrtpi / (4.0 * N[j][2] * pow((double)(k + 1), cfg[j].nu));
@@ -8851,13 +8781,10 @@ void cfftlog_ells_p2(
         for (; q < Nx; q++) { // Scalar tail
           Fy_ijk[q] = ob[q] * prefactor * xnu[q];
         }    
-#endif  
       }
     }
   }
-#ifndef COSMO2D_NOT_USE_SIMD
   free((void*) x_pow_nu);
-#endif
   return;
 }
 
@@ -9263,14 +9190,7 @@ static double** C_cl_tomo_core(
       }
       #pragma omp parallel for
       for (int k=ks; k<kk; k++) {  
-#ifdef COSMO2D_NOT_USE_SIMD
-        double tcl = 0.0;
-        for (int q=0; q<nchi; q++) {
-          tcl += vres[i][k][q];
-        }
-#else
         const double tcl = simd_array_sum(vres[i][k], nchi);
-#endif   
         Cl[i][k] = tcl * dlnk * 2. / M_PI + CLnl[i][k] - CLlin[i][k];
       }
       const int L = kk - 1; // check convergeence

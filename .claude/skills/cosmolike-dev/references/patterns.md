@@ -74,7 +74,9 @@ GCC will not auto-emit gather instructions. Interpolation-table fill loops
 (`C_ss_tomo_limber_fill`, `C_gs_tomo_limber_fill`, ...) that load from
 scattered indices keep hand-written SIMDe gather + FMA bodies, with a comment
 explaining the auto-vectorization blocker, a scalar tail that calls the same
-`int_for_*_core` scalar function, and a `COSMO2D_NOT_USE_SIMD` fallback.
+`int_for_*_core` scalar function for individual nodes and vector tails.
+The owner retired selectable scalar branches: SIMDe is always compiled,
+including in debug builds. Use external scalar references for comparisons.
 
 For contiguous access, start from local pointers and verify what the
 compiler emits; use SIMDe when measurement justifies it. For gathers,

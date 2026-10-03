@@ -17,14 +17,9 @@
 
 #include "log.c/src/log.h"
 
-// HALO_NOT_USE_SIMD selects the scalar mass-node loops of the halo
-// spectra, the reference path. COSMO2D_NOT_USE_SIMD removes SIMDe from
-// basics.h, so it selects them too.
-#if defined(COSMO2D_NOT_USE_SIMD) && !defined(HALO_NOT_USE_SIMD)
-#define HALO_NOT_USE_SIMD
-#endif
+// Halo mass-node loops use SIMDe in both optimized and debug builds.
+// Scalar kernels remain for individual-node calls and incomplete vectors.
 
-#ifndef COSMO2D_NOT_USE_SIMD
 // SIMDe vectors (simde/x86/avx2.h and fma.h, included by basics.h).
 //
 // A v4d holds four doubles side by side, its "lanes" 0, 1, 2, 3, and one
@@ -37,7 +32,6 @@
 // path's line does for one node, four nodes at a time.
 typedef simde__m256d v4d;
 typedef simde__m128d v2d;
-#endif
 
 // ---------------------------------------------------------------------------
 // Halo model: peak-background split, halo and galaxy profiles, and the
@@ -1022,7 +1016,6 @@ static inline double nfw_um(
 }
 
 
-#ifndef HALO_NOT_USE_SIMD
 // ---------------------------------------------------------------------------
 // SIMD path of the halo spectra: nfw_um on four mass nodes at once.
 //
@@ -1706,7 +1699,6 @@ static inline __attribute__((always_inline)) v4d nfw_um4(
   // (fu - 1/xu) sin(c x) + the rest, fused: u m(c) on the four lanes
   return nfw_fmadd4(vf_term, vsin_full, vsum);
 }
-#endif
 
 
 // ---------------------------------------------------------------------------
@@ -2931,25 +2923,8 @@ double p_gm(
           const double kj  = exp(lnk);
 
           double gm02 = 0.0;
-#ifdef HALO_NOT_USE_SIMD
-          if (same_conc) {
-            for (int q=0; q<nnode; q++) {
-              const double um = nfw_um(conc_halo[q], kj*r_s[q],
-                                       lnk + lnrs[q], ln1c_halo[q]);
-              gm02 += um*(w1[q]*um + w0[q]);
-            }
-          }
-          else {
-            for (int q=0; q<nnode; q++) {
-              const double um = nfw_um(conc_halo[q], kj*r_s[q],
-                                       lnk + lnrs[q], ln1c_halo[q]);
-              const double ug = nfw_um(conc_gal[q], kj*r_sg[q],
-                                       lnk + lnrsg[q], ln1c_gal[q]);
-              gm02 += um*(w1[q]*ug + w0[q]);
-            }
-          }
-#else
-          // the scalar loops above, four nodes q, q+1, q+2, q+3 per step
+          // Sum um*(w1*ug + w0), using ug=um for equal concentrations.
+          // Evaluate four nodes q, q+1, q+2, q+3 per step
           // (one per lane; nfw_um4 = nfw_um on each lane,
           // bitwise) into four-lane partial sums, added in a fixed lane
           // order (simd_horizontal_sum), then a scalar tail. The
@@ -3089,7 +3064,6 @@ double p_gm(
             }
             gm02 += um*(w1[q]*ug + w0[q]);
           }
-#endif
 
           // a 1-halo sum is a sum of positive terms; its log is splined
           if (!(gm02 > 0)) {
@@ -3466,14 +3440,7 @@ double p_gg(
           const double kj  = exp(lnk);
 
           double g02 = 0.0;
-#ifdef HALO_NOT_USE_SIMD
-          for (int q=0; q<nnode; q++) {
-            const double ug = nfw_um(conc_gal[q], kj*r_sg[q],
-                                     lnk + lnrsg[q], ln1c_gal[q]);
-            g02 += ug*(w2[q]*ug + w1[q]);
-          }
-#else
-          // the scalar loop above, four nodes q, q+1, q+2, q+3 per step
+          // Sum ug*(w2*ug + w1), four nodes q, q+1, q+2, q+3 per step
           // (one per lane; nfw_um4 = nfw_um on each lane,
           // bitwise) into four-lane partial sums, added in a fixed lane
           // order (simd_horizontal_sum), then a scalar tail (summation
@@ -3536,7 +3503,6 @@ double p_gg(
                                      lnk + lnrsg[q], ln1c_gal[q]);
             g02 += ug*(w2[q]*ug + w1[q]);
           }
-#endif
 
           // a 1-halo sum is a sum of positive terms; its log is splined
           if (!(g02 > 0)) {

@@ -118,7 +118,6 @@ int detect_uniform_segments(const double *x, int n, double rtol, int max_seg,
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
 // ----------------------------------------------------------------------------
-#ifndef COSMO2D_NOT_USE_SIMD
   #if defined(__aarch64__) || defined(_M_ARM64)
     #ifndef SIMDE_ARM_NEON_A64V8_NATIVE
       #warning "SIMDe: NEON is being EMULATED — something is wrong"
@@ -190,7 +189,6 @@ double simd_array_sum(
   }
   return result;
 }
-#endif
 
 // ---------------------------------------------------------------------------
 // Allocate a GSL interpolation object using the globally configured
@@ -1111,11 +1109,9 @@ void spline2d_upsample_uniform(
     const double* restrict c0 = cx[q-1];
     double* restrict c1 = cx[q];
     int j = 0;
-#ifndef COSMO2D_NOT_USE_SIMD
     // SIMDe body, 4 columns per operation (AVX2 on x86, two NEON
     // registers on Apple Silicon); the scalar loop after it finishes
-    // the last nyf % 4 columns and is the whole loop under
-    // COSMO2D_NOT_USE_SIMD. Every row loop below has the same shape.
+    // the last nyf % 4 columns. Every row loop below has the same shape.
     const simde__m256d vinv = simde_mm256_set1_pd(inv_dx2);
     const simde__m256d vtwo = simde_mm256_set1_pd(2.0);
     const simde__m256d vm = simde_mm256_set1_pd(m);
@@ -1127,7 +1123,6 @@ void spline2d_upsample_uniform(
       simde_mm256_storeu_pd(c1 + j, simde_mm256_mul_pd(simde_mm256_sub_pd(
         simde_mm256_mul_pd(vinv, s), simde_mm256_loadu_pd(c0 + j)), vm));
     }
-#endif
     for (; j<nyf; j++) {
       const double rhs = inv_dx2 * (t0[j] - 2.0 * t1[j] + t2[j]);
       c1[j] = (rhs - c0[j]) * m;
@@ -1143,13 +1138,11 @@ void spline2d_upsample_uniform(
     const double* restrict c2 = cx[q+1];
     double* restrict c1 = cx[q];
     int j = 0;
-#ifndef COSMO2D_NOT_USE_SIMD
     const simde__m256d vm = simde_mm256_set1_pd(m);
     for (; j <= nyf - 4; j += 4) {
       simde_mm256_storeu_pd(c1 + j, simde_mm256_fnmadd_pd(vm,
         simde_mm256_loadu_pd(c2 + j), simde_mm256_loadu_pd(c1 + j)));
     }
-#endif
     for (; j<nyf; j++) {
       c1[j] -= m * c2[j];
     }
@@ -1164,7 +1157,6 @@ void spline2d_upsample_uniform(
     double* restrict bq = bx[q];
     double* restrict dq = dx3[q];
     int j = 0;
-#ifndef COSMO2D_NOT_USE_SIMD
     const simde__m256d vdx = simde_mm256_set1_pd(dxc);
     const simde__m256d vtwo = simde_mm256_set1_pd(2.0);
     const simde__m256d vthree = simde_mm256_set1_pd(3.0);
@@ -1181,7 +1173,6 @@ void spline2d_upsample_uniform(
       simde_mm256_storeu_pd(dq + j, simde_mm256_div_pd(
         simde_mm256_sub_pd(k1, k0), v3dx));
     }
-#endif
     for (; j<nyf; j++) {
       bq[j] = (t1[j] - t0[j])/dxc - dxc*(c1[j] + 2.0*c0[j])/3.0;
       dq[j] = (c1[j] - c0[j])/(3.0*dxc);
@@ -1202,7 +1193,6 @@ void spline2d_upsample_uniform(
     const double* restrict dq = dx3[q];
     double* restrict out = zf[i];
     int j = 0;
-#ifndef COSMO2D_NOT_USE_SIMD
     const simde__m256d vdel = simde_mm256_set1_pd(del);
     for (; j <= nyf - 4; j += 4) {
       const simde__m256d h = simde_mm256_fmadd_pd(vdel,
@@ -1212,7 +1202,6 @@ void spline2d_upsample_uniform(
       simde_mm256_storeu_pd(out + j, simde_mm256_fmadd_pd(vdel, g,
         simde_mm256_loadu_pd(t0 + j)));
     }
-#endif
     for (; j<nyf; j++) {
       out[j] = t0[j] + del*(bq[j] + del*(c0[j] + del*dq[j])); // Horner form
     }

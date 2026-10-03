@@ -48,9 +48,9 @@
 // Limber nodes (pcm_1h_richness_fill of halo_cluster.c) and the table
 // read at every integer l (limber_fill_interp of cosmo2D.c). The first
 // two perform the scalar operations in the scalar order on every
-// element, so they are bitwise the scalar loops, which
-// COSMO2D_NOT_USE_SIMD (the DEBUG build) selects as the reference. The
-// Limber sums and the Legendre sums read contiguous rows: they stay
+// element, so they match the scalar reference bitwise. Both optimized
+// and debug builds use these vector paths. The Limber and Legendre sums
+// read contiguous rows: they stay
 // `omp simd` reductions over local restrict pointers, the cosmo2D.c
 // rule.
 // ============================================================================
@@ -219,17 +219,14 @@ static const gsl_integration_glfixed_table* limber_gl_table_cluster(void)
 
 
 
-#ifndef COSMO2D_NOT_USE_SIMD
 // ============================================================================
 // [SECTION] SIMDe VECTORS AND FUSED MULTIPLY-ADDS (private copies of halo.c's)
 // ============================================================================
 //
 // The explicit vector code of this file goes through SIMDe
 // (simde/x86/avx2.h and fma.h): AVX2 on x86-64, NEON on arm64, from one
-// source. basics.h includes SIMDe only when COSMO2D_NOT_USE_SIMD is not
-// defined (the DEBUG build defines it), so every SIMDe type and call sits
-// inside #ifndef COSMO2D_NOT_USE_SIMD, with the scalar loop, the
-// reference, in the other branch.
+// source. basics.h supplies these types in both optimized and debug
+// builds. Scalar calls handle individual points and incomplete vectors.
 //
 // A v4d holds four doubles side by side, its "lanes" 0, 1, 2, 3 (one AVX2
 // register on x86-64, two NEON registers on arm64); a v2d holds two: one
@@ -364,7 +361,6 @@ static inline __attribute__((always_inline)) void limber_load_pairs4(
   // row[j+1] on all four lanes
   *vright = simde_mm256_set_m128d(vright_high, vright_low);
 }
-#endif
 
 
 
@@ -738,8 +734,7 @@ static void limber_table_cluster_upsample(limber_table_cluster* T)
     spline_coeffs_uniform(T->tabe[row], T->nexact, h, T->cspl[row]);
   }
 
-#ifndef COSMO2D_NOT_USE_SIMD
-  // The reference loop (the #else branch below), four dense nodes i, i+1,
+  // Evaluate the cubic polynomial above at four dense nodes i, i+1,
   // i+2, i+3 per step, one per lane of a v4d.
   //
   // Why explicit SIMDe: every dense node reads its exact interval through
@@ -857,23 +852,6 @@ static void limber_table_cluster_upsample(limber_table_cluster* T)
       dense[i] = y[j] + dx*(b + dx*(c[j] + dx*d));
     }
   }
-#else
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int row = 0; row < T->nrows; row++) {
-    for (int i = 0; i < T->nell; i++) {
-      const double* restrict y = T->tabe[row];
-      const double* restrict c = T->cspl[row];
-
-      const int j     = T->qidx[i];
-      const double dx = T->qdel[i];
-
-      const double b = (y[j+1] - y[j])*inv_h - h*(c[j+1] + 2.0*c[j])/3.0;
-      const double d = (c[j+1] - c[j])/(3.0*h);
-
-      T->tab[row][i] = y[j] + dx*(b + dx*(c[j] + dx*d));
-    }
-  }
-#endif
 }
 
 
@@ -1355,7 +1333,6 @@ static void C_cs_tomo_limber_work(
   nonlinear_power_at_nodes(cn_all, nbin_cluster, npts_max, lx, nell,
     p_nonlinear);
 
-#ifndef COSMO2D_NOT_USE_SIMD
   // One (cluster bin, l) row of support nodes per task, read by the batch
   // reader of halo_cluster.c: pcm_1h_richness_fill takes the row's nodes
   // four per SIMDe vector and every richness bin at once (a node's place
@@ -1393,26 +1370,6 @@ static void C_cs_tomo_limber_work(
       pcm_1h_richness_fill(k_node, a_node, nsupport, p1h_rows);
     }
   }
-#else
-  #pragma omp parallel for collapse(3) schedule(static)
-  for (int ni = 0; ni < nbin_cluster; ni++) {
-    for (int i = 0; i < nell; i++) {
-      for (int p = 0; p < npts_max; p++) {
-        const cosmo_nodes* cn = &cn_all[ni];
-        if (p >= cn->nsupport) {
-          continue; // the one-halo term lives where W_c does
-        }
-        const double a  = cn->data[CN_A][p];
-        const double fK = cn->data[CN_FK][p];
-        const double k  = (lx[i] + 0.5)/fK;
-
-        for (int nl = 0; nl < nbin_richness; nl++) {
-          p_one_halo[ni][nl][i][p] = pcm_1h_richness(k, a, nl);
-        }
-      }
-    }
-  }
-#endif
 
   // --- 6. LIMBER SUM: one row (pair, richness) and one l per task ---
   #pragma omp parallel for collapse(2) schedule(static)
@@ -2358,7 +2315,7 @@ typedef struct
 //
 // The only sum is over l: every (row, theta bin) has its own.
 //
-// Why the reference loop (COSMO2D_NOT_USE_SIMD) is slow: at LMAX = 75000
+// Why a scalar one-output loop is slow: at LMAX = 75000
 // a C_l row and a kernel row are 600 kB each, far more than the L1 cache
 // holds. The reference loop makes one full pass over l per (row, theta
 // bin), so it reads the whole of Cl[row] again for every theta bin and
@@ -2388,28 +2345,7 @@ static void legendre_sums_cluster(
     double* w_vec           // output: [nrows][ntheta]
   )
 {
-#ifdef COSMO2D_NOT_USE_SIMD
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int row = 0; row < nrows; row++) {
-    for (int i = 0; i < ntheta; i++) {
-      // Local restrict pointers: without them the compiler cannot prove
-      // that Pl[i] and Cl[row] do not alias (pointer-to-pointer
-      // indirection inside a collapse(2) region) and emits
-      // reload-checking code; the body is a single multiply-add with
-      // nothing to hide that overhead behind (SKILL.md, pitfall 1)
-      const double* restrict pl = Pl[i];
-      const double* restrict cl = Cl[row];
-
-      double sum = 0.0;
-      #pragma omp simd reduction(+:sum)
-      for (int l = 1; l < lmax; l++) {
-        sum += pl[l]*cl[l];
-      }
-      w_vec[row*ntheta + i] = sum;
-    }
-  }
-#else
-  // Same sums as the reference loop above, 4 rows x 4 theta bins per
+  // Group the Legendre sums into 4 rows x 4 theta bins per
   // pass over l: `row` and `i` are the first row and the first theta bin
   // of the group, which covers rows row .. row+3 and bins i .. i+3.
   #pragma omp parallel for collapse(2) schedule(static)
@@ -2485,7 +2421,6 @@ static void legendre_sums_cluster(
       }
     }
   }
-#endif
 }
 
 

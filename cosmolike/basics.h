@@ -8,10 +8,8 @@
 #include <gsl/gsl_integration.h>
 #include <gsl/gsl_matrix.h>
 #include "structs.h"
-#ifndef COSMO2D_NOT_USE_SIMD
 #include "simde/x86/avx2.h"
 #include "simde/x86/fma.h"
-#endif
 #ifndef __COSMOLIKE_BASICS_H
 #define __COSMOLIKE_BASICS_H
 #ifdef __cplusplus
@@ -151,7 +149,6 @@ gsl_spline* malloc_gsl_spline(const int n);
 // ---------------------------------------------------------------------------
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n);
 
-#ifndef COSMO2D_NOT_USE_SIMD
 // ---------------------------------------------------------------------------
 // Sum all elements of a double array using AVX2 SIMD intrinsics (via
 // SIMDe for portability).
@@ -175,7 +172,6 @@ double simd_array_sum(
 double simd_horizontal_sum(
     simde__m256d four_lanes  // 256-bit register holding four doubles to sum
   );
-#endif
 
 // ---------------------------------------------------------------------------
 // Allocate a 1D array of int as a single 64-byte-aligned contiguous block.

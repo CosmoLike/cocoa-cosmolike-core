@@ -72,10 +72,9 @@ double pcm_1h_richness(const double k, const double a, const int nl);
 // out must not overlap). The read of the cluster-lensing Limber integrand:
 // the n points are the quadrature nodes of one multipole. A point's place
 // on the table is found once and serves every richness bin, four points
-// per SIMDe vector; every value is bitwise pcm_1h_richness's
-// (COSMO2D_NOT_USE_SIMD: that scalar call per point). Thread rule of
-// pcm_1h_richness: after cluster_warmup, calls from threaded loops only
-// read.
+// per SIMDe vector; every value is bitwise the scalar pcm_1h_richness
+// call at that point. After cluster_warmup, calls from threaded loops
+// only read the cached table, as in pcm_1h_richness.
 // ---------------------------------------------------------------------------
 void pcm_1h_richness_fill(const double* k, const double* a, const int n,
   double** out);

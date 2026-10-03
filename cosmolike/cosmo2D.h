@@ -139,7 +139,7 @@ void limber_fill_interp(
 // theta bin i: w_vec[nz*ntheta + i] = sum_{l=lmin}^{lmax-1} Pl[i][l]*Cl[nz][l].
 // Grouped (4 spectra x 4 theta bins per pass over l) so each C_l and
 // kernel array is read far fewer times; bitwise equal to the one-sum-
-// per-pass loop (kept under COSMO2D_NOT_USE_SIMD). Details in cosmo2D.c.
+// per-pass scalar reference. Details in cosmo2D.c.
 // Call outside parallel regions.
 void legendre_sums(
     const int NSIZE,   // number of spectra (rows of Cl)

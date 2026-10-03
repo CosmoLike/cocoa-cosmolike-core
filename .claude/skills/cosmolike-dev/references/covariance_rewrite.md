@@ -10,6 +10,8 @@ status available in a fresh core checkout; it does not replace the study.
 
 - New C code only in `cosmolike/covariances/`, with filenames ending
   `_cov.c`. Existing data-vector C files are not modified for this rewrite.
+  The later explicit request to retire the global SIMD switches is a
+  separate maintenance ticket; it does not relax this port boundary.
 - Covariance tables, grids, model choices and cache ownership are separate
   from the data vector. Reading public APIs is allowed. Private copies of
   internal helpers stay private to the covariance module when needed.
@@ -156,6 +158,15 @@ as one major ticket before beginning another implementation component.
   line. The external scalar baseline remains available for checking.
 - Remaining scientific limits are explicit: uniform-footprint pair area,
   independent catalogs, supplied operators/spectra, and no survey driver.
+
+The final rebuilt project run passed **399 tests across all seven
+projects**, including Roman's slow halo checks and the seven new LSST
+primitive checks. Another 24 debug checks passed for the common and
+cluster paths. No references were refrozen. Counts, logs and the separate
+SIMD-retirement review are recorded in
+[the SIMD retirement record](simd_retirement.md).
+The final comments also make the shared ell grid and disjoint writable
+rows explicit; vector names follow the existing `v2d`/`v` convention.
 
 ## Next gates, before a survey covariance can be used
 

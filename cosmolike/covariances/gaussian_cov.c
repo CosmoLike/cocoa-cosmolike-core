@@ -8,7 +8,8 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-// v2d follows cosmo2D.c's naming. Here its two lanes hold separate outputs.
+// v2d follows cosmo2D.c's naming: a 128-bit vector of two doubles.
+// The projection uses these two lanes for different output columns.
 typedef simde__m128d v2d;
 
 // ============================================================================
@@ -141,8 +142,10 @@ void gaussian_wick_cov(
 //   weighted_left - scratch [nleft][nell], owned and reused by the caller
 //   covariance - output [nleft][nright], overwritten
 //
-// Scratch and output must not overlap each other or any input. Input rows
-// may coincide. Row pointers support the house allocators' padded strides.
+// All rows must use the same multipole grid, including its first ell.
+// Scratch and output must not overlap each other or any input. Their rows
+// must also be disjoint: different workers can write different rows.
+// Read-only input rows may coincide. Row pointers support padded strides.
 // Cache invalidation:
 // No static cache. Geometry owners retain kernels and scratch across calls.
 // Thread safety:

@@ -71,7 +71,8 @@ pragma vectorizes strict floating-point arithmetic. Measure loop layouts,
 thread counts, precision, and generated instructions before choosing them.
 Covariance production code always uses SIMDe for its bulk arithmetic.
 Keep scalar comparisons in the external test harness, with no covariance
-preprocessor fallback or dependency on `COSMO2D_NOT_USE_SIMD`.
+preprocessor fallback. The same rule now applies to existing data-vector
+SIMDe paths; see `references/simd_retirement.md`.
 Krause and Takada papers are primary physics sources; CosmoCov code and the
 study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
@@ -102,12 +103,13 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    Only vectorize a loop after its algorithm is already minimal.
 4. **One change at a time.** Each change is validated and measured in
    isolation. Never bundle a refactor with an optimization in one commit.
-5. **Every risky optimization gets an escape hatch.** Preprocessor guards
-   (`COSMO2D_NOT_USE_SIMD`, `DONT_NZ_FAST_SUMBSAMPLE`, ...) must allow falling
-   back to the simple reference implementation. The fallback is also the
-   ground truth for debugging.
-   Covariance is the owner-requested exception: SIMDe is unconditional in
-   production; scalar references belong only to the external test harness.
+5. **Keep a checkable reference for optimizations.** Scalar comparison
+   implementations belong in external tests, not selectable production
+   branches. The owner retired `COSMO2D_NOT_USE_SIMD`, `HALO_NOT_USE_SIMD`
+   and the covariance scalar switch: optimized and debug builds always
+   compile the existing SIMDe paths. Keep scalar single-point kernels and
+   vector tails where the algorithm needs them. See the retirement record
+   for the pinned historical source and independent validation checks.
 6. **Preserve existing conventions.** Keep the file's variable naming, struct
    layout, and code structure when modifying. Renames happen only as their own
    dedicated, mechanical commits (e.g. `zdistr_photoz` → `nz_source_photoz`).
@@ -162,8 +164,8 @@ Run all of these before declaring a change correct:
   entries (small scales cut by the scale cuts, which notebooks and other
   masks do use) or in a branch the frozen point never reaches (table edges,
   large photo-z shifts, out-of-grid fallbacks). Compare the full unmasked
-  data vector against the reference build (or the `COSMO2D_NOT_USE_SIMD`
-  fallback) at several parameter points. Bitwise equality is the default
+  data vector against an external reference build at several parameter
+  points. Bitwise equality is the default
   expectation when the operation order is unchanged: it is free and it
   catches a single misplaced rounding. Where an optimization cannot be
   bitwise (a vector libm replacement, reordered sums), say so in a comment
@@ -227,8 +229,9 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
   vectorized. SIMDe intrinsics do compile to vector instructions (verify
   by disassembly; the `u_KS` S/Q sums, now in `future_port_unfinished/`:
   `v4d` mul then add). SIMDe and scalar
-  agree to ~1e-12, not bitwise; `COSMO2D_NOT_USE_SIMD` selects the
-  scalar path.
+  may agree to ~1e-12 rather than bitwise when operation order changes.
+  Keep the scalar comparison in the external test harness. Native fused
+  operations that preserve order should still be checked bitwise.
 - Mind IPC interpretation: this workload is memory-bound (~1.1 IPC, ~25% LLC
   miss rate is normal). Low IPC is not by itself a problem to "fix".
 - Landmarks (June 2026 snapshot; re-measure, don't trust): full benchmark
@@ -288,8 +291,7 @@ syntax.
    conditions directly in the `if`, one comparison or predicate per line.
    This also applies to assignments combining `&&` or `||`, not only guards.
    Use line breaks rather than unnecessary single-use boolean variables.
-   Do not
-   introduce a single-use `rebuild` flag for that condition.
+   Do not introduce a single-use `rebuild` flag for that condition.
 5. **Guided Context:** Add bite-sized, purposeful inline comments before
    mathematical equations or data-transformation loops explaining *why*
    the code is performing that action, not just *what* it is doing.
@@ -425,8 +427,9 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
   document the role index and use named local pointers inside the loop.
   Keep arrays with different shapes separate; do not add an allocator
   abstraction merely to combine them.
-- Every SIMD/fast-path block is wrapped in a preprocessor guard with the slow
-  reference path in the `#else`/guarded branch.
+- Compile production SIMDe paths unconditionally, including in debug
+  builds. Keep scalar comparison implementations in external tests; do not
+  reintroduce production SIMD opt-out macros.
 - Fortran (custom CAMB): all modifications fenced with `!VM BEGINS` /
   `!VM ENDS` so they survive upstream rebases.
 - Function naming for the established decompositions: `<name>_work` for
