@@ -168,7 +168,8 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
   nothing about it: check `-Rpass=loop-vectorize` /
   `-Rpass-missed=loop-vectorize` remarks before believing a loop is
   vectorized. SIMDe intrinsics do compile to vector instructions (verify
-  by disassembly; `u_KS` S/Q sums: `v4d` mul then add). SIMDe and scalar
+  by disassembly; the `u_KS` S/Q sums, now in `future_port_unfinished/`:
+  `v4d` mul then add). SIMDe and scalar
   agree to ~1e-12, not bitwise; `COSMO2D_NOT_USE_SIMD` selects the
   scalar path.
 - Mind IPC interpretation: this workload is memory-bound (~1.1 IPC, ~25% LLC
@@ -344,10 +345,11 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
 - `cfftlog/` — non-Limber pipeline; `cfftlog_ells_cocoa0` hoists the
   ell-independent forward FFT out of the convergence loop.
 - `halo.c` — halo model: Tinker multiplicity and bias (`tinker_alpha`,
-  `fnu`, `hb1nu`, `bias_norm`), NFW and KS gas profiles (`u_nfw_c` on the
-  f/G table; `u_KS` on `ks_upsample1d` tables), HOD tables (`hod_tables`:
-  `ngal`, `bgal`), spectra `p_gm`/`p_gg` (`p_mm`, `p_my`, `p_yy` are kept,
-  not compiled, in `future_port_unfinished/`). Every lazily built table
+  `fnu`, `hb1nu`, `bias_norm`), the NFW profile (`u_nfw_c` on the f/G
+  table), HOD tables (`hod_tables`: `ngal`, `bgal`), spectra `p_gm`/`p_gg`
+  (`p_mm`, `p_my`, `p_yy`, the KS gas profiles `u_KS`, `frac_bnd`,
+  `frac_ejc`, `u_y_ejc` and `u_c` are kept, not compiled, in
+  `future_port_unfinished/`). Every lazily built table
   is warmed by `halo_warmup`. Numerics: "halo.c numerics" below.
 - `basics.c` — allocators, `zero*d`, interpolation utilities
   (`spline_coeffs_uniform` + direct-index Horner is the house spline;

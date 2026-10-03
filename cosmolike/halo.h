@@ -41,8 +41,6 @@ double dlognudlogm(const double M);
 
 double u_nfw_c(const double c, const double k, const double m, const double a);
 
-double u_KS(double c, double k, const double rv);
-
 double ngal(const int ni, const double a);
 
 double bgal(const int ni, const double a);

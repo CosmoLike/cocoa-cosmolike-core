@@ -351,3 +351,48 @@ double p_mm(
                         Ntable.N_k_nlin, lim[1][0], lim[1][1], lim[1][2],
                         log(k)));
 }
+
+
+// u_c: the profile dispatcher p_mm reads for the HMx term A(a) u(k|M_min)
+// (NFW is its only option); no compiled caller is left, so it is kept here.
+// Restore with p_mm (declaration: double u_c(const double c, const double k,
+// const double m, const double a);).
+// ---------------------------------------------------------------------------
+// Normalized Fourier transform u(k|M) of the halo matter profile, with
+// the profile chosen by like.halo_model[3]: HALO_PROFILE_NFW (u_nfw_c)
+// is the only option, other values abort.
+//
+// Parameters:
+//   c - concentration r_Delta/r_s
+//   k - wavenumber in (c/H0)^-1
+//   m - halo mass in M_sun/h
+//   a - scale factor
+//
+// Returns:
+//   u(k|M), dimensionless; 1 at k -> 0
+// ---------------------------------------------------------------------------
+double u_c(
+    const double c, // concentration r_Delta/r_s
+    const double k, // wavenumber in (c/H0)^-1
+    const double m, // halo mass in M_sun/h
+    const double a  // scale factor (passed to the selected profile)
+  )
+{
+  double ans;
+
+  switch (like.halo_model[3])
+  {
+    case HALO_PROFILE_NFW:
+    {
+      ans = u_nfw_c(c, k, m, a);
+      break;
+    }
+    default:
+    {
+      log_fatal("like.halo_model[3] = %d not supported", like.halo_model[3]);
+      exit(1);
+    }
+  }
+
+  return ans;
+}

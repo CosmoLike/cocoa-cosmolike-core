@@ -44,17 +44,19 @@ typedef struct
   // --------------------------------------------------- 
   double halo_m[2];       // halo.c mass range [RANGE_MIN, RANGE_MAX]
                           // (M_sun/h)
-  double halo_uks_c[2];   // halo.c u_KS concentration range [RANGE_MIN,
+  double halo_uks_c[2];   // u_KS concentration range [RANGE_MIN,
                           // RANGE_MAX]; queries outside are clamped to it
+                          // (u_KS: future_port_unfinished/halo_tsz.c, not compiled)
 } lim;
 
-// Slots of Ntable.halo_uks_n[]: coarse node counts of the u_KS tables of
-// halo.c (both scaled by init_accuracy_boost)
+// Slots of Ntable.halo_uks_n[]: coarse node counts of the u_KS tables
+// (both scaled by init_accuracy_boost; u_KS is in
+// future_port_unfinished/halo_tsz.c, not compiled)
 #define UKS_N_LNC 0     // ln c axis
 #define UKS_N_LNZ 1     // ln z axis
 #define NUKS_N 2
 // Slots of Ntable.halo_uks_m[]: dense refinement factors of the u_KS
-// coarse -> dense splines of halo.c
+// coarse -> dense splines (future_port_unfinished/halo_tsz.c)
 #define UKS_M_LNC2D 0   // ln c axis of the 2D table
 #define UKS_M_W 1       // w axis
 #define UKS_M_LNZ 2     // ln z axis
@@ -127,12 +129,12 @@ typedef struct
   // HALO MODEL
   // ---------------------------------------------------
   // ---------------------------------------------------  
-  int halo_uks_n[NUKS_N];  // u_KS coarse nodes (halo.c; boosted); slots
+  int halo_uks_n[NUKS_N];  // u_KS coarse nodes (not compiled; boosted); slots
                            // UKS_N_* (above Ntab)
   int halo_nfw_n;   // u_nfw_c dense ln t nodes (halo.c; boosted)
   int halo_spline_pad; // exact coarse nodes beyond each end of every
-                       // halo.c coarse -> dense spline (u_KS axes,
-                       // tinker_alpha, coarse ln k of p_gm/p_gg)
+                       // halo.c coarse -> dense spline (tinker_alpha,
+                       // coarse ln k of p_gm/p_gg; the u_KS axes)
   int halo_uks_m[NUKS_M];  // u_KS dense refinement factors; slots UKS_M_*
   // mass-function table sizes, one entry per like.halo_model[0] option
   // (HMF_TINKER_2010: the tinker_alpha normalization table)
@@ -311,7 +313,7 @@ typedef struct
   uint64_t random_photoz_clustering;
   uint64_t random_ia;
   uint64_t random_galaxy_bias;
-  uint64_t random_gas;
+  uint64_t random_gas;      // gas parameters (u_KS, not compiled)
   uint64_t random_ia_halo;  // halo-model IA parameters (below)
   // ---------------------------------------------------
   // ---------------------------------------------------
@@ -385,7 +387,8 @@ typedef struct
   //gas[8] = gas_sigma_star;
   //gas[9] = gas_lgT_w;
   //gas[10] = gas_f_H;
-  double gas[MAX_SIZE_ARRAYS]; // Compton-Y related variables
+  double gas[MAX_SIZE_ARRAYS]; // Compton-Y related variables (read only by
+                               // future_port_unfinished/halo_tsz.c, not compiled)
   // ---------------------------------------------------
   // HALO-MODEL INTRINSIC ALIGNMENT (Fortuna et al. 2021; halo.c)
   // ---------------------------------------------------

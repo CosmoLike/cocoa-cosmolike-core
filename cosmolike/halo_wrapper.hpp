@@ -19,8 +19,8 @@ namespace cosmolike_interface
 //
 // halo.c computes the halo model: the halo mass function and halo bias
 // (Tinker et al. 2010 fits), the halo concentration and density profile
-// (NFW), the gas pressure profile (Komatsu-Seljak), the HOD galaxy
-// counts, and the power spectra assembled from them. Its functions are
+// (NFW), the HOD galaxy counts, and the power spectra assembled from
+// them. Its functions are
 // plain C. This layer makes them callable from Python, so the unit
 // tests (projects/roman_real/tests/test_halo.py) and notebooks can
 // evaluate them one number at a time.
@@ -57,7 +57,7 @@ namespace cosmolike_interface
 //            halo.c requires 0 < a < 1 (a = 1 aborts)
 //   ni, nj = lens (clustering) tomographic bins, counted from 0
 //
-// Dimensionless: u_nfw_c, u_KS, conc, hb1nu, fnu, dlognudlogm,
+// Dimensionless: u_nfw_c, conc, hb1nu, fnu, dlognudlogm,
 // bias_norm, bgal, ia_f_red_central, ia_window_2h.
 // ---------------------------------------------------------------------------
 
@@ -110,9 +110,6 @@ double bias_norm_cpp(const double a);
 // Fourier transform of the NFW density profile, normalized to 1 at k = 0
 double u_nfw_c_cpp(const double c, const double k, const double m,
                    const double a);
-
-// Fourier transform of the Komatsu-Seljak gas pressure profile (table)
-double u_KS_cpp(const double c, const double k, const double rv);
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -193,9 +190,6 @@ void set_nuisance_hod_cpp(
     const arma::Col<double> hod,
     const double gc
   );
-
-// gas (Compton-y) parameters nuisance.gas[0..n-1]
-void set_nuisance_gas_cpp(const arma::Col<double> gas);
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

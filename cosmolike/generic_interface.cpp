@@ -962,8 +962,8 @@ void init_halo_matter_field(const int halo_matter_field)
 //   Ntable.dCX_dlnk_nlnk[NODES_DENSE]           -> ceil(baseline * boost)
 //   Ntable.dCX_dlnk_nlnk[NODES_COARSE]  -> ceil(baseline * boost)
 //   Ntable.N_M[NODES_COARSE]            -> ceil(baseline * boost)
-//   Ntable.halo_uks_n[UKS_N_LNC]   -> ceil(baseline * boost)
-//   Ntable.halo_uks_n[UKS_N_LNZ]   -> ceil(baseline * boost)
+//   Ntable.halo_uks_n[UKS_N_LNC]   -> ceil(baseline * boost) (u_KS, not
+//   Ntable.halo_uks_n[UKS_N_LNZ]   -> ceil(baseline * boost)  compiled)
 //   Ntable.halo_nfw_n              -> ceil(baseline * boost)
 //   Ntable.halo_na_lens            -> ceil(baseline * boost)
 //   Ntable.halo_ia_na              -> ceil(baseline * boost)
@@ -2021,8 +2021,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 // distances and growth through the other set_ functions).
 //
 // When any input changed (fdiff): writes cosmology.Omega_m,
-// Omega_v = 1 - Omega_m, Omega_b (the gas profiles of the halo model
-// read it), Omega_nu = omega_nu_h2/h^2
+// Omega_v = 1 - Omega_m, Omega_b, Omega_nu = omega_nu_h2/h^2
 // (part of Omega_m; the halo model reads it under
 // like.halo_model[4] = HALO_FIELD_CB, init_halo_matter_field),
 // h0 = hubble/100 (input H0 in km/s/Mpc) and MGSigma = MGmu = 0, and
@@ -2034,8 +2033,7 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 //
 // Parameters:
 //   omega_matter - Omega_m today, massive neutrinos included
-//   omega_baryon - Omega_b today (0 = not provided; only the
-//                  Compton-y sector demands it)
+//   omega_baryon - Omega_b today (0 = not provided)
 //   hubble       - H0 (km/s/Mpc)
 //   omega_nu_h2  - omega_nu h^2 = Omega_nu h^2 of the massive neutrinos
 //                  today (CAMB's omnuh2; 0 = none; the default of the
