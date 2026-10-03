@@ -28,6 +28,9 @@ one-loop D^4 factors or sigma(M, z) = D sigma(M, 0), read
 `references/fable_review_growth_factor.md` (Fable 5, 2026-10-02): where
 each D comes from physically, every consumer with file:line, and why the
 table's sampling k (5e-4/Mpc, a horizon scale) matters at w != -1.
+The measurements behind it (dark-energy perturbations on/off, the k
+scan, neutrino mass dependence vs Eisenstein & Hu 1999) are in
+`references/growth_factor_measurements.md`.
 
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
