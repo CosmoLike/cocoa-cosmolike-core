@@ -1,7 +1,8 @@
 # Plan: growth factor and neutrino-aware halo quantities in cosmolike
 
-Status: proposal for the owner's approval (2026-10-02). Nothing is
-implemented. Evidence, saved in cosmolike_core
+Status (2026-10-03): Phases 2 and 3 implemented and validated in all seven
+project suites. Execution results and precision limitations are in
+`sigma_fftlog_implementation.md` beside this tracked plan. Evidence in cosmolike_core
 `.claude/skills/cosmolike-dev/references/`:
 
 | file | content |
@@ -35,8 +36,8 @@ every scale cosmolike models.
 
 ## Phase 2: sigma^2(M, a) from both fields (cosmo3D.c)
 
-Today one sigma^2(M) table is built at a = 1 from the field a global switch
-picks (`like.halo_model[4]`), and every consumer rescales it with the
+Before Phase 2, one sigma^2(M) table was built at a = 1 from the field a global switch
+picked (`like.halo_model[4]`), and consumers rescaled it with the
 total-matter D(a) at k0.
 
 1. Build two tables on the existing (ln M, a) grid:
@@ -60,10 +61,9 @@ total-matter D(a) at k0.
    built once), with the study's settings.
 3. Provide d ln sigma/d ln M per a as well.
 4. Request P_cb from CAMB whenever the run has halo consumers (HOD, cluster
-   counts, halo-model IA, the halo-model p_mm); today only with
-   `halo_matter_field: 1`. Every run has massive neutrinos (the minimum
-   mnu is 0.06 eV), so the condition is the halo consumers alone. The C++
-   hand-off (`set_linear_power_spectrum_cb`) already exists.
+   counts and halo-model IA). The implemented likelihoods request it
+   consistently so direct halo readers after any evaluation also work.
+   The C++ hand-off is `set_linear_power_spectrum_cb`.
 5. Check: with mnu = 0 both tables agree with D^2(a) sigma^2(M, 1) to the
    growth's own scale dependence (< 1e-4); the tests stay inside their band.
 
@@ -109,30 +109,53 @@ Check: with mnu = 0 every consumer reproduces Phase 2 bit for bit or within
 2. Mass-radius map: rho_cb for the halo statistics (Castorina et al. 2014,
    Castro et al. 2023) (owner, 2026-10-02). The halo-model p_mm is an open
    question (below).
-3. Phase 1 approved: growth factor at k = 0.05/Mpc in the seven
-   likelihoods (owner, 2026-10-02).
+3. Phase 1 approved and done: growth factor at k = 0.05/Mpc in the seven
+   likelihoods and the notebook utils (committed 2026-10-03; all tests
+   pass, roman_real halo_reference.json re-recorded). Phases 2 and 3
+   approved and implemented in the following session.
 4. p_my and p_yy are not compiled: kept in cosmolike_core
    future_port_unfinished/ (owner, 2026-10-02).
-5. Open, literature searched (Fable, fable_review_concentration_growth.md):
+5. Approved by the owner (2026-10-03), after the literature review
+   (Fable, fable_review_concentration_growth.md):
    no paper says which growth factor the D^1.15 of the Bhattacharya 2013
    concentration takes with massive neutrinos (the fit has no neutrino
    calibration). In the fit the D of the prefactor and the D inside nu are
    one function, the one carrying sigma(M, z) from z = 0 to z. Recommended:
    D_cb(M, a) = sigma_cb(M, a)/sigma_cb(M, 1) in both places (it follows
    from the Phase 2 table). Size: c moves by 0.14-1.3% (mnu = 0.06-0.6 eV,
-   z = 0.3-1) against the fit's own +-20% cosmology dependence. Awaiting the
-   owner.
+   z = 0.3-1) against the fit's own +-20% cosmology dependence. Adopted
+   for the concentration prefactor as well as the peak height.
 6. p_mm (halo-model matter spectrum, no likelihood uses it) moves to
    future_port_unfinished/ (owner, 2026-10-02); the covariance rewrite
    builds its own P_hm next to D_hm.
 7. sigma^2(M, a) by FFTLog (owner, 2026-10-02; Phase 2, step 2).
+8. Always use cb for halo statistics; retire halo_matter_field and its
+   initializer (owner, 2026-10-03). Keep total-matter variance as a
+   diagnostic reader. The density of the M200m overdensity definition
+   and the lensing mass weight remains total matter.
+9. Reuse serially created FFTW plans and per-thread work arrays as in
+   cosmo2D.c. Keep complete (field,a) rows after measured comparison
+   with split collapse(3) inverse transforms at 1, 4 and 8 threads.
+10. Do not push; the owner pushes. Prefer simple guards over recovery
+    machinery. Explain the numerical steps to an advanced undergraduate,
+    with one variable per line and the code's existing cache style.
+
+11. Retire COSMO3D_ASSUME_PIECEWISE_UNIFORM: every build uses direct
+    piecewise-uniform indexing, with metadata always built by the setters.
+    Delete the binary-search branches (owner, 2026-10-03).
+
+12. Keep OpenBLAS at one thread permanently, including both covariance
+    inversion paths and after initialization. Explicit CosmoLike OpenMP
+    loops own the thread team (owner, 2026-10-03).
+13. Retire the aggressive compiler mode after covariance-inverse failures;
+    keep optimized strict IEEE and debug builds. Reject the old environment
+    flag and document unsupported fast-math flags (owner, 2026-10-03).
 
 ## Decisions for the owner (open)
 
 1. des_cluster reference scripts (`tests/reference/ref_cosmology.py` and
    three others mirror the DES reference code at k0 = 5e-4/Mpc): follow
    Phase 1, or keep the external convention?
-2. Phases 2 and 3 as scoped (with p_mm, p_my, p_yy out of the compiled
-   code, Phase 3 covers the halo statistics and the HOD spectra only)?
-3. The D^1.15 factor of the Bhattacharya concentration: the recommended
-   cb growth at halo scales (decision taken item 5)?
+   This update preserves that external non-halo convention. Its halo
+   reference integrates the evolving cb spectrum directly, independently
+   of either growth-table convention.
