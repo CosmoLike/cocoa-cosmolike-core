@@ -14,8 +14,11 @@ ellipticity dispersions per component. The CAMB arrays are shared inputs;
 the reference contractions are independent NumPy computations.
 
 The raw mask file is `inputs/cap_mask_cl.txt`, with L=0..4096 and
-C_0=Omega^2/(4 pi). The same cap must eventually supply the pair-count
-noise geometry; that real-space step has not been implemented here.
+C_0=Omega^2/(4 pi). The subsequent [pair-geometry ticket](covariance_mask.md)
+implements noise geometry from this same raw-mask convention. It finds that
+the pilot's cutoff leaves 1.05e-5 pair-area error and up to 1.30e-6 SSC shell
+error; the full survey gate must include a refined mask. This diagnostic
+archive retains its original cutoff so the results remain reproducible.
 
 The diagnostic uses 24 logarithmic band centers from ell=30 to 50000,
 all ten field pairs, and no data-vector exclusions. The Gaussian mode

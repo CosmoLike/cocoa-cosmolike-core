@@ -58,6 +58,10 @@ states the observed-shear convention, angular quadrature checks and geometry
 timings. The survey driver must still validate its spectrum convention and
 multipole cutoff before using these operators for an actual covariance.
 
+`mask_cov.c` converts the raw footprint spectrum into ordered-pair areas for
+analytic pure noise. Its [direct-geometry checks](../../.claude/skills/cosmolike-dev/references/covariance_mask.md)
+measure the different mask-resolution requirements of pair noise and SSC.
+
 This is **not yet a survey covariance generator**. All-pairs non-Limber
 spectra, spin-operator integration, masks, SSC, connected non-Gaussian
 covariance, dataset inputs and file output remain to be integrated and

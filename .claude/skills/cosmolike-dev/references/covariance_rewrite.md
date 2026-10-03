@@ -204,6 +204,12 @@ project run. It builds unit-normalized full-sky spin-bin averages and exact
 integer Fourier bands. This isolated library does not relink the projects;
 their survey-operator integration and accuracy gates remain open.
 
+The [mask pair-geometry ticket](covariance_mask.md) adds three isolated
+optimized/debug tests, for 435 distinct passing tests including the earlier
+project run. Direct cap geometry exposes a 1.05e-5 pair-area error at the
+pilot's mask cutoff; the refined mask also moves SSC shell variances by up
+to 1.30e-6. Mask resolution is part of the still-open survey accuracy gate.
+
 1. Complete the pinned 2-lens/2-source configuration's convergence study.
    The overlapping samples, signed magnification, per-bin noise, CAMB dump
    and raw spherical-cap mask are available outside git. The preliminary

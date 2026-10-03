@@ -257,6 +257,10 @@ void realspace_operator_cov(
 // Every band must fit within the supplied integer grid. All rows, including
 // columns outside each band, are overwritten. No allocation or static cache.
 // Each worker owns one band; two SIMD lanes fill adjacent multipoles.
+//
+// Cache invalidation:
+// No static state. The caller can reuse these weights until the integer
+// multipole grid or inclusive band limits change.
 // ---------------------------------------------------------------------------
 void bandpower_operator_cov(
     const int nband,           // number of Fourier bands
