@@ -32,7 +32,7 @@ The measurements behind it (dark-energy perturbations on/off, the k
 scan, neutrino mass dependence vs Eisenstein & Hu 1999) are in
 `references/growth_factor_measurements.md`.
 Before changing sigma^2(M), the halo-model consumers (mass function,
-bias, concentration, HOD, cluster counts, p_mm/p_my/p_yy) or anything
+bias, concentration, HOD, cluster counts, p_mm) or anything
 that chooses P_cb vs P_mm, read `references/fable_review_neutrino_halos.md`
 (Fable 5, literature verified with arXiv section/figure): which field each
 consumer needs with massive neutrinos, and the state of the halo.c fits.
@@ -456,8 +456,7 @@ integral family:
   M_min / M_0 does not help. The linear read in a (<= 1.4e-5) dominates
   at 128 nodes: raising hdi buys nothing for `ngal` / `bgal` until
   `N_a` is raised.
-- Mass integrals of the spectra (`p_mm`, `p_my`, `p_yy`, `p_gm`,
-  `p_gg`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
+- Mass integrals of the spectra (`p_mm`, `p_gm`, `p_gg`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
   0 / 1 / 2 / >= 3. Chi2 ladder at 64 nodes vs 1024 (2026-09-29, HOD
   gg+gs 3x2pt, per-point fiducial): roman_real 8.6e-6, lsst_y1 8.2e-11;
   spectrum builds at 64 nodes: p_mm 0.04 s, p_gm 0.06 s, p_gg 0.05 s
@@ -483,9 +482,9 @@ integral family:
   1024-node build, per-point generated fiducial): 512 -> 4.4e-11,
   256 -> 5.4e-10, 128 -> 2.1e-8; largest single datavector entry moves
   by 1.2e-8 (256) / 8.6e-8 (128) relative. 256 is therefore also
-  viable if the builds must halve again; keep any y-probe (p_my/p_yy)
-  likelihood in mind before dropping further - their chi2-level
-  tolerance is untested. The integrands read `sigma2` and
+  viable if the builds must halve again. The y spectra (p_my/p_yy) are
+  kept, not compiled, in future_port_unfinished/halo_tsz.c; restoring
+  them needs their own chi2-level tolerance check. The integrands read `sigma2` and
   `dlognudlogm` by linear interpolation in ln M (a kink per cell,
   algebraic GL convergence); the gather bullet above is the way to
   make a small rule exact at every k.

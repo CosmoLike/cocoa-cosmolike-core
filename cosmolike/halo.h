@@ -53,10 +53,6 @@ double p_gm(const double k, const double a, const int ni);
 
 double p_gg(const double k, const double a, const int ni, const int nj);
 
-double p_my(const double k, const double a);
-
-double p_yy(const double k, const double a);
-
 void set_HOD(const int ni);
 
 // halo-model intrinsic alignment (Fortuna et al. 2021), one IA

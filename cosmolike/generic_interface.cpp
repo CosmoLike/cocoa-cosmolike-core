@@ -905,8 +905,8 @@ void init_include_halo_IA(const int include_halo_IA)
 // r_Delta, the matter windows M/rho_m, the lensing kernels and the 2-halo
 // spectra stay total matter. One switch for every consumer: sigma2 and
 // dlognudlogm (cosmo3D.c, halo.c), the HOD tables, p_gm, p_gg, the
-// halo-model IA and the cluster mass tables (halo_cluster.c). p_mm, p_my
-// and p_yy abort under 1 (their 2-halo term is total-matter only).
+// halo-model IA and the cluster mass tables (halo_cluster.c). p_mm
+// aborts under 1 (its 2-halo term is total-matter only).
 // Likelihood yaml key: halo_matter_field.
 //
 // Cache invalidation:
@@ -2022,8 +2022,8 @@ void init_ggl_exclude(arma::Col<int> ggl_exclude)
 // distances and growth through the other set_ functions).
 //
 // When any input changed (fdiff): writes cosmology.Omega_m,
-// Omega_v = 1 - Omega_m, Omega_b (the Compton-y halo-model sector reads
-// it; the y spectra abort while it is 0), Omega_nu = omega_nu_h2/h^2
+// Omega_v = 1 - Omega_m, Omega_b (the gas profiles of the halo model
+// read it), Omega_nu = omega_nu_h2/h^2
 // (part of Omega_m; the halo model reads it under
 // like.halo_model[4] = HALO_FIELD_CB, init_halo_matter_field),
 // h0 = hubble/100 (input H0 in km/s/Mpc) and MGSigma = MGmu = 0, and

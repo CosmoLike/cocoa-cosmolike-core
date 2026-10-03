@@ -323,8 +323,8 @@ double dlognudlogm_cpp(
 // is unbiased with respect to itself; halo.c tinker_alpha). Over the
 // tabulated mass range it is below 1, 0.80 at z = 0 and 0.79 at z = 1
 // with the defaults, because the light halos under M_min hold a sizable
-// share of the matter. The 2-halo sums of halo.c p_mm, p_my and p_yy
-// run over the tabulated range and add the missing 1 - bias_norm(a)
+// share of the matter. The 2-halo sum of halo.c p_mm
+// runs over the tabulated range and adds the missing 1 - bias_norm(a)
 // back as halos of mass exactly M_min, the additive correction of Mead
 // et al. 2020 (2005.00009 App. A), so that P_2h -> P_lin as k -> 0
 // with the mass function left as fitted.
@@ -527,7 +527,7 @@ double bgal_cpp(
 //
 // halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
 // Ntable.N_k_nlin nodes over [limits.a_min, 0.9999999] x
-// [limits.k_cH0[RANGE_MIN], limits.k_cH0[RANGE_MAX]] for p_mm, p_my, p_yy; per lens
+// [limits.k_cH0[RANGE_MIN], limits.k_cH0[RANGE_MAX]] for p_mm; per lens
 // bin over that bin's a-range for p_gm, p_gg - and interpolates
 // bilinearly. The first call pays the whole table build (a mass
 // integral per node); later calls are lookups.
@@ -581,117 +581,6 @@ arma::Col<double> p_mm_cpp(
   arma::Col<double> res(k.n_elem, arma::fill::zeros);
   for (arma::uword i=0; i<k.n_elem; i++) {
     res(i) = p_mm(k(i), a);
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Matter-Compton-y cross power spectrum at one (k, a). The 1-halo term
-// carries the low-k damping of 2009.01858 Eq. 17 (Table 2 scale).
-//
-// Calls halo.c p_my (table rebuilt when cosmology.random, Ntable.random
-// or nuisance.random_gas changes); the gas parameters must be set first
-// (set_nuisance_gas_cpp).
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1; k <= 0 aborts (spdlog::critical + exit)
-//   a - scale factor inside [limits.a_min, 0.9999999]
-//
-// Returns:
-//   P_my(k, a) in U = G (M_sun/h)^2/(c/H0) (halo.c GAS PROFILES banner)
-// ---------------------------------------------------------------------------
-double p_my_cpp(
-    const double k,   // wavenumber in (c/H0)^-1
-    const double a    // scale factor
-  )
-{
-  check_wavenumber("p_my_cpp", k);
-  return p_my(k, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Matter-Compton-y cross power spectrum at many k, one a (serial loop
-// over the scalar call).
-//
-// Parameters:
-//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
-//   a - scale factor inside [limits.a_min, 0.9999999]
-//
-// Returns:
-//   arma::Col of P_my(k(i), a), same length and order as k
-// ---------------------------------------------------------------------------
-arma::Col<double> p_my_cpp(
-    const arma::Col<double> k,   // wavenumbers in (c/H0)^-1
-    const double a               // scale factor
-  )
-{
-  check_wavenumbers("p_my_cpp", k);
-  arma::Col<double> res(k.n_elem, arma::fill::zeros);
-  for (arma::uword i=0; i<k.n_elem; i++) {
-    res(i) = p_my(k(i), a);
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Compton-y auto power spectrum at one (k, a), with the same low-k
-// damping of the 1-halo term as p_my.
-//
-// Calls halo.c p_yy (table rebuilt on the same keys as p_my).
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1; k <= 0 aborts (spdlog::critical + exit)
-//   a - scale factor inside [limits.a_min, 0.9999999]
-//
-// Returns:
-//   P_yy(k, a) in U^2 (c/H0)^-3, U = G (M_sun/h)^2/(c/H0) (halo.c GAS
-//   PROFILES banner)
-// ---------------------------------------------------------------------------
-double p_yy_cpp(
-    const double k,   // wavenumber in (c/H0)^-1
-    const double a    // scale factor
-  )
-{
-  check_wavenumber("p_yy_cpp", k);
-  return p_yy(k, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Compton-y auto power spectrum at many k, one a (serial loop over the
-// scalar call).
-//
-// Parameters:
-//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
-//   a - scale factor inside [limits.a_min, 0.9999999]
-//
-// Returns:
-//   arma::Col of P_yy(k(i), a), same length and order as k
-// ---------------------------------------------------------------------------
-arma::Col<double> p_yy_cpp(
-    const arma::Col<double> k,   // wavenumbers in (c/H0)^-1
-    const double a               // scale factor
-  )
-{
-  check_wavenumbers("p_yy_cpp", k);
-  arma::Col<double> res(k.n_elem, arma::fill::zeros);
-  for (arma::uword i=0; i<k.n_elem; i++) {
-    res(i) = p_yy(k(i), a);
   }
   return res;
 }
@@ -920,7 +809,7 @@ double Pdelta_cpp(
 // two cache keys:
 //
 //   nuisance.random_galaxy_bias -> ngal, bgal, p_gm, p_gg tables
-//   nuisance.random_gas         -> u_KS, p_my, p_yy tables
+//   nuisance.random_gas         -> u_KS tables
 //
 // A setter that changes a parameter must therefore draw a new key
 // (RandomNumber, generic_interface.hpp), or the next call would return

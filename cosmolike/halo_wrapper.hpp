@@ -95,8 +95,8 @@ double dlognudlogm_cpp(const double M);
 // -----------------------------------------------------------------------------
 
 // integral of b(nu) f(nu) over the tabulated mass range; 1 - bias_norm is
-// the HMx additive 2-halo correction of the I11 sums of halo.c p_mm,
-// p_my, p_yy (table in a)
+// the HMx additive 2-halo correction of the I11 sum of halo.c p_mm
+// (table in a)
 double bias_norm_cpp(const double a);
 
 // ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ double bgal_cpp(const int ni, const double a);
 // ---------------------------------------------------------------------------
 // HALO-MODEL POWER SPECTRA (cached 2D tables in (a, ln k))
 //
-// m = matter, y = Compton-y (thermal SZ), g = galaxies. Scalar overloads
+// m = matter, g = galaxies. Scalar overloads
 // return one value; array overloads batch over k at one a.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -142,18 +142,6 @@ double bgal_cpp(const int ni, const double a);
 double p_mm_cpp(const double k, const double a);
 
 arma::Col<double> p_mm_cpp(const arma::Col<double> k, const double a);
-
-// -----------------------------------------------------------------------------
-
-double p_my_cpp(const double k, const double a);
-
-arma::Col<double> p_my_cpp(const arma::Col<double> k, const double a);
-
-// -----------------------------------------------------------------------------
-
-double p_yy_cpp(const double k, const double a);
-
-arma::Col<double> p_yy_cpp(const arma::Col<double> k, const double a);
 
 // -----------------------------------------------------------------------------
 
