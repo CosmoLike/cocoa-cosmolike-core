@@ -78,6 +78,29 @@ study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
 do not build elaborate recovery paths. Never push; local commits are allowed.
 
+**Survey accuracy and Roman (owner clarification, 2026-10-03).** The
+old study's 1e-6 per-entry reference-refinement target is not a universal
+production covariance requirement. Do not transfer the data-vector
+|delta chi2| < 0.2 rule to covariance convergence. Assess numerical
+refinement through marginalized Figure of Merit and parameter errors,
+with positive-definiteness checks and relative covariance-mode diagnostics.
+The owner's suggested 1e-3 scale is a starting numerical target, not a
+literature-mandated accuracy of the physical covariance model. See
+`references/covariance_accuracy.md` for papers, proposals and limitations.
+Keep tight algebra, units and determinism checks separate.
+The immediate target is **roman_real**, with eight lens and eight source
+bins. Eifler et al., arXiv:2004.05271, provides survey guidance; do not
+replace the project's layout with the paper's ten-bin Fourier analysis.
+See `references/covariance_roman.md`. Every new all-pairs cross-bin and
+non-Limber C implementation belongs in `cosmolike/covariances/`.
+Start runtime estimates with small representative components, separating
+shared tables from work repeated per bin pair; do not start an hours-long
+full covariance just to estimate its cost. See
+`references/covariance_roman_timing.md` for the measured pilot and its limits.
+Then establish a stable high-resolution numerical reference and use Fisher
+FoM/errors to select practical settings. A chain is not needed for the
+initial local Fisher test; check several cosmologies before generalizing.
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 

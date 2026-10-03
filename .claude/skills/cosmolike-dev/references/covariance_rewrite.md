@@ -211,10 +211,14 @@ pilot's mask cutoff; the refined mask also moves SSC shell variances by up
 to 1.30e-6. Mask resolution is part of the still-open survey accuracy gate.
 All 43 covariance tests pass together with the external libraries enabled
 (`results/combined_covariance_final_tests.log`). The final radial diagnostic
-with a common refined mask changes total modes by at most 1.043e-6, but
-still fails the SSC componentwise gate. This does not freeze any setting.
+with a common refined mask changes total modes by at most 1.043e-6.
+The old SSC componentwise production gate
+is superseded by [the accuracy protocol](covariance_accuracy.md).
+Roman FoM convergence has not yet been measured.
 
-1. Complete the pinned 2-lens/2-source configuration's convergence study.
+1. Complete the pinned 2-lens/2-source configuration's convergence study
+   and the requested [Roman real-space target](covariance_roman.md), using
+   FoM, parameter errors and covariance validity as the scientific tests.
    The overlapping samples, signed magnification, per-bin noise, CAMB dump
    and raw spherical-cap mask are available outside git. The preliminary
    projected diagnostic does not yet meet the full numerical contract.

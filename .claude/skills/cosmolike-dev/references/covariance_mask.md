@@ -1,5 +1,11 @@
 # Raw-mask pair geometry for pure-noise covariance
 
+**Accuracy policy update (2026-10-03):** historical mentions below of a
+1e-6 production refinement gate are superseded by
+[the FoM-based protocol](covariance_accuracy.md). The measurements are
+retained; small-entry relative errors are diagnostics, not a universal
+production blocker.
+
 `mask_cov.c/.h` computes ordered-pair angular areas from the same raw mask
 power spectrum used by SSC. The scalar-bin operator retains every mask mode,
 including its monopole and dipole. These are footprint modes, irrespective

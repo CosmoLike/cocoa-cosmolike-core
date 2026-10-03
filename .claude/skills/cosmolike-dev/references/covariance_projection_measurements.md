@@ -1,5 +1,11 @@
 # SSC/cNG survey projection: preliminary measurements
 
+**Accuracy policy update (2026-10-03):** historical mentions below of a
+1e-6 production refinement gate are superseded by
+[the FoM-based protocol](covariance_accuracy.md). The measurements are
+retained; small-entry relative errors are diagnostics, not a universal
+production blocker.
+
 This is a Phase-0 diagnostic, **not a production covariance** and not the
 full study acceptance gate. The external code in
 `test/covariance_reference/` connects the tested halo, angular, response

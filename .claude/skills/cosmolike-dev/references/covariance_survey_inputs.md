@@ -1,5 +1,11 @@
 # Covariance radial inputs and all-pairs Limber spectra
 
+**Accuracy policy update (2026-10-03):** historical mentions below of a
+1e-6 production refinement gate are superseded by
+[the FoM-based protocol](covariance_accuracy.md). The measurements are
+retained; small-entry relative errors are diagnostics, not a universal
+production blocker.
+
 The first survey integration ticket adds `spectra_cov.c/.h` and the small
 `generic_interface_cov.cpp/.hpp` binding in `cosmolike/covariances/`.
 Only LSST links the binding at this stage. No existing core C file changed.
