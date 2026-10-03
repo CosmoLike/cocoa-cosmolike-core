@@ -31,6 +31,11 @@ table's sampling k (5e-4/Mpc, a horizon scale) matters at w != -1.
 The measurements behind it (dark-energy perturbations on/off, the k
 scan, neutrino mass dependence vs Eisenstein & Hu 1999) are in
 `references/growth_factor_measurements.md`.
+Before changing sigma^2(M), the halo-model consumers (mass function,
+bias, concentration, HOD, cluster counts, p_mm/p_my/p_yy) or anything
+that chooses P_cb vs P_mm, read `references/fable_review_neutrino_halos.md`
+(Fable 5, literature verified with arXiv section/figure): which field each
+consumer needs with massive neutrinos, and the state of the halo.c fits.
 
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
