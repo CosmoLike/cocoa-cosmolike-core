@@ -209,6 +209,10 @@ optimized/debug tests, for 435 distinct passing tests including the earlier
 project run. Direct cap geometry exposes a 1.05e-5 pair-area error at the
 pilot's mask cutoff; the refined mask also moves SSC shell variances by up
 to 1.30e-6. Mask resolution is part of the still-open survey accuracy gate.
+All 43 covariance tests pass together with the external libraries enabled
+(`results/combined_covariance_final_tests.log`). The final radial diagnostic
+with a common refined mask changes total modes by at most 1.043e-6, but
+still fails the SSC componentwise gate. This does not freeze any setting.
 
 1. Complete the pinned 2-lens/2-source configuration's convergence study.
    The overlapping samples, signed magnification, per-bin noise, CAMB dump

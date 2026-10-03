@@ -115,6 +115,36 @@ of the componentwise gate. It adds no change to the data-vector reader.
 The experiment lives in `smooth_power_inputs.py`; its paired runs and
 comparison are `survey_projection_smooth*` and `smooth_power*_refinement`.
 
+The next run doubles radial sampling again, from 256 to 512 nodes per panel,
+with L_max=32768 for the mask. The coarse SSC is recomputed from its archived
+response/window arrays using that same refined mask before comparison.
+Mass and angular counts remain 512 and 256 per panel respectively.
+
+| Contribution | Maximum change / diagonal geometric mean | Maximum relative change of nonzero entries |
+|---|---:|---:|
+| Gaussian | 5.644e-7 | 5.920e-7 |
+| Isotropic SSC | 4.124e-6 | 7.031e-4 |
+| Projected-tree SSC | 4.869e-6 | 9.177e-4 |
+| cNG | 4.701e-6 | 5.365e-7 |
+
+No exactly zero entry changes. cNG can have a larger diagonal-scaled error
+than its relative error because a cumulant need not satisfy the covariance
+correlation bound by itself. Near-zero SSC cross terms remain more sensitive
+than the bulk matrix. Total generalized eigenvalues are
+[0.9999995283, 1.0000010424], and the refined total correlation minimum is
+0.00638893. The Gaussian and cNG per-entry checks pass for this finite test;
+SSC and the full study gate still do not. This is a radial/mask refinement,
+not a convergence certificate for every other accuracy knob or cosmology.
+
+Reproduce with `compare_survey_refinement.py`, using the
+`survey_projection_smooth_256.npz` and
+`survey_projection_smooth_512_mask32768.npz` archives. The full comparison is
+`results/smooth_power_512_refinement.json`. Original archives are retained.
+Input file checksums and source commits are in
+`inputs/manifest_covariance.json`. A separate read-through of this comparison
+checked the common-mask substitution, row ordering, exact-zero handling and
+the two distinct error normalizations; no error floor hides SSC zero crossings.
+
 ## Model differences that cannot be ignored
 
 All comparisons use the same positive total diagnostic covariance as the
