@@ -27,17 +27,17 @@ namespace cosmolike_interface
 //
 // One Python call travels
 //
-//   ci.p_mm(k, a)                         (Python)
-//     -> m.def("p_mm", ...)               (project interface.cpp)
-//     -> p_mm_cpp(k, a)                   (this layer: checks the input,
+//   ci.p_gm(k, a, ni)                     (Python)
+//     -> m.def("p_gm", ...)               (project interface.cpp)
+//     -> p_gm_cpp(k, a, ni)               (this layer: checks the input,
 //                                          loops over arrays)
-//     -> p_mm(k, a)                       (halo.c: reads a cached table)
+//     -> p_gm(k, a, ni)                   (halo.c: reads a cached table)
 //     -> on first use, or after a cache key changed: the table is
 //        refilled (the halo-model mass integrals at every (a, ln k) node)
 //
 // Names: each function below is the C function's name plus _cpp, and
 // its Python name is the C name itself (as for the sigma2 and
-// scale-cut bindings): halo.c p_mm -> p_mm_cpp -> ci.p_mm.
+// scale-cut bindings): halo.c p_gm -> p_gm_cpp -> ci.p_gm.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -95,8 +95,8 @@ double dlognudlogm_cpp(const double M);
 // -----------------------------------------------------------------------------
 
 // integral of b(nu) f(nu) over the tabulated mass range; 1 - bias_norm is
-// the HMx additive 2-halo correction of the I11 sum of halo.c p_mm
-// (table in a)
+// the HMx additive 2-halo correction of a halo-model I11 sum
+// (future_port_unfinished/halo_pmm.c; table in a)
 double bias_norm_cpp(const double a);
 
 // ---------------------------------------------------------------------------
@@ -139,12 +139,6 @@ double bgal_cpp(const int ni, const double a);
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-double p_mm_cpp(const double k, const double a);
-
-arma::Col<double> p_mm_cpp(const arma::Col<double> k, const double a);
-
-// -----------------------------------------------------------------------------
-
 double p_gm_cpp(const double k, const double a, const int ni);
 
 arma::Col<double> p_gm_cpp(
@@ -176,7 +170,7 @@ arma::Col<double> p_gg_cpp(
 // linear growth factor D(a), D(1) = 1
 double growfac_cpp(const double a);
 
-// linear matter power spectrum (the 2-halo term of p_mm multiplies it)
+// linear matter power spectrum
 double p_lin_cpp(const double k, const double a);
 
 // nonlinear matter power spectrum (the 2-halo term of p_gm/p_gg uses it)

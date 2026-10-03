@@ -47,8 +47,6 @@ double ngal(const int ni, const double a);
 
 double bgal(const int ni, const double a);
 
-double p_mm(const double k, const double a);
-
 double p_gm(const double k, const double a, const int ni);
 
 double p_gg(const double k, const double a, const int ni, const int nj);

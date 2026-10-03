@@ -323,8 +323,9 @@ double dlognudlogm_cpp(
 // is unbiased with respect to itself; halo.c tinker_alpha). Over the
 // tabulated mass range it is below 1, 0.80 at z = 0 and 0.79 at z = 1
 // with the defaults, because the light halos under M_min hold a sizable
-// share of the matter. The 2-halo sum of halo.c p_mm
-// runs over the tabulated range and adds the missing 1 - bias_norm(a)
+// share of the matter. The 2-halo sum of a halo-model matter spectrum
+// (future_port_unfinished/halo_pmm.c) runs over the tabulated range and
+// adds the missing 1 - bias_norm(a)
 // back as halos of mass exactly M_min, the additive correction of Mead
 // et al. 2020 (2005.00009 App. A), so that P_2h -> P_lin as k -> 0
 // with the mass function left as fitted.
@@ -519,73 +520,17 @@ double bgal_cpp(
 //   P_XY(k) = int dn u_X u_Y           (1-halo)
 //           + I_X(k) I_Y(k) P(k)       (2-halo)
 //
-//   u_X = the profile of field X in one halo (matter, gas pressure,
-//         galaxies through the HOD)
+//   u_X = the profile of field X in one halo (matter, galaxies through
+//         the HOD)
 //   I_X = int dn b u_X, the bias-weighted mean profile, plus the HMx
 //         term that stands in for the halos below limits.halo_m[RANGE_MIN]
 //         (halo.c POWER SPECTRA banner)
 //
 // halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
-// Ntable.N_k_nlin nodes over [limits.a_min, 0.9999999] x
-// [limits.k_cH0[RANGE_MIN], limits.k_cH0[RANGE_MAX]] for p_mm; per lens
-// bin over that bin's a-range for p_gm, p_gg - and interpolates
-// bilinearly. The first call pays the whole table build (a mass
+// Ntable.N_k_nlin nodes over [limits.k_cH0[RANGE_MIN],
+// limits.k_cH0[RANGE_MAX]] in k, per lens bin over that bin's a-range for
+// p_gm, p_gg - and interpolates bilinearly. The first call pays the whole table build (a mass
 // integral per node); later calls are lookups.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Matter-matter power spectrum at one (k, a).
-//
-// Calls halo.c p_mm (table rebuilt when cosmology.random or
-// Ntable.random changes).
-//
-// Parameters:
-//   k - wavenumber in (c/H0)^-1; k <= 0 aborts (spdlog::critical + exit)
-//   a - scale factor inside [limits.a_min, 0.9999999]
-//
-// Returns:
-//   P_mm(k, a) in (c/H0)^3
-// ---------------------------------------------------------------------------
-double p_mm_cpp(
-    const double k,   // wavenumber in (c/H0)^-1
-    const double a    // scale factor
-  )
-{
-  check_wavenumber("p_mm_cpp", k);
-  return p_mm(k, a);
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Matter-matter power spectrum at many k, one a: the scalar call in a
-// serial loop (after the first call builds the table, each entry is one
-// bilinear lookup).
-//
-// Parameters:
-//   k - wavenumbers in (c/H0)^-1; an empty array or any k(i) <= 0 aborts
-//   a - scale factor inside [limits.a_min, 0.9999999]
-//
-// Returns:
-//   arma::Col of P_mm(k(i), a) in (c/H0)^3, same length and order as k
-// ---------------------------------------------------------------------------
-arma::Col<double> p_mm_cpp(
-    const arma::Col<double> k,   // wavenumbers in (c/H0)^-1
-    const double a               // scale factor
-  )
-{
-  check_wavenumbers("p_mm_cpp", k);
-  arma::Col<double> res(k.n_elem, arma::fill::zeros);
-  for (arma::uword i=0; i<k.n_elem; i++) {
-    res(i) = p_mm(k(i), a);
-  }
-  return res;
-}
-
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

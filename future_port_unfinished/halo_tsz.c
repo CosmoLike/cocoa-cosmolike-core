@@ -8,7 +8,8 @@
 // (fnu_params_at, hb1nu_params_at, bias_norm, conc) and the GAS PROFILES
 // section (u_KS, frac_bnd, frac_ejc, u_y_ejc, nuisance.gas), which stays in
 // halo.c. To use them again:
-//   1. paste the two functions back into halo.c, after p_mm;
+//   1. paste the two functions back into halo.c, in the HALO MODEL POWER
+//      SPECTRA section (p_mm, their template, is in halo_pmm.c here);
 //   2. declare them in halo.h (double p_my(const double k, const double a);
 //      double p_yy(const double k, const double a););
 //   3. move the wrappers of halo_tsz_wrapper.cpp back into halo_wrapper.cpp

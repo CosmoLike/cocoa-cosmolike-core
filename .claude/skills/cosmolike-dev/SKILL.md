@@ -32,7 +32,7 @@ The measurements behind it (dark-energy perturbations on/off, the k
 scan, neutrino mass dependence vs Eisenstein & Hu 1999) are in
 `references/growth_factor_measurements.md`.
 Before changing sigma^2(M), the halo-model consumers (mass function,
-bias, concentration, HOD, cluster counts, p_mm) or anything
+bias, concentration, HOD, cluster counts) or anything
 that chooses P_cb vs P_mm, read `references/fable_review_neutrino_halos.md`
 (Fable 5, literature verified with arXiv section/figure): which field each
 consumer needs with massive neutrinos, and the state of the halo.c fits.
@@ -346,7 +346,8 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
 - `halo.c` — halo model: Tinker multiplicity and bias (`tinker_alpha`,
   `fnu`, `hb1nu`, `bias_norm`), NFW and KS gas profiles (`u_nfw_c` on the
   f/G table; `u_KS` on `ks_upsample1d` tables), HOD tables (`hod_tables`:
-  `ngal`, `bgal`), spectra `p_mm`/`p_gm`/`p_gg`. Every lazily built table
+  `ngal`, `bgal`), spectra `p_gm`/`p_gg` (`p_mm`, `p_my`, `p_yy` are kept,
+  not compiled, in `future_port_unfinished/`). Every lazily built table
   is warmed by `halo_warmup`. Numerics: "halo.c numerics" below.
 - `basics.c` — allocators, `zero*d`, interpolation utilities
   (`spline_coeffs_uniform` + direct-index Horner is the house spline;
@@ -459,7 +460,8 @@ integral family:
   M_min / M_0 does not help. The linear read in a (<= 1.4e-5) dominates
   at 128 nodes: raising hdi buys nothing for `ngal` / `bgal` until
   `N_a` is raised.
-- Mass integrals of the spectra (`p_mm`, `p_gm`, `p_gg`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
+- Mass integrals of the spectra (`p_gm`, `p_gg`; `p_mm` measured too
+  before it moved to `future_port_unfinished/`): 64 / 128 / 256 / 1024 (the largest tabulated size) at hdi
   0 / 1 / 2 / >= 3. Chi2 ladder at 64 nodes vs 1024 (2026-09-29, HOD
   gg+gs 3x2pt, per-point fiducial): roman_real 8.6e-6, lsst_y1 8.2e-11;
   spectrum builds at 64 nodes: p_mm 0.04 s, p_gm 0.06 s, p_gg 0.05 s
@@ -520,7 +522,7 @@ Trapezoid rules, uniform in a log variable:
   switch gap), ~1e-10 elsewhere.
 - Refill cost ~15-40 ms at 4 threads for l <= 6 (M2); 10-15 ms for l = 2.
 - Mass nodes below the IA HOD's M_0 carry no red satellites and are
-  skipped in the kernel sums (about half at the p_mm mass range);
+  skipped in the kernel sums (about half of the spectra's mass range);
   mapping the rule from M_0 upward (as p_gm) is an open improvement.
 
 ### Tables and splines

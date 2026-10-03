@@ -905,8 +905,7 @@ void init_include_halo_IA(const int include_halo_IA)
 // r_Delta, the matter windows M/rho_m, the lensing kernels and the 2-halo
 // spectra stay total matter. One switch for every consumer: sigma2 and
 // dlognudlogm (cosmo3D.c, halo.c), the HOD tables, p_gm, p_gg, the
-// halo-model IA and the cluster mass tables (halo_cluster.c). p_mm
-// aborts under 1 (its 2-halo term is total-matter only).
+// halo-model IA and the cluster mass tables (halo_cluster.c).
 // Likelihood yaml key: halo_matter_field.
 //
 // Cache invalidation:
