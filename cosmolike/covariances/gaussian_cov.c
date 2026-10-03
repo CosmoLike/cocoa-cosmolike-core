@@ -8,6 +8,9 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
+// v2d follows cosmo2D.c's naming. Here its two lanes hold separate outputs.
+typedef simde__m128d v2d;
+
 // ============================================================================
 // GAUSSIAN COVARIANCE AT INTEGER MULTIPOLES
 // ============================================================================
@@ -197,15 +200,15 @@ void gaussian_project_cov(
       const double* restrict kernel2 = kernel_right[right2];
       const double* restrict kernel3 = kernel_right[right3];
       const double* weighted_rows[tile_rows];
-      simde__m128d totals_low[tile_rows];
-      simde__m128d totals_high[tile_rows];
+      v2d vtotals_low[tile_rows];
+      v2d vtotals_high[tile_rows];
 
       for (int row=0; row<tile_rows; row++) {
         const int index = left+row < nleft ? left+row : nleft-1;
         weighted_rows[row] = weighted_left[index];
         // setzero_pd starts two independent output sums at zero.
-        totals_low[row] = simde_mm_setzero_pd();
-        totals_high[row] = simde_mm_setzero_pd();
+        vtotals_low[row] = simde_mm_setzero_pd();
+        vtotals_high[row] = simde_mm_setzero_pd();
       }
 
       for (int node=0; node<nell; node++) {
@@ -213,9 +216,9 @@ void gaussian_project_cov(
         // argument in lane 0: low holds columns 0,1 and high holds 2,3.
         // Keeping the pairs separate also avoids repeatedly splitting and
         // joining a 256-bit value on machines with 128-bit vector registers.
-        const simde__m128d kernels_low = simde_mm_set_pd(
+        const v2d vkernels_low = simde_mm_set_pd(
           kernel1[node], kernel0[node]);
-        const simde__m128d kernels_high = simde_mm_set_pd(
+        const v2d vkernels_high = simde_mm_set_pd(
           kernel3[node], kernel2[node]);
 
         for (int row=0; row<tile_rows; row++) {
@@ -223,14 +226,14 @@ void gaussian_project_cov(
           // Scalar equation, once for each right bin:
           //   total += weighted_left[left+row][ell] * kernel_right[right][ell].
           // set1_pd repeats the left-bin weight on both lanes.
-          const simde__m128d weight = simde_mm_set1_pd(weighted[node]);
+          const v2d vweight = simde_mm_set1_pd(weighted[node]);
           // fmadd evaluates weight*kernel + total with one rounding on
           // native FMA/NEON, matching the scalar fma rather than rounding
           // the product first. No lane is added to a different lane.
-          totals_low[row] = simde_mm_fmadd_pd(
-            weight, kernels_low, totals_low[row]);
-          totals_high[row] = simde_mm_fmadd_pd(
-            weight, kernels_high, totals_high[row]);
+          vtotals_low[row] = simde_mm_fmadd_pd(
+            vweight, vkernels_low, vtotals_low[row]);
+          vtotals_high[row] = simde_mm_fmadd_pd(
+            vweight, vkernels_high, vtotals_high[row]);
         }
       }
 
@@ -241,8 +244,8 @@ void gaussian_project_cov(
         double results[4];
         // storeu_pd copies two lanes to ordinary doubles without an
         // alignment requirement. The second pair fills columns 2 and 3.
-        simde_mm_storeu_pd(results, totals_low[row]);
-        simde_mm_storeu_pd(results+2, totals_high[row]);
+        simde_mm_storeu_pd(results, vtotals_low[row]);
+        simde_mm_storeu_pd(results+2, vtotals_high[row]);
         for (int column=0;
              column<4
              && right+column<nright;
