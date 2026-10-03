@@ -1,0 +1,51 @@
+#ifndef COSMOLIKE_SPECTRA_COV_H
+#define COSMOLIKE_SPECTRA_COV_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// A snapshot of the radial inputs to a covariance calculation. Distances
+// use c/H0; weights use its inverse. Field order is lenses, then sources.
+// No data-vector exclusion or scale cut is applied to these fields.
+struct radial_cov {
+  int nnode;            // number of common radial quadrature nodes
+  int nlens;            // number of lens fields
+  int nsource;          // number of source fields
+  double** geometry;   // [4][node]: a, chi, f_K, positive dchi weight
+  double*** window;    // [3][field][node]: density, lensing, intrinsic
+};
+
+// Construct a snapshot from the current core cosmology and nuisance state.
+// Recreate it after changing that state. Edges ascend in a, strictly inside
+// (0,1); each interval gets a tabulated Gauss-Legendre rule. The caller
+// must include the foreground and the complete redshift support.
+struct radial_cov* radial_inputs_cov(
+    const int npanel,       // number of integration intervals
+    const double* a_edges,  // npanel+1 increasing scale factors
+    const int nquad,        // nodes per panel: 64, 96, 128, 256, 512, 1024
+    const int nwindow,      // uniform-a nodes for cumulative efficiencies
+    const int include_ia    // 0 ignores IA; 1 includes the core NLA amplitude
+  );
+
+void free_radial_cov(struct radial_cov* radial); // release this snapshot
+
+// Evaluate every field pair on one common radial rule. This is a Limber
+// spectrum builder, not a non-Limber approximation at small multipoles.
+// Output rows use i-major triangular order: (0,0),(0,1),...,(1,1),...
+// Spectra are in the core harmonic convention, before the extra spin
+// conversion in the real-space data-vector kernels. Noise is not included.
+// No cache: the caller owns the ell grid and output, and calls serially.
+void limber_spectra_cov(
+    const struct radial_cov* radial, // immutable snapshot
+    const int nell,                 // number of supplied ell nodes
+    const double* ell,              // finite multipoles >= 1
+    const int linear,               // 0 = Pdelta, 1 = linear total matter
+    const int include_rsd,          // same lens RSD field for every pair
+    double* const* spectra          // output [nfield*(nfield+1)/2][nell]
+  );
+
+#ifdef __cplusplus
+}
+#endif
+#endif
