@@ -73,8 +73,15 @@ results are appended after the sequential rebuild and test pass.
 
 ## Complete project regression pass
 
-Every project was rebuilt and checked sequentially on 2026-10-04. The
-ordinary OpenMP build passed all covariance and data-vector suites:
+Every project's installed interface was checked sequentially on
+2026-10-04. A later build-log audit found that roman_fourier, roman_kl
+and des_y3 had skipped recompilation because the runner unset a
+lower-case flag instead of the upper-case skip flag. Their suite results
+below therefore do not validate this covariance change. The other four
+projects did rebuild. Fresh covariance and frozen-example checks follow
+the correction, recorded with the shared-block optimization.
+
+The installed interfaces passed these covariance and data-vector suites:
 
 | Project | Covariance tests | Data-vector tests |
 |---|---:|---:|

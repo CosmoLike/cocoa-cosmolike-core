@@ -1,6 +1,16 @@
 # Complete survey covariance scaling (2026-10-04)
 
-## Baseline after Gaussian block scheduling
+## Installed-library baseline
+
+Build-provenance correction: the external runner unset lower-case project
+names, but the skip-compilation flags are upper-case except for DES
+cluster. Its build logs for roman_fourier, roman_kl and des_y3 were empty:
+those projects used their previously installed libraries. The other four
+projects did rebuild. The table remains a measurement of the binaries
+actually run, but it is not a uniform Gaussian-only optimization baseline.
+Repository commit IDs alone do not identify a loaded library's source.
+The subsequent shared-block comparison rebuilds the affected interfaces
+explicitly and retains the saved arrays as an exact arithmetic reference.
 
 Apple M2 Pro, BLAS fixed at one thread. Each case has one excluded
 warm-up per thread count and three complete matrix recomputations.
@@ -39,7 +49,9 @@ All G, SSC, cNG, total and mean arrays are bitwise identical across
 jitter or clipping. These checks establish deterministic implementation
 and positivity for the supplied cases, not convergence of Fisher errors.
 
-Eight-thread scaling remains poor in several cases. LSST real-space
+The installed-library eight-thread scaling is poor in several cases;
+do not attribute that to the new Gaussian wrapper in the three projects
+with skipped builds. LSST's build was current: its real-space
 shared matter tables take 4.2168/2.4830/1.5987/1.4358 s at 1/2/4/8
 workers. Its final SSC/cNG projection instead takes
 0.3017/0.3280/0.3557/0.5333 s. The latter repeatedly calls the small
