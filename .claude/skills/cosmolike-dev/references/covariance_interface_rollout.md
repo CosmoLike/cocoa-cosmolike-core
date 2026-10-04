@@ -298,3 +298,47 @@ notebook and build had finished; its scope and results are recorded in
 The later high-boost memory audit and bitwise-preserving spectrum batching
 are recorded in `covariance_limber_batches.md`. That change passes the
 updated 116 covariance checks; it does not change the data-vector C code.
+
+## Shared C assembly and YAML production entry point (2026-10-04)
+
+`assembly_cov.c` now owns whole Gaussian matrices and connected catalog
+projections. Notebook wrappers only validate, allocate and copy Armadillo
+arrays around these C calls. The production `ci.covariance` submodule
+borrows C-contiguous NumPy inputs directly and returns owned C-order arrays.
+Its component and cluster interfaces call the same existing C kernels;
+there is no separate numerical implementation in either C++ layer.
+
+`command_line.py` reads familiar `theory`, `params`, `sampler: evaluate`
+and `output` blocks through Cobaya's YAML reader and parameterization.
+Every prior parameter requires an explicit evaluate override. Covariance
+controls inherit the project's default YAML. The seven thin runners select
+this production backend; DES cluster selects the joint angular adapter.
+The current runner computes one matrix in one process and disables Cobaya
+MPI initialization. Future Python subblock dispatch remains separate work.
+
+All seven interfaces rebuilt successfully. Their covariance suites passed
+162 checks in total: 108 LSST Y1, 49 DES cluster, and one for each other
+project. The shared adapter tests compare real/Fourier G, SSC, cNG, total
+and signal arrays exactly between production and notebook entry points at
+one and eight threads. Direct-input checks cover read-only arrays, rejected
+non-contiguous layouts and result ownership across later calls.
+
+All seven actual YAML examples passed configuration and command-help
+checks. Roman examples retain their own notebook cosmologies. Full LSST
+Y1 and Roman real CLI runs matched the existing notebook archives exactly
+for G, SSC, cNG, total and signal. On the Apple M2 Pro with eight OpenMP
+threads, these sequential single runs took 67.55 s and 72.94 s for covariance
+construction, excluding initialization and file writing. These are workflow
+checks, not a repeated optimization or x86 scaling benchmark. They do not
+establish integration/Fisher convergence or add missing physical terms.
+
+Public documentation separates production interfaces from notebook
+wrappers and explains Armadillo through its Python notebook API purpose.
+Core and project README rendering, local links, explicit anchors and math
+delimiters pass. The seven disabled-build dry runs omit every covariance
+source and object, including the new production files.
+
+A DEBUG build with undefined-behavior and floating-division sanitizers
+passed 16 Gaussian, array-boundary and complete small-survey parity checks.
+No sanitizer error occurred. The optimized LSST library was restored and
+verified against its saved bytes after the test.
