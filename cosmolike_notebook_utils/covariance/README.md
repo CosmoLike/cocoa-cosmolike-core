@@ -262,7 +262,12 @@ bins are split into panels to resolve their high-multipole oscillations.
 Low-level tests may also use 64 nodes; smaller and generated rules are
 rejected. Compare, for example,
 `survey.configuration(accuracy_boost=1, integration_accuracy=1)` with the
-level-zero baseline to isolate quadrature refinement.
+level-zero baseline to isolate quadrature refinement. Include levels 2, 3
+and 4 before accepting the default: compare it directly with level 4 and
+check stability from level 3 to 4. Hold interpolation settings fixed during
+this scan, then test their refinement separately. Save Gaussian, SSC and
+connected terms as well as the total matrix, so cancellations between terms
+cannot conceal a numerical error.
 
 Numerical convergence must be measured for the intended
 physical model; matching a data-vector cutoff does not certify a covariance.

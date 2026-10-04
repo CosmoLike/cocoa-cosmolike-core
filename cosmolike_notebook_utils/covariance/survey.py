@@ -351,7 +351,7 @@ def fourier_covariance(interface, settings, rows, noise, progress=None):
         settings = common resolved mapping plus int32 band_first and
             band_last arrays with inclusive integer band endpoints >= 2.
             Bands may overlap. Their endpoints are scientific choices,
-            held fixed when accuracy_boost changes integration resolution.
+            held fixed under interpolation and quadrature refinements.
         rows = int32 [nobservable,3], (type,A,B). Type 0 is shear E-E,
             2 galaxy-E and 3 galaxy-galaxy. Do not include xi- rows: an
             E-mode spectrum supplies both real-space shear correlations.

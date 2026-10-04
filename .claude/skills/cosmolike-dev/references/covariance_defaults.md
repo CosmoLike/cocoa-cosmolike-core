@@ -78,7 +78,16 @@ Evidence is in external `covariance_reference/results/default_lsst_ng_refined`
 and `gsl_lsst_level0`/`gsl_lsst_level1`; these paths are development records,
 not public README instructions.
 
-Pending: all-project regression results; levels 2/3/4, including default
+The linked interfaces were rebuilt sequentially. Frozen data-vector examples
+passed in LSST Y1 (12), Roman real (12), Roman Fourier (12), Roman KL (12),
+DES Y3 (24), DES Y1 x Planck (12) and DES cluster (16), without changing
+frozen references. Each non-LSST galaxy project also passed its covariance
+adapter test. DES cluster passed all 46 covariance tests. The totals are
+143 covariance tests and 100 frozen data-vector tests across seven projects.
+Notebook outputs were cleared because they described the retired pilot;
+the revised cells have not been executed as a full notebook.
+
+Pending: levels 2/3/4, including default
 versus level4 and level3 versus4; converged non-Gaussian interpolation and
 cutoff checks; validated project baselines and quiet eight-thread timing
 table. Keep G, SSC, cNG and total comparisons separate. Do not equate a
