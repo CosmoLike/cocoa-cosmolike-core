@@ -13,8 +13,10 @@
 
 This package prepares inputs for CoCoA's covariance components and assembles
 requested matrix blocks. The caller supplies its initialized project
-interface; the package never imports a survey's compiled module or loads
-a likelihood covariance. Each project supplies an
+interface; the package never imports a survey's compiled module. Forecast
+assembly does not load likelihood data. The separate comparison reader loads
+a supplied covariance only when requested by the notebook. Each project
+supplies an
 `EXAMPLE_EVALUATE_COVARIANCE.ipynb`.
 
 A covariance describes the joint scatter of measured two-point functions.
@@ -30,7 +32,7 @@ fluctuations larger than the survey. See
 
 | File | Calculation and responsibility |
 | --- | --- |
-| `accuracy.py` | One `accuracy_boost` resolves the signal/mask cutoffs and radial, angular and window sampling together. |
+| `accuracy.py` | Refine interpolation grids and multipole cutoffs with `accuracy_boost`; choose quadrature rules independently with `integration_accuracy`. |
 | `gaussian.py` | Batched all-pairs Limber spectra, complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
@@ -41,6 +43,7 @@ fluctuations larger than the survey. See
 | `counts_cluster.py` | Integrate supplied selected abundances into count means, Poisson noise and SSC. Project the separate non-SSC count–matter-spectrum cross terms from selected halo moments. This is not a full cluster forecast. |
 | `transform_cluster.py` | Apply the cluster-lensing localization to both sides of a supplied joint covariance, including every count and two-point cross block. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
+| `likelihood.py` | Read a dataset's total covariance and scale-cut mask; select identical entries from computed components and the supplied matrix, retaining original indices. |
 | `diagnostics.py` | Check symmetry, diagonal variances, raw/correlation eigenvalues and generalized covariance ratios. No clipping or diagonal correction is applied. |
 | `reference/` | Independent NumPy/SciPy/mpmath algorithms for component tests. Production assembly never calls these oracles. |
 | [`../plot_covariances.py`](../plot_covariances.py) | Matplotlib correlation comparisons, component maps/histograms and scale-dependent standard deviations. |

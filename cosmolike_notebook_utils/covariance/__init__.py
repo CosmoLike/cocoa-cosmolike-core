@@ -1,7 +1,8 @@
 """Notebook tools for covariance components and survey assembly.
 
 The caller supplies an initialized project interface. This package never
-imports a project's compiled module and never loads a likelihood covariance.
+imports a project's compiled module. Reading a supplied likelihood covariance
+requires an explicit call to the comparison tools in likelihood.py.
 Survey numbers, redshift files and modeling choices belong to the notebook
 or project example. The underlying C components retain OpenMP and SIMDe;
 Python prepares common inputs and assembles the requested matrix blocks.
