@@ -76,6 +76,33 @@ Debug evidence is `/tmp/check_cluster_spectra_debug.py` and
 `/tmp/cluster-spectra-debug-test.log` in this session. The analytic tests
 are tracked in `des_cluster/tests/covariance/test_spectra_cluster.py`.
 
+## Complete two-point Gaussian pilot
+
+The external `cluster_gaussian_pilot.py` assembles all 140 measured
+two-point rows (2800 angular entries) from 22 internal fields, including
+all crossed spectra. This omits the 12 counts, SSC, cNG and Y transform;
+it is not a completed 2812-entry joint forecast. Settings are ell_max
+10000, mask_ell_max 4096, 64 radial nodes per panel, 128 angular nodes and
+nwindow 4097. No controlled timing is claimed.
+
+The Gaussian correlation matrix has minimum eigenvalue 0.00742072.
+Cholesky succeeds both before and after diagonal rescaling, with maximum
+correlation-normalized reconstruction residuals 1.70e-15 and 1.78e-15.
+The diagonal ranges from 3.79e-15 to 48.3863. At that dynamic range the
+NumPy raw eigensolver reports -3.83e-15, while SciPy's evr and evd drivers
+give positive minima 2.32e-15 and 2.27e-15. This is a conditioning issue
+in the raw eigenproblem, not evidence that the underlying pilot is
+indefinite. No matrix entry or eigenvalue was repaired.
+
+Consequently the shared `covariance_modes` positivity flag now uses the
+correlation eigenproblem, an invertible diagonal congruence preserving
+inertia. Raw eigenvalues remain available as diagnostics. Its regression
+tests preserve known positive and negative modes across extreme unit
+changes, reject zero/negative diagonals, and check input immutability.
+All nine notebook-tools checks pass. A separate manual review checked
+the distinction between rescaling and regularization, explained the
+quadratic-form argument, and retained the limits of this Gaussian pilot.
+
 ## Didactic review
 
 The manual review followed the tests before starting another major ticket.

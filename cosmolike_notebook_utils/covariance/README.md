@@ -186,5 +186,13 @@ errors and marginalized Fisher Figures of Merit at representative
 cosmologies. The data-vector $`|\Delta\chi^2|<0.2`$ rule is not a covariance
 convergence criterion.
 
+`covariance_modes` tests positivity using the correlation matrix: each
+observable is divided by its own standard deviation. This invertible
+change of units preserves the signs of the covariance modes. It is useful
+when shear, clustering and counts have very different variances: rounding
+in a raw eigensolver can overwhelm the smallest eigenvalues. The function
+also returns the raw eigenvalues for inspection. Rescaling neither removes
+negative modes nor adds variance to make a matrix pass.
+
 The notebook computes full G+SSC+cNG forecasts in both spaces. All-pairs
 non-Limber corrections and production FoM convergence remain separate work.

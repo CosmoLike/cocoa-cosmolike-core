@@ -40,21 +40,35 @@ def covariance_modes(matrix):
         failure, but a total covariance must give nonnegative variance to
         every linear combination. An invertible total must be positive
         definite. Raw largest eigenvalues do not rank cosmological information.
+
+        positive_definite uses the correlation matrix when all variances
+        are positive. Dividing each observable by its standard deviation
+        is an invertible change of units: it preserves the number of
+        positive and negative modes. It also prevents a large-variance
+        block from setting the numerical error scale of tiny raw eigenvalues.
+        Raw eigenvalues are still returned, unchanged, as diagnostics.
+        No negative mode is clipped and no regularization is performed.
     """
     values = _symmetric_matrix(matrix=matrix)
     diagonal = np.diag(v=values)
     eigenvalues = np.linalg.eigvalsh(a=values)
     correlation_eigenvalues = None
+    positive_definite = False
     if np.all(diagonal > 0.0):
-        normalization = np.sqrt(diagonal[:, None]*diagonal[None, :])
-        correlation = values/normalization
+        # C = D R D, with D the positive standard deviations. The quadratic
+        # forms v^T C v and (D v)^T R (D v) have identical possible signs.
+        # Normalize one axis at a time so the product of two very small or
+        # very large variances cannot underflow or overflow before its root.
+        deviation = np.sqrt(diagonal)
+        correlation = (values/deviation[:, None])/deviation[None, :]
         correlation_eigenvalues = np.linalg.eigvalsh(a=correlation)
+        positive_definite = bool(correlation_eigenvalues[0] > 0.0)
     return {
         "minimum_diagonal": float(np.min(diagonal)),
         "positive_diagonal": bool(np.all(diagonal > 0.0)),
         "eigenvalues": eigenvalues,
         "correlation_eigenvalues": correlation_eigenvalues,
-        "positive_definite": bool(eigenvalues[0] > 0.0),
+        "positive_definite": positive_definite,
     }
 
 
@@ -86,4 +100,3 @@ def compare_covariances(matrix, reference):
             np.max(np.abs(eigenvalues-1.0))
         ),
     }
-
