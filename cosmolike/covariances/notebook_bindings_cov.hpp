@@ -2,6 +2,7 @@
 #define COSMOLIKE_NOTEBOOK_BINDINGS_COV_HPP
 
 #include <algorithm>
+#include <carma.h>
 #include <armadillo>
 #include <pybind11/numpy.h>
 

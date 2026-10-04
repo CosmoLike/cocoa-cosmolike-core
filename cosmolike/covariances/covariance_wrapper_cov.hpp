@@ -1,12 +1,13 @@
 #ifndef COSMOLIKE_COVARIANCE_WRAPPER_COV_HPP
 #define COSMOLIKE_COVARIANCE_WRAPPER_COV_HPP
 
+#include <carma.h>
 #include <armadillo>
 #include <pybind11/pybind11.h>
 
 namespace cosmolike_interface {
 // Notebook numeric inputs and outputs use Armadillo's physical axes.
-// CARMA performs the NumPy conversion only at the binding boundary.
+// Bindings copy Python inputs and use CARMA to export numeric results.
 // Dict/tuple results group the named matrices and cubes documented below.
 
 pybind11::dict covariance_limber_spectra_cpp(
