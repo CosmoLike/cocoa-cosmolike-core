@@ -93,6 +93,9 @@ two-point response conventions and test all internal field cross spectra.
 Selected mass moments and their exclusive-category convention are in
 `references/covariance_cluster_moments.md`; do not replace one membership
 probability by its powers when several legs belong to the same halo.
+Joint cluster-lensing localization and its deterministic zero rows are
+recorded in `references/covariance_cluster_localization.md`. Transform
+every cross block before applying the likelihood's scale selection.
 
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.

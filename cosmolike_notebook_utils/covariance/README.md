@@ -37,6 +37,7 @@ fluctuations larger than the survey. See
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
 | `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
 | `counts_cluster.py` | Integrate supplied selected abundances into count means, Poisson noise and SSC. Project the separate non-SSC count–matter-spectrum cross terms from selected halo moments. This is not a full cluster forecast. |
+| `transform_cluster.py` | Apply the cluster-lensing localization to both sides of a supplied joint covariance, including every count and two-point cross block. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
 | `diagnostics.py` | Check symmetry, diagonal variances, raw/correlation eigenvalues and generalized covariance ratios. No clipping or diagonal correction is applied. |
 | `reference/` | Independent NumPy/SciPy/mpmath algorithms for component tests. Production assembly never calls these oracles. |
@@ -119,6 +120,24 @@ linear-bias galaxy approximation. It does not supply discrete cluster
 legs or shared-object noise terms. A full cluster joint matrix also
 needs cluster SSC/cNG, count–cluster-spectrum terms, consistent catalog
 normalizations and the project's estimator transforms.
+
+Cluster lensing can be expressed as the localized statistic
+$`Y(R)=\Sigma(R)-\Sigma(R_{\max})`$. The angular transformation removes
+the dependence on mass interior to the measured radius. If a mean vector
+changes as $`y=A x`$, its covariance changes as $`C_y=A C_x A^{\mathsf T}`$.
+Here $`A`$ acts on cluster-lensing angular rows and leaves the other
+measurements unchanged. Consequently a count–lensing block receives one
+transformation, and a lensing–lensing block receives two. See
+[Park, Rozo & Krause, Eqs. 9–12](https://arxiv.org/abs/2004.07504) and
+[the DES covariance model, Sec. II.4](https://arxiv.org/abs/2503.13631).
+
+`transform_cluster.py` receives the same angular operator used by the
+project's mean calculation. Supply every unmasked angular bin: the
+derivative stencil can read neighboring bins outside the final scale
+selection. The last output bin is exactly zero because it subtracts
+$`\Sigma(R_{\max})`$ from itself. That known null mode remains in the
+returned matrix. Apply the likelihood's selection afterwards; no
+eigenvalue correction is part of the transformation.
 
 `survey.realspace_covariance` and `survey.fourier_covariance` receive an initialized project interface,
 resolved integration settings, the observable row map and catalog noise.
