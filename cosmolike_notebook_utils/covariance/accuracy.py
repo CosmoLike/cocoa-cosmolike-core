@@ -37,7 +37,9 @@ def covariance_accuracy(accuracy_boost=1):
     angular nodes, an extra near-opposite angular panel per doubling, and
     a smaller centered derivative step. These changes require refinement
     checks against the underlying power-spectrum interpolation. They do
-    not supply the missing full survey SSC/cNG physics.
+    not certify the full survey SSC/cNG model. The same boost increases
+    ng_ell_nodes, the samples used to interpolate the matter trispectrum
+    in ln(ell+1/2). Scientific Fourier-band endpoints remain fixed.
     """
     if not isinstance(accuracy_boost, (int, np.integer)):
         raise ValueError("accuracy_boost must be one of the integers 1, 2, 4, 8")
@@ -48,6 +50,7 @@ def covariance_accuracy(accuracy_boost=1):
         "accuracy_boost": boost,
         "ell_max": 10000*boost,
         "mask_ell_max": 4096*boost,
+        "ng_ell_nodes": 16*boost,
         "radial_nquad": 64*boost,
         "angle_nquad": 128*boost,
         "nwindow": 4096*boost+1,

@@ -104,3 +104,23 @@ Manual didactic review checked field crossings, real/Fourier noise,
 owned outputs, loop overviews, scratch lifetime, one comparison per line,
 and the 80-column C++ limit. No new SIMD intrinsic or C parallel loop was
 introduced: the wrapper uses the existing documented production C calls.
+
+## Shared Fourier forecast assembly
+
+`survey.fourier_covariance` shares the real-space matter/response/radial
+pipeline. Integer (2ell+1)-weighted bands replace angular kernels; Fourier
+rows omit xi-. Gaussian includes finite-band pure noise. SSC/cNG retain
+all crossed bins. Empty probe groups are skipped before C contractions.
+The source transfer is explicit: Fourier averages core C_ell directly and
+uses sqrt[(ell-1)ell(ell+1)(ell+2)]/(ell+1/2)^2 per NG source leg. Real space
+retains the existing conversion needed to match Cocoa's angular transform;
+no data-vector C convention was changed. Estimator/convention validation
+beyond these defined predictions remains part of the physical survey gate.
+
+Tests merge adjacent bands and compare the directly computed wider band
+against H C H^T for every G/SSC/cNG/total entry. Mean signals also match
+direct core-spectrum averaging. Complete arrays repeat bitwise at one and
+eight threads. All 61 LSST covariance checks pass. Manual didactic review
+checked mode-count weights, two-sided transformation, fixed scientific
+band endpoints during refinement, the single boost's NG grid, and the
+normalization distinction. No new C or SIMD arithmetic was introduced.

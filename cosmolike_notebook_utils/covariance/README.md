@@ -88,15 +88,26 @@ it by the radial integration weight and contracting common shell responses
 with `covariance_project` gives the SSC matrix. Keep every cross-lens
 block. Removing selected cross correlations can make a covariance indefinite.
 
-## Full real-space assembly
+## Real-space and Fourier assembly
 
-`survey.realspace_covariance` receives an initialized project interface,
+`survey.realspace_covariance` and `survey.fourier_covariance` receive an initialized project interface,
 resolved integration settings, the observable row map and catalog noise.
 It returns separate Gaussian, SSC, cNG and total matrices, the projected
 mean signals and elapsed times by calculation stage. CAMB setup, output
 writing and eigenvalue diagnostics remain outside this function.
 `survey.observable_rows` puts angular bins inside each tomographic row,
 with xi+, xi-, galaxy--shear and galaxy clustering in that order.
+Fourier rows omit xi-: one E-mode spectrum supplies both real-space shear
+correlations. Integer band endpoints are inclusive, and each multipole
+receives weight proportional to its mode count, $2\ell+1$. Refinement
+holds those endpoints fixed so it compares the same measurement.
+
+Fourier means average the core angular spectra directly. Real-space
+means retain Cocoa's extra source-leg factor when using unit-normalized
+spin kernels. The chosen convention is applied consistently to Gaussian,
+SSC and cNG signals; white noise receives neither conversion.
+The low-level supplied-spectrum wrappers let users state their own field
+conventions explicitly; see their Python `help(...)` documentation.
 
 The supported model uses massless neutrinos, linear galaxy bias, zero
 intrinsic alignment, magnification and RSD, Limber spectra and a spherical

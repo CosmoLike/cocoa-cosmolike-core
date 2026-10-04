@@ -1,4 +1,4 @@
-"""Full real-space 3x2pt matrices under an explicit Limber halo model.
+"""Real-space and Fourier 3x2pt matrices under an explicit Limber halo model.
 
 The Gaussian, super-sample and connected terms follow the decomposition
 in Krause & Eifler (2017), Appendix A, arXiv:1601.05779. SSC uses the
@@ -56,7 +56,7 @@ def observable_rows(nlens, nsource, excluded_gammat=()):
     return np.array(rows, dtype=np.int32)
 
 
-def compress_operators(operators, ell, coarse_ell):
+def compress_operators(operators, ell, coarse_ell, source_factor=None):
     """Project linear interpolation weights instead of a dense trispectrum.
 
     If T(l,l') is bilinear in x=ln(l+1/2), write
@@ -76,6 +76,10 @@ def compress_operators(operators, ell, coarse_ell):
         operators = float [4,ntheta,nell] bin-averaged angular kernels.
         ell = increasing [nell] integer multipoles, beginning at two.
         coarse_ell = [ncoarse] samples uniform in ln(ell+1/2), covering ell.
+        source_factor = optional [nell] transfer per source leg. The default
+            reproduces Cocoa's real-space transformation. Fourier callers
+            supply sqrt[(ell-1)ell(ell+1)(ell+2)]/(ell+1/2)^2, matching
+            the C spectra directly without an angular-kernel conversion.
     Returns:
         float [4,ntheta,ncoarse] compressed operators. Multipoles, kernels
         and these operators are dimensionless.
@@ -91,6 +95,10 @@ def compress_operators(operators, ell, coarse_ell):
     left = np.minimum(position.astype(np.intp), len(grid)-2)
     fraction = position-left
     spin = (ell-1.0)*(ell+2.0)/(ell+0.5)**2
+    if source_factor is not None:
+        spin = np.asarray(source_factor, dtype=float)
+        if spin.shape != np.shape(ell) or not np.all(np.isfinite(spin)):
+            raise ValueError("source_factor must be finite and match ell")
     result = np.empty((4, operators.shape[1], len(grid)))
 
     # A source leg carries one shear factor; galaxy density carries none.
@@ -137,9 +145,13 @@ def project_connected(interface, rows, pair_window, projected, measure):
     # with one shared radial weight and enough outputs for eight workers.
     for left_probe in range(4):
         left_rows = groups[left_probe]
+        if len(left_rows) == 0:
+            continue
         left = np.ascontiguousarray(pair_window[left_rows])
         for right_probe in range(left_probe, 4):
             right_rows = groups[right_probe]
+            if len(right_rows) == 0:
+                continue
             right = np.ascontiguousarray(pair_window[right_rows])
             for first in range(ntheta):
                 start = first if left_probe == right_probe else 0
@@ -160,6 +172,61 @@ def project_connected(interface, rows, pair_window, projected, measure):
 
 
 def realspace_covariance(interface, settings, rows, noise, progress=None):
+    """Compute angular-bin G, SSC, cNG and total covariances.
+
+    Arguments:
+        interface = initialized project interface.
+        settings = resolved survey/integration mapping, documented in
+            _survey_covariance; edges_rad contains common angular edges.
+        rows = int32 [nobservable,3], (probe,A,B) from observable_rows.
+        noise = float64 [nfield], independent observed white-noise powers.
+        progress = optional callable taking (stage, elapsed_seconds).
+    Returns:
+        Owned component/total matrices with angular bins inside each row,
+        mean signals, geometry and stage times; see _survey_covariance.
+        No files or likelihood covariance are changed.
+    """
+    return _survey_covariance(
+        interface=interface, settings=settings, rows=rows, noise=noise,
+        progress=progress, space="real",
+    )
+
+
+def fourier_covariance(interface, settings, rows, noise, progress=None):
+    """Compute E-mode bandpower G, SSC, cNG and total covariances.
+
+    The supplied mean spectra use the core Fourier shear normalization.
+    The extra factor that matches Cocoa's real-space transform is absent;
+    the same Fourier normalization enters G, SSC and cNG, once per leg.
+
+    The same matter trispectrum and background response used in angular
+    space are averaged over integer multipoles in each band. Each weight
+    is proportional to 2*ell+1, the number of harmonic modes. White noise
+    belongs to the finite band sum; no angular pair-area term is added.
+
+    Arguments:
+        interface = initialized project interface.
+        settings = common resolved mapping plus int32 band_first and
+            band_last arrays with inclusive integer band endpoints >= 2.
+            Bands may overlap. Their endpoints are scientific choices,
+            held fixed when accuracy_boost changes integration resolution.
+        rows = int32 [nobservable,3], (type,A,B). Type 0 is shear E-E,
+            2 galaxy-E and 3 galaxy-galaxy. Do not include xi- rows: an
+            E-mode spectrum supplies both real-space shear correlations.
+        noise = float64 [nfield], independent observed white-noise powers.
+        progress = optional callable taking (stage, elapsed_seconds).
+    Returns:
+        The same dict as realspace_covariance, with bands innermost.
+        pair_area_sr2 is an empty array because it has no Fourier role.
+        No files or likelihood covariance are changed.
+    """
+    return _survey_covariance(
+        interface=interface, settings=settings, rows=rows, noise=noise,
+        progress=progress, space="fourier",
+    )
+
+
+def _survey_covariance(interface, settings, rows, noise, progress, space):
     """Compute separate G, SSC and cNG matrices and return elapsed stages.
 
     Arguments:
@@ -178,15 +245,16 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
         rows = int32 [nobservable,3] from observable_rows(...).
         noise = float [nlens+nsource] white powers from noise_powers(...).
         progress = optional callable receiving a stage name and elapsed seconds.
+        space = "real" for spin angular bins, "fourier" for integer bands.
 
     Returns:
         dict with gaussian, ssc, cng and total [ndata,ndata] dimensionless
-        matrices; signal [nobservable,ntheta]; rows; coarse_ell; radial
-        geometry [4,nradial] (a,chi,f_K,dchi); pair_area_sr2 [ntheta]; and
-        stages_s elapsed times. Here ndata=nobservable*ntheta; distances
+        matrices; signal [nobservable,nbin]; rows; coarse_ell; radial
+        geometry [4,nradial] (a,chi,f_K,dchi); pair_area_sr2 [nbin]; and
+        stages_s elapsed times. Here ndata=nobservable*nbin; distances
         have units c/H0. The function writes no files and repairs no modes.
 
-    Returned arrays use row-major observable ordering with theta innermost.
+    Returned arrays order observables first, then angular bins or bands.
     Times include Python preparation, core workspaces and cold table builds;
     CAMB/initialization, diagnostic eigenproblems and file writing are outside
     this function. No shared table is recomputed inside a tomographic block.
@@ -199,6 +267,8 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
         raise ValueError("response_step must be finite and positive")
     if rows.ndim != 2 or rows.shape[1] != 3 or rows.dtype.kind not in "iu":
         raise ValueError("rows must contain integer (probe,A,B) triplets")
+    if space == "fourier" and np.any(rows[:, 0] == 1):
+        raise ValueError("Fourier rows must omit xi-: retain E-E only once")
     if np.any(rows < 0) or np.any(rows[:, 0] > 3):
         raise ValueError("field IDs must be nonnegative and probe IDs in 0..3")
     started = time.perf_counter()
@@ -214,7 +284,21 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
     # Gaussian Wick products need field pairs that never appear as measured
     # observables. Building one complete snapshot keeps these correlations
     # consistent across every covariance block.
-    ell = np.arange(2, settings["ell_max"]+1, dtype=float)
+    ell_max = settings["ell_max"]
+    if space == "fourier":
+        # Unlike a real-space transform, a measured band ends at a fixed
+        # multipole. Refinement must not change which modes it measures.
+        first_band = np.asarray(settings["band_first"])
+        last_band = np.asarray(settings["band_last"])
+        if (first_band.ndim != 1 or len(first_band) == 0
+                or last_band.shape != first_band.shape
+                or first_band.dtype.kind not in "iu"
+                or last_band.dtype.kind not in "iu"
+                or np.any(first_band < 2)
+                or np.any(last_band < first_band)):
+            raise ValueError("need matching integer bands with 2<=first<=last")
+        ell_max = int(np.max(last_band))
+    ell = np.arange(2, ell_max+1, dtype=float)
     snapshot = interface.covariance_limber_spectra(
         ell=ell, a_edges=settings["a_edges"],
         nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
@@ -229,50 +313,82 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
         raise ValueError("noise count must match the initialized field count")
     if np.any(rows[:, 1:] >= base.shape[1]):
         raise ValueError("an observable field ID exceeds the initialized count")
-    signal = observed_spectra(snapshot["spectra"], ell=ell, nlens=nlens)
+    source_factor = None
+    if space == "real":
+        # The core angular transforms carry an additional source-leg
+        # factor relative to unit-normalized Wigner kernels. Preserve that
+        # real-space convention in the mean, G, SSC and cNG together.
+        signal = observed_spectra(snapshot["spectra"], ell=ell, nlens=nlens)
+    else:
+        # A Fourier band averages the core C_ell directly. Do not apply
+        # the conversion used only to match the real-space transforms.
+        signal = np.ascontiguousarray(snapshot["spectra"])
+        source_factor = np.sqrt((ell-1)*ell*(ell+1)*(ell+2))/(ell+0.5)**2
     checkpoint("all_pairs_limber_spectra", started)
 
-    # --- 2. Full-sky angular bins and the footprint's available pairs ---
-    # White noise extends to arbitrarily high ell. Its exact pair-count
-    # term is added later; only signal and mixed terms use the finite sum.
+    # --- 2. Measurement operators and the common survey footprint ---
+    # Real-space white noise extends above any finite ell cutoff, so its
+    # pair-count term is analytic. A Fourier band instead includes exactly
+    # the modes between its endpoints; its noise uses that finite sum.
     tick = time.perf_counter()
-    operators = interface.covariance_realspace_operator(
-        edges_rad=settings["edges_rad"], ell_max=settings["ell_max"],
-        nquad=settings["angle_nquad"],
-    )
     mask = cap_mask(area_sr=settings["area_sr"],
                     ell_max=settings["mask_ell_max"])
-    mask_operator = interface.covariance_realspace_operator(
-        edges_rad=settings["edges_rad"], ell_max=settings["mask_ell_max"],
-        nquad=settings["angle_nquad"],
-    )
-    pair_area = interface.covariance_mask_pair_area(
-        edges_rad=settings["edges_rad"], mask_cl=mask,
-        area_sr=settings["area_sr"],
-        scalar_kernel=np.ascontiguousarray(mask_operator[3]),
-    )
-    kernels = np.ascontiguousarray(operators[:, :, 2:])
-    ntheta = kernels.shape[1]
-    ndata = len(rows)*ntheta
+    pair_area = np.empty(0)
+    if space == "real":
+        operators = interface.covariance_realspace_operator(
+            edges_rad=settings["edges_rad"], ell_max=ell_max,
+            nquad=settings["angle_nquad"],
+        )
+        mask_operator = interface.covariance_realspace_operator(
+            edges_rad=settings["edges_rad"], ell_max=settings["mask_ell_max"],
+            nquad=settings["angle_nquad"],
+        )
+        pair_area = interface.covariance_mask_pair_area(
+            edges_rad=settings["edges_rad"], mask_cl=mask,
+            area_sr=settings["area_sr"],
+            scalar_kernel=np.ascontiguousarray(mask_operator[3]),
+        )
+        kernels = np.ascontiguousarray(operators[:, :, 2:])
+    else:
+        bands = interface.covariance_bandpower_operator(
+            first=np.ascontiguousarray(first_band, dtype=np.int32),
+            last=np.ascontiguousarray(last_band, dtype=np.int32),
+            ell_min=2, nell=len(ell),
+        )
+        # All Fourier fields use the same band average. Keep four operator
+        # slots so the common SSC/cNG projection can attach two, one or no
+        # shear transfer factors to E-E, galaxy-E and galaxy density.
+        kernels = np.repeat(bands[None, :, :], repeats=4, axis=0)
+    nbin = kernels.shape[1]
+    ndata = len(rows)*nbin
     checkpoint("angular_and_mask_geometry", tick)
 
     # --- 3. Gaussian covariance and the observable mean signals ---
     # A block covariance needs crossed spectra, including lens cross bins
     # absent from the data vector. The snapshot retains that full matrix.
     tick = time.perf_counter()
-    gaussian = interface.covariance_gaussian_real(
-        spectra=signal, noise=np.ascontiguousarray(noise),
-        rows=np.ascontiguousarray(rows, dtype=np.int32), operators=kernels,
-        ell_min=2, area_sr=settings["area_sr"], pair_area_sr2=pair_area,
-    )
+    if space == "real":
+        gaussian = interface.covariance_gaussian_real(
+            spectra=signal, noise=np.ascontiguousarray(noise),
+            rows=np.ascontiguousarray(rows, dtype=np.int32), operators=kernels,
+            ell_min=2, area_sr=settings["area_sr"], pair_area_sr2=pair_area,
+        )
+    else:
+        gaussian = interface.covariance_gaussian_fourier(
+            spectra=signal, noise=np.ascontiguousarray(noise),
+            pairs=np.ascontiguousarray(rows[:, 1:], dtype=np.int32),
+            operators=bands, ell_min=2, area_sr=settings["area_sr"],
+        )
     checkpoint("gaussian_blocks", tick)
 
-    # The SSC mean subtraction uses the full angular signal of each
+    # The SSC mean subtraction uses the full projected signal of each
     # measured observable, rather than its local radial integrand.
     tick = time.perf_counter()
-    observable_signal = np.empty((len(rows), ntheta))
+    observable_signal = np.empty((len(rows), nbin))
     for probe in range(4):
         selected = np.flatnonzero(rows[:, 0] == probe)
+        if len(selected) == 0:
+            continue
         fields = rows[selected, 1:]
         spectra = np.ascontiguousarray(signal[:, fields[:, 0], fields[:, 1]].T)
         observable_signal[selected] = interface.covariance_project(
@@ -291,11 +407,14 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
                                    settings["ng_ell_nodes"]))-0.5
     coarse_ell[0] = ell[0]
     coarse_ell[-1] = ell[-1]
-    compressed = compress_operators(kernels, ell=ell, coarse_ell=coarse_ell)
-    transform = compressed.reshape(4*ntheta, -1)
+    compressed = compress_operators(
+        operators=kernels, ell=ell, coarse_ell=coarse_ell,
+        source_factor=source_factor,
+    )
+    transform = compressed.reshape(4*nbin, -1)
     nnode = geometry.shape[1]
-    projected = np.empty((4*ntheta, 4*ntheta, nnode))
-    response = np.empty((4*ntheta, nnode))
+    projected = np.empty((4*nbin, 4*nbin, nnode))
+    response = np.empty((4*nbin, nnode))
     long_power = np.empty((nnode, len(mask)))
     unused, angle_weight, corner = angular_rule(
         nquad=settings["tree_nquad"], npanel=settings["tree_npanel"]
@@ -399,7 +518,7 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
     mean = np.zeros_like(windows)
     mean[:nlens] = base[0, :nlens]
     pair_mean = mean[rows[:, 1]]+mean[rows[:, 2]]
-    response = response.reshape(4, ntheta, nnode)
+    response = response.reshape(4, nbin, nnode)
     shell = pair_window[:, None, :]*response[rows[:, 0]]/geometry[2]**2
     shell -= pair_mean[:, None, :]*observable_signal[:, :, None]
     shell = shell.reshape(ndata, nnode)
