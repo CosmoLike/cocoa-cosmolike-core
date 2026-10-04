@@ -24,6 +24,33 @@ Cluster moments expose `density` and `biased_density` matrices, and `J01`,
 these names; the former packed four-dimensional `single`/`pair` outputs are
 retired. Numerical physics and units are unchanged.
 
+### Validation of the Armadillo boundary
+
+All seven project interfaces were rebuilt sequentially in strict mode.
+Covariance tests passed in LSST Y1 (97), DES cluster (49), and the five
+other project adapters (one each): 151 total. Frozen data-vector examples
+passed in LSST Y1 (12), Roman real (12), Roman Fourier (12), Roman KL (12),
+DES Y3 (24), DES Y1 x Planck (12) and DES cluster (16): 100 total, with no
+reference changes. The shell runner stops on compiler or test failure.
+
+DEBUG builds with undefined-behavior and floating-division sanitizers
+passed 30 LSST wrapper/connected/halo-boundary checks and 35 DES cluster
+moment/count/spectrum/halo-boundary checks. No sanitizer reports appeared.
+The tested strict libraries were restored after each DEBUG check.
+
+Tests retain independent numerical references and one/two/four/eight-thread
+comparisons. New cases exercise C-order, Fortran-order, sliced and read-only
+inputs; rectangular axes; 48-element cubes; unchanged existing array views;
+and vector versus singleton-matrix output ranks. The named cluster moments
+retain selection normalization and length-unit scaling. The didactic review
+checked loop overviews, C workspace roles, physical axis meanings, separate
+comparisons and the 80-column limit across the changed C++ files.
+
+The three edited public READMEs render with valid local C++ links and
+anchors. The skill passes its format validator. No runtime benchmark was
+performed for this wrapper rewrite; earlier interface timings below refer
+to their recorded implementations, not the new copying boundary.
+
 ## Requested order
 
 1. Add notebook-facing C++ wrappers, following the data-vector wrapper
