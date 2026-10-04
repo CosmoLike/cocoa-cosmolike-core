@@ -695,10 +695,19 @@ redshift files, cosmology and number densities. Each project's executable
 `EXAMPLE_EVALUATE_COVARIANCE.ipynb` uses a thin `covariance/` input adapter.
 The notebooks compute full galaxy/shear G+SSC+cNG matrices in real and
 Fourier space, compare accuracy boosts, plot the components and save the
-resolved inputs with the outputs. The DES cluster and DESxPlanck examples
-currently cover galaxy/shear only; cluster and CMB observables need their
-own models. The example boosts demonstrate refinement, not a validated
-inference accuracy.
+resolved inputs with the outputs. DESxPlanck covers galaxy/shear only;
+CMB observables need their own models. The example boosts demonstrate
+refinement, not a validated inference accuracy.
+
+The shared `forecast_cluster.py` also assembles the full angular DES
+cluster layout from these C components. It retains all internal spectra,
+adds count Poisson noise and common count/two-point SSC, and propagates
+the Y localization through every cross block. Its cNG uses the biased
+matter-tracer approximation; selected-cluster one-halo cNG corrections
+and non-SSC count–spectrum terms are omitted. The
+[shared Python guide](../../cosmolike_notebook_utils/covariance/README.md)
+explains the forecast boundary and defined Y null modes. Matrix
+positivity does not establish convergence or validate omitted physics.
 
 [Shared Matplotlib functions](../../cosmolike_notebook_utils/plot_covariances.py)
 show split-triangle correlation comparisons, component maps and histograms,

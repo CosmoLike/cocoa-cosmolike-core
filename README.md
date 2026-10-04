@@ -52,8 +52,9 @@ describe the CosmoLike multiprobe framework.
 > and shear fields. The matrices use massless neutrinos, Limber spectra
 > and a spherical-cap footprint, retaining every internal cross-bin
 > spectrum. Numerical and Fisher convergence remain to be established
-> before inference. CMB and cluster covariance extensions are separate
-> work; the DES×Planck and DES cluster notebooks cover galaxy–shear only.
+> before inference. DES cluster also has a joint angular 6x2pt+N forecast
+> with explicitly limited cluster cNG and count-cross approximations.
+> DES×Planck covers galaxy–shear only; CMB covariance remains separate work.
 
 # Running a likelihood example <a name="likelihood"></a>
 
@@ -241,6 +242,16 @@ The notebook computes boosts 1 and 2 at fixed physical inputs, then
 plots changes in correlations, error bars and covariance entries. It also
 compares variance ratios across all matrix directions. The highest tested
 boost is a numerical comparison reference, not a guarantee of convergence.
+
+The DES cluster notebook also uses
+[`forecast_cluster.py`](cosmolike_notebook_utils/covariance/forecast_cluster.py)
+to assemble the angular cluster $`6\times2\mathrm{pt}+N`$ matrix, with
+absolute counts, all Gaussian and SSC cross blocks, and the same Y
+localization used by its mean model. Its cluster cNG treats clusters as
+linearly biased matter tracers; count cross covariance contains SSC only.
+Selected-cluster one-halo cNG and non-SSC count–spectrum terms are omitted
+and recorded in each output. The [DES cluster running guide](../../../projects/des_cluster/covariance/README.md#joint)
+explains those limits, the known Y null rows, and the saved row positions.
 
 > [!NOTE]
 > The example computes all three covariance components. The shared

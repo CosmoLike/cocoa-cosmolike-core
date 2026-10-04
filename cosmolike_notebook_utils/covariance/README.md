@@ -37,6 +37,7 @@ fluctuations larger than the survey. See
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
 | `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
 | `survey_cluster.py` | Prepare the joint cluster row layout, absolute count densities, normalized cluster windows and every internal cluster cross spectrum. |
+| `forecast_cluster.py` | Assemble the joint angular forecast with count Poisson noise, common SSC, biased-tracer cNG and the optional Y transformation. Archive its omitted physics with the result. |
 | `counts_cluster.py` | Integrate supplied selected abundances into count means, Poisson noise and SSC. Project the separate non-SSC count–matter-spectrum cross terms from selected halo moments. This is not a full cluster forecast. |
 | `transform_cluster.py` | Apply the cluster-lensing localization to both sides of a supplied joint covariance, including every count and two-point cross block. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
@@ -124,6 +125,19 @@ measured rows and the positions of counts in the joint vector. Cross-bin
 spectra needed by Gaussian pairings remain available even when they are
 absent from that measured row list. These helpers prepare inputs; they
 do not by themselves compute a complete cluster covariance.
+
+`forecast_cluster.compute_forecast` combines these inputs into the full
+angular matrix. Its cNG approximation multiplies the matter trispectrum
+by one linear bias per density leg; count cross terms contain SSC only.
+Selected-cluster one-halo cNG corrections and non-SSC count–spectrum
+terms remain outside this forecast. Every output records those omissions.
+For an executable example and its physical choices, use the
+[DES cluster guide](../../../../../projects/des_cluster/covariance/README.md#joint).
+The result includes count means and positions, all six two-point families,
+separate components, and the optional Y transformation on every cross block.
+`valid_indices` excludes only its defined last-bin null modes. Numerical
+and Fisher convergence, physical scale cuts and the omitted terms still
+need assessment before inference.
 
 For cluster counts, `count_statistics` integrates supplied selected
 abundances and their long-mode responses. It returns count means,

@@ -96,6 +96,11 @@ probability by its powers when several legs belong to the same halo.
 Joint cluster-lensing localization and its deterministic zero rows are
 recorded in `references/covariance_cluster_localization.md`. Transform
 every cross block before applying the likelihood's scale selection.
+The joint angular notebook forecast and its explicit approximations are
+recorded in `references/covariance_cluster_joint.md`. Its connected term
+uses linearly biased matter tracers and its count crosses contain SSC
+only. It is not a complete selected/discrete-halo covariance. Archive
+those omissions with the matrix and retain the defined Y null-row map.
 
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.
