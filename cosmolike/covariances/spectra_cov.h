@@ -30,6 +30,18 @@ struct radial_cov* radial_inputs_cov(
 
 void free_radial_cov(struct radial_cov* radial); // release this snapshot
 
+// Read independent wavenumber rows at one scale factor. Inputs and outputs
+// have shape [nrow][ncol], in core c/H0 units, and cannot overlap.
+// Initialize the cosmology tables before calling; no table is changed.
+void power_rows_cov(
+    const double a,                  // shared scale factor
+    const int nrow,                  // independent wavenumber rows
+    const int ncol,                  // samples per row
+    const double* const* k,          // positive physical wavenumbers
+    const int linear,               // linear or configured nonlinear power
+    double* const* power            // caller-owned output rows
+  );
+
 // Evaluate every field pair on one common radial rule. This is a Limber
 // spectrum builder, not a non-Limber approximation at small multipoles.
 // Output rows use i-major triangular order: (0,0),(0,1),...,(1,1),...

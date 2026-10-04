@@ -57,8 +57,8 @@ def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu):
         +2.0*pairs[0, :, None]*pairs[1, :, None]*corner
     )
     internal = interface.covariance_power(
-        a=a, k=magnitude.ravel(), linear=True
-    ).reshape(magnitude.shape)
+        a=a, k=magnitude, linear=True
+    )
     angular = interface.covariance_tree_averages(
         k=pairs, pk=pk, corner=corner, weight=weight, ps=internal
     )

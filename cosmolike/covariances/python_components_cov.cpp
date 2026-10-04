@@ -12,6 +12,7 @@
 #include "operators_cov.h"
 #include "perturbation_cov.h"
 #include "ssc_cov.h"
+#include "spectra_cov.h"
 #include "cosmolike/cosmo3D.h"
 #include "cosmolike/halo.h"
 #include "cosmolike/structs.h"
@@ -439,16 +440,21 @@ static py::tuple covariance_halo_moments(
   return py::make_tuple(i11, moments);
 }
 
-// Read a whole physical-k row through the normal initialized core reader.
-// Keeping this call at the Python boundary avoids one Python-to-C call
-// per wavenumber. The covariance owns the chosen input grid.
+// Read one vector or a matrix of physical wavenumbers at a shared a.
+// Matrix rows are independent integration batches distributed by C over
+// OpenMP workers. A vector retains the original serial core-reader path.
+// The output has the input's shape; the covariance owns the input grid.
 static cov_array covariance_power(
     const double a,      // scale factor inside the initialized range
     const cov_array& k,  // physical wavenumbers in inverse c/H0
     const bool linear   // linear total-matter P or the configured Pdelta
   )
 {
-  vector_cov(k, "k");
+  if (k.ndim() == 1) {
+    vector_cov(k, "k");
+  } else {
+    matrix_cov(k, "k");
+  }
   if (!std::isfinite(a)
       || a < limits.a_min
       || a >= 1.0
@@ -463,8 +469,13 @@ static cov_array covariance_power(
     }
   }
 
-  cov_array output(k.size());
-  if (linear) {
+  cov_array output(k.request().shape);
+  if (k.ndim() == 2) {
+    auto k_rows = input_rows_cov(k);
+    auto rows = output_rows_cov(output);
+    power_rows_cov(a, k.shape(0), k.shape(1), k_rows.data(), linear,
+                    rows.data());
+  } else if (linear) {
     p_lin_at_a(a, k.data(), k.size(), output.mutable_data());
   } else {
     Pdelta_at_a(a, k.data(), k.size(), output.mutable_data());
@@ -625,7 +636,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("lnm_edges").noconvert(), py::arg("nquad"));
 
   module.def("covariance_power", &covariance_power,
-      "Read total-matter power on a supplied k row in the core c/H0 units.",
+      "Read power for a k vector or matrix at one a; retain its shape. "
+      "Matrix rows use OpenMP. Input/output use the core c/H0 units.",
       py::arg("a"), py::arg("k").noconvert(), py::arg("linear") = true);
 
   module.def("covariance_tree_averages", &covariance_tree_averages,

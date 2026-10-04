@@ -24,6 +24,48 @@
 typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
+// Prepare matter power for independent covariance integration rows.
+//
+// In a trispectrum integral, each row represents a pair K,Q. Its columns
+// contain |K+Q| at the sampled relative angles. Every sample has the same
+// redshift, so the core reader reuses one redshift interpolation bracket
+// within a row. Different rows only read the initialized cosmology tables
+// and write separate outputs; they can therefore be assigned to workers.
+//
+// The existing reader still performs every interpolation. This changes
+// neither the power model nor its arithmetic, and introduces no cache or
+// reduction. Wavenumbers have units (c/H0)^-1 and power has units (c/H0)^3.
+// Call outside an OpenMP region, after initializing the core power tables.
+// ---------------------------------------------------------------------------
+void power_rows_cov(
+    const double a,                  // shared scale factor
+    const int nrow,                  // independent wavenumber rows
+    const int ncol,                  // samples per row
+    const double* const* k,          // positive physical wavenumbers
+    const int linear,               // linear or configured nonlinear power
+    double* const* power            // caller-owned output rows
+  )
+{
+  if (nrow < 1
+      || ncol < 1) {
+    log_fatal("power_rows_cov needs positive row and column counts");
+    exit(1);
+  }
+
+  // Each worker reads a complete row at the common redshift. Its output
+  // does not depend on any other row, so no synchronization is needed
+  // between samples and no sum changes with the number of workers.
+  #pragma omp parallel for schedule(static)
+  for (int row=0; row<nrow; row++) {
+    if (linear) {
+      p_lin_at_a(a, k[row], ncol, power[row]);
+    } else {
+      Pdelta_at_a(a, k[row], ncol, power[row]);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Integrate each catalog's lensing efficiency on a covariance-owned grid.
 //
 // In a flat universe a foreground shell at chi lenses a source at chi'
