@@ -283,3 +283,11 @@ unchanged. Debug tests cover all halo and SSC checks, including physical
 mass refinement, thread repeatability and complete rectangular subblock
 assembly. This remains a self-review; no unavailable model review is
 claimed.
+
+The two loop changes were saved separately in commit `33a5fc5` after the
+bitwise checks and the default/debug covariance tests. This commits the
+parallel work distribution, not a measured speedup. After all project
+regressions finished, a fresh five-second CPU-time sample still measured
+1.18 cores of desktop activity, principally WindowServer and the Codex
+renderer/service. No new timing run was started. The external record is
+`results/quiet_check_final.json`; quiet-machine scaling remains outstanding.

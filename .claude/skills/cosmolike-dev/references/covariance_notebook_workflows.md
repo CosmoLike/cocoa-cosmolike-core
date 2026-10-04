@@ -70,8 +70,10 @@ its outputs are from committed cells, with no hand-entered scientific data.
 The first combined sector run found a CAMB import-path conflict: covariance
 setup chose site-packages, then Cobaya required external_modules/code/CAMB.
 The covariance conftest now chooses the same CAMB source before import.
-This is path selection, not replacement of an imported module. Combined
-regressions are rerun after that fix; record completion separately.
+This is path selection, not replacement of an imported module. The combined
+rerun passed all 109 collected tests. One additional notebook-helper check
+was added after that run started; the final covariance-only run includes it
+and passes all 53 checks.
 
 Data-vector modules are in tests/data_vector; covariance modules in
 tests/covariance. Frozen files, hashes and reference generator stay at
@@ -117,3 +119,27 @@ Validation commands from configured Cocoa:
 - Default LSST compilation including all eight C components and both
   covariance C++ sources: exit 0.
 - `git diff --check`: passed before commits.
+
+All seven project regression runs completed successfully without refreezing:
+
+| Project | Passed checks |
+|---|---:|
+| roman_real | 104 |
+| roman_fourier | 45 |
+| roman_kl | 49 |
+| des_y3 | 63 |
+| desy1xplanck | 45 |
+| des_cluster | 29 |
+| lsst_y1, combined covariance/data-vector rerun | 109 |
+
+The final covariance-only run separately passes 53 checks. The combined
+LSST run reports 15 warnings from the existing emulator dependencies;
+none is a test failure. The original multi-project coordinator retains
+its nonzero exit for the first LSST import-path failure. Keep that log:
+the explicit combined rerun, not a suppressed failure, establishes the
+fixed result. External `results/covariance_scaling/project_tests_final.json`
+records both attempts. Concurrent regression elapsed times are not timing
+evidence. The main repository and all seven project working trees are clean.
+
+The seven final README render/link checks passed, including the subsequently
+edited test instructions. No frozen data or reference manifest changed.
