@@ -252,3 +252,108 @@ downloaded, pinned files in `roman_challenge_source/`. The diagnostic scripts an
 were read again for units, matrix scaling, interpretation of signed
 contributions, and the distinction between localization and root cause.
 No production computation changed in this ticket.
+
+## Future-generator regression: physical Roman SSC recomputation
+
+The owner clarified that the priority is a reliable new Roman covariance,
+not recovering the provenance of the old file. The old negative mode is
+now a demanding test direction, not a prerequisite for proceeding.
+
+The external `recompute_roman_ssc_mode.py` computes actual halo-response
+SSC for the Roman redshift distributions and 15 real-space angular bins.
+It compresses the 2115 measurements into nine variables: shear and the
+eight lens families. Within each family the weights are the stored
+correlation eigenvector divided by the original standard deviations.
+Summing the nine variables therefore preserves the exact failing
+direction; the stored compressed total variance is -0.498478198980569.
+
+This is a new controlled physical calculation. It uses the Roman
+fiducial from the notebook adapter with massless neutrinos, so cb and
+total matter coincide, and a 2415-square-degree spherical-cap footprint.
+Magnification and RSD are off. The initialized NLA/redshift/bias choices,
+cosmology and input covariance fingerprint are saved with each result.
+These are explicit modeling inputs, not a reconstruction of the old file.
+
+At each distance the calculation:
+
+1. Reads common covariance-owned lens/source windows.
+2. Computes the halo moments needed for the two-halo slope and the
+   one-halo abundance response. All halo inputs refer to the same field.
+3. Constructs a smooth linear-power row from the supplied CAMB table,
+   with explicit power-law endpoints, before evaluating the dilation slope.
+4. Computes both the published isotropic halo response and the alternative
+   projected-tree coefficients as separate modeling choices.
+5. Splines the logarithm of the positive response onto a dense log-k grid.
+   The integer-multipole transform then uses only linear table lookups.
+6. Applies the full-sky bin operators on ell=2..ell_max, with the observed
+   shear transfer factors, and subtracts the complete projected
+   survey-mean response.
+7. Forms SSC from common radial response factors. Cross-lens terms are
+   present automatically. No finished covariance entry is log-splined.
+
+The response has 129 exact nodes plus four padding nodes in the pilot,
+then 4097 dense nodes; refinement uses 257+4 exact and 8193 dense nodes.
+At a fixed distance log(ell+1/2) differs from log physical k by a constant.
+This experiment tests interpolation at fixed a, not the rejected coarse
+evolution table along a moving Limber wavenumber.
+
+| Setting | Pilot | Refined |
+|---|---:|---:|
+| Radial nodes, four a panels | 256 | 512 |
+| Mass nodes, eight log-M panels | 1024 | 2048 |
+| Exact response nodes, with padding | 133 | 261 |
+| Dense response nodes | 4097 | 8193 |
+| Maximum integer ell | 50000 | 100000 |
+| Angular nodes per bin | 512 | 1024 |
+| Maximum mask multipole | 4096 | 8192 |
+
+The refined nine-variable **SSC correlation matrix** has:
+
+| Response | Complete minimum eigenvalue | Cross-lens terms deleted |
+|---|---:|---:|
+| Isotropic | +0.0069079983 | -0.0898583558 |
+| Projected tree | +0.0063019857 | -0.0943281163 |
+
+Even the three-variable subset containing shear and the first two lens
+families reproduces the failure: +0.0165668554 becomes -0.0610020237 for
+the isotropic response. The projected-tree case behaves similarly.
+The removed cross-lens contribution in the stored failing direction is
++1.2581760903 or +1.4260918933, respectively. These are variances in that
+explicitly normalized diagnostic direction, not corrections inserted into
+the shipped covariance.
+
+The complete physical SSC is positive, while deleting only the cross-lens
+terms makes it indefinite. Thus the unsafe omission has now been tested
+with the actual radial/halo/real-space calculation, beyond the earlier
+rank-one toy example. A future generator must compute every requested
+cross block; different lens labels are not a reason to set NG to zero.
+
+Refinement changes the matrix by 4.19e-7 and 1.42e-6 in relative
+Frobenius norm. More stringently, generalized refined/pilot covariance
+eigenvalues lie in [0.99994047, 1.00013202] for isotropic and
+[0.99993738, 1.00010638] for projected tree. Every direction in this
+nine-dimensional space is therefore stable within 1.33e-4 for this
+combined refinement. This does not replace a full-matrix or Fisher FoM
+test and does not assess nonlinear response-model uncertainty.
+
+The archived physical responses were also contracted with production
+`gaussian_project_cov`. C agrees with independent NumPy to at most
+7.97e-16 after diagonal scaling. Uneven rectangular subblocks reconstruct
+the same result bitwise at 1, 2, 4 and 8 threads. No C routine calls MPI;
+the arrays already support separate Python/C++ block dispatch.
+
+A permanent LSST SSC regression now checks uneven subblock assembly
+against an independent response contraction, all cross entries, positive
+definiteness and 1/2/4/8-thread consistency. The new halo regression checks
+small (one a, two k) batches against the corresponding larger table.
+The physical response calculations remain external, with results
+`roman_physical_ssc_{pilot,refined}.{json,npz}`,
+`roman_physical_ssc_refinement.json` and
+`roman_physical_ssc_C_projection.json`.
+
+Remaining generator work is full G+SSC+cNG assembly with complete pair
+coverage, including non-Limber spectra, and positivity/convergence of both
+the full Roman matrix and the likelihood selection. Positivity of these
+nine compressed SSC variables does not prove positivity of the final
+2115-dimensional total covariance. No covariance or mask was replaced,
+and no eigenvalue clipping or diagonal regularization was applied.

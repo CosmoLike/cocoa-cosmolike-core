@@ -59,7 +59,8 @@ Function comments explain equations, units and array contents.
 | [ssc_cov.c](ssc_cov.c), [header](ssc_cov.h) | Survey-averaged background fluctuations and the response of projected observables. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
-| [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to the Limber spectra and copies of their radial inputs; it adds no covariance physics. |
+| [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
+| [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
 
 ## From three-dimensional matter to angular spectra
 
@@ -398,6 +399,23 @@ Each shell thus contributes a weighted outer product of the same
 response vector with itself. Using common responses and positive
 integration weights preserves the positive-semidefinite structure.
 
+To see why, consider any weighted sum of measurements with coefficients
+$v_i$. Its SSC variance is
+
+$$
+v^{\mathsf T}\mathcal C^{\rm SSC}v
+=\int d\chi\,s_b(\chi)
+\left[\sum_i v_i\Phi_i(\chi)\right]^2\ge0.
+$$
+
+Different lens bins can respond to the same background fluctuation.
+Their cross terms are part of this square, including when their mutual
+clustering spectrum is absent from the data vector. Deleting selected
+cross-lens terms while retaining their correlations with shear can break
+this structure and give a negative variance. Interpolate the common
+responses before forming their products, and retain every requested
+cross block when assembling separately computed pieces of the matrix.
+
 The long-mode Limber approximation needs its own accuracy assessment;
 full-sky angular transforms do not make it exact. Correlations between
 distinct radial shells and a complete nonlinear tidal response require
@@ -493,3 +511,18 @@ and Figure of Merit, commonly proportional to the inverse area of a
 two-parameter confidence region. Small entrywise differences alone do
 not establish that. No universal production integration setting or
 complete survey runtime is asserted by these component interfaces.
+
+## Notebook calculations
+
+The [shared Python tools](../../cosmolike_notebook_utils/covariance/README.md)
+prepare survey-independent inputs, build requested Gaussian blocks and
+inspect covariance eigenvalues. Project adapters supply redshift files,
+cosmology and number densities. The LSST Y1 project contains the executable
+`EXAMPLE_EVALUATE_COVARIANCE.ipynb` and a `covariance/` input adapter.
+The example computes a single-source Gaussian shear covariance; it is not
+a full G+SSC+cNG survey generator.
+
+[Shared Matplotlib functions](../../cosmolike_notebook_utils/plot_covariances.py)
+show split-triangle correlation comparisons, component maps and histograms,
+and angular standard-deviation panels. They receive arrays only and never
+alter the covariance to make a plot appear positive or well behaved.

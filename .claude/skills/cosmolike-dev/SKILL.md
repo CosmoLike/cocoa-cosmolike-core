@@ -139,6 +139,52 @@ result as a veto. Run accuracy checks first. Timing reports require a
 quiet machine and one benchmark at a time, with no concurrent tests,
 builds, CAMB jobs or other computational experiments. Do not report
 contended preflight timings as optimization evidence.
+
+**Covariance parallelism (owner clarification, 2026-10-03).** Strong
+scaling to 8--10 OpenMP cores per process is a primary requirement.
+Measure 1, 2, 4 and 8 threads on this laptop; do not accept good 2--3-core
+scaling as sufficient. Audit small outer-loop counts, serial setup and
+load imbalance. Test collapse over independent indices or larger input
+batches, preserving deterministic sums and the unconditional SIMDe paths.
+The laptop has eight performance cores; qualify any 10-thread result
+because it also uses efficiency cores. Production x86 scaling still needs
+measurement on that hardware. Keep BLAS at one thread.
+Covariance C must never call MPI. Cocoa/Cobaya's Python layer owns MPI;
+a future C++/Python interface can dispatch independent matrix subblocks
+to processes, each using OpenMP internally. Example 40-core layouts are
+five MPI processes times eight threads or four times ten. Keep shared
+tables reusable within a process and make block inputs explicit; do not
+implement an MPI layer or a speculative block framework before needed.
+
+**Notebook covariance workflows (owner clarification, 2026-10-03).**
+Develop the first public examples in `projects/lsst_y1/covariance/`, using
+explicit LSST Y1 survey inputs. Keep reusable Python calculations in
+`cosmolike_notebook_utils`, with the initialized project interface passed
+by the caller. Project folders own survey choices and thin examples;
+design them for replication across projects without copying algorithms.
+Port useful Python from the external covariance reference work, not its
+bash scripts, machine-specific library paths or benchmark scaffolding.
+Keep independent numerical test references independent of production
+calculations. Separate test modules into `tests/data_vector/` and
+`tests/covariance/`, with clear commands for each sector. The ordinary
+documented test command selects data-vector tests. Do not refreeze or
+modify likelihood snapshots merely to reorganize the test files.
+The public entry point is `EXAMPLE_EVALUATE_COVARIANCE.ipynb` in LSST Y1.
+Expose one covariance `accuracy_boost`, resolving numerical controls in a
+shared helper; do not ask ordinary notebook users to tune a list of grids.
+The notebook must compute several boosts and show changes in the covariance,
+its error bars and relative modes. A largest tested boost is a comparison
+reference, not an automatic claim of convergence. Covariance READMEs follow
+Cocoa's numbered contents, anchors, assumptions and Step flows; teach setup,
+compilation, notebook execution, accuracy changes and separate tests.
+Commit completed pieces incrementally; avoid commits of many thousands of
+lines. Keep mechanical test moves separate from numerical changes.
+Shared covariance plotting belongs in `cosmolike_notebook_utils`; consult
+Krause's papers for interpretable layouts, cite exact figures, and render
+and inspect the resulting panels. The plots must preserve signs and
+visibly mask undefined ratios, never repair eigenvalues or fabricate a
+missing component. See `references/covariance_notebook_workflows.md`.
+
 Then diagnose the negative eigenvalues reported in the existing Roman
 covariance, distinguishing the full matrix from the likelihood selection
 and tracing the responsible scales and components without clipping modes.
@@ -149,6 +195,11 @@ overlap; combining lens families introduces the failing mode. Never copy
 the legacy writer's equal-lens-only NG rule into the rewrite. Compute
 cross-lens covariance terms even when those spectra are absent from the
 data vector; their C implementation stays covariance-owned.
+The owner prioritizes the future Roman generator over recovering the old
+file's provenance. Use its failure to design regression tests: recompute
+physical cross-lens responses, retain complete subblock coverage, and
+check full and selected total matrices. Do not make historical attribution
+a prerequisite for developing and validating the new covariance.
 For SSC, interpolate common responses before forming their weighted outer
 products. Do not independently interpolate auto/cross covariance blocks
 with inconsistent value/log prescriptions and assume positivity survives.
@@ -959,7 +1010,8 @@ Reject or push back unless all of these hold (details in
       full unmasked data vector bitwise equal to the reference build, or
       within a stated tolerance where the change documents why it cannot
       be bitwise; determinism sweep clean across thread counts.
-- [ ] Builds and runs clean in all three modes; DEBUG sanitizers quiet.
+- [ ] Builds and runs clean in both supported modes (strict and DEBUG);
+      DEBUG sanitizers quiet. Aggressive mode remains retired.
 - [ ] New hot loops inside `collapse(2)` regions use local `restrict` pointers.
 - [ ] No flat `memset`/`memcpy` over padded multi-dim allocations; uses
       `zero*d`.
@@ -969,7 +1021,8 @@ Reject or push back unless all of these hold (details in
       previously-shipped race — see pitfalls).
 - [ ] FFTW plans created once, cached, and creation is serialized; sizes
       passed through `next_fft_size`.
-- [ ] Preprocessor fallback guard exists and the fallback still works.
+- [ ] Production SIMDe remains unconditional; any scalar comparison stays
+      in external tests, without restoring a retired fallback switch.
 - [ ] Comments explain why, not what.
 - [ ] PR cites `perf stat -r 3` numbers (mean ± stddev), never single-eval
       timings; claims of "no perf change" are backed by counters, not vibes.
