@@ -11,6 +11,10 @@ register pressure, cache and memory bandwidth differ from Apple NEON.
 Keep unconditional SIMDe. Re-measure architecture-sensitive choices on
 the actual x86 CPU and strict production compiler before selecting them.
 
+The owner subsequently confirmed that the laptop was quiet enough.
+The completed measurements and the selected halo-loop adjustment appear
+in the final section below; they supersede the earlier timing deferrals.
+
 ## Patterns taken from the existing engines
 
 `pt_cfastpt.c::fpt_regrid` separates the expensive FFTLog sampling from
@@ -58,11 +62,11 @@ the existing angular kernel with compiler unroll factors 2 and 4.
 SIMDe arithmetic is already present; disassembly contains native vector
 FMA, multiplication, addition and division instructions.
 
-At the owner's request, this pass now prioritizes interpolation accuracy
+At the owner's earlier request, this pass prioritized interpolation accuracy
 and the negative-mode investigation. The queued timing job was stopped
 before it launched. A lookup-validation preflight invoked timing helpers
 while project tests were running; those elapsed times were discarded.
-No new performance result is reported here. Run the prepared profile
+No performance result was retained from that attempt. Run the prepared profile
 only on a quiet machine, one benchmark at a time, after all competing
 computational jobs have exited. Do not use noisy Mac results to reject
 the default SIMDe design for production x86.
@@ -290,4 +294,192 @@ parallel work distribution, not a measured speedup. After all project
 regressions finished, a fresh five-second CPU-time sample still measured
 1.18 cores of desktop activity, principally WindowServer and the Codex
 renderer/service. No new timing run was started. The external record is
-`results/quiet_check_final.json`; quiet-machine scaling remains outstanding.
+`results/quiet_check_final.json`; the later measurements follow below.
+
+## Completed quiet-machine measurements
+
+The owner confirmed that the machine was available for timing. Each job
+ran alone: no concurrent build, test suite, CAMB calculation or second
+benchmark. Ordinary desktop services remained active. Hardware was Apple
+M2 Pro (eight performance and four efficiency cores), macOS 13.7.5,
+Clang 19.1.7, arm64. OpenMP used 1/2/4/8 threads with
+`OMP_PROC_BIND=disabled`; the operating system chose core placement.
+Every loaded BLAS pool was checked to have one thread.
+
+Isolated C variants use the same strict flags: `-O3 -march=native`,
+`-fno-fast-math -fno-associative-math -frounding-math -ftrapping-math
+-fno-reciprocal-math`. Halo and angular-integrator variants also use
+`-flto=auto`. The separate power/lookup experiment does not use LTO.
+These are wall-clock component measurements, not Linux perf hardware
+counters, production x86 results, or full-covariance timings.
+
+### Halo preparation: split rows only when the team needs more work
+
+The comparison uses the real Roman input setup with Omega_m=0.3,
+Omega_b=0.04, H0=67.32, ns=0.96605, As=2.1e-9, w=-1 and mnu=0.06 eV.
+It measures cb halo moments; this does not certify a total-matter
+massive-neutrino covariance prescription. CAMB and the first lazy core
+tables are excluded. Each timed call includes caller output allocation,
+copies and padding checks, C workspace construction, all halo stages,
+and workspace release. No halo output is cached between calls.
+
+The pinned baseline is `f497d1b`, before either mass-axis change.
+Four layouts were compared: baseline, mass-weight splitting only,
+`33a5fc5` (weights and every profile mass node separately), and a chunked
+profile layout. The final confirmation alternates baseline/chunked order,
+uses two warmups per configuration, and retains 101 samples per layout
+and thread count. All use the same eight logarithmic mass panels between
+1e6 and 1e17 M_sun/h and the same physical inputs.
+
+Final medians, milliseconds per complete halo call:
+
+| (a rows, k per row, mass nodes) | Layout | 1 thread | 2 threads | 4 threads | 8 threads |
+|---|---|---:|---:|---:|---:|
+| (1, 2, 4096) | Baseline | 1.322 | 1.230 | 1.268 | 1.425 |
+| (1, 2, 4096) | Selected | 1.327 | 0.794 | 0.507 | 0.562 |
+| (1, 32, 4096) | Baseline | 7.749 | 4.653 | 2.995 | 2.255 |
+| (1, 32, 4096) | Selected | 7.764 | 4.241 | 2.321 | 1.534 |
+| (1, 128, 4096) | Baseline | 43.428 | 23.803 | 13.145 | 7.799 |
+| (1, 128, 4096) | Selected | 43.444 | 23.281 | 12.357 | 7.023 |
+| (8, 16, 2048) | Baseline | 16.455 | 8.598 | 4.622 | 2.888 |
+| (8, 16, 2048) | Selected | 16.468 | 8.609 | 4.633 | 2.932 |
+
+The eight-thread means and sample standard deviations retain the observed
+spread rather than presenting the median as a guaranteed runtime:
+
+| (a rows, k per row) | Baseline mean +/- SD (ms) | Selected mean +/- SD (ms) |
+|---|---:|---:|
+| (1, 2) | 1.427 +/- 0.042 | 0.587 +/- 0.069 |
+| (1, 32) | 2.363 +/- 0.242 | 1.598 +/- 0.198 |
+| (1, 128) | 8.043 +/- 0.601 | 7.350 +/- 0.723 |
+| (8, 16) | 2.978 +/- 0.334 | 3.046 +/- 0.386 |
+
+Relative to one thread, selected eight-thread medians improve by 2.36x,
+5.06x, 6.19x and 5.62x respectively. Relative to the old eight-thread
+baseline, gains are 2.54x, 1.47x and 1.11x for the one-a requests.
+The already well-filled eight-a request has no improvement (1.5% slower
+by median). The smallest request is faster at four than eight threads;
+batching small independent requests remains important. Do not promise
+linear scaling for tiny batches or extrapolate these results to ten cores.
+
+The 51-repeat four-layout trial explains the adjustment to `33a5fc5`:
+collapsing every profile mass node added index overhead to larger calls.
+Whole profile rows avoid that overhead when enough rows exist. Otherwise
+each row gets ceil(threads/(na*nk)) contiguous mass chunks, giving at least
+one task per worker. This adds no arrays or caches and changes no sums.
+For (8,16), its eight-thread median was 2.946 ms versus 3.165 ms for
+the every-mass layout; for (1,128), 7.065 versus 7.184 ms. The 101-repeat
+baseline comparison confirms the selected layout without cherry-picking
+a best repetition. An earlier contended file remains excluded.
+
+The full default comparison checks uint64 views, including four additional
+boundary shapes: (na,nk)=(1,1),(1,3),(3,1),(2,5). Every output is bitwise
+identical to baseline at 1/2/4/8 threads. A separate O0 build with undefined
+behavior and floating-divide-by-zero sanitizers checks five small shapes,
+zero-k completion, odd pair counts and output padding. It also matches
+the strict baseline bitwise, with no sanitizer report.
+
+### Angular input preparation dominates the existing C integral
+
+At z=0.75, 128 wavenumbers give 8,256 unique pairs and 5,120 angular
+nodes per pair. Each row reads P(|K+Q|,a). Nine samples follow two warmups.
+The existing serial power reader takes 442.845 ms with output preallocated.
+The external experiment partitions identical rows across workers and
+calls that same reader; its output is bitwise equal to the serial batch.
+
+| Threads | Power median (ms) | Power mean +/- SD (ms) | SIMDe integral median (ms) | Integral mean +/- SD (ms) |
+|---:|---:|---:|---:|---:|
+| 1 | 443.134 | 443.005 +/- 0.902 | 40.064 | 40.123 +/- 0.269 |
+| 2 | 226.502 | 226.722 +/- 2.196 | 20.340 | 20.375 +/- 0.212 |
+| 4 | 118.682 | 128.690 +/- 29.992 | 10.619 | 10.676 +/- 0.209 |
+| 8 | 63.091 | 63.071 +/- 1.058 | 5.642 | 6.316 +/- 1.041 |
+
+The power stage scales 7.02x and the existing SIMDe integral 7.10x from
+one to eight threads. Constructing the Python wavenumber geometry with
+allocation takes a further 166.737 ms (166.415 +/- 2.999 ms), compared
+with 7.051 ms for the angular rule and 10.927 ms for Python row pointers.
+Fixed physical wavenumbers let a future table builder reuse this geometry
+across scale-factor rows. Reusing it and batching power inputs matter
+more than tuning the already short contraction. The isolated power
+experiment remains external until that production table builder exists.
+
+Explicit unroll factors two/four pass bitwise comparisons. Eight-thread
+medians are 6.821/5.506 ms, versus 5.642 ms without the extra pragma;
+means are 6.475 +/- 1.215, 6.140 +/- 1.175, and 6.316 +/- 1.041 ms.
+The observed differences do not justify a production unroll change.
+Keep unconditional SIMDe; revisit unrolling on the intended x86 target.
+
+### Coarse exact rows, cubic construction, then dense linear queries
+
+The complete two-stage test uses 33 fixed physical wavenumbers (561 pairs),
+2,560 angular nodes, and 65 off-grid scale factors over [0.25,0.875].
+It compares direct calculation at every query with 21 exact samples
+including boundary padding, cubic construction of 1,025 physical-value
+rows, then ordinary linear interpolation. Both paths use eight threads
+and reuse the same precomputed pair geometry and angular rule.
+The spline timing includes exact coarse integrals, pivot-power growth
+factors, dense construction, output allocation and all 65 queries.
+
+| Path | Median (ms) | Mean +/- SD (ms), five samples |
+|---|---:|---:|
+| 65 direct rows | 183.521 | 183.872 +/- 1.744 |
+| Complete two-stage calculation | 66.604 | 66.183 +/- 1.260 |
+
+The measured gain is 2.76x, including construction. Maximum errors over
+each reference component's peak are 7.15e-7 (AvgP), 4.77e-7 (AvgB) and
+2.18e-6 (AvgT). Maximum pointwise relative errors among entries larger
+than 1e-6 of their component peak are 7.13e-6, 1.10e-5 and 6.11e-4.
+No significant entry changes sign. These reproduce the accuracy tests;
+they do not certify a covariance or justify splining directly along the
+moving k=(ell+1/2)/chi(a) coordinate.
+
+Once the dense table exists, the 65-query hot lookup medians are:
+
+| Reader | Threads | Median (microseconds) | Mean +/- SD, 19 samples |
+|---|---:|---:|---:|
+| NumPy, allocates output | Serial | 253.8 | 255.5 +/- 21.4 |
+| Existing cosmo2D SIMDe gather, preallocated | 8 | 161.8 | 185.7 +/- 63.0 |
+| Contiguous-column SIMDe experiment, preallocated | 1 | 30.6 | 31.4 +/- 1.9 |
+| Contiguous-column SIMDe experiment, preallocated | 8 | 48.3 | 52.2 +/- 13.7 |
+
+These compare readers and layouts, not a controlled scalar-versus-SIMD
+instruction experiment. Table transposition is outside the gather timing;
+neither C reader allocates output. Contiguous lanes represent adjacent
+physical columns at the same a and share its bracket. The gather reader
+instead represents different query coordinates in its lanes. Both agree
+with the same linear formula, and contiguous results are bitwise equal
+at one/eight threads. A short cache-resident lookup does not benefit from
+eight workers here. Keep the contiguous SIMDe candidate for the eventual
+table design; do not add a standalone production API with no caller.
+
+### Evidence and remaining limits
+
+The local raw records are `results/halo_thread_scaling_chunked.json`
+(51 repeats), `results/halo_thread_scaling_final.json` (101 repeats),
+`results/halo_thread_accuracy.json`, `results/halo_chunks_debug.log`, and
+`results/optimization_timing.json`. Harnesses are
+`check_halo_scaling.py`, `check_halo_chunks_debug.py` and
+`review_optimization.py timing`, under the external covariance reference.
+All samples are retained, including the slower repetitions.
+
+The didactic self-review checked the new profile-loop overview, its
+two-rows/eight-workers example, chunk endpoint explanation and low-mass
+completion slot. Every C line is within 80 columns; the SIMD moment sums
+and their explanations remain unchanged. This is a self-review, not an
+unavailable Fable review. Production changes are confined to `halo_cov.c`.
+Only LSST currently compiles that routine into its public interface.
+
+After installing the measured code, the standard LSST interface rebuild
+and 61 project checks passed: all 53 covariance tests plus eight frozen
+NLA/TATT and repeated-cosmology tests for cosmic shear and 3x2pt
+(`test_example1.py` and `test_example2.py`). The run took 90.02 seconds;
+the four frozen chi2 differences and four repeatability differences all
+print 0.000000. No reference was refrozen. The small-batch regression now
+checks one, two and three k rows at 1/2/4/8 threads using uint64 views.
+The production source also passes a compile-only check without OpenMP.
+The earlier full seven-project results remain recorded separately; those
+full suites were not repeated for this covariance-only layout change.
+
+These measurements identify component costs and support one small halo
+layout change. Full Roman G+SSC+cNG generation, full/selected-matrix
+positivity and Fisher/FoM convergence remain separate unfinished work.

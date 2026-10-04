@@ -1,5 +1,8 @@
 #include <math.h>
 #include <stdlib.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "halo_cov.h"
 #include "cosmolike/basics.h"
@@ -275,29 +278,47 @@ void halo_moments_cov(
 
   double*** profile = (double***) malloc3d(na, nk, nmass+1);
 
-  // A profile depends on a, k and mass, but not on another profile value.
-  // Distribute all three indices so even a small k batch can occupy the
-  // full thread team. Each (a,k,M) value is computed once, including the
-  // minimum-mass completion slot, then reused by every moment needing it.
+  // At a fixed (a,k), every halo mass has an independent NFW profile.
+  // Whole mass rows let the worker reuse a and k. If fewer rows exist
+  // than workers, divide each row into contiguous mass chunks so a small
+  // request can still occupy the thread team. Larger requests keep one
+  // chunk per row and avoid a parallel-loop index calculation per mass.
+  int threads = 1; // available workers; serial builds use one
+  #ifdef _OPENMP
+  threads = omp_get_max_threads();
+  #endif
+
+  const int nprofile = na*nk; // independent (scale factor, wavenumber) rows
+  const int nchunk = (threads+nprofile-1)/nprofile; // chunks per profile row
+
+  // For example, two profile rows and eight workers give four chunks
+  // per row: all eight workers can evaluate different masses. With at
+  // least eight rows, each task instead evaluates one complete mass row.
+  // No mass sum is split here; the later moment integrals keep their order.
   #pragma omp parallel for collapse(3) schedule(static)
   for (int row=0; row<na; row++) {
-    // At this scale factor, each k row uses the stored concentrations
-    // to generate profiles for all resolved masses and the completion mass.
+    // Each k uses this scale factor's shared mass/concentration samples.
     for (int index=0; index<nk; index++) {
-      // One iteration evaluates the normalized NFW profile of one mass.
-      // The last iteration supplies the profile of the unresolved mass.
-      for (int node=0; node<=nmass; node++) {
-        const double m = node < nmass ? mass[0][node] : mass_min;
-        double value = 1.0;
+      // Chunks cover disjoint parts of the same profile row. A chunk stops
+      // before end; its neighbor starts there, so each mass is written once.
+      for (int chunk=0; chunk<nchunk; chunk++) {
+        const int begin = (nmass+1)*chunk/nchunk; // first owned mass slot
+        const int end = (nmass+1)*(chunk+1)/nchunk; // first unowned mass slot
 
-        // At zero wavenumber every normalized halo profile is one.
-        // The last mass slot stores the unresolved-mass profile.
-        if (k[row][index] > 0.0) {
-          value = u_nfw_c(concentration[row][node], k[row][index], m,
-                          a[row]);
+        // Evaluate each mass in the owned interval. The final physical
+        // slot belongs to the minimum-mass completion profile; it is
+        // included in the partition just like every resolved halo mass.
+        for (int node=begin; node<end; node++) {
+          const double m = node < nmass ? mass[0][node] : mass_min;
+          double value = 1.0; // normalized profile at zero wavenumber
+
+          if (k[row][index] > 0.0) {
+            value = u_nfw_c(concentration[row][node], k[row][index], m,
+                            a[row]);
+          }
+
+          profile[row][index][node] = value;
         }
-
-        profile[row][index][node] = value;
       }
     }
   }
