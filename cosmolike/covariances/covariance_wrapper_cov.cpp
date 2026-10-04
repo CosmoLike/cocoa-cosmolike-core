@@ -5,6 +5,7 @@
 #include <armadillo>
 #include "covariance_wrapper_cov.hpp"
 #include "gaussian_cov.h"
+#include "assembly_cov.h"
 #include "cosmolike/basics.h"
 
 namespace py = pybind11;
@@ -26,8 +27,8 @@ namespace cosmolike_interface {
 // Public arrays use Armadillo axes. The short C workspace copies below
 // follow cosmo2D_wrapper.cpp: C requires contiguous multipole rows, whereas
 // Armadillo stores columns contiguously. No pointer vectors describe user
-// arrays. The existing C routines retain their SIMD arithmetic and sum
-// order; complete independent observable blocks share an OpenMP team.
+// arrays. The shared C assembler retains SIMD arithmetic and sum order;
+// complete independent observable blocks share an OpenMP team.
 // ---------------------------------------------------------------------------
 static arma::Mat<double> gaussian_matrix_cpp(
     const arma::Cube<double>& spectra,   // (ell, field, field), signal only
@@ -92,103 +93,51 @@ static arma::Mat<double> gaussian_matrix_cpp(
     }
   }
 
-  // --- 2. SHARE THE BIN OPERATORS AND ENUMERATE DISTINCT BLOCKS ---
+  // --- 2. COPY NOTEBOOK AXES TO THE SHARED C ROW LAYOUT ---
 
-  // Every pair of catalogs uses the same angular/band operator. Copy it
-  // once, outside the observable loop. Each C row sums consecutive ell.
+  // Armadillo stores columns contiguously; C sums contiguous ell rows.
+  // These copies preserve physical axes and keep pointer bookkeeping out
+  // of the notebook API. The C assembler owns every mathematical loop.
   arma::Mat<double> output(ndata, ndata);
-  arma::Mat<int> tasks(nobs*(nobs+1)/2, 2);
-  double*** kernels = (double***) malloc3d(operators.n_rows, nbin, nell);
-  for (arma::uword probe=0; probe<operators.n_rows; probe++) {
+  const int nfield = noise.n_elem; // catalogs in each spectrum axis
+  const int nprobe = realspace ? 4 : 1; // operator roles
+  double** power = (double**) malloc2d(nfield*nfield, nell);
+  double** kernels = (double**) malloc2d(nprobe*nbin, nell);
+  double** result = (double**) malloc2d(ndata, ndata);
+  arma::Mat<int> layout(3, nobs); // column-major triples, flat (probe,A,B)
+
+  for (int first=0; first<nfield; first++) {
+    for (int second=0; second<nfield; second++) {
+      for (int ell=0; ell<nell; ell++) {
+        power[first*nfield+second][ell] = spectra(ell, first, second);
+      }
+    }
+  }
+  for (int probe=0; probe<nprobe; probe++) {
     for (int bin=0; bin<nbin; bin++) {
       for (int ell=0; ell<nell; ell++) {
-        kernels[probe][bin][ell] = operators(probe, bin, ell);
+        kernels[probe*nbin+bin][ell] = operators(probe, bin, ell);
       }
     }
   }
-
-  // Cov(AB,CD)=Cov(CD,AB). A task owns both a block and its transpose;
-  // enumerating the triangle explicitly gives the workers equal task counts.
-  int task = 0;
-  for (int first=0; first<nobs; first++) {
-    for (int second=first; second<nobs; second++) {
-      tasks(task, 0) = first;
-      tasks(task, 1) = second;
-      task++;
-    }
+  for (int row=0; row<nobs; row++) {
+    layout(0, row) = realspace ? rows(row, 0) : 0;
+    layout(1, row) = rows(row, offset);
+    layout(2, row) = rows(row, offset+1);
   }
 
-  // --- 3. APPLY THE C WICK AND PROJECTION ROUTINES TO EACH BLOCK ---
+  gaussian_matrix_cov(nell, nfield, nobs, nbin, layout.memptr(), power,
+      noise.memptr(), kernels, ell_min, area_sr,
+      realspace ? pair_area.memptr() : nullptr, realspace, result);
 
-  // Each worker keeps scratch for a complete bin-by-bin block. Different
-  // tasks write disjoint matrix cells, so the ell sum never gets split
-  // between workers. A single-observable call lets C parallelize its bins.
-  #pragma omp parallel if(nobs > 1)
-  {
-    arma::Col<double> harmonic(nell); // Wick covariance per multipole
-    double** cross = (double**) malloc2d(4, nell);
-    double** weighted = (double**) malloc2d(nbin, nell);
-    double** block = (double**) malloc2d(nbin, nbin);
-
-    #pragma omp for schedule(static)
-    for (arma::uword index=0; index<tasks.n_rows; index++) {
-      const int first = tasks(index, 0);
-      const int second = tasks(index, 1);
-      const int a = rows(first, offset);
-      const int b = rows(first, offset+1);
-      const int c = rows(second, offset);
-      const int d = rows(second, offset+1);
-      const int left_probe = realspace ? rows(first, 0) : 0;
-      const int right_probe = realspace ? rows(second, 0) : 0;
-      const arma::Col<int> fields = {a, b, c, d};
-      const arma::Col<double> noise_ab = {noise(a), noise(b)};
-      const arma::Col<double> cross_noise = {
-        a == c ? noise(a) : 0.0,
-        b == d ? noise(b) : 0.0,
-        a == d ? noise(a) : 0.0,
-        b == c ? noise(b) : 0.0
-      };
-
-      // Preserve AC,BD,AD,BC order: the Wick kernel multiplies rows 0*1
-      // and 2*3. Catalog noise contributes only for identical fields.
-      for (int ell=0; ell<nell; ell++) {
-        cross[0][ell] = spectra(ell, a, c);
-        cross[1][ell] = spectra(ell, b, d);
-        cross[2][ell] = spectra(ell, a, d);
-        cross[3][ell] = spectra(ell, b, c);
-      }
-      gaussian_wick_cov(ell_min, nell, area_sr/(4.0*M_PI), cross,
-          cross_noise.memptr(), !realspace, harmonic.memptr());
-      gaussian_project_cov(nbin, nbin, nell, kernels[left_probe],
-          kernels[right_probe], harmonic.memptr(), weighted, block);
-
-      if (realspace) {
-        // Disjoint angular bins share pure pair noise only on the
-        // diagonal. This term includes modes beyond the finite ell grid.
-        for (int bin=0; bin<nbin; bin++) {
-          block[bin][bin] += gaussian_noise_pair_cov(
-              (probe_cov) left_probe, (probe_cov) right_probe,
-              fields.memptr(), noise_ab.memptr(), pair_area(bin));
-        }
-      }
-
-      // Select one triangle even for a diagonal block: roundoff in a
-      // reverse product must not change which value gets mirrored.
-      for (int left=0; left<nbin; left++) {
-        const int start = first == second ? left : 0;
-        for (int right=start; right<nbin; right++) {
-          const int i = first*nbin+left;
-          const int j = second*nbin+right;
-          output(i, j) = block[left][right];
-          output(j, i) = block[left][right];
-        }
-      }
+  for (int row=0; row<ndata; row++) {
+    for (int col=0; col<ndata; col++) {
+      output(row, col) = result[row][col];
     }
-    free(cross);
-    free(weighted);
-    free(block);
   }
+  free(power);
   free(kernels);
+  free(result);
   return output;
 }
 
@@ -273,88 +222,37 @@ arma::Mat<double> covariance_project_connected_cpp(
   const int nnode = measure.n_elem; // common radial quadrature
   const int nbin = projected.n_rows/4; // angular bins per statistic
   arma::Mat<double> output(nobs*nbin, nobs*nbin);
-  arma::Col<int> counts(4, arma::fill::zeros);
-  arma::Mat<int> groups(4, nobs); // input observable IDs within each probe
+  const int ntransform = 4*nbin; // combined probe and angular-bin axis
+  double** windows = (double**) malloc2d(nobs, nnode);
+  double** matter = (double**) malloc2d(ntransform*ntransform, nnode);
+  double** result = (double**) malloc2d(nobs*nbin, nobs*nbin);
 
-  // Preserve catalog order within each probe. On a diagonal angular
-  // block, this determines which value supplies both covariance triangles.
+  // Copy by physical indices. C expects the radial node to vary fastest;
+  // its assembler supplies probe grouping, integration and parallel work.
   for (int row=0; row<nobs; row++) {
-    const int probe = probes(row);
-    groups(probe, counts(probe)) = row;
-    counts(probe)++;
-  }
-  const int largest = counts.max(); // largest catalog group
-  arma::Mat<int> tasks(10*nbin*nbin, 4); // probes and bins for each task
-  int ntask = 0;
-  for (int left=0; left<4; left++) {
-    if (counts(left) == 0) continue;
-    for (int right=left; right<4; right++) {
-      if (counts(right) == 0) continue;
-      for (int first=0; first<nbin; first++) {
-        const int start = left == right ? first : 0;
-        for (int second=start; second<nbin; second++) {
-          tasks(ntask, 0) = left;
-          tasks(ntask, 1) = right;
-          tasks(ntask, 2) = first;
-          tasks(ntask, 3) = second;
-          ntask++;
-        }
-      }
+    for (int node=0; node<nnode; node++) {
+      windows[row][node] = pair_window(row, node);
     }
   }
-
-  // C integrates complete radial rows. Copy each group once; unused
-  // rows in smaller groups are never passed to the projection routine.
-  double*** windows = (double***) malloc3d(4, largest, nnode);
-  for (int probe=0; probe<4; probe++) {
-    for (int row=0; row<counts(probe); row++) {
+  for (int first=0; first<ntransform; first++) {
+    for (int second=0; second<ntransform; second++) {
       for (int node=0; node<nnode; node++) {
-        windows[probe][row][node] = pair_window(groups(probe, row), node);
+        matter[first*ntransform+second][node] = projected(first, second, node);
       }
     }
   }
 
-  // Each task owns all catalog pairings for two angular bins, including
-  // their transposes. Round-robin scheduling distributes large and small
-  // catalog groups across the team without splitting a radial sum.
-  #pragma omp parallel if(ntask > 1)
-  {
-    arma::Col<double> weight(nnode);
-    double** weighted = (double**) malloc2d(largest, nnode);
-    double** block = (double**) malloc2d(largest, largest);
+  connected_matrix_cov(nobs, nbin, nnode, probes.memptr(), windows,
+      matter, measure.memptr(), result);
 
-    #pragma omp for schedule(static, 1)
-    for (int task=0; task<ntask; task++) {
-      const int left = tasks(task, 0);
-      const int right = tasks(task, 1);
-      const int first = tasks(task, 2);
-      const int second = tasks(task, 3);
-
-      // First combine the matter function with its radial measure.
-      // The C kernel then multiplies the left window before summing
-      // against the right, preserving the original arithmetic order.
-      for (int node=0; node<nnode; node++) {
-        weight(node) = measure(node)
-            *projected(left*nbin+first, right*nbin+second, node);
-      }
-      gaussian_project_cov(counts(left), counts(right), nnode,
-          windows[left], windows[right], weight.memptr(), weighted, block);
-
-      for (int i=0; i<counts(left); i++) {
-        const int start = (left == right
-                           && first == second) ? i : 0;
-        for (int j=start; j<counts(right); j++) {
-          const int row = groups(left, i)*nbin+first;
-          const int col = groups(right, j)*nbin+second;
-          output(row, col) = block[i][j];
-          output(col, row) = block[i][j];
-        }
-      }
+  for (int row=0; row<nobs*nbin; row++) {
+    for (int col=0; col<nobs*nbin; col++) {
+      output(row, col) = result[row][col];
     }
-    free(weighted);
-    free(block);
   }
   free(windows);
+  free(matter);
+  free(result);
   return output;
 }
 
