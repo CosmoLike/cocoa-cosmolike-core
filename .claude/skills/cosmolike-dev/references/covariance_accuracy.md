@@ -121,3 +121,157 @@ convergence. The still-valid precision bound max|1/lambda-1| is
 1.04237e-6, recorded by external `compare_survey_refinement.py` in
 `results/smooth_power_512_likelihood_bounds.json`; it is not the new
 production stopping rule.
+
+## Nested interpolation-grid audit (2026-10-04)
+
+Before the correction, the covariance non-Gaussian table used 16*b points
+uniform in ln(ell+1/2) between ell=2 and ell=10000*b. This changed both
+the cell spacing and the upper endpoint at each boost. Only the first old
+node survived a doubling. Even with a fixed endpoint, doubling n points
+gives 2*n-1 intervals instead of the intended 2*(n-1).
+
+`covariance_accuracy` now starts with 15 intervals across ell=2..10000.
+Each doubling halves that same logarithmic step. Increasing the signal
+cutoff appends cells, rather than stretching existing ones. Resolved
+settings hold the explicit ng_ell array instead of ng_ell_nodes; the full
+arrays have 16/35/73/153 samples at boosts 1/2/4/8. Every old sample is
+bitwise retained at an even index of the next grid, including both original
+anchors. The saved settings preserve those positions without requiring a
+reader to reconstruct them from current defaults.
+
+Both survey assemblers validate the supplied grid before expensive work
+and trim unused upper nodes with a linear array count. They keep the first
+node at or beyond the signal cutoff, with its original value. This avoids
+extra halo work above fixed Fourier bands without changing the remaining
+cell locations. No new C code, binary search or data-vector table is used.
+
+The lensing-window table already has 4096*b+1 points on a fixed interval
+and is nested. Signal/mask sums use integer multipoles, so raising their
+cutoffs retains the old modes. Mass, radial and angular Gauss--Legendre
+rules change their nodes and weights together; those are quadrature rules,
+not interpolation grids, and were not replaced merely to force nesting.
+DenseLogTable has caller-owned sampling choices rather than boost defaults;
+its documentation now explains refinement of both interval counts.
+
+CAMB tables remain fixed under the covariance boost. The notebook CAMB
+helper's redshift copy grid is nested, but its log-k copy grid still uses
+1250+250*CLAccuracyBoost*AccuracyBoost points. This separate nonnested grid
+does not move in these covariance-only tests. Its refinement and CAMB's own
+accuracy are independent possible floors; neither was changed in this fix.
+
+The first isolated response experiment holds mass integration at 1024
+nodes/panel and the logarithmic response step at 0.00125. It compares 512
+fixed random log-spaced query locations with direct halo-response calls at
+a=0.55,0.75,0.9, using a fixed distance of 1000 Mpc/h to map angular to
+physical modes. The original moving-range grid's boost-8 maximum relative
+response errors are 2.48%, 2.24%, 2.17%; the nested grid gives 1.74%, 1.57%,
+1.49%. This comparison also changes node density, so it is not evidence
+that node retention alone caused the improvement. It is not a full survey
+or a certified response-accuracy setting. External evidence:
+`covariance_reference/check_nested_boost.py` and
+`covariance_reference/results/nested_boost_response.json`.
+
+### Fixed-range control and high-boost components
+
+The fixed-range comparison holds ell=2..10000 on both ladders. At a=0.75,
+the nested 16/31/61/121/241/481-node tables retain every old node, while
+16/32/64/128/256/512-node tables retain only the two endpoints. The nested
+sequence generally has fewer individual queries whose error grows on
+refinement (56/30/45/49/102 of 512, versus 62/81/56/95/124), but it does not
+win every maximum or RMS comparison. Nesting is not a proof of monotonic
+error: curvature, narrow features and fixed input-table interpolation
+remain. See results/fixed_range_boost_response.json and its Python runner.
+
+The actual LSST first-source Gaussian xi+/xi- covariance has 52 entries,
+with the full 26 angular bins from 2.5 to 900 arcminutes. CAMB, cosmology,
+catalogs and scientific bins stay fixed; the complete covariance boost
+changes signal/mask cutoffs, radial/angular rules and window sampling.
+All four totals are positive definite. Maximum generalized variance
+changes on successive refinements are:
+
+| Boost pair | Maximum fractional variance change |
+|---|---:|
+| 1 to 2 | 1.02147743905e-4 |
+| 2 to 4 | 1.10252220802e-5 |
+| 4 to 8 | 2.28962303339e-6 |
+
+The highest run uses bounded multipole batches; the lower-boost numbers
+agree with the earlier unbatched run. The storage fix, bitwise tests and
+separate quiet benchmark are in `covariance_limber_batches.md`.
+This is one source's Gaussian covariance, not all-probe FoM convergence.
+Evidence: check_gaussian_boost.py and results/gaussian_boost_sequence.*.
+
+A separate physical-shell test projects all five matter cNG terms and the
+SSC response at a=0.75 and a fixed representative distance of 1000 Mpc/h.
+Four density band operators cover 30..99, 100..399, 400..1199 and 1200..4000.
+There is no line-of-sight integral in this diagnostic. It raises mass/tree
+quadrature, response-step and nested multipole resolution together, then
+refines only the multipole table once more at fixed boost-8 quadrature.
+
+| Refinement | SSC shell change | cNG shell change |
+|---|---:|---:|
+| 1 to 2 | 7.9911e-2 | 1.3690e-1 |
+| 2 to 4 | 6.1263e-2 | 4.3712e-2 |
+| 4 to 8 | 5.4588e-3 | 1.1407e-2 |
+| Table-only doubling above 8 | 1.4192e-3 | 2.6133e-3 |
+
+Here the metric is max|Delta C_ij|/sqrt(|C_ii*C_jj|), using the finer
+component's diagonal. These are component diagnostics, not generalized
+modes of a total covariance. The extra table doubling is not a new public
+boost=16. See check_ng_shell_boost.py and results/ng_shell_boost.*.
+
+### Remaining copied-power derivative floor
+
+The fixed-range nested response ladder still stalls near its worst query:
+at a=0.75, 241/481/961 response nodes give maximum relative interpolation
+errors 0.00793978 / 0.00793059 / 0.00786841. Increasing a covariance-table
+count alone is therefore insufficient in this example.
+
+An input-copy control retains all 1500 original log-k nodes and their
+linear, cb and nonlinear log-power samples exactly, then fills a nested
+11993-node table in two different ways. Linear midpoint insertion preserves
+the same piecewise-linear power function and leaves the response-table
+floor essentially unchanged. Direct responses move by at most 1.42e-6;
+changing the supplied k sampling also changes internal halo preparation.
+
+Cubic construction between the original samples, followed by ordinary
+linear reads in C, instead gives:
+
+| Response nodes | Original power copy | Cubic-dense power copy |
+|---:|---:|---:|
+| 241 | 7.9398e-3 | 4.5312e-3 |
+| 481 | 7.9306e-3 | 1.1844e-3 |
+| 961 | 7.8684e-3 | 3.1093e-4 |
+
+Errors compare interpolation against direct responses using the same
+power-copy choice. Direct responses between those choices change by up to
+0.477%; cubic construction changes the function between supplied samples.
+This isolates a practical floor associated with the slope changes of the
+copied power interpolant, which feed the SSC dilation derivative. It does
+not prove that this cubic reconstruction is the exact CAMB derivative.
+The production CAMB/power-copy policy was deliberately not changed by this
+covariance-grid fix. Validate dense nested copying against CAMB's own
+interpolator and physical covariance/Fisher results before adopting it.
+
+Evidence: check_response_input_floor.py and results/response_input_floor.*.
+The measured maximum/RMS curves were rendered and visually inspected in
+results/response_grid_convergence.png and .pdf, including the logarithmic
+axes and the distinction between each power-copy choice's own reference.
+All paths in these measurement sections are within the external
+covariance_reference directory. The tests compare numerical choices within
+the supported massless model, not the accuracy of its physical prescription.
+
+### Regression and didactic review
+
+All 116 project covariance checks pass: LSST 65, DES cluster 46, and one
+shared-adapter check in each of the five remaining projects. New checks
+cover exact inherited coordinates, cutoff bracketing without stretching,
+owned trimmed arrays, invalid grids and saved-grid roundtrips. The existing
+tests retain all component/reference and one/eight-thread comparisons.
+
+The manual didactic pass checked intervals versus points, fixed coordinates
+versus values refined by quadrature, table support versus measured cutoff,
+Fourier trimming, distinction from Gaussian rules and fixed CAMB inputs.
+There are no new C loops or SIMD intrinsics. Public documentation and all
+seven notebooks explain the nested sampling and its limits without claiming
+that positive-definiteness or a single boost establishes convergence.

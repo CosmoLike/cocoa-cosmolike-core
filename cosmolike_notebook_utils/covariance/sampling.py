@@ -27,6 +27,8 @@ class DenseLogTable:
 
     Both ncoarse and ndense require refinement checks at off-grid queries.
     More dense nodes cannot recover a feature missing from the coarse data.
+    On a fixed interval, doubling resolution uses 2*(n-1)+1 points so the
+    old nodes remain in the new grid. Apply this to both sampling stages.
     """
 
     def __init__(self, k, values, ndense, logarithmic=False):

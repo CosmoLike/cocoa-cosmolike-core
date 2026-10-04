@@ -31,7 +31,7 @@ fluctuations larger than the survey. See
 | File | Calculation and responsibility |
 | --- | --- |
 | `accuracy.py` | One `accuracy_boost` resolves the signal/mask cutoffs and radial, angular and window sampling together. |
-| `gaussian.py` | Complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
+| `gaussian.py` | Batched all-pairs Limber spectra, complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
@@ -239,6 +239,34 @@ The same boost refines halo mass and angular integration and reduces the
 response finite-difference step. These are resolutions, not survey-accuracy
 labels. Check parameter errors and Fisher FoM for the intended physical model.
 
+The interpolation grids retain their old nodes when the boost doubles.
+For example, a table with 16 points has 15 intervals; splitting each
+interval gives 31 points. Using 32 points across the same range would move
+every interior node. A linear interpolant then changes where its slope
+jumps, which can make the error oscillate as resolution increases.
+
+The resolved `ng_ell` array contains the matter-response and trispectrum
+samples. Its spacing is uniform in $`\ln(\ell+1/2)`$. When the signal cutoff
+grows, the table extends on the same grid instead of stretching existing
+intervals. The last table node may lie beyond that cutoff to bracket the
+last signal mode; it does not add modes to the observable. Fourier forecasts
+trim unused upper samples without moving the remaining nodes. The saved
+settings include the actual array, so the interpolation grid is reproducible.
+
+This node-retention rule applies to interpolation tables. Gauss–Legendre
+quadrature nodes and weights change together when its order increases;
+they are tested separately. Nested sampling also does not guarantee
+monotonic convergence of every covariance entry. Compare several boosts,
+including the highest affordable pair, and isolate individual grids if
+convergence stalls. CAMB inputs stay fixed in this covariance-only test;
+their sampling needs a separate refinement check before inference.
+
+Spectrum preparation processes independent multipoles in bounded batches.
+Every batch uses the complete radial quadrature and all field pairs, so it
+preserves the individual sums and introduces no additional interpolation.
+This bounds temporary memory when both the multipole cutoff and radial
+resolution grow at high boost.
+
 ## Interpolation and numerical checks <a name="interpolation_and_numerical_checks"></a>
 
 Sample expensive quantities at **fixed physical wavenumber** before
@@ -247,6 +275,10 @@ table. Repeated queries read adjacent entries linearly; queries outside
 the sampled range fail explicitly. Increase both coarse and dense counts,
 and compare off-grid values to direct calculations. Increasing dense
 sampling cannot restore a feature missing from coarse samples.
+On a fixed interval, refine the number of intervals: use
+`2*(ndense-1)+1` points when doubling resolution. Preserve the coarse sample
+nodes as well. Increasing both point counts without checking their positions
+can change the interpolation error instead of steadily resolving it.
 
 A positive diagonal or a few positive subblocks is insufficient. Check
 the complete total matrix, any selected likelihood matrix, and complete

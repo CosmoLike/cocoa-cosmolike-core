@@ -54,7 +54,7 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
     # settings are deliberately not an inference-accuracy prescription.
     settings.update({
         "ell_max": 160,
-        "ng_ell_nodes": 12,
+        "ng_ell": np.geomspace(2.5, 160.5, 12)-0.5,
         "mask_ell_max": 128,
         "radial_nquad": 64,
         "angle_nquad": 64,
@@ -115,3 +115,4 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
                 assert metadata["lens_file"] == settings["lens_file"]
                 assert metadata["source_file"] == settings["source_file"]
                 assert metadata["area_deg2"] == settings["area_deg2"]
+                np.testing.assert_array_equal(metadata["ng_ell"], settings["ng_ell"])

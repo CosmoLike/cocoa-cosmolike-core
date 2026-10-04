@@ -26,6 +26,7 @@ import time
 import numpy as np
 from scipy.special import roots_legendre
 
+from .accuracy import non_gaussian_multipoles
 from .counts_cluster import count_statistics
 from .forecast import _json_array
 from .gaussian import observed_spectra, limber_spectra
@@ -138,8 +139,8 @@ def compute_forecast(interface, settings, progress=None):
     if (mass_bounds.shape != (2,) or not np.all(np.isfinite(mass_bounds))
             or mass_bounds[1] <= mass_bounds[0]):
         raise ValueError("cluster_lnm_bounds needs two increasing finite log masses")
-    if settings['ng_ell_nodes'] < 2 or settings['ell_max'] < 2:
-        raise ValueError("need ng_ell_nodes>=2 and ell_max>=2")
+    coarse_ell = non_gaussian_multipoles(samples=settings['ng_ell'],
+                                        ell_max=settings['ell_max'])
     if not isinstance(settings['cluster_ytransform'], (bool, np.bool_)):
         raise ValueError("cluster_ytransform must be True or False")
     operator = None
@@ -234,10 +235,6 @@ def compute_forecast(interface, settings, progress=None):
     # The expensive matter calculation is independent of catalog labels.
     # Reuse the exact galaxy/shear pipeline, then attach cluster windows.
     tick = time.perf_counter()
-    coarse_ell = np.exp(np.linspace(np.log(2.5), np.log(ell[-1]+0.5),
-                                     settings['ng_ell_nodes']))-0.5
-    coarse_ell[0] = ell[0]
-    coarse_ell[-1] = ell[-1]
     compressed = compress_operators(operators=kernels, ell=ell, coarse_ell=coarse_ell)
 
     def report_matter(completed, total):

@@ -18,6 +18,7 @@ import numpy as np
 
 from .gaussian import observed_spectra, limber_spectra
 from .geometry import angular_rule, cap_mask
+from .accuracy import non_gaussian_multipoles
 
 
 def observable_rows(nlens, nsource, excluded_gammat=()):
@@ -364,7 +365,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         interface = project interface with cosmology and catalogs initialized.
         settings = resolved integration and physical choices:
             ell_max, mask_ell_max = signal and footprint multipole cutoffs;
-            ng_ell_nodes = count of samples uniform in ln(ell+1/2);
+            ng_ell = supplied samples uniform in ln(ell+1/2);
             a_edges, radial_nquad = scale-factor panels and GL nodes/panel;
             nwindow = uniform-a samples for cumulative lensing efficiencies;
             angle_nquad = GL nodes within each observed angular bin;
@@ -392,8 +393,6 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     """
     if settings["mnu"] != 0.0:
         raise ValueError("the full halo matter model currently requires mnu=0")
-    if settings["ng_ell_nodes"] < 2 or settings["ell_max"] < 2:
-        raise ValueError("need at least two NG samples and ell_max >= 2")
     if not np.isfinite(settings["response_step"]) or settings["response_step"] <= 0:
         raise ValueError("response_step must be finite and positive")
     if rows.ndim != 2 or rows.shape[1] != 3 or rows.dtype.kind not in "iu":
@@ -429,6 +428,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
                 or np.any(last_band < first_band)):
             raise ValueError("need matching integer bands with 2<=first<=last")
         ell_max = int(np.max(last_band))
+    coarse_ell = non_gaussian_multipoles(samples=settings["ng_ell"], ell_max=ell_max)
     ell = np.arange(2, ell_max+1, dtype=float)
     snapshot = limber_spectra(
         interface=interface,
@@ -535,10 +535,6 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # only in the final radial sums. This avoids repeating expensive halo
     # integrations for thousands of observable pairs.
     tick = time.perf_counter()
-    coarse_ell = np.exp(np.linspace(np.log(2.5), np.log(ell[-1]+0.5),
-                                   settings["ng_ell_nodes"]))-0.5
-    coarse_ell[0] = ell[0]
-    coarse_ell[-1] = ell[-1]
     compressed = compress_operators(
         operators=kernels, ell=ell, coarse_ell=coarse_ell,
         source_factor=source_factor,

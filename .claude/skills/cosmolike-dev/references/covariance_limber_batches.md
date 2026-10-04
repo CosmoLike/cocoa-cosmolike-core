@@ -7,7 +7,7 @@ catalog's full internal field matrix. At boost 8, its 7 radial panels have
 3584 nodes, the signal has 79999 multipoles, and there are ten fields.
 `limber_spectra_cov` allocates two power tables and complete field windows,
 about 8*(2+10)*3584*79999 = 27.52 GB of logical double storage. A process
-sample found all eight workers inside its window-preparation loop. The
+sample found all eight workers inside its Limber-spectrum loop. The
 initial unbatched boost-8 run was stopped before completion; its elapsed
 time is not a completed-runtime measurement.
 

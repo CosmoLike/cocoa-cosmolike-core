@@ -150,6 +150,14 @@ dense table in the hot path. Do not replace the hot lookup with a cubic
 solve/evaluation. Test off-grid linear queries against direct calculations,
 in addition to checking the dense nodes, and distinguish interpolation in
 physical wavenumber from interpolation along k=(ell+1/2)/chi(a).
+When an accuracy boost refines interpolation tables, preserve existing
+sample positions: double intervals, not endpoint-inclusive point counts.
+If a cutoff grows, extend the same grid rather than stretching it. Test
+actual node retention and a high-boost convergence sequence; separate
+grid movement from interpolation density, cutoff error and fixed input
+power-table resolution. Gauss--Legendre quadrature nodes are a different
+case: refine their nodes and weights together and measure convergence.
+See `references/covariance_accuracy.md` for the measured grid audit.
 Study `cosmo2D.c::limber_fill_interp` and the `legendre_sums`/`xipm`
 transform helpers when designing covariance lookup and projection:
 share grid indices across tables, prefer SIMDe for bulk linear reads,
