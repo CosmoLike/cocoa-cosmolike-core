@@ -85,6 +85,11 @@ Krause and Takada papers are primary physics sources; CosmoCov code and the
 study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
 do not build elaborate recovery paths. Never push; local commits are allowed.
+Cluster count responses and all-pairs Limber projection are recorded in
+`references/covariance_cluster_counts.md` and
+`references/covariance_cluster_spectra.md`. They are validated components,
+not a completed cluster 6x2pt+N covariance. Retain the distinct count and
+two-point response conventions and test all internal field cross spectra.
 
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.

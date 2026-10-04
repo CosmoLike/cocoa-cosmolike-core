@@ -65,6 +65,51 @@ Optimized des_cluster build: six checks passed with
 The complete data-vector regression run is tracked with the project
 rollout; the new call does not run during likelihood evaluation.
 
+### DES selected-abundance pilot
+
+The untimed physical pilot uses the actual 12 DES count bins: redshift
+edges 0.2, 0.4, 0.55, 0.65 and richness edges 20, 30, 45, 60, 500. Area
+is 4143 deg2. The project's `des_y6_cluster.nz` supplies selection
+probabilities. Lognormal MOR parameters are [4.26, 0.943, 0.15, 0.207],
+with fixed Tinker amplitude 0.368 and no fitted selection-bias correction.
+Massless CAMB and the galaxy-forecast cosmology supply the power tables.
+
+Selected density is phi_i(z)*n_lambda(z); its response is that density
+times the unmodified selected halo bias. This assumes the richness and
+photo-z selection is fixed at given halo mass and true redshift under
+the background perturbation. It does not validate an environmental
+selection model or identify a fitted lensing factor with a count response.
+The public abundance readers still set the mass/a-table precision.
+
+| Radial GL nodes per panel | Mask maximum L | Largest mean-count difference from the core | Largest total-diagonal refinement | Largest generalized variance refinement |
+|---:|---:|---:|---:|---:|
+| 64 | 512 | 9.286e-7 | first setting | first setting |
+| 128 | 1024 | 2.252e-6 | 1.124e-5 | 1.897e-5 |
+| 256 | 2048 | 9.529e-7 | 2.707e-6 | 3.190e-6 |
+
+The 12 final means span 232.064 to 4634.340 objects. All three count
+Poisson+SSC matrices are positive definite, without repairs. At the final
+setting the smallest raw eigenvalue is 241.424 count^2 and the largest
+SSC/Poisson diagonal ratio is 0.591. Refinement is not strictly monotonic:
+the radial integrands read the existing tabulated selection and abundance.
+Neither this comparison nor positivity certifies joint-survey Fisher errors.
+
+A separate untimed necessary-condition check forms the 5x5 matter/four-
+richness field matrix at z=0.25, 0.45, 0.60, using P_cm=P_1h+b_c P_NL,
+P_cc=b_c b_d P_NL and exclusive-bin noise 1/n_c. Across 97 wavenumbers
+from 0.001 to 20 h/Mpc, there are no negative correlation eigenvalues.
+Their minima are 0.1081, 0.1433 and 0.1777 respectively. This supports
+continuing the all-pairs projection for this fiducial; it does not
+establish positivity for other selections or the full joint covariance.
+
+External reproducibility scripts are `test/covariance_reference/`
+`cluster_counts_pilot.py` and `cluster_spectra_consistency.py`; their JSON
+reports are in that folder's `results/`. These short correctness checks
+overlapped ongoing data-vector regressions. No performance number is
+reported from them.
+
+### Analytic component tests
+
 Closed-integral test: constant selected abundances between chi=0.2 and
 0.8 give mean counts proportional to (0.8^3-0.2^3)/3 and count SSC to
 (0.8^5-0.2^5)/5. A supplied two-point response A/chi^2 makes cross SSC

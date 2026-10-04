@@ -1,4 +1,18 @@
-# Covariances of galaxy clustering and weak lensing
+# Table of contents
+
+1. [Covariances of galaxy clustering and weak lensing](#overview)
+2. [File guide](#files)
+3. [From three-dimensional matter to angular spectra](#spectra)
+4. [Galaxy counts, shape noise and the footprint](#noise)
+5. [Nonlinear structure: the connected four-point function](#connected)
+6. [Super-sample covariance](#ssc)
+7. [Cluster counts and their common background](#counts)
+8. [Cluster cross spectra](#cluster_spectra)
+9. [From spectra to measured bins](#operators)
+10. [Units, numerical structure and remaining scope](#numerics)
+11. [Notebook calculations](#notebooks)
+
+# Covariances of galaxy clustering and weak lensing <a name="overview"></a>
 
 This directory computes ingredients for the covariance of galaxy
 clustering, galaxy–galaxy lensing and cosmic shear, often called the
@@ -46,7 +60,7 @@ validated survey accuracy settings and all-pairs non-Limber corrections
 remain open. Covariance integration choices stay separate from the
 data-vector calculation.
 
-## File guide
+## File guide <a name="files"></a>
 
 Each C file has a matching header containing its public interfaces.
 Function comments explain equations, units and array contents.
@@ -60,14 +74,15 @@ Function comments explain equations, units and array contents.
 | [non_gaussian_cov.c](non_gaussian_cov.c), [header](non_gaussian_cov.h) | Halo trispectrum terms and the power-spectrum response to a background density change. |
 | [ssc_cov.c](ssc_cov.c), [header](ssc_cov.h) | Survey-averaged background fluctuations and the response of projected observables. |
 | [counts_cluster_cov.c](counts_cluster_cov.c), [header](counts_cluster_cov.h) | Shell volumes convert supplied selected cluster abundances and their density responses into count quantities. |
+| [spectra_cluster_cov.c](spectra_cluster_cov.c), [header](spectra_cluster_cov.h) | Project supplied cluster windows, biases and mass profiles into every cluster–galaxy, cluster–shear and cluster–cluster spectrum. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
 | [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
 | [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, reusing arrays across observable pairs. |
 | [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
-| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count-shell quantities, with input checks and owned outputs. |
+| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count shells and all-pairs spectra, with input checks and owned outputs. |
 
-## From three-dimensional matter to angular spectra
+## From three-dimensional matter to angular spectra <a name="spectra"></a>
 
 ### Radial windows: `spectra_cov.c`
 
@@ -159,7 +174,7 @@ $\gamma_j g_k$. Excluding $g_i g_k$ from the measured data vector does
 not remove it from this equation. This is why `spectra_cov.c` computes
 every lens/source pair, including pairs absent from the data vector.
 
-## Galaxy counts, shape noise and the footprint
+## Galaxy counts, shape noise and the footprint <a name="noise"></a>
 
 ### Analytic noise: `gaussian_cov.c`
 
@@ -221,7 +236,7 @@ Mask multipoles describe the footprint, so their monopole and dipole
 are retained even when an estimator removes those modes from the
 cosmological signal.
 
-## Nonlinear structure: the connected four-point function
+## Nonlinear structure: the connected four-point function <a name="connected"></a>
 
 ### Halo mass integrals: `halo_cov.c`
 
@@ -320,7 +335,7 @@ trispectrum enters a survey calculation. The assembler itself adds no
 survey area, radial weights, galaxy shot-noise trispectrum or angular
 binning. Those require a consistent survey-level model.
 
-## Super-sample covariance: `ssc_cov.c`
+## Super-sample covariance: `ssc_cov.c` <a name="ssc"></a>
 
 A survey can lie in a region whose mean density is slightly above or
 below the cosmic mean. That background fluctuation changes the abundance
@@ -430,7 +445,7 @@ beyond the scalar density change used above.
 derive density and tidal SSC, including curved-sky predictions beyond
 Limber for the long modes.
 
-## Cluster counts and their common background: `counts_cluster_cov.c`
+## Cluster counts and their common background: `counts_cluster_cov.c` <a name="counts"></a>
 
 A cluster count is an absolute number of objects, whereas a clustering
 field is a density contrast normalized by a mean. Their radial weights
@@ -478,7 +493,46 @@ separately. This component does **not** supply a cluster selection model,
 cluster spectra or the non-SSC count–spectrum term, and does not yet
 generate a complete cluster $`6\times2\mathrm{pt}+N`$ matrix.
 
-## From spectra to measured bins: `operators_cov.c`
+## Cluster cross spectra: `spectra_cluster_cov.c` <a name="cluster_spectra"></a>
+
+A cluster catalog supplies a normalized distance distribution $`q_c`$
+and a selected halo bias $`b_c`$. For an abundance-weighted selection,
+$`q_c\propto f_K^2\phi_c n_c`$: the number of selected objects in a
+shell is its volume times its abundance. Normalize this distribution
+with $`\int q_c\,d\chi=1`$ before constructing a density contrast.
+
+The supplied-table projection uses the mean-spectrum model
+
+```math
+P_{cc'}=b_cb_{c'}P_{\rm NL},\qquad
+P_{cg}=b_cb_gP_{\rm NL},\qquad
+P_{cm}=b_cP_{\rm NL}+P_{cm}^{1h}.
+```
+
+The last term is the cluster's own selected halo mass profile. It enters
+cluster lensing without an extra factor of halo bias. The galaxy model
+uses linear bias and omits a cluster–galaxy one-halo term. These are
+the distinct mean models of
+[To et al. (2021), Sections 4.1.2–4.1.3](https://arxiv.org/abs/2008.10757).
+Their accuracy and joint consistency must be checked on the intended
+scales; they do not define a complete nonlinear cluster covariance.
+
+The function applies the common Limber measure $`d\chi/f_K^2`$ to every
+pair, including different cluster redshift and richness categories.
+Only a source partner receives $`P_{cm}^{1h}`$ and the harmonic shear
+transfer factor. Inputs have zero IA, magnification and RSD. Angular
+catalog noise is added separately, using $`1/\bar n_c`$ per steradian
+for exclusive cluster categories.
+
+The Python call `interface.covariance_cluster_spectra` accepts common
+radial arrays and returns `cluster_base` and `cluster_cluster`. Combine
+these with the galaxy/shear spectra, retaining all field pairs, before
+calling the Gaussian covariance wrapper. Check the noise-inclusive field
+matrix for negative modes as well as the final measured covariance.
+This component supplies neither cluster SSC/cNG nor count–spectrum
+covariance, and does not replace those terms by zeros in a joint result.
+
+## From spectra to measured bins: `operators_cov.c` <a name="operators"></a>
 
 Measurements average over finite angular intervals. For an angular bin
 $b$, the code constructs an operator
@@ -529,7 +583,7 @@ The operator's angular quadrature and maximum multipole must be refined
 together. Evaluating a bin at its center does not perform the integral
 above.
 
-## Units, numerical structure and remaining scope
+## Units, numerical structure and remaining scope <a name="numerics"></a>
 
 Core radial distances use $c/H_0$, and wavenumbers use its inverse.
 Power spectra, bispectra and trispectra consequently carry the third,
@@ -565,7 +619,7 @@ two-parameter confidence region. Small entrywise differences alone do
 not establish that. No universal production integration setting or
 complete survey runtime is asserted by these component interfaces.
 
-## Notebook calculations
+## Notebook calculations <a name="notebooks"></a>
 
 The [shared Python tools](../../cosmolike_notebook_utils/covariance/README.md)
 prepare survey-independent inputs, build requested Gaussian blocks and
