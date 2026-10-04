@@ -79,3 +79,17 @@ catalog windows, including narrow/discontinuous cluster selections.
 Check all field-pair spectra, matrix positivity, thread determinism and
 the complete projected covariance. No eigenvalue clipping or diagonal
 jitter may hide a failed physical or numerical construction.
+
+## Lensing-kernel stability check to carry out
+
+[Leonard et al., N5K, Eq. 24](https://arxiv.org/html/2212.04291)
+keeps j_l(k chi)/(k chi)^2 inside the shear transform. Unlike the current
+data-vector implementation's W D/chi input and external k^-2, its radial
+input is chi W D, with the denominator absorbed into the Mellin kernel.
+If M_l(s) is the ordinary spherical-Bessel Mellin integral, gamma
+recurrence gives M_l(s-2)=M_l(s)/[(l+s-2)(l+3-s)]. This is algebraically
+the same physical projection but avoids amplifying the radial input by
+chi^-2 near the observer. The paper explicitly motivates its numerical
+stability. Compare both formulations and analytic Gaussian transforms
+before choosing the covariance implementation; no data-vector change is
+authorized by this study.
