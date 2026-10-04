@@ -136,3 +136,51 @@ unrelated quoted installation/usage blocks were preserved.
 The galaxy/shear Fourier example remains separate; this joint cluster
 generator is angular only. Notebook stage times are ordinary contended
 run output, not controlled performance measurements.
+
+## Full baseline timing and scaling (2026-10-04)
+
+The complete 2812-entry angular forecast was timed on the Apple M2 Pro
+after all tests, notebooks and builds finished. Preflight and postflight
+process inspection found ordinary desktop background activity and no
+competing numerical jobs. This was not an idle operating system: the
+window server and desktop application services remained active.
+
+This measurement uses accuracy_boost=1, the fixed massless Limber model,
+biased-tracer matter cNG and SSC-only count crosses described above.
+Y localization is enabled, retaining its 48 known zero rows in the output.
+Initialization and CAMB are excluded. Each worker count has one excluded
+warm-up followed by three complete covariance calls at the same cosmology;
+core readers are warm, but covariance matrices are recomputed every call.
+BLAS was checked to remain at one thread at each OpenMP worker count.
+
+| OpenMP threads | Mean (s) | Sample standard deviation (s) | Speedup |
+|---:|---:|---:|---:|
+| 1 | 13.79681 | 0.03441 | 1.000 |
+| 2 | 8.98278 | 0.01531 | 1.536 |
+| 4 | 6.54586 | 0.02301 | 2.108 |
+| 8 | 6.35110 | 0.05284 | 2.172 |
+
+Every measured G, SSC, cNG, total and joint mean array is bitwise identical
+to the one-thread reference. The mean stage times locate the remaining
+scaling problem; they do not establish its cause.
+
+| Stage | 1 thread (s) | 4 threads (s) | 8 threads (s) |
+|---|---:|---:|---:|
+| All-pairs Limber spectra | 2.19936 | 1.22692 | 1.09533 |
+| Gaussian covariance and mean | 3.78297 | 1.73840 | 1.95219 |
+| Shared halo tables | 6.55790 | 2.67425 | 2.36248 |
+| Joint SSC and connected assembly | 1.01953 | 0.69770 | 0.73481 |
+| Y localization | 0.22687 | 0.19774 | 0.19535 |
+
+Eight threads reduce the four-thread wall time by only about 3%. Gaussian
+assembly and shared halo work dominate at eight threads. Profile those
+stages separately before choosing larger batches, collapsed loops or
+scratch changes. Do not attribute the plateau to memory bandwidth, OpenMP
+overhead or a serial fraction without testing those explanations. Good
+scaling to 8--10 production cores is still an open optimization requirement.
+
+These results neither certify the boost's accuracy nor time the omitted
+selected-halo/count terms. They are not cold-cosmology costs or x86 results.
+The external reproducibility record is
+`covariance_reference/benchmark_cluster_joint.py` and
+`covariance_reference/results/cluster_joint_timing.json`.

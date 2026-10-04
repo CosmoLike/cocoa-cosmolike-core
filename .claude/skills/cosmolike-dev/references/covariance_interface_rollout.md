@@ -160,7 +160,9 @@ All seven interfaces bind the galaxy/shear covariance components. Thin
 adapters use the actual project redshift files and bin counts. DESxPlanck
 and DES cluster need explicit unit lens-photo-z stretch factors in their
 setters; initialize_forecast handles this through one optional setting.
-Their notebooks cover galaxy/shear only, not CMB or cluster observables.
+These initial notebooks cover galaxy/shear only, not CMB or cluster
+observables. The later DES joint angular example and its model limits are
+recorded in `covariance_cluster_joint.md`.
 Roman KL's 0.035 quadrature shape dispersion is converted to a per-component
 value by division by sqrt(2); its added lens density is an explicit forecast
 assumption. Roman real/Fourier use 2415 deg2 and density 41.3 as explicit
@@ -206,3 +208,38 @@ sharing matter tables, the transform/source-factor contract, every returned
 shape and unit, and the distinction between a common matter response and
 catalog normalization. The halo loop remains explained in physical stages.
 No C, SIMD operation, quadrature or interpolation choice was changed.
+
+## Final project regressions (2026-10-04)
+
+All seven data-vector test collections pass after the interface/notebook
+rollout and shared matter extraction. No frozen likelihood reference was
+changed. Roman real's ordinary run skipped its 24 opt-in halo checks; a
+separate run enabled and passed all 24, so no planned check remains skipped.
+
+| Project | Data-vector checks passed | Covariance checks passed |
+|---|---:|---:|
+| LSST Y1 | 57 | 63 |
+| Roman real | 104 | 1 |
+| Roman Fourier | 45 | 1 |
+| Roman KL | 49 | 1 |
+| DES Y3 | 63 | 1 |
+| DESxPlanck | 45 | 1 |
+| DES cluster | 29 | 46 |
+| Total | 392 | 114 |
+
+The five single covariance adapter tests each exercise real and Fourier
+forecasts, component repeatability, catalog layout and archive metadata.
+LSST Y1 covers the common numerical components; DES cluster also covers
+counts, selected halos, all-pairs spectra and the joint angular forecast.
+An initial Roman KL collection failed because its interface directory was
+missing from PYTHONPATH; the corrected environment passed all 49 tests.
+The source and references were unchanged to resolve that import error.
+
+External logs are `/tmp/covariance-port-<project>-data-vector.log`,
+`/tmp/covariance-port-roman_real-slow-data-vector.log`,
+`/tmp/covariance-port-lsst_y1-components.log`,
+`/tmp/des-cluster-covariance-complete.log` and
+`/tmp/covariance-final-<project>.log`. Test elapsed times are not benchmarks.
+The DES 1/2/4/8-thread measurement was run only after every numerical test,
+notebook and build had finished; its scope and results are recorded in
+`covariance_cluster_joint.md`.
