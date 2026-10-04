@@ -97,6 +97,48 @@ Start runtime estimates with small representative components, separating
 shared tables from work repeated per bin pair; do not start an hours-long
 full covariance just to estimate its cost. See
 `references/covariance_roman_timing.md` for the measured pilot and its limits.
+The module-wide didactic pass is recorded in
+`references/covariance_didactic_review.md`. Follow it with measured small
+component profiles and optimization experiments, including cubic-spline
+upsampling as used in `halo.c`, `cosmo2D.c` and `pt_cfastpt.c`. Verify both
+runtime and accuracy; do not infer a speedup from adding SIMD or unrolling.
+The intended spline architecture is coarse exact evaluation, cubic-spline
+upsampling during table construction, then linear interpolation on the
+dense table in the hot path. Do not replace the hot lookup with a cubic
+solve/evaluation. Test off-grid linear queries against direct calculations,
+in addition to checking the dense nodes, and distinguish interpolation in
+physical wavenumber from interpolation along k=(ell+1/2)/chi(a).
+Study `cosmo2D.c::limber_fill_interp` and the `legendre_sums`/`xipm`
+transform helpers when designing covariance lookup and projection:
+share grid indices across tables, prefer SIMDe for bulk linear reads,
+and reuse spectra/kernels across several output sums.
+Measure lookup and contraction separately; preserve each sum's order
+and keep the covariance implementation inside its own directory.
+Production chains run on x86 supercomputers. Treat Apple/NEON timings as
+local diagnostics, not a reason to discard SIMDe or an x86-oriented
+optimization. Vector widths, gather costs, FMA mappings, cache sizes and
+register pressure differ. Retain unconditional SIMDe and benchmark the
+actual x86 production compiler/CPU before selecting architecture-sensitive
+unrolling, tiling or lookup layouts. Never label Mac timings as x86 gains.
+SIMDe is the default design choice for independent bulk arithmetic;
+measurements refine its layout rather than treating an unimpressive Mac
+result as a veto. Run accuracy checks first. Timing reports require a
+quiet machine and one benchmark at a time, with no concurrent tests,
+builds, CAMB jobs or other computational experiments. Do not report
+contended preflight timings as optimization evidence.
+Then diagnose the negative eigenvalues reported in the existing Roman
+covariance, distinguishing the full matrix from the likelihood selection
+and tracing the responsible scales and components without clipping modes.
+The shipped-matrix localization and a controlled legacy interpolation
+failure are recorded in `references/covariance_roman_negative_modes.md`.
+The same review finds zero NG between different lens bins despite window
+overlap; combining lens families introduces the failing mode. Never copy
+the legacy writer's equal-lens-only NG rule into the rewrite. Compute
+cross-lens covariance terms even when those spectra are absent from the
+data vector; their C implementation stays covariance-owned.
+For SSC, interpolate common responses before forming their weighted outer
+products. Do not independently interpolate auto/cross covariance blocks
+with inconsistent value/log prescriptions and assume positivity survives.
 Then establish a stable high-resolution numerical reference and use Fisher
 FoM/errors to select practical settings. A chain is not needed for the
 initial local Fisher test; check several cosmologies before generalizing.
@@ -350,14 +392,51 @@ On a nested call like `nfw_um4(simde_mm256_loadu_pd(conc_gal + q),
 simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)), ...)`: "very
 hard to understand - put comments right in front of lines that use
 simde and split the calls in multiple lines so a student can
-understand". So, in every SIMD block:
-- one intrinsic per statement, each result in a named const v4d with a
-  physics name (vconc_gal, vkrs_gal = k r_s,g, ...) and a short comment
-  naming the scalar quantity held by the four lanes;
-- before the block, the scalar line it mirrors;
-- one plain sentence the first time an intrinsic kind appears (load,
-  mul, add, horizontal sum) - never a SIMD tutorial.
-Naming temporaries never changes the operation graph: bitwise safe.
+understand". The owner's clarification (2026-10-03) applies to **every
+SIMDe call**, including repetitions of a previously explained intrinsic.
+SIMD means applying the same operation to several numbers at once; each
+number occupies a vector position called a lane. Do not assume a physics
+student already knows these terms or the intrinsic naming conventions.
+
+- Before each block, state the scalar equation and identify what each
+  lane represents: adjacent nodes, different bins, or independent sums.
+- Put one intrinsic per statement, with named intermediate results.
+  Immediately before **each call**, explain its inputs, operation and
+  result in terms of those physical quantities. A glossary elsewhere,
+  or one explanation for the entire loop, does not satisfy this rule.
+- Explain broadcasts, loads, arithmetic and stores individually. For
+  `set_pd(high, low)`, explicitly give lane order; for `loadu/storeu`,
+  give the array indices and explain that no vector-aligned address is
+  required. A store still requires enough valid array elements.
+- For fused calls, give the exact scalar expression, including the sign
+  of `fmsub` or `fnmadd`, and explain the fused rounding convention.
+  For reductions, say which entries are added and in what order.
+- Explain the two-at-a-time loop bounds, scalar remainder, or repeated
+  final lane. Identify where a duplicate result is discarded.
+- Use blank lines between loading, physical arithmetic, accumulation
+  and output. Within a long block, separate each conceptual step with a
+  short explanatory comment and whitespace. Apply this also to scalar
+  setup: allocation, boundaries, normalization, quadrature and storage
+  are separate steps, not one dense paragraph of code.
+- Immediately above every substantial loop, give an overview of its
+  purpose, what one iteration represents, which inputs it reads, and
+  what it computes or stores. For OpenMP put the overview before the
+  pragma. Explain nested loops at their own level too. When SIMD is used,
+  the overview must say what each lane represents, what work happens
+  together, and whether the lanes are eventually added or remain separate.
+  Detailed comments inside a loop do not replace this overview.
+- An overview must **explain the reasoning**, not merely narrate operations
+  such as "advance a sample, append a trapezoid, save the result." Define
+  the physical quantities and explain why this traversal, weighting or
+  approximation computes the desired quantity. For example, explain that
+  the lensing integrals count galaxies behind a foreground distance, and
+  that a trapezoid integrates a straight-line approximation between two
+  sampled endpoint values. State what the SIMD lanes mean in that reasoning.
+  A list of variable names and programming verbs is not a substitute.
+
+Preserve the original operation graph and test numerical equivalence
+when exposing nested calls as named steps. Do not combine operations or
+change a fused call into separately rounded multiplication and addition.
 
 ### Equation-to-Code Blueprinting
 

@@ -6,7 +6,14 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-typedef simde__m128d v2d; // two independent K,Q pairs
+// SIMD applies one operation to two doubles. The two positions, called
+// lanes, hold independent (K,Q) pairs, each with its own complete angle sum.
+// A fused multiply-add (FMA) evaluates a*b+c with one rounding when
+// supported directly by the processor. This differs from rounding a*b
+// first and then adding c; the calls below retain the chosen operations.
+// Unaligned loads/stores accept addresses that are not multiples of 16
+// bytes. They still require two valid adjacent doubles in the array.
+typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
 // Analytic planar average of the EdS kernel F3(k,-k,q).
@@ -32,6 +39,7 @@ static double paired_f3_cov(
 {
   const double ratio = other/paired;
   const double ratio2 = ratio*ratio;
+
   if (ratio <= 1.0) {
     return -ratio2*(9.0-ratio2)/126.0;
   }
@@ -111,6 +119,9 @@ void tree_averages_cov(
     log_fatal("tree_averages_cov needs positive pair and angle counts");
     exit(1);
   }
+
+  // A planar angular average uses normalized dtheta/pi weights. Verify
+  // their normalization separately from the allowed range of each node.
   double normalization = 0.0;
   for (int node=0; node<nangle; node++) {
     if (!isfinite(corner[node])
@@ -124,11 +135,14 @@ void tree_averages_cov(
     }
     normalization += weight[node];
   }
+
   if (fabs(normalization-1.0) > 1.e-10) {
     log_fatal("tree_averages_cov needs weights summing to 1, got %g",
               normalization);
     exit(1);
   }
+
+  // The stable formulas below divide by K and Q, so neither may vanish.
   for (int pair=0; pair<npair; pair++) {
     for (int role=0; role<2; role++) {
       if (!isfinite(k[role][pair])
@@ -140,80 +154,244 @@ void tree_averages_cov(
     }
   }
 
+  // Fixing K and Q does not fix the internal mode |k+q|: it also depends
+  // on the angle between the two vectors. The covariance needs an average
+  // over that angle. All nontrivial angular dependence enters through
+  // P_s, P_s*G and P_s*G^2, so accumulate those three integrals together.
+  // The remaining F2/F3 contributions are analytic and are added afterward.
+  // Each worker treats two (K,Q) pairs. SIMD shares the angle samples but
+  // keeps one pair's complete integrals in each lane; adding lanes would
+  // mix two different choices of the external wavenumbers.
   #pragma omp parallel for schedule(static)
   for (int pair=0; pair<npair; pair+=2) {
+    // --- 1. PACK TWO INDEPENDENT WAVENUMBER PAIRS ---
+
+    // An odd final pair is duplicated for safe reads. Only the genuine
+    // pair's result is written in the output loop below.
     const int next = pair+1 < npair ? pair+1 : pair;
+
+    // set_pd takes the high lane first: lane 0 gets K for pair and lane 1
+    // gets K for next. A lane is a whole pair, not one of K and Q.
     const v2d vk = simde_mm_set_pd(k[0][next], k[0][pair]);
+
+    // Pack Q for pair/next into lanes 0/1. The reversed set_pd argument
+    // order keeps these Q values matched to the K values above.
     const v2d vq = simde_mm_set_pd(k[1][next], k[1][pair]);
+
+    // Pack P_K in pair/next order; set_pd assigns its last argument to
+    // lane 0. These are powers, with units of length cubed.
     const v2d vpk = simde_mm_set_pd(pk[0][next], pk[0][pair]);
+
+    // Pack P_Q with pair in lane 0 and next in lane 1, again supplying
+    // the high-lane value as the first set_pd argument.
     const v2d vpq = simde_mm_set_pd(pk[1][next], pk[1][pair]);
+
     const double* restrict power0 = ps[pair];
     const double* restrict power1 = ps[next];
 
-    // Quantities independent of theta are computed once per pair.
+    // --- 2. PRECOMPUTE THE ANGLE-INDEPENDENT PARTS OF G ---
+
+    // Copy 1/2 into both lanes for the coefficient of cos(theta) in G.
     const v2d vhalf = simde_mm_set1_pd(0.5);
+
+    // Copy 2/7 into both lanes for G's squared-projection numerator.
     const v2d vtwo_sevenths = simde_mm_set1_pd(2.0/7.0);
+
+    // Subtract Q-K in each pair; this remains accurate near equal K,Q.
     const v2d vdiff = simde_mm_sub_pd(vq, vk);
+
+    // Square each Q-K for the stable |k+q|^2 expression below.
     const v2d vdiff2 = simde_mm_mul_pd(vdiff, vdiff);
-    const v2d vtwokq = simde_mm_mul_pd(simde_mm_set1_pd(2.0),
-                                     simde_mm_mul_pd(vk, vq));
-    const v2d vbase = simde_mm_mul_pd(simde_mm_set1_pd(-1.0/28.0),
-                                    simde_mm_add_pd(vpk, vpq));
-    const v2d vslope = simde_mm_mul_pd(vhalf, simde_mm_add_pd(
-        simde_mm_div_pd(simde_mm_mul_pd(vk, vpq), vq),
-        simde_mm_div_pd(simde_mm_mul_pd(vq, vpk), vk)));
+
+    // Copy 2 to both lanes for the 2*K*Q term in |k+q|^2.
+    const v2d vtwo = simde_mm_set1_pd(2.0);
+
+    // Form K*Q separately within each pair, not across lanes.
+    const v2d vkq = simde_mm_mul_pd(vk, vq);
+
+    // Multiply by two to obtain the coefficient 2*K*Q in each lane.
+    const v2d vtwokq = simde_mm_mul_pd(vtwo, vkq);
+
+    // Copy the constant -1/28 multiplying P_K+P_Q into both lanes.
+    const v2d vminus_one_28 = simde_mm_set1_pd(-1.0/28.0);
+
+    // Add P_K+P_Q within each pair for G's constant contribution.
+    const v2d vpower_sum = simde_mm_add_pd(vpk, vpq);
+
+    // Form -(P_K+P_Q)/28 separately in the two lanes.
+    const v2d vbase = simde_mm_mul_pd(vminus_one_28, vpower_sum);
+
+    // The coefficient of -mu is (K*P_Q/Q + Q*P_K/K)/2. Keep its
+    // multiplication and division order explicit to preserve rounding.
+
+    // Form K*P_Q within each pair, the numerator of the first ratio.
+    const v2d vk_pq = simde_mm_mul_pd(vk, vpq);
+
+    // Divide that numerator by its own Q, giving K*P_Q/Q per lane.
+    const v2d vk_pq_over_q = simde_mm_div_pd(vk_pq, vq);
+
+    // Form Q*P_K within each pair, the numerator of the second ratio.
+    const v2d vq_pk = simde_mm_mul_pd(vq, vpk);
+
+    // Divide by the matching K, giving Q*P_K/K per lane.
+    const v2d vq_pk_over_k = simde_mm_div_pd(vq_pk, vk);
+
+    // Add the two ratios for each pair; no sum between independent lanes.
+    const v2d vratio_sum = simde_mm_add_pd(vk_pq_over_q, vq_pk_over_k);
+
+    // Multiply each ratio sum by 1/2 to get G's -mu coefficient.
+    const v2d vslope = simde_mm_mul_pd(vhalf, vratio_sum);
+
+    // The remaining correction is (Q^2-K^2)*(P_Q-P_K)/4.
+
+    // Subtract the two external powers within each pair.
     const v2d vpower_diff = simde_mm_sub_pd(vpq, vpk);
-    const v2d vsquare_diff = simde_mm_mul_pd(vdiff,
-                                           simde_mm_add_pd(vq, vk));
-    const v2d vcorrection = simde_mm_mul_pd(simde_mm_set1_pd(0.25),
-        simde_mm_mul_pd(vsquare_diff, vpower_diff));
+
+    // Form Q+K in each lane for the difference-of-squares identity.
+    const v2d vsum_kq = simde_mm_add_pd(vq, vk);
+
+    // (Q-K)*(Q+K) avoids subtracting nearly equal squared magnitudes.
+    const v2d vsquare_diff = simde_mm_mul_pd(vdiff, vsum_kq);
+
+    // Copy the common factor 1/4 into both pair lanes.
+    const v2d vquarter = simde_mm_set1_pd(0.25);
+
+    // Multiply the squared-magnitude difference by the power difference.
+    const v2d vcorrection_product = simde_mm_mul_pd(vsquare_diff, vpower_diff);
+
+    // Apply 1/4 to that product separately in each lane.
+    const v2d vcorrection = simde_mm_mul_pd(vquarter, vcorrection_product);
+
+    // --- 3. INTEGRATE P_s, P_s*G AND P_s*G^2 OVER ANGLE ---
+
+    // Initialize both pairs' P_s integrals to zero.
     v2d vsum_p = simde_mm_setzero_pd();
+
+    // Initialize both pairs' P_s*G integrals to zero.
     v2d vsum_b = simde_mm_setzero_pd();
+
+    // Initialize both pairs' P_s*G^2 integrals to zero.
     v2d vsum_t = simde_mm_setzero_pd();
 
+    // Nearly opposite vectors with K close to Q give a very small internal
+    // magnitude s. Compute s^2 from (K-Q)^2+2*K*Q*(1+cos(theta)) to avoid
+    // subtracting large, nearly equal squared magnitudes. The combined G
+    // below likewise cancels its large terms algebraically before division.
+    // At each angle, its quadrature weight turns P_s, P_s*G and P_s*G^2
+    // into contributions to the three averages. SIMD updates both pairs,
+    // each in its own lane, visiting the angles in the same fixed order.
     for (int node=0; node<nangle; node++) {
+      // Both pairs use this same angle. Copy c=1+cos(theta) to both lanes.
       const v2d vc = simde_mm_set1_pd(corner[node]);
+
+      // Copy mu=cos(theta)=c-1 to both lanes for G's regular term.
       const v2d vmu = simde_mm_set1_pd(corner[node]-1.0);
+
+      // Compute s^2 = 2*K*Q*c+(Q-K)^2 separately for each pair. fmadd
+      // fuses product and addition into one native-FMA rounding.
       const v2d vs2 = simde_mm_fmadd_pd(vtwokq, vc, vdiff2);
 
       // Numerator of the final fraction in G: two squared projections
       // weighted by power, followed by the finite power-difference term.
+      // Compute Q+K*mu = K*c+(Q-K) per lane. fmadd retains one rounding
+      // on native FMA hardware, even when this projection is very small.
       const v2d vproj_q = simde_mm_fmadd_pd(vk, vc, vdiff);
-      const v2d vproj_k = simde_mm_sub_pd(simde_mm_mul_pd(vq, vc), vdiff);
-      const v2d vterm_q = simde_mm_mul_pd(vpq,
-          simde_mm_mul_pd(vproj_q, vproj_q));
-      const v2d vterm_k = simde_mm_mul_pd(vpk,
-          simde_mm_mul_pd(vproj_k, vproj_k));
+
+      // Form Q*c in each pair. Keep its rounding separate from subtraction.
+      const v2d vqc = simde_mm_mul_pd(vq, vc);
+
+      // Compute K+Q*mu = Q*c-(Q-K) independently in each lane.
+      const v2d vproj_k = simde_mm_sub_pd(vqc, vdiff);
+
+      // Square Q+K*mu separately for each pair.
+      const v2d vproj_q2 = simde_mm_mul_pd(vproj_q, vproj_q);
+
+      // Weight that squared projection by the pair's own P_Q.
+      const v2d vterm_q = simde_mm_mul_pd(vpq, vproj_q2);
+
+      // Square K+Q*mu separately for each pair.
+      const v2d vproj_k2 = simde_mm_mul_pd(vproj_k, vproj_k);
+
+      // Weight that squared projection by the matching P_K.
+      const v2d vterm_k = simde_mm_mul_pd(vpk, vproj_k2);
+
+      // Add the two power-weighted squared projections within each pair.
+      const v2d vprojection_sum = simde_mm_add_pd(vterm_q, vterm_k);
+
+      // Form (2/7)*projection_sum-correction. fmsub means product minus
+      // its third argument, with one native-FMA rounding per lane.
       const v2d vnumerator = simde_mm_fmsub_pd(vtwo_sevenths,
-          simde_mm_add_pd(vterm_q, vterm_k), vcorrection);
+                                             vprojection_sum, vcorrection);
+
+      // Form base-mu*slope. fnmadd negates the product before adding its
+      // third argument, fused into one native-FMA rounding per lane.
       const v2d vregular = simde_mm_fnmadd_pd(vmu, vslope, vbase);
-      const v2d vg = simde_mm_add_pd(vregular,
-                                    simde_mm_div_pd(vnumerator, vs2));
+
+      // Divide each numerator by the matching internal magnitude s^2.
+      const v2d vfraction = simde_mm_div_pd(vnumerator, vs2);
+
+      // Complete G by adding its regular and fractional terms per pair.
+      const v2d vg = simde_mm_add_pd(vregular, vfraction);
 
       // One read of P_s serves all three averages. The two vector lanes
       // are different K,Q pairs; no horizontal reduction is needed.
+      // set_pd takes lane 1 first: pack P_s(pair) in lane 0 and P_s(next)
+      // in lane 1, since the internal magnitude differs between pairs.
       const v2d vps = simde_mm_set_pd(power1[node], power0[node]);
+
+      // Copy this node's dtheta/pi weight to both pair lanes.
       const v2d vw = simde_mm_set1_pd(weight[node]);
+
+      // Multiply P_s by the common angle weight separately for each pair.
       const v2d vweighted_p = simde_mm_mul_pd(vw, vps);
+
+      // Square G within each lane for the connected four-point term.
       const v2d vg2 = simde_mm_mul_pd(vg, vg);
+
+      // Add the weighted P_s to its own pair's AvgP sum.
       vsum_p = simde_mm_add_pd(vsum_p, vweighted_p);
+
+      // Add weighted_P_s*G to each pair's bispectrum integral. fmadd has
+      // one native-FMA rounding for product and addition in each lane.
       vsum_b = simde_mm_fmadd_pd(vweighted_p, vg, vsum_b);
+
+      // Add weighted_P_s*G^2 to each pair's trispectrum integral, again
+      // using one fused native-FMA rounding per lane without mixing pairs.
       vsum_t = simde_mm_fmadd_pd(vweighted_p, vg2, vsum_t);
     }
+
+    // --- 4. COMPLETE THE ANALYTIC PARTS AND WRITE VALID PAIRS ---
 
     // Add the angle-independent F2 and F3 contributions after integration.
     // A duplicated final lane supplies an odd pair count without padding.
     double sums[3][2];
+
+    // Copy AvgP subtotals for pair/next into sums[0][0/1]. storeu does
+    // not require special vector alignment for this ordinary stack array.
     simde_mm_storeu_pd(sums[0], vsum_p);
+
+    // Copy the two P_s*G integrals into sums[1][0/1] in the same order.
+    // storeu needs two valid doubles, but no vector-aligned address.
     simde_mm_storeu_pd(sums[1], vsum_b);
+
+    // Copy the P_s*G^2 integrals into sums[2][0/1]. storeu likewise
+    // accepts the ordinary array address without extra alignment.
     simde_mm_storeu_pd(sums[2], vsum_t);
+
+    // For each valid pair lane, add the angle-independent F2/F3 pieces
+    // and write all three averages. An odd final pair leaves a duplicate
+    // lane whose result is deliberately not written.
     for (int lane=0; lane<2; lane++) {
       const int index = pair+lane;
       if (index < npair) {
+        // p and q here are P_K and P_Q, not the wavenumber magnitudes.
         const double p = pk[0][index];
         const double q = pk[1][index];
         const double first = paired_f3_cov(k[0][index], k[1][index]);
         const double second = paired_f3_cov(k[1][index], k[0][index]);
+
+        // Restore the angle-independent terms and their Wick multiplicities
+        // from the scalar AvgP/AvgB/AvgT equations in the function header.
         average[0][index] = sums[0][lane];
         average[1][index] = (12.0/7.0)*p*q+2.0*sums[1][lane];
         average[2][index] = 12.0*first*p*p*q+12.0*second*q*q*p

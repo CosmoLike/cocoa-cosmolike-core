@@ -6,7 +6,14 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-typedef simde__m128d v2d; // two independent radial samples
+// v2d stores two doubles in positions called lanes. SIMD operations apply
+// the same calculation to both lanes, here two independent radial samples.
+// A fused multiply-add (FMA) evaluates a*b+c with one rounding when
+// supported directly by the processor. This differs from rounding a*b
+// first and then adding c; the calls below retain the chosen operations.
+// Unaligned loads/stores accept addresses that are not multiples of 16
+// bytes. They still require two valid adjacent doubles in the array.
+typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
 // Average the long-wavelength density field over the angular survey mask.
@@ -67,6 +74,7 @@ void ssc_mask_variance_cov(
     log_fatal("ssc_mask_variance_cov needs positive sizes and mask area");
     exit(1);
   }
+  // The monopole checks the mask convention before any background sum.
   const double monopole = area_sr*area_sr/(4.0*M_PI);
   if (!isfinite(mask_cl[0])
       || fabs(mask_cl[0]/monopole-1.0) > 1.e-8) {
@@ -74,6 +82,7 @@ void ssc_mask_variance_cov(
               "got %g, expected %g", mask_cl[0], monopole);
     exit(1);
   }
+  // A mask power cannot be negative; every radial distance is positive.
   for (int ell=0; ell<nmask; ell++) {
     if (!isfinite(mask_cl[ell])
         || mask_cl[ell] < 0.0) {
@@ -82,6 +91,7 @@ void ssc_mask_variance_cov(
       exit(1);
     }
   }
+
   for (int node=0; node<nnode; node++) {
     if (!isfinite(distance[node])
         || distance[node] <= 0.0) {
@@ -94,20 +104,51 @@ void ssc_mask_variance_cov(
   // Area normalization is common to every radial sample. Distance is not:
   // each lane receives its own f_K^-2 only after the angular sum is done.
   const double inv_area2 = 1.0/(area_sr*area_sr);
+
+  // Averaging a long-wavelength fluctuation over the footprint weights
+  // its angular modes by the mask power. At each distance, the Limber
+  // approximation converts mode L into k=(L+1/2)/f_K, so its contribution
+  // uses that distance's linear P(k,a) and the geometric factor 1/f_K^2.
+  // Sum those contributions to obtain sigma_b^2 at each distance. A worker
+  // owns two distances; SIMD shares their mask weights but keeps one
+  // complete angular sum per lane. A later stage integrates over distance.
   #pragma omp parallel for schedule(static)
   for (int node=0; node<nnode; node+=2) {
+    // Each lane owns a complete sum over mask multipoles at one distance.
+    // For an odd node count, repeat the last valid input in lane 1.
     const int next = node+1 < nnode ? node+1 : node;
     const double* restrict power0 = power[node];
     const double* restrict power1 = power[next];
+
+    // Start both distance-specific sums at zero: vsum = [0,0].
     v2d vsum = simde_mm_setzero_pd();
+
+    // Add one mask multipole to both radial sums. SIMD shares its angular
+    // weight while keeping the two distance-dependent power values separate.
     for (int ell=0; ell<nmask; ell++) {
+      // set_pd takes lane 1 first: lane 0 receives P at node, lane 1
+      // P at next, both evaluated at this mask multipole.
       const v2d vpower = simde_mm_set_pd(power1[ell], power0[ell]);
+
+      // This mask/mode-count weight is shared by the two distances.
       const double weight = (2.0*ell+1.0)*mask_cl[ell]*inv_area2;
+
+      // Copy the common weight into both lanes, [weight,weight].
       const v2d vweight = simde_mm_set1_pd(weight);
+
+      // Add P*weight to each distance's own sum. fmadd uses one rounding
+      // for multiply-plus-add on native FMA hardware; lanes stay separate.
       vsum = simde_mm_fmadd_pd(vpower, vweight, vsum);
     }
+
     double result[2];
+
+    // Store the two sums into result[0/1] for node/next. storeu permits
+    // this ordinary two-double array without special vector alignment.
     simde_mm_storeu_pd(result, vsum);
+
+    // Complete each sum with its own f_K^-2. Discard the duplicate second
+    // lane at an odd endpoint, so each physical node is written once.
     sigma2[node] = result[0]/(distance[node]*distance[node]);
     if (node+1 < nnode) {
       sigma2[next] = result[1]/(distance[next]*distance[next]);
@@ -179,25 +220,67 @@ void ssc_shell_response_cov(
     }
   }
 
+  // A background fluctuation changes both the matter power in a shell and
+  // the catalog means used to normalize the observed fields. The first
+  // effect adds W_A*W_B*D/f_K^2. Dividing by the perturbed means reduces
+  // the signal by (U_A+U_B)*C_AB to first order, explaining the subtraction.
+  // Each worker obtains this net response for one spectrum at every shell.
+  // SIMD evaluates two shells together, one per lane. Their responses stay
+  // separate because the subsequent SSC integral supplies the radial weights.
   #pragma omp parallel for schedule(static)
   for (int row=0; row<nrow; row++) {
     const double* restrict pair = pair_window[row];
     const double* restrict mean = mean_window[row];
     const double* restrict dp = power_response[row];
     double* restrict phi = response[row];
+
+    // The same complete C_AB multiplies both local mean responses.
+    // set1_pd copies that spectrum into lanes 0 and 1.
     const v2d vsignal = simde_mm_set1_pd(signal[row]);
+
     int node = 0;
+
+    // Compute Phi = (W_A W_B)*D/f_K^2 - (U_A+U_B)*C_AB at two radial nodes
+    // per iteration, then store both values. SIMD lanes own node/node+1;
+    // both must exist for each two-value load/store, and are never summed.
     for (; node+1<nnode; node+=2) {
+      // Load distances at node and node+1 into lanes 0 and 1.
+      // loadu allows ordinary double-array storage without vector alignment.
       const v2d vf = simde_mm_loadu_pd(distance+node);
+
+      // Load W_A W_B at those same nodes in the same lane order.
+      // loadu requires two valid doubles, but no vector-aligned address.
       const v2d vpair = simde_mm_loadu_pd(pair+node);
+
+      // Load D=dP/d(delta_b) for node and node+1. loadu has no extra
+      // vector-alignment requirement for this response array.
       const v2d vdp = simde_mm_loadu_pd(dp+node);
+
+      // Load U_A+U_B at both nodes. loadu accepts the ordinary mean-window
+      // array address and keeps node in lane 0, node+1 in lane 1.
       const v2d vmean = simde_mm_loadu_pd(mean+node);
+
+      // Square each distance independently to form its own f_K^2.
       const v2d vdistance2 = simde_mm_mul_pd(vf, vf);
+
+      // Multiply the two-field window by D at the matching radial node.
       const v2d vproduct = simde_mm_mul_pd(vpair, vdp);
+
+      // Divide each product by its own distance squared: the local
+      // projected power response before correcting the catalog means.
       const v2d vlocal = simde_mm_div_pd(vproduct, vdistance2);
+
+      // fnmadd computes -(mean*signal)+local in each lane. The subtraction
+      // is fused with the product into one native-FMA rounding.
       const v2d vphi = simde_mm_fnmadd_pd(vmean, vsignal, vlocal);
+
+      // Write Phi to phi[node] and phi[node+1]. storeu accepts their
+      // ordinary array address without requiring vector alignment.
       simde_mm_storeu_pd(phi+node, vphi);
     }
+
+    // If one node remains, use the same scalar formula and fused rounding
+    // without reading or writing a nonexistent second node.
     if (node < nnode) {
       const double local = pair[node]*dp[node]
                            /(distance[node]*distance[node]);

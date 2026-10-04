@@ -10,7 +10,14 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-typedef simde__m128d v2d; // two independent wavenumbers or wavenumber pairs
+// A SIMD vector applies the same operation to two doubles in positions
+// called lanes. Here each lane owns a different k or (K,Q) mass integral.
+// A fused multiply-add (FMA) evaluates a*b+c with one rounding when
+// supported directly by the processor. This differs from rounding a*b
+// first and then adding c; the calls below retain the chosen operations.
+// Unaligned loads/stores accept addresses that are not multiples of 16
+// bytes. They still require two valid adjacent doubles in the array.
+typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
 // Build the mass moments shared by halo-model SSC and connected covariance.
@@ -100,6 +107,8 @@ void halo_moments_cov(
     log_fatal("halo_moments_cov: unsupported tabulated mass rule %d", nquad);
     exit(1);
   }
+  // Check each scale factor and its k grid before any shared tables are
+  // constructed. All samples must lie in the public readers' domain.
   for (int row=0; row<na; row++) {
     if (!isfinite(a[row])
         || a[row] < limits.a_min
@@ -119,6 +128,7 @@ void halo_moments_cov(
   }
   const double lnm_min = log(limits.halo_m[RANGE_MIN]);
   const double lnm_max = log(limits.halo_m[RANGE_MAX]);
+
   for (int edge=0; edge<=npanel; edge++) {
     if (!isfinite(lnm_edges[edge])
         || lnm_edges[edge] < lnm_min
@@ -136,28 +146,47 @@ void halo_moments_cov(
   const int nmass = npanel*nquad;
   const int npair = nk*(nk+1)/2;
   const double rho_cb = cosmology.rho_crit*omega_halo_field();
+
   if (!isfinite(rho_cb)
       || rho_cb <= 0.0) {
     log_fatal("halo_moments_cov needs a positive initialized cb density");
     exit(1);
   }
+
+  // mass roles are M, the volume V=M/rho_cb, and dlnM/V. The last role
+  // supplies the density prefactor of dn/dlnM before f(nu)*nu*dlnnu/dlnM.
   const double mass_min = exp(lnm_edges[0]);
   double** mass = (double**) malloc2d(3, nmass);
   int** pairs = (int**) malloc2d_int(2, npair);
+
+  // Map the same Gaussian integration rule onto each logarithmic interval.
   gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);
+
+  // Each mass panel contributes nquad samples to the common integration
+  // rule. Save their physical masses, cb volumes and number-density weights.
   for (int panel=0; panel<npanel; panel++) {
+    // Map one Gaussian node into this panel and store its three mass-only
+    // quantities at the global index used by every redshift and k row.
     for (int node=0; node<nquad; node++) {
       const int index = panel*nquad+node;
       double lnm;      // logarithmic mass abscissa
       double measure;  // positive dlnM quadrature measure
+
       gsl_integration_glfixed_point(lnm_edges[panel], lnm_edges[panel+1],
                                     node, &lnm, &measure, rule);
+
+      // Store physical mass, cb volume, and the weighted number prefactor
+      // separately: subsequent redshift rows share these same mass nodes.
       mass[0][index] = exp(lnm);
       mass[1][index] = mass[0][index]/rho_cb;
       mass[2][index] = measure/mass[1][index];
     }
   }
+
   gsl_integration_glfixed_table_free(rule);
+
+  // Enumerate the upper triangle once. Each output pair can then locate
+  // its two profile rows directly, without searching the wavenumber grid.
   int pair = 0;
   for (int first=0; first<nk; first++) {
     for (int second=first; second<nk; second++) {
@@ -169,6 +198,8 @@ void halo_moments_cov(
 
   // --- 2. HALO STATISTICS AT EACH (a,M), WITH SERIAL TABLE WARMUP ---
 
+  // Public readers may build tables on their first call. Complete that
+  // setup here so the parallel loops below only read initialized tables.
   (void) sigma2(mass_min, a[0]);
   (void) dlognudlogm(mass_min, a[0]);
   (void) fnu(1.0, a[0]);
@@ -180,29 +211,51 @@ void halo_moments_cov(
   double*** weights = (double***) malloc3d(5, na, nmass);
   double** concentration = (double**) malloc2d(na, nmass+1);
   double* completion = malloc(sizeof(double)*na);
+
   if (completion == NULL) {
     log_fatal("halo_moments_cov: cannot allocate completion weights");
     exit(1);
   }
+
+  // A halo moment sums contributions from halos of every mass. Each mass
+  // interval contributes its expected number density times profile, volume
+  // and bias factors. The abundance, volume and bias do not depend on k,
+  // so prepare their products once for all later profile integrals.
+  // At k=0 the biased mass integral should be one. Our finite mass range
+  // can miss part of it; record that difference for the completion term.
+  // Each worker builds these weights at one independent scale factor.
   #pragma omp parallel for schedule(static)
   for (int row=0; row<na; row++) {
     double resolved = 0.0;
+
+    // At each mass, turn the peak height into a weighted halo abundance.
+    // Combine it with bias and volume powers for the later profile sums,
+    // while accumulating the already-resolved k=0 biased mass fraction.
     for (int node=0; node<nmass; node++) {
       const double m = mass[0][node];
       const double volume = mass[1][node];
       const double nu = 1.686/sqrt(sigma2(m, a[row]));
       const double bias = hb1nu(nu, a[row]);
+
+      // number is (dn/dlnM)*dlnM at this mass and scale factor. Attach
+      // powers of the halo volume and bias to form the five moment weights.
       const double number = mass[2][node]*fnu(nu, a[row])*nu
                             *dlognudlogm(m, a[row]);
       const double volume2 = volume*volume;
+
       weights[0][row][node] = number*bias*volume;
       weights[1][row][node] = number*volume2;
       weights[2][row][node] = number*bias*volume2;
       weights[3][row][node] = weights[2][row][node]*volume;
       weights[4][row][node] = weights[1][row][node]*volume2;
+
+      // Concentration is shared by every k; resolved is I11 at k=0,
+      // since the normalized profile there is exactly one.
       concentration[row][node] = conc(m, a[row]);
       resolved += weights[0][row][node];
     }
+
+    // Assign the missing k=0 weight to a profile at the minimum mass.
     completion[row] = 1.0-resolved;
     concentration[row][nmass] = conc(mass_min, a[row]);
   }
@@ -210,16 +263,28 @@ void halo_moments_cov(
   // --- 3. SHARED PROFILES, INCLUDING THE M_min COMPLETION PROFILE ---
 
   double*** profile = (double***) malloc3d(na, nk, nmass+1);
+
+  // Each worker task fills one (a,k) profile row across all masses.
+  // Compute u(k|M) once here, including the minimum-mass completion slot,
+  // so every moment involving this k can reuse the same profile values.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int row=0; row<na; row++) {
+    // At this scale factor, each k row uses the stored concentrations
+    // to generate profiles for all resolved masses and the completion mass.
     for (int index=0; index<nk; index++) {
+      // One iteration evaluates the normalized NFW profile of one mass.
+      // The last iteration supplies the profile of the unresolved mass.
       for (int node=0; node<=nmass; node++) {
         const double m = node < nmass ? mass[0][node] : mass_min;
         double value = 1.0;
+
+        // At zero wavenumber every normalized halo profile is one.
+        // The last mass slot stores the unresolved-mass profile.
         if (k[row][index] > 0.0) {
           value = u_nfw_c(concentration[row][node], k[row][index], m,
                           a[row]);
         }
+
         profile[row][index][node] = value;
       }
     }
@@ -227,21 +292,50 @@ void halo_moments_cov(
 
   // --- 4a. I11: ONE PROFILE AND ONE BIAS, PLUS UNRESOLVED MASS ---
 
+  // I11 describes how the halo population contributes to a large-scale
+  // density fluctuation. A halo supplies its profile u(k|M), weighted by
+  // its mass fraction and bias; integrating over mass gives I11(k).
+  // Add the unresolved fraction through the chosen minimum-mass profile.
+  // For one scale factor, each worker computes two such integrals. SIMD
+  // shares their mass weights, but each lane keeps a different k and its
+  // complete mass sum. Adding lanes would mix different physical scales.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int row=0; row<na; row++) {
+    // Integrate two wavenumbers at this scale factor and write their I11
+    // values. SIMD lanes 0/1 own index/next, including their completion terms.
     for (int index=0; index<nk; index+=2) {
+      // Lane 0 owns index, lane 1 owns next. Repeat the last valid profile
+      // for an odd nk, then discard that duplicate output below.
       const int next = index+1 < nk ? index+1 : index;
       const double* restrict u0 = profile[row][index];
       const double* restrict u1 = profile[row][next];
       const double* restrict weight = weights[0][row];
+
+      // Start the two I11 mass sums at zero, without mixing wavenumbers.
       v2d vsum = simde_mm_setzero_pd();
+
+      // For each mass, update both k-specific sums with u(k|M)*weight.
+      // SIMD shares the scalar weight but keeps the two integrals separate.
       for (int node=0; node<nmass; node++) {
+        // set_pd takes the high lane first. Pack [u(index,M),u(next,M)]
+        // into lanes 0 and 1 at this common mass node.
         const v2d vu = simde_mm_set_pd(u1[node], u0[node]);
+
+        // Copy the common (dn/dlnM)*dlnM*b*M/rho_cb weight into both lanes.
         const v2d vw = simde_mm_set1_pd(weight[node]);
+
+        // Each k adds u(k|M)*weight to its own I11. fmadd fuses product
+        // and addition into one rounding on native FMA hardware.
         vsum = simde_mm_fmadd_pd(vu, vw, vsum);
       }
+
       double result[2];
+
+      // Copy I11 sums for index/next into result[0/1]. storeu permits
+      // this two-double stack array without special vector alignment.
       simde_mm_storeu_pd(result, vsum);
+
+      // Add the unresolved-mass contribution at each physical k only once.
       i11[row][index] = result[0]+completion[row]*u0[nmass];
       if (index+1 < nk) {
         i11[row][next] = result[1]+completion[row]*u1[nmass];
@@ -251,38 +345,106 @@ void halo_moments_cov(
 
   // --- 4b. FIVE PAIR MOMENTS FROM THE SAME FOUR PROFILE READS ---
 
+  // Several factors of the density field can come from the same halo.
+  // Each factor supplies a profile u and a volume M/rho_cb; a moment sums
+  // their product over the halo abundance, with bias when required. For a
+  // fixed (K,Q), the five moments reuse the same two profiles but combine
+  // them in different powers. Compute them together to reuse those reads.
+  // Each worker handles two pairs at one scale factor. SIMD lane 0 owns
+  // the first pair's mass integrals and lane 1 the second pair's; they
+  // remain separate because they describe different covariance entries.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int row=0; row<na; row++) {
+    // At this scale factor, compute and store five moments for each pair
+    // group. SIMD handles two pairs together without adding their results.
     for (int index=0; index<npair; index+=2) {
+      // Each lane owns one full (K,Q) pair, not one of the two magnitudes.
+      // An odd final pair is repeated for safe reads and written only once.
       const int next = index+1 < npair ? index+1 : index;
       const double* restrict uk0 = profile[row][pairs[0][index]];
       const double* restrict uq0 = profile[row][pairs[1][index]];
       const double* restrict uk1 = profile[row][pairs[0][next]];
       const double* restrict uq1 = profile[row][pairs[1][next]];
       v2d vsums[5];
+
       for (int role=0; role<5; role++) {
+        // Initialize this moment's two independent pair sums to [0,0].
         vsums[role] = simde_mm_setzero_pd();
       }
+
+      // At each mass, form the needed two-, three- and four-leg profile
+      // products and add their weighted contributions to all five moments.
+      // Lanes remain separate pairs; dn denotes the weighted abundance
+      // (dn/dlnM)*dlnM and V denotes M/rho_cb in the comments below.
       for (int node=0; node<nmass; node++) {
+        // --- PROFILES AT THIS MASS, WITH PAIRS KEPT IN SEPARATE LANES ---
+
+        // set_pd takes lane 1 first: vk holds the K-profile for index
+        // in lane 0 and for next in lane 1.
         const v2d vk = simde_mm_set_pd(uk1[node], uk0[node]);
+
+        // Pack the matching Q-profiles in the same index/next lane order;
+        // set_pd again receives the high-lane value first.
         const v2d vq = simde_mm_set_pd(uq1[node], uq0[node]);
+
+        // Multiply matching lanes to form u(K)*u(Q) for each pair.
         const v2d vproduct = simde_mm_mul_pd(vk, vq);
+
+        // Append another Q leg: u(K)*u(Q)^2 in each pair lane.
         const v2d vkqq = simde_mm_mul_pd(vproduct, vq);
+
+        // Append another K leg: u(K)^2*u(Q) in each pair lane.
         const v2d vkkq = simde_mm_mul_pd(vproduct, vk);
+
+        // Square the two-profile product to get u(K)^2*u(Q)^2 per pair.
         const v2d vkkqq = simde_mm_mul_pd(vproduct, vproduct);
+
+        // --- MASS WEIGHTS SHARED BY THE TWO PAIRS ---
+
+        // Copy the unbiased two-leg weight dn*V^2 into both lanes.
         const v2d vw02 = simde_mm_set1_pd(weights[1][row][node]);
+
+        // Copy the biased two-leg weight dn*b*V^2 into both lanes.
         const v2d vw12 = simde_mm_set1_pd(weights[2][row][node]);
+
+        // Copy the biased three-leg weight dn*b*V^3 into both lanes.
         const v2d vw13 = simde_mm_set1_pd(weights[3][row][node]);
+
+        // Copy the unbiased four-leg weight dn*V^4 into both lanes.
         const v2d vw04 = simde_mm_set1_pd(weights[4][row][node]);
+
+        // --- ADD THIS MASS NODE TO EACH OF THE FIVE MOMENTS ---
+
+        // I02 += u(K)*u(Q)*dn*V^2 in each lane. fmadd uses a single
+        // native-FMA rounding for the product and running-sum addition.
         vsums[0] = simde_mm_fmadd_pd(vproduct, vw02, vsums[0]);
+
+        // I12 += u(K)*u(Q)*dn*b*V^2 for each pair, with one fused rounding
+        // on native FMA hardware, preserving the order of mass nodes.
         vsums[1] = simde_mm_fmadd_pd(vproduct, vw12, vsums[1]);
+
+        // I13(K,Q,Q) += u(K)*u(Q)^2*dn*b*V^3. fmadd accumulates each
+        // lane separately with one native-FMA rounding.
         vsums[2] = simde_mm_fmadd_pd(vkqq, vw13, vsums[2]);
+
+        // I13(K,K,Q) += u(K)^2*u(Q)*dn*b*V^3. fmadd fuses product and
+        // addition once per lane on native FMA hardware.
         vsums[3] = simde_mm_fmadd_pd(vkkq, vw13, vsums[3]);
+
+        // I04 += u(K)^2*u(Q)^2*dn*V^4. fmadd retains the two independent
+        // mass sums and a single native-FMA rounding for each update.
         vsums[4] = simde_mm_fmadd_pd(vkkqq, vw04, vsums[4]);
       }
+
+      // Store each moment's two pair results, discarding a duplicated
+      // second lane when the total number of pairs is odd.
       for (int role=0; role<5; role++) {
         double result[2];
+
+        // Copy this moment's index/next sums into result[0/1]. storeu
+        // requires two valid doubles but no vector-aligned stack address.
         simde_mm_storeu_pd(result, vsums[role]);
+
         moments[role][row][index] = result[0];
         if (index+1 < npair) {
           moments[role][row][next] = result[1];
@@ -290,6 +452,8 @@ void halo_moments_cov(
       }
     }
   }
+
+  // The caller keeps only i11 and moments; all construction tables end here.
   free(profile);
   free(completion);
   free(concentration);

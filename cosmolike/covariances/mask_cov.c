@@ -6,7 +6,14 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-typedef simde__m128d v2d; // two independent angular-bin sums
+// A SIMD vector applies one operation to two doubles. Its two positions
+// (lanes 0 and 1) hold separate angular-bin sums throughout this file.
+// A fused multiply-add (FMA) evaluates a*b+c with one rounding when
+// supported directly by the processor. This differs from rounding a*b
+// first and then adding c; the calls below retain the chosen operations.
+// Unaligned loads/stores accept addresses that are not multiples of 16
+// bytes. They still require two valid adjacent doubles in the array.
+typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
 // Ordered-pair angular area from a common survey footprint.
@@ -79,6 +86,7 @@ void mask_pair_area_cov(
     log_fatal("mask_pair_area_cov needs positive sizes and area in (0,4pi]");
     exit(1);
   }
+  // Validate the raw spectrum before interpreting its monopole as area.
   for (int ell=0; ell<nmask; ell++) {
     if (!isfinite(mask_cl[ell])
         || mask_cl[ell] < 0.0) {
@@ -86,11 +94,14 @@ void mask_pair_area_cov(
       exit(1);
     }
   }
+
   const double monopole = area_sr*area_sr/(4.0*M_PI);
   if (fabs(mask_cl[0]/monopole-1.0) > 1.e-8) {
     log_fatal("mask_pair_area_cov needs raw C0=area^2/(4pi)");
     exit(1);
   }
+
+  // Ordered boundaries are needed for a positive spherical annulus area.
   for (int edge=0; edge<=nbin; edge++) {
     if (!isfinite(edges_rad[edge])
         || edges_rad[edge] < 0.0
@@ -105,34 +116,67 @@ void mask_pair_area_cov(
     }
   }
 
+  // A pair is observable only when both positions lie inside the footprint.
+  // The mask spectrum describes how the availability of two positions varies
+  // with separation. Its sum against K_bin,L averages that information over
+  // an angular bin; the factor 8*pi^2*Delta_x below converts the average to
+  // the ordered-pair area. Each worker computes two bins. SIMD accumulates
+  // their separate multipole sums, one per lane, so bins are never mixed.
   #pragma omp parallel for schedule(static)
   for (int bin=0; bin<nbin; bin+=2) {
     // The last group may duplicate its read-only row. Store that bin once.
     const int next = bin+1 < nbin ? bin+1 : bin;
     const double* restrict kernel0 = scalar_kernel[bin];
     const double* restrict kernel1 = scalar_kernel[next];
+
+    // Initialize the two bin-specific sums of K_bin,L*C_L^W to zero.
     v2d vsum = simde_mm_setzero_pd();
+
+    // Add one mask multipole to both bin sums. SIMD reuses C_L^W across
+    // lanes, but multiplies it by a different bin kernel in each lane.
     for (int ell=0; ell<nmask; ell++) {
+      // set_pd takes lane 1 first: pack [kernel(bin,L), kernel(next,L)]
+      // into lanes 0 and 1. Each is a different angular-bin operator.
       const v2d vkernel = simde_mm_set_pd(kernel1[ell], kernel0[ell]);
+
+      // Copy the same mask power C_L^W into both bin lanes.
       const v2d vmask = simde_mm_set1_pd(mask_cl[ell]);
+
+      // Each bin adds K_bin,L*C_L^W to its own running sum. fmadd fuses
+      // the product and addition into one native-FMA rounding per lane.
       vsum = simde_mm_fmadd_pd(vkernel, vmask, vsum);
     }
+
     double sum[2];
+
+    // Copy the bin/next sums to sum[0/1]; do not add them to each other.
+    // storeu accepts this two-double array without vector alignment.
     simde_mm_storeu_pd(sum, vsum);
+
+    // Recover each bin's pair area from its harmonic sum. The row check
+    // discards the repeated lane when there is an odd number of bins.
     for (int lane=0; lane<2; lane++) {
       const int row = bin+lane;
       if (row < nbin) {
         const double lower = edges_rad[row];
         const double upper = edges_rad[row+1];
+
+        // width = cos(lower)-cos(upper) is the annulus area divided by
+        // 2 pi. The sine identity retains precision for narrow annuli.
         const double width = 2.0*sin((upper+lower)/2.0)
                                *sin((upper-lower)/2.0);
+
+        // Undo the scalar operator's 1/(4 pi width) normalization and
+        // supply the 2 pi from integrating the second object's azimuth.
         const double area = 8.0*M_PI*M_PI*width*sum[lane];
+
         if (!isfinite(area)
             || area <= 0.0) {
           log_fatal("mask_pair_area_cov: bin %d has no positive pair area; "
                     "check footprint, bins and mask resolution", row);
           exit(1);
         }
+
         pair_area[row] = area;
       }
     }

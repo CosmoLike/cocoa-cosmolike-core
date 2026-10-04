@@ -5,6 +5,11 @@
 extern "C" {
 #endif
 
+// Integrate the two-position survey footprint over each angular annulus.
+// The raw mask has C_0=area_sr^2/(4 pi); retain its monopole and dipole.
+// scalar_kernel is the bin-averaged w operator from operators_cov.c,
+// including (2L+1)/(4 pi). No density or ellipticity factor is inserted.
+// Inputs stay read-only. The caller owns the overwritten output array.
 void mask_pair_area_cov(
     const int nbin,                     // number of angular bins
     const int nmask,                    // mask multipoles 0..nmask-1

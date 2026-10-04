@@ -16,6 +16,9 @@ void realspace_operator_cov(
     double* const* kernel      // [4*nbin][ell_max+1], overwritten
   );
 
+// Give each integer ell inside a band its normalized (2 ell+1) weight;
+// all columns outside that band are zero. Bounds are inclusive absolute
+// multipoles, while output column zero corresponds to ell_min.
 void bandpower_operator_cov(
     const int nband,           // number of Fourier bands
     const int ell_min,         // first integer multipole of output columns

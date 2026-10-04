@@ -9,7 +9,15 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-typedef simde__m128d v2d; // two angular quadrature nodes
+// SIMD performs the same operation on several values at once. Here v2d
+// holds two doubles; their positions are called lane 0 and lane 1.
+// The real-space loop uses two angular nodes, the band loop two ell values.
+// A fused multiply-add (FMA) evaluates a*b+c with one rounding when
+// supported directly by the processor. This differs from rounding a*b
+// first and then adding c; the calls below retain the chosen operations.
+// Unaligned loads/stores accept addresses that are not multiples of 16
+// bytes. They still require two valid adjacent doubles in the array.
+typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
 // Area-averaged full-sky angular operators for observed scalar/shear fields.
@@ -95,6 +103,8 @@ void realspace_operator_cov(
     log_fatal("realspace_operator_cov: unsupported GL size %d", nquad);
     exit(1);
   }
+  // Validate each angular boundary before allocating tables: bins must
+  // have positive width and lie within physical separations from 0 to pi.
   for (int edge=0; edge<=nbin; edge++) {
     if (!isfinite(edges_rad[edge])
         || edges_rad[edge] < 0.0
@@ -109,47 +119,93 @@ void realspace_operator_cov(
     }
   }
 
-  // --- 1. ANGULAR NODES AND DEGREE-ONLY RECURRENCE COEFFICIENTS ---
+  // --- 1. SAMPLE THE GEOMETRY OF EACH ANGULAR BIN ---
 
-  // Geometry roles: x, normalized area measure, sin^2(theta/2), cos^2.
+  // Allocate all four geometry tables together. Their indices are
+  // [quantity][angular bin][quadrature node]. The quantities are cos(theta),
+  // normalized area weight, sin^2(theta/2), and cos^2(theta/2).
   double*** geometry = (double***) malloc3d(4, nbin, nquad);
+
+  // A Gauss-Legendre rule supplies sample angles and integration weights.
+  // Reuse this rule for every bin, mapping it onto that bin's boundaries.
   gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);
+
+  // Build the geometry of one angular annulus per iteration. Its boundaries
+  // set the area normalization; Gaussian nodes supply the angles and
+  // weights stored for reuse by every probe and multipole.
   for (int bin=0; bin<nbin; bin++) {
+    // These are the two angular boundaries of the measured annulus.
     const double lower = edges_rad[bin];
     const double upper = edges_rad[bin+1];
+
+    // The spherical area element is 2 pi sin(theta) dtheta. Dividing an
+    // annulus integral by its area cancels 2 pi, leaving the normalization
+    // width = integral sin(theta) dtheta = cos(lower)-cos(upper).
+    // The sine-product identity avoids subtracting two cosines near one.
     const double width = 2.0*sin((upper+lower)/2.0)*sin((upper-lower)/2.0);
+
+    // A zero-area annulus cannot define an average correlation.
     if (width <= 0.0) {
       log_fatal("realspace_operator_cov: bin %d has zero angular area", bin);
       exit(1);
     }
+
+    // Sample one angle inside this annulus, turn its dtheta weight into
+    // an area-average weight, and save its full-angle and half-angle factors.
     for (int node=0; node<nquad; node++) {
+      // GSL returns theta and its weight for integral f(theta) dtheta.
+      // The spherical sin(theta) factor is added explicitly below.
       double theta;   // angle at this Gaussian node, in radians
       double measure; // integration weight for dtheta
+
       gsl_integration_glfixed_point(lower, upper, node, &theta, &measure,
                                     rule);
+
+      // The spin-two rotation kernels use powers of these half angles.
+      // Evaluating them directly retains precision at tiny separations.
       const double sine = sin(theta/2.0);
       const double cosine = cos(theta/2.0);
+
+      // Jacobi polynomials are evaluated at x = cos(theta).
       geometry[0][bin][node] = cos(theta);
+
+      // Convert the dtheta weight to a normalized spherical-area weight.
+      // Summing these weights approximates the area average of unity.
       geometry[1][bin][node] = measure*sin(theta)/width;
+
+      // Cache the squared half angles: every multipole reuses them.
       geometry[2][bin][node] = sine*sine;
       geometry[3][bin][node] = cosine*cosine;
     }
   }
+
+  // All sample angles and weights have been copied into geometry.
   gsl_integration_glfixed_table_free(rule);
+
+  // --- 2. PRECOMPUTE THE POLYNOMIAL RECURRENCE ---
 
   // [probe][A/B/C/normalization][degree]. Norm includes the mode density
   // (2 ell+1)/(4 pi), and the additional normalized d_(2,0) factor.
   const double alpha[4] = {0.0, 4.0, 2.0, 0.0};
   const double beta[4] = {4.0, 0.0, 2.0, 0.0};
   double*** coefficient = (double***) malloc3d(4, 4, ell_max+1);
+
+  // Each probe has its own Jacobi-polynomial parameters. Build its degree
+  // coefficients and harmonic normalizations once, shared by all bins.
   for (int probe=0; probe<4; probe++) {
     const double sum = alpha[probe]+beta[probe];
     const double difference = alpha[probe]-beta[probe];
     const int first_ell = probe == W_THETA_COV ? 0 : 2;
+
+    // Store A_n, B_n and C_n for advancing this probe's polynomial by one
+    // degree, plus the normalization mapping that degree to physical ell.
     for (int degree=0; degree<=ell_max-first_ell; degree++) {
       const double n = degree;
       const double twice = 2.0*n+sum;
       const double denominator = 2.0*(n+1.0)*(n+sum+1.0);
+
+      // A multiplies x P_n. B multiplies P_n and C multiplies P_(n-1).
+      // At n=0 the special form avoids division by zero when alpha+beta=0.
       coefficient[probe][0][degree] = (twice+1.0)*(twice+2.0)/denominator;
       if (degree == 0) {
         coefficient[probe][1][degree] = difference/2.0;
@@ -160,6 +216,9 @@ void realspace_operator_cov(
         coefficient[probe][2][degree] = 2.0*(n+alpha[probe])*(n+beta[probe])
                                          *(twice+2.0)/(denominator*twice);
       }
+
+      // Convert the area-averaged polynomial into the harmonic operator.
+      // Gamma_t also needs the normalization of the d_(2,0) element.
       const double ell = degree+first_ell;
       double normalization = (2.0*ell+1.0)/(4.0*M_PI);
       if (probe == GAMMA_T_COV) {
@@ -169,14 +228,25 @@ void realspace_operator_cov(
     }
   }
 
-  // --- 2. SPIN POLYNOMIALS AND AREA AVERAGES ---
+  // --- 3. SPIN POLYNOMIALS AND AREA AVERAGES ---
 
   // [worker][previous/current/weighted prefactor][node]. Every worker
   // reuses its rows for the next bin; no allocation occurs inside OpenMP.
   const int nthreads = omp_get_max_threads();
   double*** work = (double***) malloc3d(nthreads, 3, nquad);
+
+  // A measured angular bin averages correlations over an annulus, rather
+  // than observing the correlation at just its center. For each multipole
+  // we therefore integrate the appropriate spin kernel over the sample
+  // angles, using the area weights prepared above. The polynomial recurrence
+  // obtains the next multipole from the previous two without starting over.
+  // One worker builds a complete (probe,bin) row. SIMD evaluates two angles
+  // together: the lanes accumulate even/odd-node contributions to the SAME
+  // bin integral, so their subtotals are added after visiting all angles.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int probe=0; probe<4; probe++) {
+    // For this probe, use each bin's own geometry to fill its ell row.
+    // The two SIMD lanes always refer to two angles inside that same bin.
     for (int bin=0; bin<nbin; bin++) {
       const int thread = omp_get_thread_num();
       const int first_ell = probe == W_THETA_COV ? 0 : 2;
@@ -188,10 +258,14 @@ void realspace_operator_cov(
       double* restrict weight = work[thread][2];
       double* restrict output = kernel[probe*nbin+bin];
       const double* restrict cosine = geometry[0][bin];
+
+      // Start with P_(-1)=0 and P_0=1. Attach the probe's half-angle
+      // factor to the area weight; it does not change with degree.
       for (int node=0; node<nquad; node++) {
         const double sine2 = geometry[2][bin][node];
         const double cosine2 = geometry[3][bin][node];
         double prefactor = 1.0;
+
         if (probe == XI_PLUS_COV) {
           prefactor = cosine2*cosine2;
         } else if (probe == XI_MINUS_COV) {
@@ -199,40 +273,98 @@ void realspace_operator_cov(
         } else if (probe == GAMMA_T_COV) {
           prefactor = sine2*cosine2;
         }
+
         previous[node] = 0.0;
         current[node] = 1.0;
         weight[node] = geometry[1][bin][node]*prefactor;
       }
+
+      // A spin-two field has no ell=0 or ell=1 contribution.
       for (int ell=0; ell<first_ell; ell++) {
         output[ell] = 0.0;
       }
 
-      // Sum P_n first, then advance to P_(n+1). Every supported Gaussian
-      // rule is even, so both SIMD lanes correspond to real angular nodes.
+      // Each degree produces one harmonic-operator entry: sum the current
+      // polynomial over angles, then advance its recurrence. SIMD keeps
+      // separate even/odd-node sums until their final addition. All allowed
+      // rules are even, so each two-node load has two real angular samples.
       for (int degree=0; degree<=ell_max-first_ell; degree++) {
+        // Copy A_n to both lanes: the recurrence coefficient is the same
+        // at the two angles, even though the polynomial values differ.
         const v2d va = simde_mm_set1_pd(coefficient[probe][0][degree]);
+
+        // Copy B_n to both lanes for the angle-independent additive term.
         const v2d vb = simde_mm_set1_pd(coefficient[probe][1][degree]);
+
+        // Copy C_n to both lanes for the previous-degree contribution.
         const v2d vc = simde_mm_set1_pd(coefficient[probe][2][degree]);
+
+        // Start two partial bin integrals at zero: lane 0 will sum nodes
+        // 0,2,4,... and lane 1 nodes 1,3,5,..., always in this fixed order.
         v2d vsum = simde_mm_setzero_pd();
+
+        // Process two angles together: accumulate weight*P_n, advance both
+        // polynomials to P_(n+1), and save them for the next degree. Lane 0
+        // owns node and lane 1 owns node+1; their sums stay separate here.
         for (int node=0; node<nquad; node+=2) {
+          // Load P_n at node and node+1 into lanes 0 and 1. loadu accepts
+          // an address without special vector alignment; both nodes exist.
           const v2d vcurrent = simde_mm_loadu_pd(current+node);
+
+          // Load P_(n-1) at the same two nodes, in the same lane order.
+          // loadu does not require vector-aligned storage.
           const v2d vprevious = simde_mm_loadu_pd(previous+node);
+
+          // Load cos(theta) for nodes node and node+1. loadu permits
+          // ordinary double-array addresses without vector alignment.
           const v2d vx = simde_mm_loadu_pd(cosine+node);
+
+          // Load the area-times-spin weights for the same two angles.
+          // loadu imposes no extra alignment on weight+node.
           const v2d vweight = simde_mm_loadu_pd(weight+node);
+
+          // Each lane adds weight*P_n to its own bin-integral subtotal.
+          // fmadd performs multiply-plus-add with one rounding on native
+          // FMA hardware; it does not add lane 0 to lane 1.
           vsum = simde_mm_fmadd_pd(vweight, vcurrent, vsum);
+
+          // Form A_n*cos(theta)+B_n separately at the two angles.
+          // fmadd fuses that multiplication and addition into one rounding
+          // on native FMA hardware.
           const v2d vlinear = simde_mm_fmadd_pd(va, vx, vb);
-          const v2d vnext = simde_mm_fmsub_pd(vlinear, vcurrent,
-                                           simde_mm_mul_pd(vc, vprevious));
+
+          // Multiply C_n by P_(n-1) lane by lane. This product is rounded
+          // before entering the fused subtraction in the next step.
+          const v2d vbackward = simde_mm_mul_pd(vc, vprevious);
+
+          // At each angle compute P_(n+1) = vlinear*P_n - vbackward.
+          // fmsub means multiply-minus-third-argument, fused into one
+          // rounding on native FMA hardware.
+          const v2d vnext = simde_mm_fmsub_pd(vlinear, vcurrent, vbackward);
+
+          // Copy lanes 0 and 1 into previous[node] and previous[node+1].
+          // storeu needs two valid doubles, but no vector-aligned address.
           simde_mm_storeu_pd(previous+node, vcurrent);
+
+          // Save P_(n+1) at current[node] and current[node+1] for the next
+          // degree. storeu accepts the ordinary double-array address.
           simde_mm_storeu_pd(current+node, vnext);
         }
+
         double sum[2];
+
+        // Copy the even-node and odd-node subtotals into sum[0] and sum[1].
+        // storeu allows this stack array without special vector alignment.
         simde_mm_storeu_pd(sum, vsum);
+
+        // This is the only addition between lanes. Its order is fixed,
+        // then the harmonic normalization converts the integral to K_ell.
         output[degree+first_ell] = (sum[0]+sum[1])
                                   *coefficient[probe][3][degree];
       }
     }
   }
+
   free(work);
   free(coefficient);
   free(geometry);
@@ -285,23 +417,56 @@ void bandpower_operator_cov(
       exit(1);
     }
   }
+
+  // A Fourier band combines many multipoles. An ell with more independent
+  // modes should contribute more to this average, hence its weight 2*ell+1.
+  // Dividing by the band's total mode count makes the weights sum to one.
+  // Each worker fills one band's row, leaving zero outside its limits.
+  // SIMD computes weights for two neighboring ell values; these are separate
+  // operator entries, so they are stored separately rather than added here.
   #pragma omp parallel for schedule(static)
   for (int band=0; band<nband; band++) {
     double* restrict row = kernel[band]; // this band owns its writable row
     const double lower = first[band];
     const double upper = last[band];
+
+    // The sum of 2 ell+1 over this inclusive band is the mode count.
     const double modes = (upper-lower+1.0)*(upper+lower+1.0);
+
+    // Both adjacent multipoles use the same band normalization. set1_pd
+    // copies 1/N_band into lane 0 and lane 1: [1/N_band, 1/N_band].
     const v2d vnorm = simde_mm_set1_pd(1.0/modes);
+
+    // Multipoles outside this band must contribute zero to its average.
     for (int node=0; node<nell; node++) {
       row[node] = 0.0;
     }
+
+    // Convert absolute ell limits into indices of the supplied row.
     int node = first[band]-ell_min;
     const int end = last[band]-ell_min;
+
+    // Fill two adjacent multipoles together only when both are in the band.
+    // The scalar operation for each is row[node] = (2 ell+1)/N_band.
     for (; node+1<=end; node+=2) {
+      // Increasing ell by one adds two modes: (2(ell+1)+1) = mode+2.
       const double mode = 2.0*((double) ell_min+node)+1.0;
+
+      // set_pd takes the HIGH lane first. Its second argument becomes
+      // lane 0, so the vector is [mode, mode+2] in increasing ell order.
       const v2d vmode = simde_mm_set_pd(mode+2.0, mode);
-      simde_mm_storeu_pd(row+node, simde_mm_mul_pd(vmode, vnorm));
+
+      // Multiply matching lanes: [(2 ell+1)/N_band,
+      // (2(ell+1)+1)/N_band]. The two weights are independent.
+      const v2d vband_weight = simde_mm_mul_pd(vmode, vnorm);
+
+      // Write lane 0 to row[node] and lane 1 to row[node+1]. storeu allows
+      // an ordinary double-array address without special vector alignment.
+      simde_mm_storeu_pd(row+node, vband_weight);
     }
+
+    // An odd number of multipoles leaves one final weight. Compute it
+    // scalarly so no two-value store writes beyond the band boundary.
     if (node <= end) {
       row[node] = (2.0*((double) ell_min+node)+1.0)/modes;
     }

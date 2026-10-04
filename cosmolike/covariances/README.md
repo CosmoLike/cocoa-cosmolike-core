@@ -4,6 +4,54 @@ This directory separates covariance computation from the data-vector
 engines. Every new C filename ends in `_cov.c`; existing core C files
 outside this directory are not changed for the port.
 
+## Following one calculation
+
+A covariance describes how two measured correlations fluctuate together.
+Three contributions are kept separate: Gaussian pairings (G), changes
+driven by density fluctuations larger than the survey (SSC), and the
+remaining connected four-point contribution (cNG).
+
+Read the files in this order to follow the inputs toward the observable:
+
+1. `spectra_cov.c` prepares common distance samples, field windows and
+   every required cross spectrum. A window describes how strongly one
+   catalog weights matter at each distance.
+2. `gaussian_cov.c` combines spectra and white noise through the two
+   surviving Gaussian pairings.
+3. `halo_cov.c` integrates halo profiles over mass. `perturbation_cov.c`
+   averages interactions of linear modes over their relative angle.
+   `non_gaussian_cov.c` combines those inputs into matter responses and
+   the five halo contributions to the connected trispectrum.
+4. `ssc_cov.c` weights the matter response by the survey's large-scale
+   density fluctuations and the responses of catalog normalization.
+5. `operators_cov.c` constructs the transformations from multipoles to
+   angular bins or Fourier bands. These operators must act on both
+   indices of a covariance.
+6. `mask_cov.c` counts the angular-pair area available within the footprint.
+   This sets the analytic pure-noise contribution in `gaussian_cov.c`.
+
+The function headers give the scalar equations, units and array roles.
+Inside each function, separate commented steps explain allocations,
+normalizations, integration and output. An overview immediately before
+each substantial loop explains why its weighting, traversal or approximation
+computes the physical quantity, then identifies the iteration unit, output
+and SIMD lane roles when applicable. Each SIMDe call has its own
+explanation: which numbers occupy the vector's two positions (lanes),
+what operation is applied to them, and where the result goes. Adjacent
+nodes and independent output sums use lanes differently; their meanings
+are specified at each loop rather than assumed from the vector type.
+
+The [didactic review record](../../.claude/skills/cosmolike-dev/references/covariance_didactic_review.md)
+describes the whole-module reading pass and numerical-equivalence checks.
+The [optimization review](../../.claude/skills/cosmolike-dev/references/covariance_optimization_review.md)
+tests coarse exact tables, cubic construction and SIMD linear lookup,
+with correctness checks and prepared timing comparisons. The
+[Roman negative-mode review](../../.claude/skills/cosmolike-dev/references/covariance_roman_negative_modes.md)
+locates the failing small-scale correlations and compares the public
+Roman data challenge, without modifying either matrix or the project mask.
+
+## Available building blocks
+
 The initial implementation in `gaussian_cov.c` provides four building
 blocks for supplied spectra and kernels:
 

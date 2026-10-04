@@ -21,15 +21,19 @@ namespace cosmolike_interface {
 // cosmology change cannot alter an earlier result. The C snapshot is
 // temporary and its unique_ptr releases it even if Python allocation fails.
 // No Ntable field, data-vector mask, covariance or likelihood state changes.
+//
+// The C routine stores one row per unordered field pair. Python receives
+// a full symmetric [ell][field][field] array, plus copies of the radial
+// geometry and window tables so it can audit the integration inputs.
 // ---------------------------------------------------------------------------
 static py::dict covariance_limber_spectra(
-    const py::array_t<double, py::array::c_style>& ell,
-    const py::array_t<double, py::array::c_style>& a_edges,
-    const int nquad,
-    const int nwindow,
-    const bool include_ia,
-    const bool include_rsd,
-    const bool linear
+    const py::array_t<double, py::array::c_style>& ell, // multipole samples
+    const py::array_t<double, py::array::c_style>& a_edges, // radial panels
+    const int nquad,        // Gaussian nodes per scale-factor panel
+    const int nwindow,      // uniform-a lensing-efficiency samples
+    const bool include_ia,  // include the signed NLA window
+    const bool include_rsd, // include the lens redshift-distortion window
+    const bool linear      // select linear rather than nonlinear matter P
   )
 {
   if (ell.ndim() != 1
@@ -84,24 +88,40 @@ static py::dict covariance_limber_spectra(
         "nquad must be a tabulated rule: 64,96,128,256,512,1024");
   }
 
+  // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
+
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
   const int npair = nfield*(nfield+1)/2;
   const int nell = ell.size();
+
+  // NumPy owns the values; rows only points to their starting addresses
+  // for the C interface. The array stays alive throughout the calculation.
   py::array_t<double> triangular({npair, nell});
   std::vector<double*> rows(npair);
+
   for (int pair=0; pair<npair; pair++) {
     rows[pair] = triangular.mutable_data(pair, 0);
   }
+
+  // --- 2. BUILD THE RADIAL SNAPSHOT AND INTEGRATE ALL SPECTRA ---
+
+  // unique_ptr is the sole owner of this temporary C snapshot. Its
+  // specified cleanup function, free_radial_cov, runs when the owner
+  // leaves scope, including if a later Python array allocation fails.
   std::unique_ptr<radial_cov, decltype(&free_radial_cov)> radial(
       radial_inputs_cov(a_edges.size()-1, a_edges.data(), nquad,
                         nwindow, include_ia), &free_radial_cov);
+
   limber_spectra_cov(radial.get(), nell, ell.data(), linear, include_rsd,
                      rows.data());
+
+  // --- 3. EXPAND THE FIELD-PAIR TRIANGLE FOR PYTHON ---
 
   // Store both triangles from the same computed number. This makes the
   // returned field matrix exactly symmetric, independent of thread count.
   py::array_t<double> spectra({nell, nfield, nfield});
   int pair = 0;
+
   for (int first=0; first<nfield; first++) {
     for (int second=first; second<nfield; second++) {
       for (int node=0; node<nell; node++) {
@@ -112,8 +132,13 @@ static py::dict covariance_limber_spectra(
     }
   }
 
+  // --- 4. COPY THE INTEGRATION INPUTS BEFORE RELEASING THE SNAPSHOT ---
+
+  // Geometry uses roles a, chi, f_K, dchi weight. Windows use density,
+  // lensing/magnification and signed NLA roles, then field and radial node.
   py::array_t<double> geometry({4, radial->nnode});
   py::array_t<double> windows({3, nfield, radial->nnode});
+
   for (int node=0; node<radial->nnode; node++) {
     for (int role=0; role<4; role++) {
       *geometry.mutable_data(role, node) = radial->geometry[role][node];
@@ -125,6 +150,8 @@ static py::dict covariance_limber_spectra(
       }
     }
   }
+
+  // All returned arrays now own their values independently of the C state.
   py::dict result;
   result["spectra"] = spectra;
   result["geometry"] = geometry;

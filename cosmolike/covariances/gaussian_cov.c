@@ -8,8 +8,13 @@
 #include "simde/x86/sse2.h"
 #include "simde/x86/fma.h"
 
-// v2d follows cosmo2D.c's naming: a 128-bit vector of two doubles.
-// The projection uses these two lanes for different output columns.
+// v2d holds two doubles in positions called lanes. SIMD applies the same
+// operation to both, here two covariance columns with separate ell sums.
+// A fused multiply-add (FMA) evaluates a*b+c with one rounding when
+// supported directly by the processor. This differs from rounding a*b
+// first and then adding c; the calls below retain the chosen operations.
+// Unaligned loads/stores accept addresses that are not multiples of 16
+// bytes. They still require two valid adjacent doubles in the array.
 typedef simde__m128d v2d;
 
 // ============================================================================
@@ -82,27 +87,45 @@ void gaussian_wick_cov(
     exit(1);
   }
 
+  // --- 1. NAME THE FOUR SPECTRA USED BY THE TWO WICK PAIRINGS ---
+
+  // The order is AC, BD, AD, BC; these can include cross-bin spectra
+  // absent from the data vector. Each row spans the same ell grid.
   const double* restrict cl_ac = cross_spectra[0];
   const double* restrict cl_bd = cross_spectra[1];
   const double* restrict cl_ad = cross_spectra[2];
   const double* restrict cl_bc = cross_spectra[3];
+
+  // White noise is independent of ell and vanishes for distinct catalogs.
   const double noise_ac = cross_noise[0];
   const double noise_bd = cross_noise[1];
   const double noise_ad = cross_noise[2];
   const double noise_bc = cross_noise[3];
 
+  // Fourier covariance retains NN; real-space covariance adds its exact
+  // pair-count contribution later instead of summing a truncated NN tail.
   double pure_noise = 0.0;
   if (include_noise_noise) {
     pure_noise = noise_ac*noise_bd + noise_ad*noise_bc;
   }
 
-  // Only the output is written. The four read-only input rows may coincide
-  // for auto spectra; none may overlap the output array.
+  // --- 2. COMBINE SIGNAL AND NOISE AT EACH MULTIPOLE ---
+
+  // Gaussian fluctuations connect the two measured spectra through AC*BD
+  // and AD*BC. Noise contributes to those same pairings when fields coincide.
+  // Averaging more independent modes reduces the covariance, which explains
+  // the division by fsky*(2*ell+1). In this approximation different ell
+  // values do not couple, so one worker can compute each ell independently.
+  // The four input rows may coincide for auto spectra; the output is separate.
   #pragma omp parallel for schedule(static)
   for (int node=0; node<nell; node++) {
+    // Keep CC and the two CN+NC contributions explicit. This avoids
+    // recovering small signal terms by subtracting a large NN afterward.
     const double signal = cl_ac[node]*cl_bd[node] + cl_ad[node]*cl_bc[node];
     const double mixed_ac_bd = cl_ac[node]*noise_bd + noise_ac*cl_bd[node];
     const double mixed_ad_bc = cl_ad[node]*noise_bc + noise_ad*cl_bc[node];
+
+    // The survey samples approximately fsky*(2 ell+1) independent modes.
     const double mode_count = (2.0*(ell_min + (double) node) + 1.0)*fsky;
 
     gaussian[node] = (signal + mixed_ac_bd + mixed_ad_bc + pure_noise)
@@ -172,6 +195,9 @@ void gaussian_project_cov(
 
   // --- 1. WEIGHT EACH LEFT OPERATOR ONCE ---
 
+  // Each covariance entry sums K_left*G*K_right over ell. The product
+  // K_left*G is identical for all right bins, so compute it once per left
+  // row and reuse it. Workers write separate scratch rows; G is shared.
   #pragma omp parallel for schedule(static)
   for (int left=0; left<nleft; left++) {
     const double* restrict kernel = kernel_left[left];
@@ -189,8 +215,17 @@ void gaussian_project_cov(
   // Thus every result still adds ell=0,1,2,... in the scalar order. There
   // is no sum across vector lanes and no reduction across OpenMP workers.
   enum { tile_rows = 4 }; // rows per group; columns are two pairs of lanes
+
+  // Transforming both observables requires every left/right bin pairing.
+  // Group four bins on each side so a loaded kernel value can contribute to
+  // several entries before moving to the next ell. One worker owns all
+  // sixteen sums in that group. Each SIMD vector accumulates two distinct
+  // covariance entries, one per lane; adding lanes would incorrectly mix
+  // different measured angular bins. Each lane therefore keeps its own sum.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int left=0; left<nleft; left+=tile_rows) {
+    // Pair this group of left bins with every group of right bins. The
+    // SIMD lanes produce distinct covariance columns, never a combined sum.
     for (int right=0; right<nright; right+=4) {
       // The last group can have fewer than four columns. Repeating its
       // final valid kernel keeps every read in bounds; unused results are
@@ -202,6 +237,9 @@ void gaussian_project_cov(
       const double* restrict kernel1 = kernel_right[right1];
       const double* restrict kernel2 = kernel_right[right2];
       const double* restrict kernel3 = kernel_right[right3];
+
+      // One left weight multiplies all four right kernels at this ell.
+      // Each row therefore needs two independent two-column accumulators.
       const double* weighted_rows[tile_rows];
       v2d vtotals_low[tile_rows];
       v2d vtotals_high[tile_rows];
@@ -209,11 +247,18 @@ void gaussian_project_cov(
       for (int row=0; row<tile_rows; row++) {
         const int index = left+row < nleft ? left+row : nleft-1;
         weighted_rows[row] = weighted_left[index];
-        // setzero_pd starts two independent output sums at zero.
+
+        // Start the sums for right-bin columns 0 and 1 at zero. The two
+        // lanes will keep independent ell sums for this left-bin row.
         vtotals_low[row] = simde_mm_setzero_pd();
+
+        // Start separate sums for columns 2 and 3 at zero as well.
         vtotals_high[row] = simde_mm_setzero_pd();
       }
 
+      // Walk the multipoles once for this block. Read its four right
+      // kernels, then update all left rows; each SIMD lane accumulates
+      // weighted_left*kernel_right for its own covariance column.
       for (int node=0; node<nell; node++) {
         // Each 128-bit vector holds two doubles. set_pd puts its last
         // argument in lane 0: low holds columns 0,1 and high holds 2,3.
@@ -221,34 +266,52 @@ void gaussian_project_cov(
         // joining a 256-bit value on machines with 128-bit vector registers.
         const v2d vkernels_low = simde_mm_set_pd(
           kernel1[node], kernel0[node]);
+
+        // set_pd takes lane 1 first: pack the kernels of columns 2 and 3
+        // into lanes 0 and 1 of the second vector, in that order.
         const v2d vkernels_high = simde_mm_set_pd(
           kernel3[node], kernel2[node]);
 
+        // At this ell, one left-bin weight updates four covariance entries.
+        // Two SIMD vectors hold columns 0/1 and 2/3, with independent sums.
         for (int row=0; row<tile_rows; row++) {
           const double* restrict weighted = weighted_rows[row];
+
           // Scalar equation, once for each right bin:
           //   total += weighted_left[left+row][ell] * kernel_right[right][ell].
           // set1_pd repeats the left-bin weight on both lanes.
           const v2d vweight = simde_mm_set1_pd(weighted[node]);
+
           // fmadd evaluates weight*kernel + total with one rounding on
           // native FMA/NEON, matching the scalar fma rather than rounding
           // the product first. No lane is added to a different lane.
           vtotals_low[row] = simde_mm_fmadd_pd(
             vweight, vkernels_low, vtotals_low[row]);
+
+          // Apply the same weight*kernel+total update to columns 2 and 3.
+          // fmadd again has one rounding on native FMA hardware and keeps
+          // the two column sums separate.
           vtotals_high[row] = simde_mm_fmadd_pd(
             vweight, vkernels_high, vtotals_high[row]);
         }
       }
 
+      // Copy the completed SIMD sums into the valid output rows and
+      // columns. Repeated edge inputs contributed only discarded lanes.
       for (int row=0;
            row<tile_rows
            && left+row<nleft;
            row++) {
         double results[4];
-        // storeu_pd copies two lanes to ordinary doubles without an
-        // alignment requirement. The second pair fills columns 2 and 3.
+
+        // Copy columns 0 and 1 to results[0] and results[1]. storeu needs
+        // two valid doubles, but no special vector alignment of the array.
         simde_mm_storeu_pd(results, vtotals_low[row]);
+
+        // Copy the other two lanes into results[2] and results[3]. storeu
+        // also allows this offset address without vector alignment.
         simde_mm_storeu_pd(results+2, vtotals_high[row]);
+
         for (int column=0;
              column<4
              && right+column<nright;
