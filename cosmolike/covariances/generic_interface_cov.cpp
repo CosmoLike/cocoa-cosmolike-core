@@ -1,4 +1,5 @@
 #include <carma.h>
+#include "production_interface_cov.hpp"
 #include "generic_interface_cov.hpp"
 #include "covariance_wrapper_cov.hpp"
 #include "notebook_bindings_cov.hpp"
@@ -8,6 +9,8 @@ namespace cosmolike_interface {
 
 void bind_covariance(py::module_& module)
 {
+  bind_covariance_production(module);
+
   bind_covariance_components(module);
   bind_covariance_wrappers(module);
 
