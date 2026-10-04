@@ -8,9 +8,10 @@
 6. [Super-sample covariance](#ssc)
 7. [Cluster counts and their common background](#counts)
 8. [Cluster cross spectra](#cluster_spectra)
-9. [From spectra to measured bins](#operators)
-10. [Units, numerical structure and remaining scope](#numerics)
-11. [Notebook calculations](#notebooks)
+9. [Selected halo mass integrals](#cluster_moments)
+10. [From spectra to measured bins](#operators)
+11. [Units, numerical structure and remaining scope](#numerics)
+12. [Notebook calculations](#notebooks)
 
 # Covariances of galaxy clustering and weak lensing <a name="overview"></a>
 
@@ -75,12 +76,13 @@ Function comments explain equations, units and array contents.
 | [ssc_cov.c](ssc_cov.c), [header](ssc_cov.h) | Survey-averaged background fluctuations and the response of projected observables. |
 | [counts_cluster_cov.c](counts_cluster_cov.c), [header](counts_cluster_cov.h) | Shell volumes convert supplied selected cluster abundances and their density responses into count quantities. |
 | [spectra_cluster_cov.c](spectra_cluster_cov.c), [header](spectra_cluster_cov.h) | Project supplied cluster windows, biases and mass profiles into every cluster–galaxy, cluster–shear and cluster–cluster spectrum. |
+| [moments_cluster_cov.c](moments_cluster_cov.c), [header](moments_cluster_cov.h) | Integrate supplied selected halo populations, their abundance responses and one-, two- and three-profile mass moments. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
 | [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
 | [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, reusing arrays across observable pairs. |
 | [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
-| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count shells and all-pairs spectra, with input checks and owned outputs. |
+| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count shells, all-pairs spectra and selected mass integrals, with input checks and owned outputs. |
 
 ## From three-dimensional matter to angular spectra <a name="spectra"></a>
 
@@ -531,6 +533,48 @@ calling the Gaussian covariance wrapper. Check the noise-inclusive field
 matrix for negative modes as well as the final measured covariance.
 This component supplies neither cluster SSC/cNG nor count–spectrum
 covariance, and does not replace those terms by zeros in a joint result.
+
+## Selected halo mass integrals: `moments_cluster_cov.c` <a name="cluster_moments"></a>
+
+The matter surrounding a selected cluster depends on its halo mass.
+Let $`dn=(dn/d\ln M)d\ln M`$ be the comoving halo abundance in a mass
+interval, $`S_i(M,a)`$ the probability of entering observed category
+$`i`$, and $`p(k|M)=(M/\bar\rho)u(k|M)`$ its mass-weighted Fourier
+profile. The profile has units of volume. The selected moments are
+
+$$
+J_{\beta\mu}^{i}(k_1,\ldots,k_\mu)
+=\int dn\,S_i\,b_\beta\prod_{r=1}^{\mu}p(k_r|M),
+\qquad b_0=1,\quad b_1=b.
+$$
+
+For example, $`J_{01}/n_i`$ is the one-halo cluster–matter power, where
+$`n_i=\int dn\,S_i`$. Weighting with the halo bias $`b`$ gives its
+abundance response before the separate correction for a measured catalog
+mean. These ingredients follow the selected-profile model in
+[To et al., Eqs. 20–21](https://arxiv.org/abs/2008.10757).
+
+A halo assigned to an observed category cannot be counted twice as two
+independent membership draws. Its indicator obeys $`I_i^2=I_i`$.
+Therefore a same-halo moment contains $`S_i`$ once, even with several
+cluster legs. Different exclusive categories have no shared-halo term;
+overlapping true-mass distributions do not change this rule. Correlations
+between different halos and their shared background remain present.
+
+`interface.covariance_cluster_moments` receives the selected mass weights,
+halo biases and profiles. It returns abundance and bias-weighted
+abundance, $`J_{01}`$, $`J_{11}`$, $`J_{02}(K,Q)`$, and both repeated-leg
+$`J_{03}`$ moments. A useful application is the non-SSC count–matter-power
+kernel $`J_{02}(K,K)+2P_{\rm lin}(K)I_{11}(K)J_{11}(K)`$ in
+[Schaan, Takada & Spergel, Eq. 35](https://arxiv.org/abs/1406.3330).
+Here $`I_{11}`$ integrates the full halo population; it is distinct from
+the selected $`J_{11}`$.
+
+These are unnormalized mass integrals. The caller supplies a consistent
+mass function, quadrature, density convention and selection. There is
+no low-mass completion for unobserved clusters. Angular projection,
+catalog normalization, environmental selection changes and assembly of
+the complete cluster covariance remain separate calculations.
 
 ## From spectra to measured bins: `operators_cov.c` <a name="operators"></a>
 

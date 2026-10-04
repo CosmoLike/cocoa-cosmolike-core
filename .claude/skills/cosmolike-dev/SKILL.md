@@ -90,6 +90,9 @@ Cluster count responses and all-pairs Limber projection are recorded in
 `references/covariance_cluster_spectra.md`. They are validated components,
 not a completed cluster 6x2pt+N covariance. Retain the distinct count and
 two-point response conventions and test all internal field cross spectra.
+Selected mass moments and their exclusive-category convention are in
+`references/covariance_cluster_moments.md`; do not replace one membership
+probability by its powers when several legs belong to the same halo.
 
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.

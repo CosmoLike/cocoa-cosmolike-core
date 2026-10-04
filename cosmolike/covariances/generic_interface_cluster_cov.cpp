@@ -6,6 +6,7 @@
 #include "generic_interface_cluster_cov.hpp"
 #include "counts_cluster_cov.h"
 #include "spectra_cluster_cov.h"
+#include "moments_cluster_cov.h"
 
 namespace py = pybind11;
 
@@ -254,8 +255,149 @@ static py::dict covariance_cluster_spectra(
 }
 
 
+// ---------------------------------------------------------------------------
+// Keep the selection and mass rule explicit at the notebook boundary.
+//
+// weight already contains the selected abundance and mass quadrature.
+// Profiles are shared by every selection at a given state, so C can reuse
+// them for single and pair moments without choosing a mass function or
+// reading cluster globals. Outputs expose state and selection separately;
+// only the temporary C row map combines them into a flat population index.
+// ---------------------------------------------------------------------------
+static py::dict covariance_cluster_moments(
+    const cluster_cov_array& weight,  // [state,selection,mass], selected dn
+    const cluster_cov_array& bias,    // [state,mass], linear halo bias
+    const cluster_cov_array& profile  // [state,k,mass], (M/rho)*u(k|M)
+  )
+{
+  if (weight.ndim() != 3
+      || bias.ndim() != 2
+      || profile.ndim() != 3) {
+    throw std::invalid_argument(
+        "need weight[state,selection,mass], bias[state,mass] and "
+        "profile[state,k,mass]");
+  }
+  const py::ssize_t na = weight.shape(0); // independent radial states
+  const py::ssize_t nselection = weight.shape(1); // observed categories
+  const py::ssize_t nmass = weight.shape(2); // mass quadrature nodes
+  const py::ssize_t nk = profile.shape(1); // profiles per radial state
+
+  if (na < 1
+      || nselection < 1
+      || nmass < 1
+      || nk < 1
+      || bias.shape(0) != na
+      || bias.shape(1) != nmass
+      || profile.shape(0) != na
+      || profile.shape(2) != nmass) {
+    throw std::invalid_argument(
+        "all counts must be positive; weight, bias and profile must "
+        "share their state and mass dimensions");
+  }
+  for (const auto* input : {&weight, &bias, &profile}) {
+    for (py::ssize_t entry=0; entry<input->size(); entry++) {
+      if (!std::isfinite(input->data()[entry])) {
+        throw std::invalid_argument("cluster moment inputs must be finite");
+      }
+    }
+  }
+  for (py::ssize_t entry=0; entry<weight.size(); entry++) {
+    if (weight.data()[entry] < 0.0) {
+      throw std::invalid_argument("selected mass weights must be nonnegative");
+    }
+  }
+
+  // Pointer maps retain the original mass rows without copying numerical
+  // inputs. Their vectors own the maps until the synchronous C call ends.
+  const py::ssize_t nrow = na*nselection; // flattened populations
+  const py::ssize_t npair = nk*(nk+1)/2; // triangular k-pair count
+  std::vector<const double*> weight_rows(nrow);
+  std::vector<const double* const*> weight_planes(na);
+  std::vector<const double*> bias_rows(na);
+  std::vector<const double*> profile_rows(na*nk);
+  std::vector<const double* const*> profile_planes(na);
+  for (py::ssize_t state=0; state<na; state++) {
+    weight_planes[state] = weight_rows.data()+state*nselection;
+    profile_planes[state] = profile_rows.data()+state*nk;
+    bias_rows[state] = bias.data(state, 0);
+    for (py::ssize_t bin=0; bin<nselection; bin++) {
+      weight_rows[state*nselection+bin] = weight.data(state, bin, 0);
+    }
+    for (py::ssize_t mode=0; mode<nk; mode++) {
+      profile_rows[state*nk+mode] = profile.data(state, mode, 0);
+    }
+  }
+
+  cluster_cov_array density({py::ssize_t(2), na, nselection});
+  cluster_cov_array single({py::ssize_t(2), na, nselection, nk});
+  cluster_cov_array pair({py::ssize_t(3), na, nselection, npair});
+  std::vector<double*> density_rows(2);
+  std::vector<double*> single_rows(2*nrow);
+  std::vector<double**> single_planes(2);
+  std::vector<double*> pair_rows(3*nrow);
+  std::vector<double**> pair_planes(3);
+
+  // One C row denotes one (state,selection) population. Adjacent bins
+  // remain distinct outputs even when they receive the same true masses.
+  for (int role=0; role<3; role++) {
+    pair_planes[role] = pair_rows.data()+role*nrow;
+    if (role < 2) {
+      density_rows[role] = density.mutable_data(role, 0, 0);
+      single_planes[role] = single_rows.data()+role*nrow;
+    }
+    for (py::ssize_t state=0; state<na; state++) {
+      for (py::ssize_t bin=0; bin<nselection; bin++) {
+        const py::ssize_t row = state*nselection+bin;
+        pair_rows[role*nrow+row] = pair.mutable_data(role, state, bin, 0);
+        if (role < 2) {
+          single_rows[role*nrow+row] = single.mutable_data(role, state,
+                                                        bin, 0);
+        }
+      }
+    }
+  }
+  moments_cluster_cov(na, nselection, nk, nmass, weight_planes.data(),
+      bias_rows.data(), profile_planes.data(), density_rows.data(),
+      single_planes.data(), pair_planes.data());
+
+  py::dict result;
+  result["density"] = density;
+  result["single"] = single;
+  result["pair"] = pair;
+  return result;
+}
+
+
 void bind_covariance_cluster(py::module_& module)
 {
+  module.def("covariance_cluster_moments", &covariance_cluster_moments,
+      R"doc(Integrate selected halo moments with supplied mass quadrature.
+
+Arguments (contiguous float64; one consistent length unit L):
+    weight: [state,selection,mass], dlnM*(dn/dlnM)*S_i, in L^-3.
+        S_i is the membership probability, included ONCE, even for a
+        same-halo correlation with multiple cluster legs. Weight >= 0.
+    bias: [state,mass], finite linear halo bias, dimensionless.
+    profile: [state,k,mass], finite (M/rho)*u(k|M), in L^3.
+Returns:
+    Owned density[2,state,selection]: n_i and integral dn S_i b, L^-3.
+    Owned single[2,state,selection,k]: J01 and J11, dimensionless.
+    Owned pair[3,state,selection,kpair]: J02(K,Q), J03(K,K,Q),
+        J03(K,Q,Q), with units L^3,L^6,L^6. Pair order is the k-grid's
+        upper triangle: (0,0),(0,1),...,(1,1),... .
+    J_beta_mu = integral dn S_i b_beta product(profile), b_0=1, b_1=b.
+Scope:
+    These are unnormalized ingredients, not a covariance. No mass function,
+    low-mass completion, survey mask, shot noise or catalog normalization is
+    chosen. The fixed-selection interpretation requires S_i not to respond
+    to the background overdensity; an environmental derivative is separate.
+    Distinct exclusive observed categories share no same-halo term, even
+    when their true-mass distributions overlap. Their different-halo and
+    super-sample correlations must still be computed.
+)doc",
+      py::arg("weight").noconvert(), py::arg("bias").noconvert(),
+      py::arg("profile").noconvert());
+
   module.def("covariance_cluster_spectra", &covariance_cluster_spectra,
       R"doc(Project every cluster-galaxy, cluster-source and cluster pair.
 
