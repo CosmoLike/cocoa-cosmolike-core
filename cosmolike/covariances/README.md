@@ -11,7 +11,7 @@
 9. [Selected halo mass integrals](#cluster_moments)
 10. [From spectra to measured bins](#operators)
 11. [Units, numerical structure and remaining scope](#numerics)
-12. [Notebook calculations](#notebooks)
+12. [Running the calculation](#notebooks)
 
 # Covariances of galaxy clustering and weak lensing <a name="overview"></a>
 
@@ -69,6 +69,7 @@ Function comments explain equations, units and array contents.
 | --- | --- |
 | [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, and all lens/source Limber cross spectra. |
 | [gaussian_cov.c](gaussian_cov.c), [header](gaussian_cov.h) | Gaussian pairings, projection of their covariance, and analytic pair noise. |
+| [assembly_cov.c](assembly_cov.c), [header](assembly_cov.h) | Shared Gaussian matrix assembly and connected radial projections, including block scheduling. |
 | [halo_cov.c](halo_cov.c), [header](halo_cov.h) | Mass integrals of halo profiles, abundance and bias. |
 | [perturbation_cov.c](perturbation_cov.c), [header](perturbation_cov.h) | Angular averages of leading-order gravitational mode coupling. |
 | [non_gaussian_cov.c](non_gaussian_cov.c), [header](non_gaussian_cov.h) | Halo trispectrum terms and the power-spectrum response to a background density change. |
@@ -79,27 +80,55 @@ Function comments explain equations, units and array contents.
 | [halo_cluster_cov.c](halo_cluster_cov.c), [header](halo_cluster_cov.h) | Sample the initialized halo and richness model on a supplied covariance mass rule, for use by the selected-moment integrator. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
-| [components_wrapper_cov.cpp](components_wrapper_cov.cpp), [header](covariance_wrapper_cov.hpp) | Armadillo access to spectra, radial inputs, Gaussian, mask, angular, halo and response components for notebooks. |
-| [generic_interface_cov.cpp](generic_interface_cov.cpp) | Register the spectrum and covariance notebook bindings. |
-| [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, and radial projection of connected matter tables through every catalog pair. |
-| [python_components_cov.cpp](python_components_cov.cpp), [conversion helper](notebook_bindings_cov.hpp) | Convert notebook arrays at the Python boundary and register the component and whole-matrix calls. |
-| [cluster_wrapper_cov.cpp](cluster_wrapper_cov.cpp), [header](cluster_wrapper_cov.hpp) | Armadillo matrices and cubes for count shells, all-pairs cluster spectra and named selected halo moments. |
-| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Register the cluster notebook calls and convert their Python arguments. |
 
-The notebook C++ wrappers use `arma::Col`, `arma::Mat` and `arma::Cube`,
-following the data-vector wrappers. Their axes describe physical quantities,
-not memory addresses. Python conversion is separate: inputs are copied without
-changing a notebook's arrays or views, and CARMA returns independent results.
-C-order, Fortran-order, sliced and read-only NumPy inputs are accepted. Returned
-arrays may use Fortran order; their axis meanings are unchanged. Small C
-workspaces remain local to calls into the existing SIMD/OpenMP kernels.
+### Production interface and notebook wrappers
 
-The selected cluster moments have named outputs: `density` and
-`biased_density` are matrices `[state,selection]`; `J01` and `J11` are cubes
-`[state,selection,k]`; `J02`, `J03_KKQ` and `J03_KQQ` are cubes
-`[state,selection,kpair]`. This keeps the physical moments visible without a
-fourth array axis. The pair index follows the upper triangle of the supplied
-wavenumber grid. Notebook experiments may inspect each quantity separately.
+We chose **Armadillo** to make the Python notebook API easy to develop
+and use: spectra, halo quantities and covariance components appear as
+arrays with clear physical axes. Armadillo is a C++ library for vectors,
+matrices and three-dimensional arrays called cubes.
+
+C++ serves as a thin connecting layer. **pybind11** exposes the notebook
+functions to Python, and **CARMA** converts between Armadillo and NumPy
+arrays. The numerical calculations remain in the shared C code.
+
+Both entry points use the C routines above. Numerical kernels and matrix
+assembly are implemented once, in C.
+
+The **production interface** serves command-line scripts. It borrows
+contiguous NumPy inputs and writes owned NumPy outputs, avoiding Armadillo
+notebook conversions.
+
+| Production source | Inputs and outputs |
+| --- | --- |
+| [production_interface_cov.cpp](production_interface_cov.cpp) | All-pairs spectra and radial geometry. |
+| [components_interface_cov.cpp](components_interface_cov.cpp) | Transforms, halo moments, masks and responses. |
+| [matrix_interface_cov.cpp](matrix_interface_cov.cpp) | Calls to the shared Gaussian and connected matrix assemblers. |
+| [cluster_interface_cov.cpp](cluster_interface_cov.cpp) | Cluster spectra, selected moments and counts. |
+
+The **notebook wrappers** expose intermediate steps with Armadillo
+vectors, matrices and cubes. Their axes have physical meanings rather
+than flattened storage indices.
+
+| Notebook source | Quantities to inspect |
+| --- | --- |
+| [components_wrapper_cov.cpp](components_wrapper_cov.cpp), [header](covariance_wrapper_cov.hpp) | Spectra, windows, transforms, halo moments and responses. |
+| [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Armadillo inputs and outputs for the shared C matrix assemblers. |
+| [cluster_wrapper_cov.cpp](cluster_wrapper_cov.cpp), [header](cluster_wrapper_cov.hpp) | Count shells, cluster spectra and named selected halo moments. |
+
+The wrappers only validate and convert arrays around C calls. They do not
+own a separate integration or matrix-assembly algorithm.
+
+[generic_interface_cov.cpp](generic_interface_cov.cpp),
+[generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp)
+and [python_components_cov.cpp](python_components_cov.cpp) register the
+Python calls. The [notebook conversion helper](notebook_bindings_cov.hpp)
+keeps the caller's arrays unchanged, including sliced views.
+
+Project `covariance/compute_covariance.py` scripts select the production
+interface. `EXAMPLE_EVALUATE_COVARIANCE.ipynb` uses the notebook wrappers
+for inspecting and plotting the calculation. Both share the same Python
+survey assembly and the same C kernels.
 
 ## From three-dimensional matter to angular spectra <a name="spectra"></a>
 
@@ -180,7 +209,9 @@ integer-multipole approximation used by `gaussian_wick_cov` is
 There are $`2\ell+1`$ full-sky modes at each $`\ell`$;
 $`f_{\rm sky}=\Omega_s/(4\pi)`$ approximates the reduction from a finite
 survey area $`\Omega_s`$. The Kronecker delta makes different multipoles
-uncorrelated in this approximation. This is the single-multipole form of
+uncorrelated in this approximation.
+
+This is the single-multipole form of
 the Gaussian expression in
 [Krause & Eifler, Appendix A](https://arxiv.org/abs/1601.05779).
 An arbitrary footprint also couples multipoles; the area approximation
@@ -190,7 +221,9 @@ Let $`g_i`$ denote galaxy density in lens bin $`i`$, and $`\gamma_j`$ shear
 in source bin $`j`$. The covariance between $`g_i\gamma_j`$ and $`g_k\gamma_l`$
 needs $`g_i g_k`$, $`\gamma_j\gamma_l`$, $`g_i\gamma_l`$ and
 $`\gamma_j g_k`$. Excluding $`g_i g_k`$ from the measured data vector does
-not remove it from this equation. This is why `spectra_cov.c` computes
+not remove it from this equation.
+
+This is why `spectra_cov.c` computes
 every lens/source pair, including pairs absent from the data vector.
 
 ## Galaxy counts, shape noise and the footprint <a name="noise"></a>
@@ -215,6 +248,7 @@ Expanding the Gaussian products gives signal–signal, signal–noise and
 noise–noise terms. In real space, pure white noise corresponds to
 coincident pairs. A truncated multipole sum spreads that contribution
 over nearby separations instead of representing it exactly.
+
 `gaussian_noise_pair_cov` therefore evaluates pure noise from pair counts,
 while the projected harmonic part retains the other terms. For harmonic
 band powers, `gaussian_wick_cov` can retain the full noise–noise term.
@@ -366,14 +400,18 @@ $`\overline T`$, `covariance_project_connected` performs the remaining
 radial integral for the complete matrix. Its inputs separate three
 physical ingredients: the transformed matter table, the pair windows
 $`W_AW_B`$, and the radial measure $`d\chi/(\Omega_s f_K^6)`$. They must use
-the same radial samples. The result is an owned NumPy matrix with angular
+the same radial samples.
+
+The result is an owned NumPy matrix with angular
 or band bin inside each observable.
 
 For fixed probes and angular bins, every catalog combination shares the
-same matter table. The wrapper forms that common radial weight once,
+same matter table. The C assembler forms that common radial weight once,
 then contracts it with every left and right catalog window. This includes
 cross-lens terms even when cross-lens spectra are absent from the data
-vector. OpenMP assigns complete angular blocks to workers; SIMD evaluates
+vector.
+
+OpenMP assigns complete angular blocks to workers; SIMD evaluates
 their weighted sums while preserving the radial addition order. This
 organization changes neither the supplied matter model nor the Limber
 approximation, and it does not add SSC or discrete-catalog noise terms.
@@ -532,11 +570,14 @@ with fluctuations of halos inside the survey, is additional; see
 
 The shared Python `counts_cluster.py` integrates these supplied responses
 and returns count means, Poisson noise, count SSC and count–two-point SSC
-separately. Its `count_matter_cross` helper also projects the non-SSC
+separately.
+
+Its `count_matter_cross` helper also projects the non-SSC
 count–matter kernel described [below](#cluster_moments), using the
 existing C weighted projection. The one- and two-halo pieces are returned
 separately. Their explicit survey area cancels between the absolute count
 and the inverse-area covariance; the SSC retains its footprint dependence.
+
 Discrete cluster partners and shared-object catalog terms need further
 calculations. These components do not yet generate a complete cluster
 $`6\times2\mathrm{pt}+N`$ matrix.
@@ -625,6 +666,7 @@ the complete cluster covariance remain separate calculations.
 `halo_cluster_cov.c` prepares those inputs from the initialized massless
 halo model and lognormal richness relation. It reads the cold variance,
 halo bias, concentration and NFW profile through public core functions.
+
 The cluster HMF setting selects either the fixed Tinker amplitude 0.368
 or the amplitude normalized by the mass-weighted bias integral. The
 wavenumber and mass integration grids are supplied separately from the
@@ -633,7 +675,9 @@ for the multiplicity function and its bias normalization.
 
 The Python binding returns selected mass weights, halo biases and
 mass-weighted profiles, retaining their mass axis for inspection or
-integration. Richness membership is included once. Photometric redshift
+integration. Richness membership is included once.
+
+Photometric redshift
 membership, catalog normalization and an environmental selection response
 are not added. The supported setting has `selection_model=0`; fitted
 lensing-selection factors cannot be identified with a count response
@@ -656,7 +700,9 @@ The $`\sin\theta`$ factor is the spherical annulus measure.
 The angular function $`d_\ell`$ depends on the observable: galaxy density
 uses a scalar Legendre polynomial, while shear requires spin-two
 rotation functions because its components depend on the orientation of
-the pair. In a basis aligned with the pair, shear has tangential and
+the pair.
+
+In a basis aligned with the pair, shear has tangential and
 cross components. $`\xi_+`$ sums their two correlations; $`\xi_-`$ takes
 their difference. The other operators give tangential shear around
 galaxies, $`\gamma_t`$, and galaxy clustering, $`w(\theta)`$.
@@ -698,8 +744,12 @@ In the notebook workflow `integration_accuracy` selects the
 96/128/256/512/1024-node rule at levels 0/1/2/3/4. These choices control
 radial, mass and angular integrals, including the Python-prepared tree
 and selected-cluster integrals. The C++ binding supplies GSL's precomputed
-nodes to Python. Low-level tests also accept the precomputed 64-node rule;
-smaller and generated rules are rejected. The independent `accuracy_boost`
+nodes to Python.
+
+Low-level tests also accept the precomputed 64-node rule;
+smaller and generated rules are rejected.
+
+The independent `accuracy_boost`
 refines interpolation tables and multipole cutoffs, leaving these rule
 orders unchanged. Level zero must be checked against higher levels for
 the project's full covariance.
@@ -709,7 +759,9 @@ the project's full covariance.
 Core radial distances use $`c/H_0`$, and wavenumbers use its inverse.
 Power spectra, bispectra and trispectra consequently carry the third,
 sixth and ninth powers of that length unit. Radial windows have inverse
-length units. Angles are in radians, areas in steradians, pair areas in
+length units.
+
+Angles are in radians, areas in steradians, pair areas in
 steradians squared, and catalog densities per steradian. Halo masses
 use $`M_\odot/h`$. Supplied arrays must follow the same conventions.
 
@@ -722,13 +774,16 @@ without selecting the physical approximation or its integration accuracy.
 
 The shared survey assembly retains all cross-bin SSC/cNG blocks and uses
 common observed-field conventions for every probe. Its mask model is a
-spherical cap. All-pairs non-Limber cross spectra and a calibrated
+spherical cap.
+
+All-pairs non-Limber cross spectra and a calibrated
 massive-neutrino model remain open. The halo response choices and finite
 integration grids do not constitute a validated survey accuracy setting.
 
 A usable covariance must give nonnegative variance to every linear
 combination of measurements: $`v^{\mathsf T}\mathcal C v\ge0`$.
 The selected matrix must be positive definite if it is to be inverted.
+
 An individual cross entry or a separated approximate cNG contribution
 need not be positive. Negative modes in the total covariance require
 investigation of the model, pair coverage and numerical convergence;
@@ -740,7 +795,7 @@ two-parameter confidence region. Small entrywise differences alone do
 not establish that. No universal production integration setting or
 complete survey runtime is asserted by these component interfaces.
 
-## Notebook calculations <a name="notebooks"></a>
+## Running the calculation <a name="notebooks"></a>
 
 Covariance generation is optional at compilation. Each project's README
 explains its `IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE` key in Cocoa's
@@ -749,23 +804,37 @@ files, their C++ wrappers and covariance Python bindings. Reading a supplied
 covariance for likelihood evaluation remains available. Enable generation,
 rebuild that project and restart the notebook kernel before using these tools.
 
+For an HPC or other command-line run, use the project's
+`covariance/compute_covariance.py` with its
+`EXAMPLE_EVALUATE_COVARIANCE.yaml`. Cobaya reads the familiar `theory`,
+`params` and `sampler: evaluate` blocks. The driver computes one specified
+cosmology and saves G, SSC, cNG and the total through the production interface.
+
 The [shared Python tools](../../cosmolike_notebook_utils/covariance/README.md)
 prepare survey-independent inputs, build requested Gaussian blocks and
 assemble SSC/cNG and inspect covariance eigenvalues. Project adapters supply
-redshift files, cosmology and number densities. Each project's executable
+redshift files, cosmology and number densities.
+
+Each project's executable
 `EXAMPLE_EVALUATE_COVARIANCE.ipynb` uses a thin `covariance/` input adapter.
 The notebooks begin with the project's native measurement space, plot the
 G/SSC/cNG contributions and compare the total with the supplied likelihood
 covariance after applying the same mask. They save the resolved inputs and
-outputs. Optional cells add the other measurement space or an accuracy-boost
-comparison. DESxPlanck covers galaxy/shear only;
+outputs.
+
+Optional cells add the other measurement space or an accuracy-boost
+comparison.
+
+DESxPlanck covers galaxy/shear only;
 CMB observables need their own models. The example boosts demonstrate
 refinement, not a validated inference accuracy.
 
 The shared `forecast_cluster.py` also assembles the full angular DES
 cluster layout from these C components. It retains all internal spectra,
 adds count Poisson noise and common count/two-point SSC, and propagates
-the Y localization through every cross block. Its cNG uses the biased
+the Y localization through every cross block.
+
+Its cNG uses the biased
 matter-tracer approximation; selected-cluster one-halo cNG corrections
 and non-SSC count–spectrum terms are omitted. The
 [shared Python guide](../../cosmolike_notebook_utils/covariance/README.md)

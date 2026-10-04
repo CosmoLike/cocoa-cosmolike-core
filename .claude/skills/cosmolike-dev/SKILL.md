@@ -111,6 +111,20 @@ in that build. Document activation/recompilation in each project README;
 test both build modes and do not add covariance dependencies to data-vector
 C files. The module's `has_covariance` attribute reports the compiled mode.
 
+**Production interfaces and notebook wrappers are separate layers.**
+`_interface` serves CLI/production runs; covariance production bindings
+borrow contiguous NumPy arrays without Armadillo/CARMA conversions.
+`_wrapper` serves Jupyter exploration, exposing intermediate quantities
+through readable Armadillo types. Wrappers perform validation, allocation
+and layout conversion only. Heavy integration, table construction, SIMD,
+OpenMP scheduling and matrix assembly belong in shared covariance C
+routines, called by both layers. Never duplicate a physical calculation
+or maintain a second optimized implementation in either C++ layer.
+Keep the shared Python survey workflow common too; select its numerical
+backend explicitly. Test agreement of both paths, array ownership and
+one/eight-thread determinism. Explain this division clearly in human
+READMEs, with separate production and notebook subsections.
+
 **Notebook C++ wrappers.** Follow `halo_wrapper_cluster.cpp` and
 `cosmo2D_wrapper.cpp`: numeric inputs, results and working arrays use
 `arma::Col`, `arma::Mat` and `arma::Cube`, with named axes and units.
@@ -227,7 +241,7 @@ to processes, each using OpenMP internally. Example 40-core layouts are
 five MPI processes times eight threads or four times ten. Keep shared
 tables reusable within a process and make block inputs explicit; do not
 implement an MPI layer or a speculative block framework before needed.
-The complete Gaussian wrapper now assigns whole observable blocks to
+The complete Gaussian C assembler assigns whole observable blocks to
 workers; its C primitives suppress inner parallel teams when called from
 that outer region. Preserve the fixed multipole sum order and per-worker
 scratch ownership. Measurements and checks are recorded in
@@ -248,6 +262,17 @@ see `references/covariance_connected_scaling.md`. Keep its shared radial
 weights, per-worker scratch and exact triangular ownership. Shared-table
 power reads and smaller projections still need profiling; do not claim
 that the complete scaling problem is solved.
+
+**Covariance CLI workflows.** Each project supplies an
+`EXAMPLE_EVALUATE_COVARIANCE.yaml` and a thin Python runner. Use Cobaya's
+`yaml_load_file` and `Parameterization`, keeping familiar `theory`, `params`,
+`sampler: evaluate` and `output` blocks. Evaluate one explicit cosmology;
+never silently sample priors. `covariance` contains measurement, thread and
+accuracy controls, inheriting the project's usable `default.yaml` baseline.
+Shared reading and assembly belong in `cosmolike_notebook_utils`; runners
+select the optimized production interface, not notebook wrappers. Document
+HPC usage independently of Jupyter. Explain Armadillo through the Python
+notebook API it makes convenient; C++ is a thin bridge to shared C physics.
 
 **Notebook covariance workflows.**
 Develop the first public examples in `projects/lsst_y1/covariance/`, using

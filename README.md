@@ -169,45 +169,95 @@ C implementations live inside `cosmolike/covariances/` and end in `_cov.c`.
 Additional covariance cross-bin calculations belong there, so their
 requirements do not change data-vector pair selection or integration grids.
 
-## C++ interfaces
+## C++ interfaces: production and notebooks
 
-[generic_interface.cpp](cosmolike/generic_interface.cpp) installs inputs,
-assembles data vectors, applies the likelihood mask, and manages the
-supplied covariance and likelihood evaluation. It does not generate a new
-survey covariance when a likelihood loads a covariance file.
+We chose **Armadillo** to make the Python notebook API easy to develop
+and use: spectra, halo quantities and covariance components appear as
+arrays with clear physical axes. Armadillo is a C++ library for vectors,
+matrices and three-dimensional arrays called cubes.
 
-| Wrapper | Arrays exposed to project notebooks |
+C++ serves as a thin connecting layer. **pybind11** exposes the notebook
+functions to Python, and **CARMA** converts between Armadillo and NumPy
+arrays. The numerical calculations remain in the shared C code.
+
+The C files own the numerical calculations. Two C++ layers expose those
+same calculations for different uses:
+
+| Layer | Intended use | Array handling |
+| --- | --- | --- |
+| `_interface` | Command-line runs and production likelihoods. | Keep numerical work in C and avoid notebook conversions. The covariance production path borrows contiguous NumPy inputs directly. |
+| `_wrapper` | Jupyter exploration and intermediate quantities. | Accept and return named Armadillo vectors, matrices and cubes. Copies are acceptable when they make experimentation easier. |
+
+**The wrappers are adapters, not a second numerical implementation.**
+Integration, SIMD arithmetic, table building and matrix-assembly loops
+belong in the shared C code. A fix to a physical calculation must therefore
+reach both entry points without being implemented twice.
+
+For example, both covariance paths call `gaussian_matrix_cov`:
+
+```text
+Command-line script -> production _interface -> shared covariance C
+Jupyter notebook    -> Armadillo _wrapper    -> shared covariance C
+```
+
+### Production interface
+
+[generic_interface.cpp](cosmolike/generic_interface.cpp) installs
+cosmology and survey inputs, assembles data vectors and evaluates the
+likelihood. Loading a supplied likelihood covariance does not generate
+a new survey covariance.
+
+Covariance command-line scripts use the project's `ci.covariance`
+submodule. This path bypasses the Armadillo notebook wrappers. Inputs use
+contiguous NumPy storage; returned arrays own their values.
+
+| Covariance production source | Boundary it exposes |
+| --- | --- |
+| [production_interface_cov.cpp](cosmolike/covariances/production_interface_cov.cpp) | Radial inputs and all-pairs angular spectra. |
+| [components_interface_cov.cpp](cosmolike/covariances/components_interface_cov.cpp) | Halo, mask, transform and response components. |
+| [matrix_interface_cov.cpp](cosmolike/covariances/matrix_interface_cov.cpp) | Gaussian matrices and connected projections through the shared C assemblers. |
+| [cluster_interface_cov.cpp](cosmolike/covariances/cluster_interface_cov.cpp) | Selected-cluster quantities and count components. |
+
+The shared Python survey workflow prepares inputs, calls these interfaces
+and combines G, SSC and cNG. Each project's
+`covariance/compute_covariance.py` runs that workflow with its
+`EXAMPLE_EVALUATE_COVARIANCE.yaml` and saves the components without Jupyter.
+Cobaya reads the YAML's familiar `theory`, `params`, `sampler: evaluate`
+and `output` blocks; the driver evaluates one specified cosmology.
+
+### Notebook wrappers
+
+Wrappers expose individual calculation steps for inspection: spectra,
+halo moments, radial windows, integration operators and matrix components.
+Their C++ signatures document the physical axes and units.
+
+| Notebook wrapper | Quantities to inspect |
 | --- | --- |
 | [cosmo2D_wrapper.cpp](cosmolike/cosmo2D_wrapper.cpp) | Angular spectra and real-space correlations. |
 | [halo_wrapper.cpp](cosmolike/halo_wrapper.cpp) | Halo statistics and mass-dependent quantities. |
 | [cosmo2D_scuts_wrapper.cpp](cosmolike/cosmo2D_scuts_wrapper.cpp) | Scale-response diagnostics. |
-| [components_wrapper_cov.cpp](cosmolike/covariances/components_wrapper_cov.cpp) | Covariance spectra, radial inputs, halo moments, mask, transform and SSC components as Armadillo arrays. |
-| [covariance_wrapper_cov.cpp](cosmolike/covariances/covariance_wrapper_cov.cpp) | Whole real/Fourier Gaussian matrices and connected projections from supplied matter tables and catalog windows. |
-| [cluster_wrapper_cov.cpp](cosmolike/covariances/cluster_wrapper_cov.cpp) | Count shells, cluster spectra and named selected halo moments. |
+| [components_wrapper_cov.cpp](cosmolike/covariances/components_wrapper_cov.cpp) | Covariance spectra, windows, halo moments, masks and responses. |
+| [covariance_wrapper_cov.cpp](cosmolike/covariances/covariance_wrapper_cov.cpp) | Armadillo access to the shared C matrix assemblers. |
+| [cluster_wrapper_cov.cpp](cosmolike/covariances/cluster_wrapper_cov.cpp) | Count shells, cluster spectra and selected halo moments. |
 
-Notebook C++ functions take and return Armadillo vectors, matrices and
-cubes, with physical axes documented in their headers. Python array
-conversion belongs to `generic_interface_cov.cpp`,
-`generic_interface_cluster_cov.cpp` and `python_components_cov.cpp`.
-These bindings copy inputs so existing notebook arrays and views remain
-unchanged; outputs retain their values after later calls. This readable
-notebook API is separate from the optimized likelihood interface and C
-kernels. The [covariance source guide](cosmolike/covariances/README.md)
-describes the individual quantities and their units.
+The Python bindings convert notebook arrays to Armadillo without changing
+the caller's arrays or views. Outputs remain valid after later calls.
+This convenience costs copies; production covariance runs avoid them.
 
-Each project binds the supported wrappers with pybind11 in its own
-`interface/interface.cpp`. Its `interface/MakefileCosmolike` selects the
-sources to compile. The LSST Y1, DES Y3, DES×Planck, DES cluster,
-Roman real, Roman Fourier and Roman KL interfaces can bind the galaxy/shear
-covariance components. Their per-project
-`IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE=1` installation options omit the
-covariance kernels and bindings by default. Unset the project's key and
-recompile to enable them; `interface.has_covariance` reports the compiled
-mode. Ordinary likelihoods still read and invert supplied covariance matrices.
+### Project bindings and optional compilation
 
-C++ returns whole Gaussian matrices and projects
-connected matter tables through every catalog pair. Shared Python
-prepares those tables and assembles G, SSC and cNG into the forecast.
+Each project registers its entry points in `interface/interface.cpp` and
+selects sources in `interface/MakefileCosmolike`. The project exposes both
+covariance paths only when covariance generation is enabled.
+
+The default `IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE=1` omits covariance
+kernels and bindings. Unset the project's key and recompile to enable them;
+`ci.has_covariance` reports the compiled mode.
+
+Ordinary likelihoods still read and invert supplied covariance matrices
+in a build that omits covariance generation. See the
+[covariance source guide](cosmolike/covariances/README.md) for the shared
+C calculations and their physical assumptions.
 
 # Covariance calculations <a name="covariance"></a>
 
@@ -235,6 +285,7 @@ the equations, conventions and approximations for each component.
 | [spectra_cov.c](cosmolike/covariances/spectra_cov.c) | Common radial windows and all lens/source Limber cross spectra. |
 | [operators_cov.c](cosmolike/covariances/operators_cov.c) | Full-sky, bin-averaged real-space transformations and multipole-band weights. |
 | [gaussian_cov.c](cosmolike/covariances/gaussian_cov.c) | Gaussian spectrum pairings, rectangular matrix projection and analytic pair noise. |
+| [assembly_cov.c](cosmolike/covariances/assembly_cov.c) | Complete Gaussian matrices and connected projections shared by production and notebook calls. |
 | [mask_cov.c](cosmolike/covariances/mask_cov.c) | Angular pair area from the survey footprint. |
 | [halo_cov.c](cosmolike/covariances/halo_cov.c) | Halo mass integrals needed for responses and four-point correlations. |
 | [perturbation_cov.c](cosmolike/covariances/perturbation_cov.c) | Angular averages of gravitational mode-coupling terms. |
@@ -258,16 +309,19 @@ The notebook's configuration cell exposes one covariance accuracy setting:
 settings = survey.configuration(accuracy_boost=1)
 ```
 
-Here `survey` is the LSST Y1 adapter imported by the notebook. The
-supported boosts are 1, 2, 4 and 8. They refine multipole cutoffs and
+Here `survey` is the LSST Y1 adapter imported by the notebook.
+
+The supported boosts are 1, 2, 4 and 8. They refine multipole cutoffs and
 interpolation tables from the baseline in each project's
-`covariance/default.yaml`. A separate `integration_accuracy` selects
+`covariance/default.yaml`.
+
+A separate `integration_accuracy` selects
 precomputed GSL quadrature rules: levels 0/1/2/3/4 use
 96/128/256/512/1024 nodes per panel. The global boost leaves this rule
 unchanged. Wide angular bins use several panels to resolve oscillations.
 Neither setting reruns CAMB or changes the likelihood's YAML files.
 
-The notebook computes boosts 1 and 2 at fixed physical inputs, then
+With `boosts = [1, 2]`, the notebook refines fixed physical inputs and
 plots changes in correlations, error bars and covariance entries. It also
 compares variance ratios across all matrix directions. The highest tested
 boost is a numerical comparison reference, not a guarantee of convergence.
@@ -276,7 +330,9 @@ The DES cluster notebook also uses
 [`forecast_cluster.py`](cosmolike_notebook_utils/covariance/forecast_cluster.py)
 to assemble the angular cluster $`6\times2\mathrm{pt}+N`$ matrix, with
 absolute counts, all Gaussian and SSC cross blocks, and the same Y
-localization used by its mean model. Its cluster cNG treats clusters as
+localization used by its mean model.
+
+Its cluster cNG treats clusters as
 linearly biased matter tracers; count cross covariance contains SSC only.
 Selected-cluster one-halo cNG and non-SSC count–spectrum terms are omitted
 and recorded in each output. The [DES cluster running guide](../../../projects/des_cluster/covariance/README.md#joint)
@@ -445,6 +501,7 @@ comoving smoothing radius.
 the supplied evolving linear spectra and tabulates their mass slopes.
 FFTLog expands the spectrum on a logarithmic wavenumber grid, allowing
 the smoothings at many radii to be computed together.
+
 The calculation retains the redshift dependence of the spectrum rather
 than reconstructing every redshift from one present-day variance and a
 single growth factor.
@@ -479,7 +536,9 @@ c(M,a) = 9\,\nu^{-0.29}D_{cb}(M,a)^{1.15}.
 
 The peak height $`\nu`$ compares the collapse threshold with the typical
 fluctuation on that mass scale. The same cold variance sets the peak
-height and its growth. This is the code's adopted extension of the
+height and its growth.
+
+This is the code's adopted extension of the
 [Bhattacharya et al. concentration fit](https://arxiv.org/abs/1112.5479),
 whose calibration did not include massive neutrinos. It is not a new
 simulation calibration of concentration in neutrino cosmologies.
@@ -488,6 +547,7 @@ The cosmology interface therefore accepts `omegan2`, meaning
 $`\Omega_\nu h^2`$, and `lnP_linear_cb` on the same grid and in the same
 layout as `lnP_linear`. Halo calculations require a supplied cb table;
 an empty argument is not permission to substitute total-matter power.
+
 The shared CAMB helper supplies the table using CAMB's `delta_nonu` field.
 The EMUL2 likelihood path retains an approximate conversion from its
 matter spectrum; it should not be confused with a CAMB cb spectrum.
@@ -618,6 +678,7 @@ or adding a diagonal correction does not validate the physics.
 
 Positivity is only one requirement. Refine the numerical settings and
 compare marginalized parameter errors and Fisher Figures of Merit.
+
 A Figure of Merit measures the inverse size of a chosen parameter
 confidence region; a larger value means tighter constraints.
 A Fisher calculation uses derivatives of the mean data vector at a chosen

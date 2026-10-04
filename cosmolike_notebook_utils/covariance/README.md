@@ -16,8 +16,13 @@ requested matrix blocks. The caller supplies its initialized project
 interface; the package never imports a survey's compiled module. Forecast
 assembly does not load likelihood data. The separate comparison reader loads
 a supplied covariance only when requested by the notebook. Each project
-supplies an
-`EXAMPLE_EVALUATE_COVARIANCE.ipynb`.
+supplies an `EXAMPLE_EVALUATE_COVARIANCE.ipynb` and an
+`EXAMPLE_EVALUATE_COVARIANCE.yaml` for its standalone Python runner.
+
+The CLI and notebook share this Python assembly and the same numerical C
+code. CLI runs select `backend=ci.covariance`, the direct production
+bindings. Notebook calls default to the Armadillo wrappers, exposing
+intermediate steps for exploration.
 
 The compiled interface must have covariance generation enabled. Cocoa's
 per-project `IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE=1` options omit it by
@@ -39,6 +44,7 @@ fluctuations larger than the survey. See
 
 | File | Calculation and responsibility |
 | --- | --- |
+| `command_line.py` | Read a Cobaya-style evaluate YAML, select the production backend and save a complete covariance. |
 | `accuracy.py` | Refine interpolation grids and multipole cutoffs with `accuracy_boost`; choose quadrature rules independently with `integration_accuracy`. |
 | `gaussian.py` | Batched all-pairs Limber spectra, complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
@@ -72,10 +78,22 @@ $`\sigma_\epsilon^2/n`$, with $`n`$ per steradian and dispersion per component.
 
 The component `interface.covariance_*` calls accept `float64` arrays
 (field/band IDs use `int32`). C-order, Fortran-order, sliced and read-only
-inputs keep their original values and layout. The C++ notebook wrappers use
-Armadillo vectors, matrices and cubes; returned NumPy arrays have independent
-storage and may use Fortran order. Their axes remain as documented, and the
-values survive later interface calls or cosmology changes.
+inputs keep their original values and layout.
+
+We chose Armadillo to make the Python notebook API easy to develop and use.
+This C++ library provides vectors, matrices and three-dimensional arrays
+(cubes) for thin notebook wrappers. pybind11 exposes their functions to
+Python, and CARMA converts between Armadillo and NumPy arrays.
+
+Returned NumPy arrays have independent storage and may use Fortran order.
+Their axes remain as documented, and the values survive later interface
+calls or cosmology changes. Numerical work stays in the shared C kernels.
+
+The production `ci.covariance` submodule instead requires C-contiguous
+`float64` inputs (`int32` for IDs). It borrows them without an Armadillo
+copy and returns owned C-order arrays. Its kernels and physical axis
+conventions are the same as the notebook wrappers.
+
 Distances use $`c/H_0`$, wavenumbers its inverse, and matter power
 $`(c/H_0)^3`$. Thus a value of $`k`$ in $`h/{\rm Mpc}`$ is multiplied by
 2997.92458 before a core power/halo call. Angles are radians and survey
