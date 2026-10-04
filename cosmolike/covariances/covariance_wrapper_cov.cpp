@@ -24,10 +24,11 @@ using index_array_cov = py::array_t<int, py::array::c_style>;
 // keeps signal and mixed noise, while the exact pair-area expression adds
 // pure noise. Fourier bandpowers instead retain noise in the harmonic sum.
 // The existing C primitives perform both calculations, including their
-// OpenMP/SIMDe contractions. This wrapper only arranges and reuses arrays.
+// SIMDe contractions. This wrapper distributes complete observable blocks
+// across OpenMP workers; each worker retains the same ordered ell sums.
 //
 // Validate inputs once, transpose spectra once into contiguous field-pair
-// rows, and allocate scratch once for all observable blocks. NumPy owns the
+// rows, and allocate scratch once per worker. NumPy owns the
 // returned matrix, so later calls or cosmology changes cannot alter it.
 // No cosmology or likelihood state is read or changed in this calculation.
 // ---------------------------------------------------------------------------
@@ -137,32 +138,56 @@ static matrix_array_cov gaussian_matrix_cpp(
     }
   }
 
-  std::vector<double> harmonic(nell); // covariance per integer multipole
-  std::vector<double> weighted((size_t) nbin*nell); // weighted left kernels
-  std::vector<double> block((size_t) nbin*nbin); // one angular/band block
-  std::vector<double*> weighted_rows(nbin); // C pointers into scratch
-  std::vector<double*> block_rows(nbin); // C pointers into block output
-  std::vector<const double*> left_kernel(nbin); // selected left operator
-  std::vector<const double*> right_kernel(nbin); // selected right operator
-  matrix_array_cov output({ndata, ndata}); // owned complete matrix
-
-  for (int bin=0; bin<nbin; bin++) {
-    weighted_rows[bin] = weighted.data()+(size_t) bin*nell;
-    block_rows[bin] = block.data()+(size_t) bin*nbin;
+  // Cov(AB,CD)=Cov(CD,AB). List the upper-triangle observable pairs once,
+  // so workers get equal numbers of blocks even though triangular rows
+  // have different lengths. Each task also owns its mirrored output block.
+  // This list changes only work assignment, not any multipole or sum order.
+  std::vector<int> first_observable;  // left measured row of each task
+  std::vector<int> second_observable; // right measured row of each task
+  for (int first=0; first<nobs; first++) {
+    for (int second=first; second<nobs; second++) {
+      first_observable.push_back(first);
+      second_observable.push_back(second);
+    }
   }
+
+  matrix_array_cov output({ndata, ndata}); // owned complete matrix
+  double* result = output.mutable_data(); // shared disjoint output blocks
 
   // --- 3. COMPUTE EACH OBSERVABLE BLOCK ONCE AND COPY ITS TRANSPOSE ---
 
-  // The outer loop chooses measured AB and CD. Crossed spectra AC, BD,
-  // AD and BC still come from the complete input, not from this row list.
-  // Each C call distributes independent output bins across OpenMP workers;
-  // the wrapper adds no outer thread team or MPI calls.
-  for (int first=0; first<nobs; first++) {
-    const int a = rows.at(first, offset);
-    const int b = rows.at(first, offset+1);
-    const int left_probe = realspace ? rows.at(first, 0) : 0;
+  // Many measured pairs provide many independent covariance blocks. Give
+  // each worker complete blocks, avoiding a team synchronization after
+  // every small angular-bin sum. C detects this outer parallel region and
+  // keeps its inner loops on the calling worker; its SIMDe lanes still
+  // calculate distinct angular-bin outputs in the same ell order.
+  // A single-observable call leaves bin-level parallelism to C instead.
+  #pragma omp parallel if(nobs > 1)
+  {
+    std::vector<double> harmonic(nell); // covariance per integer multipole
+    std::vector<double> weighted((size_t) nbin*nell); // weighted left kernels
+    std::vector<double> block((size_t) nbin*nbin); // one angular/band block
+    std::vector<double*> weighted_rows(nbin); // C pointers into scratch
+    std::vector<double*> block_rows(nbin); // C pointers into block output
+    std::vector<const double*> left_kernel(nbin); // selected left operator
+    std::vector<const double*> right_kernel(nbin); // selected right operator
 
-    for (int second=first; second<nobs; second++) {
+    // Each worker reuses its own arrays for successive blocks. Different
+    // workers must never overwrite the weighted kernels of an active sum.
+    for (int bin=0; bin<nbin; bin++) {
+      weighted_rows[bin] = weighted.data()+(size_t) bin*nell;
+      block_rows[bin] = block.data()+(size_t) bin*nbin;
+    }
+
+    // A task couples measured AB to CD. Its Wick inputs AC, BD, AD, BC
+    // come from the complete field matrix, including unmeasured pairs.
+    #pragma omp for schedule(static)
+    for (size_t task=0; task<first_observable.size(); task++) {
+      const int first = first_observable[task];
+      const int second = second_observable[task];
+      const int a = rows.at(first, offset);
+      const int b = rows.at(first, offset+1);
+      const int left_probe = realspace ? rows.at(first, 0) : 0;
       const int c = rows.at(second, offset);
       const int d = rows.at(second, offset+1);
       const int right_probe = realspace ? rows.at(second, 0) : 0;
@@ -214,8 +239,8 @@ static matrix_array_cov gaussian_matrix_cpp(
         for (int right=start; right<nbin; right++) {
           const int i = first*nbin+left;
           const int j = second*nbin+right;
-          *output.mutable_data(i, j) = block_rows[left][right];
-          *output.mutable_data(j, i) = block_rows[left][right];
+          result[(size_t) i*ndata+j] = block_rows[left][right];
+          result[(size_t) j*ndata+i] = block_rows[left][right];
         }
       }
     }

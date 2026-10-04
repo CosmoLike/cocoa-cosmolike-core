@@ -1,4 +1,5 @@
 #include <math.h>
+#include <omp.h>
 #include <stddef.h>
 #include <stdlib.h>
 
@@ -62,8 +63,10 @@ typedef simde__m128d v2d;
 // Cache invalidation:
 // No cache or allocation. The caller supplies current spectra and noise.
 // Thread safety:
-// No global state and no lazy table reads. Call outside parallel regions;
-// each OpenMP worker writes different multipoles, with no shared sum.
+// No global state and no lazy table reads. A standalone call distributes
+// multipoles among workers. Inside an existing parallel region, the calling
+// worker computes this entire block, using its own output. No nested team
+// is started; other workers can calculate different observable blocks.
 // ---------------------------------------------------------------------------
 void gaussian_wick_cov(
     const int ell_min,                  // first integer multipole
@@ -117,7 +120,7 @@ void gaussian_wick_cov(
   // the division by fsky*(2*ell+1). In this approximation different ell
   // values do not couple, so one worker can compute each ell independently.
   // The four input rows may coincide for auto spectra; the output is separate.
-  #pragma omp parallel for schedule(static)
+  #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int node=0; node<nell; node++) {
     // Keep CC and the two CN+NC contributions explicit. This avoids
     // recovering small signal terms by subtracting a large NN afterward.
@@ -172,8 +175,10 @@ void gaussian_wick_cov(
 // Cache invalidation:
 // No static cache. Geometry owners retain kernels and scratch across calls.
 // Thread safety:
-// Call outside parallel regions. Each output belongs to one worker; the
-// increasing-ell sum never crosses workers, regardless of thread count.
+// A standalone call distributes output tiles among workers. If a caller
+// already distributes observable blocks, each worker instead handles all
+// tiles of its own block with private scratch. No nested team is started.
+// The increasing-ell sum never crosses workers in either arrangement.
 // ---------------------------------------------------------------------------
 void gaussian_project_cov(
     const int nleft,                    // left bin count
@@ -198,7 +203,7 @@ void gaussian_project_cov(
   // Each covariance entry sums K_left*G*K_right over ell. The product
   // K_left*G is identical for all right bins, so compute it once per left
   // row and reuse it. Workers write separate scratch rows; G is shared.
-  #pragma omp parallel for schedule(static)
+  #pragma omp parallel for if(!omp_in_parallel()) schedule(static)
   for (int left=0; left<nleft; left++) {
     const double* restrict kernel = kernel_left[left];
     double* restrict weighted = weighted_left[left];
@@ -222,7 +227,7 @@ void gaussian_project_cov(
   // sixteen sums in that group. Each SIMD vector accumulates two distinct
   // covariance entries, one per lane; adding lanes would incorrectly mix
   // different measured angular bins. Each lane therefore keeps its own sum.
-  #pragma omp parallel for collapse(2) schedule(static)
+  #pragma omp parallel for collapse(2) if(!omp_in_parallel()) schedule(static)
   for (int left=0; left<nleft; left+=tile_rows) {
     // Pair this group of left bins with every group of right bins. The
     // SIMD lanes produce distinct covariance columns, never a combined sum.
