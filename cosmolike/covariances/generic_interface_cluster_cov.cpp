@@ -1,4 +1,5 @@
 #include <carma.h>
+#include "production_interface_cov.hpp"
 #include "generic_interface_cluster_cov.hpp"
 #include "cluster_wrapper_cov.hpp"
 #include "notebook_bindings_cov.hpp"
@@ -8,6 +9,8 @@ namespace cosmolike_interface {
 
 void bind_covariance_cluster(py::module_& module)
 {
+  bind_production_cluster_cov(module);
+
   module.def("covariance_cluster_halo_samples",
       [](
           const py::object& a,
