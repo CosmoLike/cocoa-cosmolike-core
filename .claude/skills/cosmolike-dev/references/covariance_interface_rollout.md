@@ -182,3 +182,27 @@ README pages use numbered contents, explicit setup/run steps, file guides,
 physics FAQs and direct paper links. Markdown-it rendering and local link
 and anchor validation pass. Notebook execution and full data-vector
 regressions are recorded with the per-project commits.
+
+## Shared matter tables for cluster assembly (2026-10-04)
+
+The catalog-independent halo loop is extracted as
+`survey._matter_covariance_tables`. Its inputs are the existing radial
+geometry, compressed measurement operators, mask multipole count and
+resolved integration settings. It returns angularly projected matter
+trispectra, responses and long-mode power. Catalog windows and observed
+mean corrections remain with the survey assembler. The extraction changes
+no numerical expression, array layout or order of operations.
+
+The original file is retained outside git for a direct comparison. Both
+versions compute a physical two-lens/two-source forecast in real and Fourier
+space at one and eight threads. G, SSC, cNG, total, mean signals, geometry,
+pair areas and coarse multipoles are bitwise identical in all four cases.
+The external check is `/tmp/check_covariance_matter_extraction.py`, with
+output in `/tmp/check-covariance-matter-extraction.log`. This is a correctness
+check during ongoing regression tests, not a performance measurement.
+
+The subsequent manual didactic review checked the physical reason for
+sharing matter tables, the transform/source-factor contract, every returned
+shape and unit, and the distinction between a common matter response and
+catalog normalization. The halo loop remains explained in physical stages.
+No C, SIMD operation, quadrature or interpolation choice was changed.
