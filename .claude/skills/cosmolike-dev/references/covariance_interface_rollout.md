@@ -243,3 +243,7 @@ External logs are `/tmp/covariance-port-<project>-data-vector.log`,
 The DES 1/2/4/8-thread measurement was run only after every numerical test,
 notebook and build had finished; its scope and results are recorded in
 `covariance_cluster_joint.md`.
+
+The later high-boost memory audit and bitwise-preserving spectrum batching
+are recorded in `covariance_limber_batches.md`. That change passes the
+updated 116 covariance checks; it does not change the data-vector C code.

@@ -15,6 +15,60 @@ import numpy as np
 from .geometry import cap_mask
 
 
+def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
+                   include_rsd=False, linear=False, batch_size=512):
+    """Compute every field cross spectrum with bounded multipole scratch.
+
+    Arguments:
+        interface = initialized project exposing covariance_limber_spectra.
+        ell = finite 1D multipoles >= 1, in their requested output order.
+        a_edges, nquad = common radial panels and Gaussian nodes per panel.
+        nwindow = samples for the common lensing-efficiency integrals.
+        include_ia, include_rsd = include the NLA or galaxy RSD windows.
+        linear = use linear rather than the configured nonlinear power.
+        batch_size = positive multipole count per C call; storage only.
+    Returns:
+        The C snapshot layout: spectra [nell,nfield,nfield], geometry
+        [4,nradial], windows [3,nfield,nradial], nlens and nsource. Arrays
+        are owned. Geometry and base windows come from the first batch.
+        Spectra are dimensionless; geometry rows are a, chi, f_K and dchi,
+        with distances in c/H0. Base windows have inverse-distance units.
+
+    Each multipole has its own radial integral. Dividing the multipoles
+    into batches therefore leaves every node and every sum in that integral
+    unchanged. The C workspace scales with batch_size*nradial*nfield rather
+    than the full signal cutoff, allowing high boosts without huge scratch.
+    This is not sparse sampling or interpolation of angular spectra.
+    """
+    modes = np.ascontiguousarray(ell, dtype=float)
+    if (modes.ndim != 1 or len(modes) == 0 or np.any(modes < 1.0)
+            or not np.all(np.isfinite(modes))):
+        raise ValueError("ell must be a nonempty finite 1D array with values >= 1")
+    if not isinstance(batch_size, (int, np.integer)) or batch_size < 1:
+        raise ValueError("batch_size must be a positive integer")
+    edges = np.ascontiguousarray(a_edges, dtype=float)
+    snapshot = None
+
+    # Each call keeps the full radial rule and every internal field pair.
+    # Only the independent multipole axis is divided. Keep one copy of the
+    # common geometry; concatenate the spectra in their original order.
+    for first in range(0, len(modes), batch_size):
+        last = min(first+batch_size, len(modes))
+        block = interface.covariance_limber_spectra(
+            ell=modes[first:last], a_edges=edges, nquad=nquad,
+            nwindow=nwindow, include_ia=include_ia, include_rsd=include_rsd,
+            linear=linear,
+        )
+        if snapshot is None:
+            nfield = block["spectra"].shape[1]
+            # Copy the dictionary so replacing its spectra array does not
+            # replace the first block before that block has been copied.
+            snapshot = dict(block)
+            snapshot["spectra"] = np.empty((len(modes), nfield, nfield))
+        snapshot["spectra"][first:last] = block["spectra"]
+    return snapshot
+
+
 def observed_spectra(spectra, ell, nlens):
     """Convert core source legs into the shear convention of spin operators.
 
@@ -193,7 +247,8 @@ def shear_gaussian(interface, source, ell_max, area, edges_rad, a_edges,
         raise ValueError("source must be a nonnegative integer")
     ell = np.arange(start=2, stop=ell_max+1, dtype=float)
     edges = np.ascontiguousarray(edges_rad, dtype=float)
-    snapshot = interface.covariance_limber_spectra(
+    snapshot = limber_spectra(
+        interface=interface,
         ell=ell,
         a_edges=np.ascontiguousarray(a_edges),
         nquad=radial_nquad,

@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-from .gaussian import observed_spectra
+from .gaussian import observed_spectra, limber_spectra
 from .geometry import angular_rule, cap_mask
 
 
@@ -430,7 +430,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             raise ValueError("need matching integer bands with 2<=first<=last")
         ell_max = int(np.max(last_band))
     ell = np.arange(2, ell_max+1, dtype=float)
-    snapshot = interface.covariance_limber_spectra(
+    snapshot = limber_spectra(
+        interface=interface,
         ell=ell, a_edges=settings["a_edges"],
         nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
         include_ia=False, include_rsd=False, linear=False,

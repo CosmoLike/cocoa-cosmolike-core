@@ -28,7 +28,7 @@ from scipy.special import roots_legendre
 
 from .counts_cluster import count_statistics
 from .forecast import _json_array
-from .gaussian import observed_spectra
+from .gaussian import observed_spectra, limber_spectra
 from .geometry import cap_mask, noise_powers
 from .survey import compress_operators, project_connected, _matter_covariance_tables
 from .survey_cluster import observable_layout, selected_windows, all_pairs_spectra
@@ -163,7 +163,8 @@ def compute_forecast(interface, settings, progress=None):
     # The covariance of AB and CD needs AC, BD, AD and BC, even when those
     # spectra are excluded from the measured vector. Keep all field pairs.
     ell = np.arange(2, settings['ell_max']+1, dtype=float)
-    snapshot = interface.covariance_limber_spectra(
+    snapshot = limber_spectra(
+        interface=interface,
         ell=ell, a_edges=settings['a_edges'], nquad=settings['radial_nquad'],
         nwindow=settings['nwindow'], include_ia=False, include_rsd=False,
         linear=False,
