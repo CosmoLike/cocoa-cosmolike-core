@@ -67,11 +67,13 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
         "band_first": np.array([20, 60], dtype=np.int32),
         "band_last": np.array([59, 160], dtype=np.int32),
     })
-    rows = np.array([
-        [0, nlens, nlens],  # first source auto-correlation
-        [2, 0, nlens],      # lens-source cross-correlation
-        [3, 0, 0],          # first lens auto-correlation
-    ], dtype=np.int32)
+    # Select one retained row of each probe. A project's measured-pair cuts
+    # can exclude the first lens paired with the first source, as in Roman KL.
+    selected_rows = []
+    for probe in (0, 2, 3):
+        candidates = full_rows[full_rows[:, 0] == probe]
+        selected_rows.append(candidates[0])
+    rows = np.ascontiguousarray(selected_rows, dtype=np.int32)
 
     # Serial BLAS prevents matrix diagnostics from nesting another thread
     # team inside the explicitly controlled CosmoLike OpenMP calculation.
