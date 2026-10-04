@@ -221,16 +221,15 @@ void halo_moments_cov(
   // interval contributes its expected number density times profile, volume
   // and bias factors. The abundance, volume and bias do not depend on k,
   // so prepare their products once for all later profile integrals.
-  // At k=0 the biased mass integral should be one. Our finite mass range
-  // can miss part of it; record that difference for the completion term.
-  // Each worker builds these weights at one independent scale factor.
-  #pragma omp parallel for schedule(static)
+  // Every (scale factor, mass) weight is independent. Distribute both
+  // indices so a call with only one scale factor still has enough work
+  // for eight or ten threads. The completion sum below is separate:
+  // sharing its additions among workers would change their rounding order.
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int row=0; row<na; row++) {
-    double resolved = 0.0;
-
     // At each mass, turn the peak height into a weighted halo abundance.
-    // Combine it with bias and volume powers for the later profile sums,
-    // while accumulating the already-resolved k=0 biased mass fraction.
+    // Combine it with bias and volume powers for the later profile sums.
+    // Each worker writes a different node; no shared sum is updated here.
     for (int node=0; node<nmass; node++) {
       const double m = mass[0][node];
       const double volume = mass[1][node];
@@ -249,9 +248,21 @@ void halo_moments_cov(
       weights[3][row][node] = weights[2][row][node]*volume;
       weights[4][row][node] = weights[1][row][node]*volume2;
 
-      // Concentration is shared by every k; resolved is I11 at k=0,
-      // since the normalized profile there is exactly one.
+      // Every wavenumber at this mass uses the same concentration.
       concentration[row][node] = conc(m, a[row]);
+    }
+  }
+
+  // At k=0 every normalized halo profile is one, so the biased mass
+  // weights alone give the resolved part of I11(0). Their integral must
+  // equal one when all matter is included. Assign the missing fraction
+  // to the minimum-mass profile. One worker owns the entire sum at each
+  // scale factor and adds masses in order, preserving the original result.
+  #pragma omp parallel for schedule(static)
+  for (int row=0; row<na; row++) {
+    double resolved = 0.0; // resolved biased mass fraction at this a
+
+    for (int node=0; node<nmass; node++) {
       resolved += weights[0][row][node];
     }
 
@@ -264,10 +275,11 @@ void halo_moments_cov(
 
   double*** profile = (double***) malloc3d(na, nk, nmass+1);
 
-  // Each worker task fills one (a,k) profile row across all masses.
-  // Compute u(k|M) once here, including the minimum-mass completion slot,
-  // so every moment involving this k can reuse the same profile values.
-  #pragma omp parallel for collapse(2) schedule(static)
+  // A profile depends on a, k and mass, but not on another profile value.
+  // Distribute all three indices so even a small k batch can occupy the
+  // full thread team. Each (a,k,M) value is computed once, including the
+  // minimum-mass completion slot, then reused by every moment needing it.
+  #pragma omp parallel for collapse(3) schedule(static)
   for (int row=0; row<na; row++) {
     // At this scale factor, each k row uses the stored concentrations
     // to generate profiles for all resolved masses and the completion mass.
