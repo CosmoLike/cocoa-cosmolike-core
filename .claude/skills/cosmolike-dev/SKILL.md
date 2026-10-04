@@ -230,6 +230,27 @@ modify likelihood snapshots merely to reorganize the test files.
 The public entry point is `EXAMPLE_EVALUATE_COVARIANCE.ipynb` in LSST Y1.
 Expose one covariance `accuracy_boost`, resolving numerical controls in a
 shared helper; do not ask ordinary notebook users to tune a list of grids.
+**Boost 1 must be usable.** Each project's `covariance/default.yaml` owns
+the fine-tuned base controls needed for its bins and scale range. Establish
+their convergence against a high-resolution calculation and further
+refinement; a fast smoke configuration must not be the public default.
+Study that project's likelihood YAML accuracy choices when setting the
+starting baseline, without assuming data-vector convergence certifies a
+covariance. Keep test-only small grids explicit in tests.
+The global boost multiplies every internal refinement, rather than replacing
+or bypassing it: base factors 2 and 3 become effective factors 4 and 6 when
+the global boost changes from 1 to 2. This applies to internally tuned
+radial, angular, halo, non-Gaussian and window sampling. Multiply interval
+counts in likelihoods too: `nonlimber_accuracyboost: 2` and
+`pk_z_refinement: 3` mean effective factors 4 and 6 at `accuracyboost: 2`.
+For covariance interpolation, multiply interval
+counts, preserving existing interpolation nodes under doubling; divide
+finite-difference step sizes by the boost. Do not multiply fixed physical
+bin edges or survey inputs. Expose and save both base controls and resolved
+effective settings, and test non-unit internal factors as well as defaults.
+For example, verify base factor 3 at global boosts 1 and 2, not only powers
+of two. Any implementation limit must raise a clear error, never silently
+cap a resolution and make the global boost ineffective.
 The notebook must compute several boosts and show changes in the covariance,
 its error bars and relative modes. A largest tested boost is a comparison
 reference, not an automatic claim of convergence. Covariance READMEs follow
