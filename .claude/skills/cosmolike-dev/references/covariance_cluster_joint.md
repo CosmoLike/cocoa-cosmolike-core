@@ -30,6 +30,12 @@ bias, tidal and environmental-selection responses. The exported forecast
 is a complete matrix only within this stated approximation. Positivity
 and numerical refinement cannot validate the omitted physical terms.
 
+The [DES implementation audit](covariance_des_physics_audit.md) separates
+missing DES ingredients from extensions of the adopted approximation.
+Non-Limber covariance is explicit in the Y6 paper. The inspected Lighthouse
+code instead shares the biased-matter cNG and SSC-only count-cross choices;
+do not describe every broader halo-model extension as implemented by DES.
+
 Sources directly checked: Krause & Eifler 1601.05779 Appendix A;
 Takada & Hu 1302.6994 corrected Eq. 44; Schaan, Takada & Spergel
 1406.3330 Eq. 35; To et al. 2008.10757; Park, Rozo & Krause 2004.07504;
