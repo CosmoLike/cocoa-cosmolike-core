@@ -1,5 +1,29 @@
 # Covariance interface, notebooks and cluster extension
 
+## Armadillo notebook boundary
+
+All covariance numerical C++ wrappers take Armadillo columns, matrices and
+cubes. `components_wrapper_cov.cpp` supplies components and radial spectra;
+`covariance_wrapper_cov.cpp` supplies whole Gaussian matrices and connected
+projection; `cluster_wrapper_cov.cpp` supplies cluster quantities. Callable
+headers declare their typed APIs. No `py::array_t` or `std::vector` row/plane
+maps remain in these wrappers. Copy short C workspaces explicitly, following
+`cosmo2D_wrapper.cpp`; preserve the existing C kernels and summation order.
+
+Python conversion and registration are separate interface files. The local
+CARMA 0.7 borrowing caster can rearrange an input and rejects certain views;
+its small-cube move path also caused an invalid free in the 16--64-element
+cube check. `notebook_bindings_cov.hpp` therefore copies Python buffers into
+owning Armadillo containers, retaining physical axis order. CARMA exports
+results. Columns are reshaped to 1D only at the Python boundary. NumPy's
+OWNDATA flag is not the ownership test: CARMA retains the allocation in a
+capsule. Test independence from inputs, views and later calls instead.
+
+Cluster moments expose `density` and `biased_density` matrices, and `J01`,
+`J11`, `J02`, `J03_KKQ`, `J03_KQQ` cubes. Shared workflows and tests consume
+these names; the former packed four-dimensional `single`/`pair` outputs are
+retired. Numerical physics and units are unchanged.
+
 ## Requested order
 
 1. Add notebook-facing C++ wrappers, following the data-vector wrapper

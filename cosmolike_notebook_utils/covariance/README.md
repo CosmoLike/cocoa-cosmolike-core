@@ -60,9 +60,12 @@ and BC, including cross-bin spectra excluded from the data vector.
 Catalog shot noise is $`1/n`$; source shape noise is
 $`\sigma_\epsilon^2/n`$, with $`n`$ per steradian and dispersion per component.
 
-The low-level `interface.covariance_*` calls accept contiguous `float64`
-arrays (field/band IDs use `int32`) and return owned NumPy arrays. The
-returned values survive later interface calls or cosmology changes.
+The component `interface.covariance_*` calls accept `float64` arrays
+(field/band IDs use `int32`). C-order, Fortran-order, sliced and read-only
+inputs keep their original values and layout. The C++ notebook wrappers use
+Armadillo vectors, matrices and cubes; returned NumPy arrays have independent
+storage and may use Fortran order. Their axes remain as documented, and the
+values survive later interface calls or cosmology changes.
 Distances use $`c/H_0`$, wavenumbers its inverse, and matter power
 $`(c/H_0)^3`$. Thus a value of $`k`$ in $`h/{\rm Mpc}`$ is multiplied by
 2997.92458 before a core power/halo call. Angles are radians and survey
@@ -332,3 +335,9 @@ negative modes nor adds variance to make a matrix pass.
 
 The notebook computes full G+SSC+cNG forecasts in both spaces. All-pairs
 non-Limber corrections and production FoM convergence remain separate work.
+
+Selected cluster mass moments are returned by physical name: `density` and
+`biased_density` have shape `[state,selection]`; `J01` and `J11` have shape
+`[state,selection,k]`; `J02`, `J03_KKQ` and `J03_KQQ` have shape
+`[state,selection,kpair]`. The count–matter helper reads `J11` and `J02`
+directly. These named results replace packed `single` and `pair` role axes.

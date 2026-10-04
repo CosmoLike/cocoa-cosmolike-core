@@ -67,7 +67,7 @@ The generalized variance ratios C_level0/C_level1 span
 [0.9998014740,1.0002049439], a maximum change of 2.04944e-4.
 Level 1 compared with the previous radial128/mass512/tree256 reference has
 maximum full-mode change 1.41127e-7. These are integration diagnostics,
-not validated production timings: levels 2/3/4 and interpolation remain open.
+not validated production timings; interpolation refinement remains open.
 
 At fixed earlier high quadratures, refining the non-Gaussian table from
 128 to 255 nodes gives total variance ratios [0.9880792314,1.0404942380].
@@ -87,8 +87,18 @@ adapter test. DES cluster passed all 46 covariance tests. The totals are
 Notebook outputs were cleared because they described the retired pilot;
 the revised cells have not been executed as a full notebook.
 
-Pending: levels 2/3/4, including default
-versus level4 and level3 versus4; converged non-Gaussian interpolation and
+Levels 2 and 3 completed at 476.4301 s and 2173.2408 s respectively.
+Both complete totals are positive definite without repair. Maximum full-mode
+changes are 1.39029465e-4 (level 1 against 2) and 8.26002339e-5 (2 against 3).
+For the latter, component changes normalized to the total level-3 covariance
+are 1.56556e-6 (G), 8.22305e-5 (SSC) and 3.91331e-6 (cNG). This diagnoses
+SSC as the dominant remaining integration difference in this comparison.
+Level 4 was interrupted to prioritize the Armadillo wrapper correction;
+its partial directory is not a completed matrix. Resume that run later,
+without repeating completed levels. Maximum tested level is 4; Roman on
+this laptop stops at 3, with Roman level 4 reserved for a server.
+
+Pending: LSST level 4, including default versus level 4 and level 3 versus 4; converged non-Gaussian interpolation and
 cutoff checks; validated project baselines and quiet eight-thread timing
 table. Keep G, SSC, cNG and total comparisons separate. Do not equate a
 positive matrix or the highest tested resolution with convergence.

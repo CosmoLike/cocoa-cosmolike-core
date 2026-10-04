@@ -80,10 +80,27 @@ Function comments explain equations, units and array contents.
 | [halo_cluster_cov.c](halo_cluster_cov.c), [header](halo_cluster_cov.h) | Sample the initialized halo and richness model on a supplied covariance mass rule, for use by the selected-moment integrator. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
-| [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
+| [components_wrapper_cov.cpp](components_wrapper_cov.cpp), [header](covariance_wrapper_cov.hpp) | Armadillo access to spectra, radial inputs, Gaussian, mask, angular, halo and response components for notebooks. |
+| [generic_interface_cov.cpp](generic_interface_cov.cpp) | Register the spectrum and covariance notebook bindings. |
 | [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, and radial projection of connected matter tables through every catalog pair. |
-| [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
-| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count shells, all-pairs spectra and selected mass integrals, with input checks and owned outputs. |
+| [python_components_cov.cpp](python_components_cov.cpp), [conversion helper](notebook_bindings_cov.hpp) | Convert notebook arrays at the Python boundary and register the component and whole-matrix calls. |
+| [cluster_wrapper_cov.cpp](cluster_wrapper_cov.cpp), [header](cluster_wrapper_cov.hpp) | Armadillo matrices and cubes for count shells, all-pairs cluster spectra and named selected halo moments. |
+| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Register the cluster notebook calls and convert their Python arguments. |
+
+The notebook C++ wrappers use `arma::Col`, `arma::Mat` and `arma::Cube`,
+following the data-vector wrappers. Their axes describe physical quantities,
+not memory addresses. Python conversion is separate: inputs are copied without
+changing a notebook's arrays or views, and CARMA returns independent results.
+C-order, Fortran-order, sliced and read-only NumPy inputs are accepted. Returned
+arrays may use Fortran order; their axis meanings are unchanged. Small C
+workspaces remain local to calls into the existing SIMD/OpenMP kernels.
+
+The selected cluster moments have named outputs: `density` and
+`biased_density` are matrices `[state,selection]`; `J01` and `J11` are cubes
+`[state,selection,k]`; `J02`, `J03_KKQ` and `J03_KQQ` are cubes
+`[state,selection,kpair]`. This keeps the physical moments visible without a
+fourth array axis. The pair index follows the upper triangle of the supplied
+wavenumber grid. Notebook experiments may inspect each quantity separately.
 
 ## From three-dimensional matter to angular spectra <a name="spectra"></a>
 

@@ -172,9 +172,19 @@ survey covariance when a likelihood loads a covariance file.
 | [cosmo2D_wrapper.cpp](cosmolike/cosmo2D_wrapper.cpp) | Angular spectra and real-space correlations. |
 | [halo_wrapper.cpp](cosmolike/halo_wrapper.cpp) | Halo statistics and mass-dependent quantities. |
 | [cosmo2D_scuts_wrapper.cpp](cosmolike/cosmo2D_scuts_wrapper.cpp) | Scale-response diagnostics. |
-| [generic_interface_cov.cpp](cosmolike/covariances/generic_interface_cov.cpp) | Covariance radial inputs and all-pairs Limber spectra. |
+| [components_wrapper_cov.cpp](cosmolike/covariances/components_wrapper_cov.cpp) | Covariance spectra, radial inputs, halo moments, mask, transform and SSC components as Armadillo arrays. |
 | [covariance_wrapper_cov.cpp](cosmolike/covariances/covariance_wrapper_cov.cpp) | Whole real/Fourier Gaussian matrices and connected projections from supplied matter tables and catalog windows. |
-| [python_components_cov.cpp](cosmolike/covariances/python_components_cov.cpp) | NumPy access to Gaussian, mask, transform, halo and SSC components. |
+| [cluster_wrapper_cov.cpp](cosmolike/covariances/cluster_wrapper_cov.cpp) | Count shells, cluster spectra and named selected halo moments. |
+
+Notebook C++ functions take and return Armadillo vectors, matrices and
+cubes, with physical axes documented in their headers. Python array
+conversion belongs to `generic_interface_cov.cpp`,
+`generic_interface_cluster_cov.cpp` and `python_components_cov.cpp`.
+These bindings copy inputs so existing notebook arrays and views remain
+unchanged; outputs retain their values after later calls. This readable
+notebook API is separate from the optimized likelihood interface and C
+kernels. The [covariance source guide](cosmolike/covariances/README.md)
+describes the individual quantities and their units.
 
 Each project binds the supported wrappers with pybind11 in its own
 `interface/interface.cpp`. Its `interface/MakefileCosmolike` selects the
