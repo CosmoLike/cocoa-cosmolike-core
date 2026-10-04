@@ -84,12 +84,12 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
             k=np.ascontiguousarray(wave), lnm=lnm, dlnm=dlnm,
         )
         moments = interface.covariance_cluster_moments(**samples)
-        number = moments['density'][0]
+        number = moments['density']
         if np.any(number <= 0.0):
             raise ValueError(
                 "selected mass rule has an empty bin; check cluster_lnm_bounds"
             )
-        own = moments['single'][1]/number[:, :, None]
+        own = moments['J11']/number[:, :, None]
         response[:, states] = own.transpose(1, 0, 2)
 
     # All richness bins share the same angular operator and k samples.

@@ -58,8 +58,8 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
     transfer = np.asarray(a=transfer, dtype=float)
     power = np.asarray(a=linear_power, dtype=float)
     full_i11 = np.asarray(a=i11, dtype=float)
-    single = np.asarray(a=moments['single'], dtype=float)
-    pair = np.asarray(a=moments['pair'], dtype=float)
+    j11 = np.asarray(a=moments['J11'], dtype=float)
+    j02 = np.asarray(a=moments['J02'], dtype=float)
     if distance.ndim != 1 or distance.size == 0:
         raise ValueError("distance must be nonempty [state]")
     if (dchi.shape != distance.shape or np.any(distance <= 0.0)
@@ -74,13 +74,13 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
     if (window.ndim != 2 or window.shape[0] == 0 or window.shape[1] != nstate
             or transfer.shape != (window.shape[0], nk)):
         raise ValueError("need pair_window[observable,state], transfer[observable,k]")
-    if (single.ndim != 4 or single.shape[0] != 2 or single.shape[1] != nstate
-            or single.shape[2] == 0 or single.shape[3] != nk):
-        raise ValueError("moments['single'] must have shape [2,state,count,k]")
-    ncount = single.shape[2]
-    if pair.shape != (3, nstate, ncount, nk*(nk+1)//2):
-        raise ValueError("moments['pair'] must match [3,state,count,k*(k+1)/2]")
-    for values in (distance, dchi, window, transfer, power, full_i11, single, pair):
+    if (j11.ndim != 3 or j11.shape[0] != nstate
+            or j11.shape[1] == 0 or j11.shape[2] != nk):
+        raise ValueError("moments['J11'] must have shape [state,count,k]")
+    ncount = j11.shape[1]
+    if j02.shape != (nstate, ncount, nk*(nk+1)//2):
+        raise ValueError("moments['J02'] must match [state,count,k*(k+1)/2]")
+    for values in (distance, dchi, window, transfer, power, full_i11, j11, j02):
         if not np.all(np.isfinite(values)):
             raise ValueError("count-spectrum inputs and selected moments must be finite")
 
@@ -88,8 +88,8 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
     # spectrum uses opposite vectors of the same magnitude, hence K=Q.
     first, second = np.triu_indices(n=nk)
     diagonal = np.flatnonzero(first == second)
-    one_halo = np.take(a=pair[0], indices=diagonal, axis=-1)
-    two_halo = 2.0*power[:, None, :]*full_i11[:, None, :]*single[1]
+    one_halo = np.take(a=j02, indices=diagonal, axis=-1)
+    two_halo = 2.0*power[:, None, :]*full_i11[:, None, :]*j11
     measure = np.ascontiguousarray(dchi/distance**2)
     right = np.ascontiguousarray(window)
     result = {}
