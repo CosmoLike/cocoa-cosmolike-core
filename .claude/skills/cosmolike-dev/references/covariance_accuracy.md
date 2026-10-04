@@ -275,3 +275,18 @@ Fourier trimming, distinction from Gaussian rules and fixed CAMB inputs.
 There are no new C loops or SIMD intrinsics. Public documentation and all
 seven notebooks explain the nested sampling and its limits without claiming
 that positive-definiteness or a single boost establishes convergence.
+
+All seven project notebooks were then executed sequentially from their
+committed cell sources, with refreshed outputs. Every cell completed.
+The 28 galaxy/shear totals (seven projects, two spaces, two boosts) remain
+positive, as do both DES joint totals after removal of their defined Y
+null rows. All 44 scientific figures were extracted and visually inspected
+for readable axes, component labels, legends and matrix boundaries.
+
+With the nested multipole grid, the DES joint boost-1/2 comparison has
+maximum generalized variance departure 0.18453723. Minimum correlation
+eigenvalues are 1.78193938303e-5 and 1.78216250886e-5. These remain teaching
+settings requiring refinement; the grid fix does not establish survey
+accuracy. The notebook's individual joint times were 6.12 and 25.95 s,
+excluding initialization and CAMB. They are execution records, not repeated
+controlled benchmarks or replacements for the earlier scaling measurement.

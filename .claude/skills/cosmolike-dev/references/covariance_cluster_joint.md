@@ -184,3 +184,19 @@ selected-halo/count terms. They are not cold-cosmology costs or x86 results.
 The external reproducibility record is
 `covariance_reference/benchmark_cluster_joint.py` and
 `covariance_reference/results/cluster_joint_timing.json`.
+
+## Nested-grid notebook follow-up (2026-10-04)
+
+After the shared nested-multipole and bounded-spectrum changes, the full
+notebook was executed again. Both joint totals remain positive after
+removing the same 48 defined Y null rows. The minimum correlation
+eigenvalues are 1.78193938303e-5 at boost 1 and 1.78216250886e-5 at boost 2;
+their maximum generalized variance departure is 0.18453723. The refreshed
+figures were visually inspected. No eigenvalue adjustment was applied.
+
+The individual joint calls took 6.12 s and 25.95 s, respectively, excluding
+CAMB and initialization. These notebook times are not repeated benchmark
+means. The controlled thread-scaling table above predates these changes.
+All 46 DES covariance checks still pass. Numerical accuracy, the omitted
+physics and scaling beyond four threads remain open; see the measured
+component refinement in covariance_accuracy.md.
