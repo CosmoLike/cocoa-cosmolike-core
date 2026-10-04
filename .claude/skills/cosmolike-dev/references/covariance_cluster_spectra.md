@@ -113,3 +113,35 @@ SIMDe call states lane meanings and its mathematical role. Loop overviews
 explain the physical calculation and why work is independent. C/header
 and modified C++ lines fit 80 columns, with one comparison per line and
 separate paragraphs. No claim of a separate-agent review is made.
+
+## Shared notebook preparation (2026-10-04)
+
+`survey_cluster.py` contains observable_layout, selected_windows and
+all_pairs_spectra. Counts follow the actual ss,gs,gg,cg,N,cc,cs ordering.
+The 12 count positions are 1240..1251; cluster-lensing rows begin at 1852.
+Fields are galaxies, clusters, sources. The normalized q and absolute
+selected density are computed on identical shells, retaining all crossed
+spectra irrespective of measured row exclusions.
+
+Spectra are streamed in blocks of 1024 multipoles to bound temporary
+power/profile memory at high boosts. This is an allocation choice, not
+an accuracy control: it changes neither nodes nor any radial sum order.
+All numerical radial contractions reuse the existing C components.
+
+Six project checks pass for full/smaller layouts, measured exclusions,
+analytic normalization, 1/2/4/8-thread repeatability, every field pair,
+source factors, invalid inputs and a 1027-multipole case crossing the
+block boundary. The independent NumPy sums agree within 3e-14 relative;
+results repeat bitwise at one/eight threads. A physical 22-field,
+49-multipole comparison with the separate DES pilot has maximum relative
+difference 2.665e-15. The first test attempt exposed an indexing-shape
+mistake in the independent test's matrix assignment; explicit np.ix_
+assignment fixed the oracle, without changing production arithmetic.
+
+The subsequent manual didactic review checked count versus contrast
+normalization, exact source/category IDs, every measured family, full
+internal cross coverage, noise versus signal, source factors, block
+memory lifetime, input ownership and failure messages. Public README
+text explains the physics and source responsibilities directly.
+No performance gain is claimed from these contended correctness runs.
+External physical check: covariance_reference/check_cluster_survey_preparation.py.

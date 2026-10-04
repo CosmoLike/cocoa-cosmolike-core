@@ -36,6 +36,7 @@ fluctuations larger than the survey. See
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
 | `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
+| `survey_cluster.py` | Prepare the joint cluster row layout, absolute count densities, normalized cluster windows and every internal cluster cross spectrum. |
 | `counts_cluster.py` | Integrate supplied selected abundances into count means, Poisson noise and SSC. Project the separate non-SSC count–matter-spectrum cross terms from selected halo moments. This is not a full cluster forecast. |
 | `transform_cluster.py` | Apply the cluster-lensing localization to both sides of a supplied joint covariance, including every count and two-point cross block. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
@@ -103,6 +104,26 @@ with `covariance_project` gives the SSC matrix. Keep every cross-lens
 block. Removing selected cross correlations can make a covariance indefinite.
 
 ## Real-space and Fourier assembly <a name="real_space_and_fourier_assembly"></a>
+
+`survey_cluster.selected_windows` distinguishes counts from density
+contrasts. A shell contains $`dN_i=\Omega f_K^2 n_i\,d\chi`$ objects,
+where $`n_i`$ includes the observed redshift and richness selections.
+The normalized window is $`q_i=f_K^2 n_i/\bar n_i`$, with
+$`\bar n_i=\int f_K^2 n_i\,d\chi`$ per steradian. Thus a count retains
+its absolute abundance, while $`\int q_i\,d\chi=1`$ for clustering.
+The fixed-selection response uses $`n_i b_i`$, where $`b_i`$ is the
+selected halo bias. See [To et al., Sec. 4.1](https://arxiv.org/abs/2008.10757).
+
+`all_pairs_spectra` combines the ordinary galaxy/shear fields with all
+cluster categories. Cluster clustering and cluster–galaxy spectra use
+biased nonlinear matter power; cluster lensing also includes the selected
+halo's own mass profile. Noise remains separate. The field order is
+galaxies, clusters, then sources; cluster categories run through richness
+inside each observed redshift bin. `observable_layout` supplies the
+measured rows and the positions of counts in the joint vector. Cross-bin
+spectra needed by Gaussian pairings remain available even when they are
+absent from that measured row list. These helpers prepare inputs; they
+do not by themselves compute a complete cluster covariance.
 
 For cluster counts, `count_statistics` integrates supplied selected
 abundances and their long-mode responses. It returns count means,
