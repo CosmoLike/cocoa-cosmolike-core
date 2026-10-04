@@ -164,6 +164,8 @@ static py::dict covariance_limber_spectra(
 
 void bind_covariance(py::module_& module)
 {
+  bind_covariance_components(module);
+
   module.def("covariance_limber_spectra", &covariance_limber_spectra,
       R"doc(Build all lens/source Limber spectra on common radial nodes.
 

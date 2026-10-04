@@ -5,5 +5,6 @@
 
 namespace cosmolike_interface {
 void bind_covariance(pybind11::module_& module);
+void bind_covariance_components(pybind11::module_& module);
 }
 #endif
