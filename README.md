@@ -48,13 +48,12 @@ and likelihood. [Krause & Eifler](https://arxiv.org/abs/1601.05779)
 describe the CosmoLike multiprobe framework.
 
 > [!NOTE]
-> Covariance components and an executable LSST Y1 G+SSC+cNG notebook are
-> available. A complete, validated Roman covariance including Gaussian,
-> super-sample (SSC) and connected non-Gaussian (cNG) terms is not yet
-> available for inference. The shared Python assembler can compute full
-> matrices for a massless, Limber forecast, retaining every cross-bin
-> block. Numerical and Fisher convergence of that model remain to be
-> established; the Gaussian notebook alone cannot validate the total.
+> Each project provides a real/Fourier G+SSC+cNG notebook for its galaxy
+> and shear fields. The matrices use massless neutrinos, Limber spectra
+> and a spherical-cap footprint, retaining every internal cross-bin
+> spectrum. Numerical and Fisher convergence remain to be established
+> before inference. CMB and cluster covariance extensions are separate
+> work; the DES×Planck and DES cluster notebooks cover galaxy–shear only.
 
 # Running a likelihood example <a name="likelihood"></a>
 
@@ -178,9 +177,10 @@ survey covariance when a likelihood loads a covariance file.
 
 Each project binds the supported wrappers with pybind11 in its own
 `interface/interface.cpp`. Its `interface/MakefileCosmolike` selects the
-sources to compile. LSST Y1 and Roman real include all covariance component
-bindings; other projects must enable them before using the shared
-covariance calculations.
+sources to compile. The LSST Y1, DES Y3, DES×Planck, DES cluster,
+Roman real, Roman Fourier and Roman KL interfaces bind the galaxy/shear
+covariance components. C++ returns whole Gaussian matrices; shared Python
+assembles SSC and cNG using the same compiled components.
 
 # Covariance calculations <a name="covariance"></a>
 
@@ -316,10 +316,12 @@ references. Their file guide is
 `projects/lsst_y1/tests/covariance/README.md`. No developer-local library
 or external study directory is required.
 
-Other projects retain their documented test commands. The LSST Y1 folder
-split should not be assumed to exist in every project. The shared
+Each project separates `tests/data_vector` from `tests/covariance`.
 [cocoa_testing.py](cocoa_testing.py) supplies the data-vector test machinery;
 project `tests/cocoa_test_utils.py` files supply their configurations.
+[cocoa_covariance_testing.py](cocoa_covariance_testing.py) checks each
+project's galaxy/shear forecast adapter with small measured subsets.
+The independent component references remain in LSST Y1's covariance tests.
 
 # Appendix <a name="appendix"></a>
 

@@ -148,3 +148,32 @@ cold-path readability. README rendering with Markdown-it, tables and all
 local links/anchors passed. No quoted installation block was changed.
 Main README has a separate anchored covariance workflow with setup,
 compilation, notebook execution, accuracy control and saved-output paths.
+
+## Project adapter rollout
+
+All seven interfaces bind the galaxy/shear covariance components. Thin
+adapters use the actual project redshift files and bin counts. DESxPlanck
+and DES cluster need explicit unit lens-photo-z stretch factors in their
+setters; initialize_forecast handles this through one optional setting.
+Their notebooks cover galaxy/shear only, not CMB or cluster observables.
+Roman KL's 0.035 quadrature shape dispersion is converted to a per-component
+value by division by sqrt(2); its added lens density is an explicit forecast
+assumption. Roman real/Fourier use 2415 deg2 and density 41.3 as explicit
+example choices, not as a reproduction of the 2004.05271 survey.
+
+The shared cocoa_covariance_testing.py runs each adapter through real and
+Fourier projections with real catalog files, a small measured subset and
+one/eight threads. All six added project checks passed bitwise component
+repeatability, positive subset totals, full row-count contracts and archive
+metadata roundtrips. Small test grids are not an accuracy prescription.
+Each project's data_vector/ and covariance/ tests are separate; the moved
+likelihood test function bodies and stored snapshots remain unchanged.
+
+Manual didactic review checked units and noise conventions, measured versus
+internal pair cuts, accuracy versus scientific band edges, model scope,
+function side effects, explanatory paragraph breaks and readable settings.
+There are no new C arithmetic loops or SIMD intrinsics in this ticket.
+README pages use numbered contents, explicit setup/run steps, file guides,
+physics FAQs and direct paper links. Markdown-it rendering and local link
+and anchor validation pass. Notebook execution and full data-vector
+regressions are recorded with the per-project commits.

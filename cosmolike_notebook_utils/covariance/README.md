@@ -1,9 +1,20 @@
-# Covariance tools for notebooks
+# Table of contents
+
+1. [Covariance tools for notebooks](#covariance_tools_for_notebooks)
+2. [Files](#files)
+3. [Array and unit conventions](#array_and_unit_conventions)
+4. [Gaussian projection](#gaussian_projection)
+5. [Halo responses and SSC](#halo_responses_and_ssc)
+6. [Real-space and Fourier assembly](#real_space_and_fourier_assembly)
+7. [One accuracy boost](#one_accuracy_boost)
+8. [Interpolation and numerical checks](#interpolation_and_numerical_checks)
+
+# Covariance tools for notebooks <a name="covariance_tools_for_notebooks"></a>
 
 This package prepares inputs for CoCoA's covariance components and assembles
 requested matrix blocks. The caller supplies its initialized project
 interface; the package never imports a survey's compiled module or loads
-a likelihood covariance. The first complete teaching example is LSST Y1's
+a likelihood covariance. Each project supplies an
 `EXAMPLE_EVALUATE_COVARIANCE.ipynb`.
 
 A covariance describes the joint scatter of measured two-point functions.
@@ -15,7 +26,7 @@ fluctuations larger than the survey. See
 [Takada & Hu](https://arxiv.org/abs/1302.6994), and the
 [C implementation and physics guide](../../cosmolike/covariances/README.md).
 
-## Files
+## Files <a name="files"></a>
 
 | File | Calculation and responsibility |
 | --- | --- |
@@ -36,25 +47,25 @@ when enabling another project; reuse these calculations and plotters.
 The component bindings require a project interface built with the shared
 covariance C/C++ sources.
 
-## Array and unit conventions
+## Array and unit conventions <a name="array_and_unit_conventions"></a>
 
 Fields are numbered from zero, with lenses preceding sources. Supplied
 signal matrices use `[multipole, field, field]`; noise is a separate
 `[field]` array. A covariance between measured AB and CD needs AC, BD, AD
 and BC, including cross-bin spectra excluded from the data vector.
-Catalog shot noise is $1/n$; source shape noise is
-$\sigma_\epsilon^2/n$, with $n$ per steradian and dispersion per component.
+Catalog shot noise is $`1/n`$; source shape noise is
+$`\sigma_\epsilon^2/n`$, with $`n`$ per steradian and dispersion per component.
 
 The low-level `interface.covariance_*` calls accept contiguous `float64`
 arrays (field/band IDs use `int32`) and return owned NumPy arrays. The
 returned values survive later interface calls or cosmology changes.
-Distances use $c/H_0$, wavenumbers its inverse, and matter power
-$(c/H_0)^3$. Thus a value of $k$ in $h/{\rm Mpc}$ is multiplied by
+Distances use $`c/H_0`$, wavenumbers its inverse, and matter power
+$`(c/H_0)^3`$. Thus a value of $`k`$ in $`h/{\rm Mpc}`$ is multiplied by
 2997.92458 before a core power/halo call. Angles are radians and survey
 areas steradians; project adapters make the conversion from arcminutes
 and square degrees explicit.
 
-## Gaussian projection
+## Gaussian projection <a name="gaussian_projection"></a>
 
 `gaussian_block` receives complete spectra, noise, four field IDs and
 left/right operators. Each output is the sum of left operator × harmonic
@@ -69,15 +80,15 @@ Signal and mixed signal-noise retain the supplied finite multipole sum.
 Both sides must use the same disjoint angular bins and footprint.
 
 For a mask, the raw angular power has monopole
-$C_0^W=\Omega^2/(4\pi)$. `cap_mask` is an illustrative footprint, not an
+$`C_0^W=\Omega^2/(4\pi)`$. `cap_mask` is an illustrative footprint, not an
 approximation to every survey. `covariance_mask_pair_area` and
 `covariance_ssc_mask_variance` both use this raw normalization.
 
-## Halo responses and SSC
+## Halo responses and SSC <a name="halo_responses_and_ssc"></a>
 
 `halo_trispectrum` retains 1-halo, 2-halo (1+3), 2-halo (2+2), 3-halo
 and 4-halo terms separately. `halo_power_response` returns a dimensional
-isotropic $dP/d\delta_b$ using the fractional halo response transferred
+isotropic $`dP/d\delta_b`$ using the fractional halo response transferred
 to the supplied nonlinear power. This halo approximation is not a
 calibration of nonlinear tidal responses or a massive-neutrino model.
 
@@ -89,7 +100,7 @@ it by the radial integration weight and contracting common shell responses
 with `covariance_project` gives the SSC matrix. Keep every cross-lens
 block. Removing selected cross correlations can make a covariance indefinite.
 
-## Real-space and Fourier assembly
+## Real-space and Fourier assembly <a name="real_space_and_fourier_assembly"></a>
 
 `survey.realspace_covariance` and `survey.fourier_covariance` receive an initialized project interface,
 resolved integration settings, the observable row map and catalog noise.
@@ -100,7 +111,7 @@ writing and eigenvalue diagnostics remain outside this function.
 with xi+, xi-, galaxy--shear and galaxy clustering in that order.
 Fourier rows omit xi-: one E-mode spectrum supplies both real-space shear
 correlations. Integer band endpoints are inclusive, and each multipole
-receives weight proportional to its mode count, $2\ell+1$. Refinement
+receives weight proportional to its mode count, $`2\ell+1`$. Refinement
 holds those endpoints fixed so it compares the same measurement.
 
 Fourier means average the core angular spectra directly. Real-space
@@ -128,11 +139,11 @@ This is algebraically the same angular projection of the interpolated
 table. Refining the coarse table is still necessary to test its accuracy.
 
 Numerical controls for this low-level assembly are explicit in its
-function documentation. The notebook's single-source Gaussian boost is
-not a certified full-survey setting. Complete matrices must pass positivity
+function documentation. The notebook's full G+SSC+cNG accuracy boost is
+not a certified inference setting. Complete matrices must pass positivity
 checks and resolution/Fisher comparisons before use for inference.
 
-## One accuracy boost
+## One accuracy boost <a name="one_accuracy_boost"></a>
 
 Use `covariance_accuracy(accuracy_boost=1)`, or set `accuracy_boost` in the
 project's configuration function. Supported boosts are 1, 2, 4 and 8.
@@ -142,15 +153,21 @@ available for inspection and saving; ordinary notebook users need only
 change the boost. This control belongs to covariance and leaves CAMB and
 data-vector accuracy settings unchanged.
 
-Boost 1 is the teaching pilot. Boost 8 reaches 80,000 signal multipoles,
-32,768 mask modes, 512 radial nodes per panel, 1,024 angular nodes per bin
-and 32,769 window nodes. These are numerical resolutions, not certified
-survey-accuracy labels. Check refinement and FoM/errors for the intended
-physical model. The same boost raises mass/angular resolution in the halo preparation
-helpers and reduces the response finite-difference step. It does not
-certify the full survey assembly or its physical choices.
+Boost 1 is a teaching resolution. For example, boost 8 resolves:
 
-## Interpolation and numerical checks
+| Numerical quantity | Boost 8 |
+| --- | --- |
+| Real-space signal maximum multipole | 80,000 |
+| Mask maximum multipole | 32,768 |
+| Radial nodes per panel | 512 |
+| Angular nodes per bin | 1,024 |
+| Lensing-window nodes | 32,769 |
+
+The same boost refines halo mass and angular integration and reduces the
+response finite-difference step. These are resolutions, not survey-accuracy
+labels. Check parameter errors and Fisher FoM for the intended physical model.
+
+## Interpolation and numerical checks <a name="interpolation_and_numerical_checks"></a>
 
 Sample expensive quantities at **fixed physical wavenumber** before
 constructing a `DenseLogTable`. Cubic interpolation only builds its dense
@@ -165,7 +182,7 @@ cross-block coverage. An individual cNG contribution need not itself be
 positive definite. Generalized eigenvalues bound variance changes across
 all directions, but final accuracy should be assessed with parameter
 errors and marginalized Fisher Figures of Merit at representative
-cosmologies. The data-vector $|\Delta\chi^2|<0.2$ rule is not a covariance
+cosmologies. The data-vector $`|\Delta\chi^2|<0.2`$ rule is not a covariance
 convergence criterion.
 
 The notebook computes full G+SSC+cNG forecasts in both spaces. All-pairs

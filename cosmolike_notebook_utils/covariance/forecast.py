@@ -29,6 +29,8 @@ def initialize_forecast(interface, settings, project):
             lens_density_arcmin2/source_density_arcmin2 specify bin counts;
             bias contains one linear bias per lens bin; photoz_interpolation
             and photoz_zmid select the project's redshift-file convention.
+            lens_photoz_stretch, when present, supplies the per-bin width
+            factors required by the DESxPlanck and DES cluster setters.
         project = project directory, a Path or string.
     Returns:
         Dict of CAMB arrays in the set_cosmology interchange format.
@@ -101,7 +103,12 @@ def initialize_forecast(interface, settings, project):
     )
     interface.set_nuisance_ia(A1=source_zero, A2=source_zero, B_TA=source_zero)
     interface.set_nuisance_shear_photoz(bias=source_zero)
-    interface.set_nuisance_clustering_photoz(bias=lens_zero)
+    if "lens_photoz_stretch" in settings:
+        interface.set_nuisance_clustering_photoz(
+            bias=lens_zero, stretch=settings["lens_photoz_stretch"],
+        )
+    else:
+        interface.set_nuisance_clustering_photoz(bias=lens_zero)
     interface.set_nuisance_shear_calib(M=source_zero)
     return tables
 
