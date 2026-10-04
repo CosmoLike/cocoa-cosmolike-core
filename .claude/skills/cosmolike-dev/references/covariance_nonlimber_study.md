@@ -93,3 +93,25 @@ chi^-2 near the observer. The paper explicitly motivates its numerical
 stability. Compare both formulations and analytic Gaussian transforms
 before choosing the covariance implementation; no data-vector change is
 authorized by this study.
+
+## Logarithmic grid and phase bookkeeping
+
+The zero guards change the FFT's coordinate origin. If the first supplied
+distance is chi_min and there are p guard nodes before it, FFT index zero
+represents chi_origin = chi_min exp(-p dlnchi). Choose the reciprocal grid
+so FFT output index p represents the desired first physical wavenumber k0.
+Its index-zero value is then k_origin = k0 exp(-p dlnchi). Multiplying these
+two origins explains the factor exp(-2 p dlnchi) in the existing phase;
+it is not a rescaling of physical distances. Reading output indices before
+p extends the integration to smaller k without changing that phase anchor.
+Test this offset separately from the transform's normalization.
+
+Nested radial nodes alone do not fix the FFT's logarithmic period.
+Independently rounding each refined length to a friendly size can change
+N_fft*dlnchi. For example, 3073 required slots round to 3136, whereas
+6145 round to 6174, not twice 3136. In a controlled refinement experiment,
+round the base even length once and multiply it by the power-of-two boost.
+Its factors remain small, and its period remains fixed when dlnchi is
+divided by that boost. The external analytic study already uses this
+fixed-period construction. It still needs numerical validation; this
+bookkeeping is not evidence for a production grid or cutoff.
