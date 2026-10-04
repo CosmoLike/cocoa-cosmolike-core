@@ -95,8 +95,17 @@ and are using Bash in `cocoa/Cocoa`.
 
     source start_cocoa.sh
 
-**Step :two:**: compile the LSST Y1 interface.
+**Step :two:**: compile the interface for the chosen notebook.
 
+For the data-vector notebooks:
+
+    unset IGNORE_COSMOLIKE_LSST_Y1_CODE
+    source ./projects/lsst_y1/scripts/compile_lsst_y1.sh
+
+For `EXAMPLE_EVALUATE_COVARIANCE.ipynb`, enable covariance generation:
+
+    unset IGNORE_COSMOLIKE_LSST_Y1_CODE
+    unset IGNORE_COSMOLIKE_LSST_Y1_COVARIANCE
     source ./projects/lsst_y1/scripts/compile_lsst_y1.sh
 
 **Step :three:**: start Jupyter.
@@ -189,8 +198,14 @@ describes the individual quantities and their units.
 Each project binds the supported wrappers with pybind11 in its own
 `interface/interface.cpp`. Its `interface/MakefileCosmolike` selects the
 sources to compile. The LSST Y1, DES Y3, DES×Planck, DES cluster,
-Roman real, Roman Fourier and Roman KL interfaces bind the galaxy/shear
-covariance components. C++ returns whole Gaussian matrices and projects
+Roman real, Roman Fourier and Roman KL interfaces can bind the galaxy/shear
+covariance components. Their per-project
+`IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE=1` installation options omit the
+covariance kernels and bindings by default. Unset the project's key and
+recompile to enable them; `interface.has_covariance` reports the compiled
+mode. Ordinary likelihoods still read and invert supplied covariance matrices.
+
+C++ returns whole Gaussian matrices and projects
 connected matter tables through every catalog pair. Shared Python
 prepares those tables and assembles G, SSC and cNG into the forecast.
 
@@ -332,7 +347,13 @@ and have compiled LSST Y1 with the covariance sources.
 
     source start_cocoa.sh
 
-**Step :two:**: run the covariance tests.
+**Step :two:**: enable and compile covariance generation.
+
+    unset IGNORE_COSMOLIKE_LSST_Y1_CODE
+    unset IGNORE_COSMOLIKE_LSST_Y1_COVARIANCE
+    source ./projects/lsst_y1/scripts/compile_lsst_y1.sh
+
+**Step :three:**: run the covariance tests.
 
     python -m pytest projects/lsst_y1/tests/covariance
 
@@ -341,6 +362,7 @@ references. Their file guide is
 `projects/lsst_y1/tests/covariance/README.md`. No developer-local library
 or external study directory is required.
 
+A data-vector-only build reports skips for the optional covariance tests.
 Each project separates `tests/data_vector` from `tests/covariance`.
 [cocoa_testing.py](cocoa_testing.py) supplies the data-vector test machinery;
 project `tests/cocoa_test_utils.py` files supply their configurations.

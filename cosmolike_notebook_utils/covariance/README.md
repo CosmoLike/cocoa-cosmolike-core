@@ -19,6 +19,13 @@ a supplied covariance only when requested by the notebook. Each project
 supplies an
 `EXAMPLE_EVALUATE_COVARIANCE.ipynb`.
 
+The compiled interface must have covariance generation enabled. Cocoa's
+per-project `IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE=1` options omit it by
+default. Follow the project's README to unset its key and recompile, then
+restart the notebook kernel. The imported module's `has_covariance` attribute
+reports its build mode; changing the environment alone cannot change an
+already compiled or imported module.
+
 A covariance describes the joint scatter of measured two-point functions.
 The Gaussian part follows from pairs of power spectra. Connected
 non-Gaussian covariance (cNG) describes the remaining connected four-point

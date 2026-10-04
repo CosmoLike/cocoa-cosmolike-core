@@ -23,7 +23,8 @@ def initialize_forecast(interface, settings, project):
     """Install the specified galaxy/shear forecast and return its CAMB tables.
 
     Arguments:
-        interface = caller's imported compiled project interface.
+        interface = caller's compiled project interface, with covariance
+            generation enabled at build time.
         settings = resolved project mapping. cosmology supplies CAMB inputs;
             lens_file/source_file are paths relative to project;
             lens_density_arcmin2/source_density_arcmin2 specify bin counts;
@@ -38,6 +39,12 @@ def initialize_forecast(interface, settings, project):
         Replaces the interface's cosmology and galaxy/source nuisance state.
         No likelihood data, mask or covariance is read or overwritten.
     """
+    if not getattr(interface, "has_covariance", False):
+        raise RuntimeError(
+            "Covariance generation is not enabled in this interface. "
+            "Follow the project's README covariance build steps, then "
+            "restart the notebook kernel."
+        )
     project = Path(project)
     lens_file = project/settings["lens_file"]
     source_file = project/settings["source_file"]
