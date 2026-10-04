@@ -210,6 +210,15 @@ the interpolation weights, then contracts the smaller trispectrum table.
 This is algebraically the same angular projection of the interpolated
 table. Refining the coarse table is still necessary to test its accuracy.
 
+`survey.project_connected` then applies every catalog's radial window.
+Its compiled `covariance_project_connected` wrapper accepts the transformed
+matter table, the pair windows and a common radial measure. It returns the
+complete connected matrix and shares each angular block's matter weights
+across catalog pairs. Every radial sum keeps its node order regardless of
+the OpenMP thread count. The low-level call is also available for supplied
+matter tables; use `help(interface.covariance_project_connected)` for its
+array shapes and units.
+
 Numerical controls for this low-level assembly are explicit in its
 function documentation. The notebook's full G+SSC+cNG accuracy boost is
 not a certified inference setting. Complete matrices must pass positivity

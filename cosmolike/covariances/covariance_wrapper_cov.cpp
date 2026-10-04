@@ -5,6 +5,7 @@
 #include <pybind11/numpy.h>
 #include "covariance_wrapper_cov.hpp"
 #include "gaussian_cov.h"
+#include "simde/x86/sse2.h"
 
 namespace py = pybind11;
 
@@ -248,8 +249,229 @@ static matrix_array_cov gaussian_matrix_cpp(
   return output;
 }
 
+// One angular block shares its matter trispectrum among all catalog pairs.
+// Catalog indices live in the separate per-probe lists below.
+struct angular_block_cov {
+  int left_probe;  // left statistic: xi+, xi-, gamma_t or w
+  int right_probe; // right statistic in that same 0..3 convention
+  int left_bin;    // left angular or Fourier bin
+  int right_bin;   // right angular or Fourier bin
+};
+
+// ---------------------------------------------------------------------------
+// Add catalog windows to an already angularly projected matter trispectrum.
+//
+// Observable r measures a pair of fields A,B. At radial shell alpha it
+// carries the product W_r = W_A W_B. The connected covariance is therefore
+//
+//   C[(r,i),(s,j)] = sum_alpha W_r(alpha) W_s(alpha)
+//                   T[t(r,i),t(s,j),alpha] measure(alpha).
+//
+// The combined index t(r,i) = p_r*nbin+i places bin inside probe.
+// T already contains both angular/band transforms; measure contains
+// dchi/(survey_area*f_K^6). A different catalog pair changes W, while
+// every pair with the same two probes and angular bins shares T.
+//
+// Compute that common radial weight once per angular block, then call
+// the existing SIMD projection for every catalog pairing in that block.
+// Distribute whole blocks over one OpenMP team. This avoids starting two
+// new parallel regions for each of thousands of small Python calls.
+// Each worker has its own weight, weighted windows and output scratch.
+// gaussian_project_cov supplies the common weighted-dot-product kernel:
+// here its integration nodes are radial shells, rather than multipoles.
+//
+// Keep the previous arithmetic: first measure*T, then W_left*weight,
+// then the C primitive's ordered sum against W_right. No mass, distance
+// or angular node changes. Signed trispectra remain signed. Copy the
+// chosen triangular result to its transpose, without averaging entries.
+// The supplied arrays are read-only; NumPy owns the returned matrix.
+// ---------------------------------------------------------------------------
+static matrix_array_cov connected_matrix_cpp(
+    const index_array_cov& probes,       // [observable], probe IDs 0..3
+    const matrix_array_cov& pair_window, // [observable,node], W_A W_B
+    const matrix_array_cov& projected,   // [4*bin,4*bin,node], transformed T
+    const matrix_array_cov& measure      // [node], dchi/(area*f_K^6)
+  )
+{
+  // --- 1. CHECK SHAPES AND VALUES BEFORE ALLOCATION OR PARALLEL WORK ---
+
+  if (probes.ndim() != 1
+      || probes.size() < 1
+      || measure.ndim() != 1
+      || measure.size() < 1
+      || pair_window.ndim() != 2
+      || pair_window.shape(0) != probes.size()
+      || pair_window.shape(1) != measure.size()
+      || projected.ndim() != 3
+      || projected.shape(0) < 4
+      || projected.shape(0)%4 != 0
+      || projected.shape(1) != projected.shape(0)
+      || projected.shape(2) != measure.size()) {
+    throw std::invalid_argument(
+        "need probes[observable], pair_window[observable,node], "
+        "projected[4*bin,4*bin,node] and measure[node]");
+  }
+  for (py::ssize_t row=0; row<probes.size(); row++) {
+    if (probes.data()[row] < XI_PLUS_COV
+        || probes.data()[row] > W_THETA_COV) {
+      throw std::invalid_argument("connected probe IDs must lie in 0..3");
+    }
+  }
+  for (const auto* array : {&pair_window, &projected, &measure}) {
+    for (py::ssize_t index=0; index<array->size(); index++) {
+      if (!std::isfinite(array->data()[index])) {
+        throw std::invalid_argument(
+            "connected projection inputs must be finite");
+      }
+    }
+  }
+
+  const int nobs = probes.size();           // measured field-pair count
+  const int nnode = measure.size();         // common radial sample count
+  const int ntransform = projected.shape(0); // four probes times bin count
+  const int nbin = ntransform/4;            // bins within each observable
+  const int ndata = nobs*nbin;              // complete covariance dimension
+
+  // --- 2. GROUP CATALOG PAIRS AND ENUMERATE INDEPENDENT ANGULAR BLOCKS ---
+
+  // Preserve input order within a probe. On a diagonal angular block,
+  // that order chooses which rounded product supplies both triangles.
+  // Pointers reference the supplied windows directly; no table is copied.
+  std::vector<std::vector<int>> groups(4); // observable IDs for each probe
+  std::vector<std::vector<const double*>> windows(4); // matching C rows
+  int largest = 0; // maximum catalog-pair count in any one probe
+
+  for (int row=0; row<nobs; row++) {
+    const int probe = probes.data()[row]; // this observable's statistic
+    groups[probe].push_back(row);
+    windows[probe].push_back(pair_window.data(row, 0));
+    if ((int) groups[probe].size() > largest) {
+      largest = groups[probe].size();
+    }
+  }
+
+  std::vector<angular_block_cov> tasks; // each also owns its transpose
+
+  // Different probes require every bin pairing. Equal probes need only
+  // the angular upper triangle, because exchanging both observables
+  // gives the transpose. Empty probe groups contribute no matrix entries.
+  for (int left=0; left<4; left++) {
+    if (groups[left].empty()) continue;
+    for (int right=left; right<4; right++) {
+      if (groups[right].empty()) continue;
+      for (int first=0; first<nbin; first++) {
+        const int start = left == right ? first : 0; // first distinct bin
+        for (int second=start; second<nbin; second++) {
+          tasks.push_back({left, right, first, second});
+        }
+      }
+    }
+  }
+
+  matrix_array_cov output({ndata, ndata}); // owned complete covariance
+  double* result = output.mutable_data(); // disjoint blocks written below
+  const double* matter = projected.data(); // shared transformed trispectra
+  const double* radial_measure = measure.data(); // shared radial weights
+
+  // --- 3. PROJECT COMPLETE ANGULAR BLOCKS WITH PRIVATE WORKER SCRATCH ---
+
+  // Blocks have different numbers of catalog pairs. Hand successive
+  // blocks to successive workers, cycling through the team: every worker
+  // then receives blocks from both large and small probe groups. Within
+  // a block, C retains its SIMDe sums and suppresses nested parallelism.
+  #pragma omp parallel if(tasks.size() > 1)
+  {
+    std::vector<double> weight(nnode); // measure times this block's T
+    std::vector<double> weighted((size_t) largest*nnode); // weighted W_left
+    std::vector<double> block((size_t) largest*largest); // catalog-pair block
+    std::vector<double*> weighted_rows(largest); // C scratch row pointers
+    std::vector<double*> block_rows(largest); // C output row pointers
+
+    for (int row=0; row<largest; row++) {
+      weighted_rows[row] = weighted.data()+(size_t) row*nnode;
+      block_rows[row] = block.data()+(size_t) row*largest;
+    }
+
+    // Each task owns all catalog pairings for these two angular bins,
+    // including their mirrored entries. No two tasks update the same cell.
+    #pragma omp for schedule(static, 1)
+    for (size_t task=0; task<tasks.size(); task++) {
+      const angular_block_cov& item = tasks[task]; // two probes and bins
+      const auto& left = groups[item.left_probe]; // left observable IDs
+      const auto& right = groups[item.right_probe]; // right observable IDs
+      const int first = item.left_probe*nbin+item.left_bin; // T row
+      const int second = item.right_probe*nbin+item.right_bin; // T column
+      const double* row = matter
+          +((size_t) first*ntransform+second)*nnode; // this block's T(alpha)
+
+      // Form measure*T at each shell before weighting any catalog. SIMD
+      // lanes 0 and 1 hold two adjacent shells here, not parts of a sum.
+      // The projection below still adds shells in their original order.
+      int node = 0; // first radial sample not yet weighted
+      for (; node+1<nnode; node+=2) {
+        // Read two adjacent radial measures. loadu needs no special
+        // alignment of the supplied NumPy array.
+        const simde__m128d vm = simde_mm_loadu_pd(radial_measure+node);
+
+        // Read T at the same two shells into the matching SIMD lanes.
+        const simde__m128d vt = simde_mm_loadu_pd(row+node);
+
+        // Multiply within each lane: [measure_0*T_0, measure_1*T_1].
+        // No shell is added to another at this preparation stage.
+        const simde__m128d vw = simde_mm_mul_pd(vm, vt);
+
+        // Store both weights in this worker's ordinary contiguous array.
+        simde_mm_storeu_pd(weight.data()+node, vw);
+      }
+      if (node < nnode) {
+        weight[node] = radial_measure[node]*row[node];
+      }
+
+      gaussian_project_cov(left.size(), right.size(), nnode,
+          windows[item.left_probe].data(), windows[item.right_probe].data(),
+          weight.data(), weighted_rows.data(), block_rows.data());
+
+      // At equal probe and angular bin, choose the catalog upper triangle.
+      // All other blocks retain every catalog pairing. Copying each value
+      // to its transpose makes symmetry exact even for signed spectra.
+      const bool diagonal = item.left_probe == item.right_probe
+                            && item.left_bin == item.right_bin;
+      for (size_t i=0; i<left.size(); i++) {
+        const size_t start = diagonal ? i : 0; // first distinct catalog
+        for (size_t j=start; j<right.size(); j++) {
+          const int global_left = left[i]*nbin+item.left_bin; // output row
+          const int global_right = right[j]*nbin+item.right_bin; // column
+          result[(size_t) global_left*ndata+global_right] = block_rows[i][j];
+          result[(size_t) global_right*ndata+global_left] = block_rows[i][j];
+        }
+      }
+    }
+  }
+  return output;
+}
+
 void bind_covariance_wrappers(py::module_& module)
 {
+  module.def("covariance_project_connected", &connected_matrix_cpp,
+      R"doc(Project a connected matter table through every catalog pair.
+
+probes[observable] is contiguous int32: 0 xi+, 1 xi-, 2 gamma_t, 3 w.
+pair_window[observable,node] contains W_A*W_B in (c/H0)^-2.
+projected[4*nbin,4*nbin,node] contains the already angularly/band-projected
+matter trispectrum in (c/H0)^9, with bin inside probe on both axes.
+Only its probe/bin upper triangle is consumed and mirrored in the result.
+measure[node] supplies dchi/(area*f_K^6), in (c/H0)^-5. These three arrays
+are contiguous float64 and share their radial nodes. Signed inputs are
+retained. The common matter model and its approximations belong to the
+caller; this operation does not compute halo physics or add SSC/noise.
+
+Returns an owned symmetric [nobservable*nbin,nobservable*nbin] matrix,
+with bin inside observable. Every entry retains increasing radial-node
+sum order. No input or cosmology/likelihood state is changed.
+)doc",
+      py::arg("probes").noconvert(), py::arg("pair_window").noconvert(),
+      py::arg("projected").noconvert(), py::arg("measure").noconvert());
+
   module.def("covariance_gaussian_real",
       [](const matrix_array_cov& spectra, const matrix_array_cov& noise,
          const index_array_cov& rows, const matrix_array_cov& operators,

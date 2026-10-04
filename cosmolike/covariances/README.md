@@ -81,7 +81,7 @@ Function comments explain equations, units and array contents.
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
 | [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
-| [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, reusing arrays across observable pairs. |
+| [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, and radial projection of connected matter tables through every catalog pair. |
 | [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
 | [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count shells, all-pairs spectra and selected mass integrals, with input checks and owned outputs. |
 
@@ -344,6 +344,23 @@ field. This equation explains how the returned three-dimensional
 trispectrum enters a survey calculation. The assembler itself adds no
 survey area, radial weights, galaxy shot-noise trispectrum or angular
 binning. Those require a consistent survey-level model.
+
+Once the two angular or band transforms have been applied to
+$\overline T$, `covariance_project_connected` performs the remaining
+radial integral for the complete matrix. Its inputs separate three
+physical ingredients: the transformed matter table, the pair windows
+$W_AW_B$, and the radial measure $d\chi/(\Omega_s f_K^6)$. They must use
+the same radial samples. The result is an owned NumPy matrix with angular
+or band bin inside each observable.
+
+For fixed probes and angular bins, every catalog combination shares the
+same matter table. The wrapper forms that common radial weight once,
+then contracts it with every left and right catalog window. This includes
+cross-lens terms even when cross-lens spectra are absent from the data
+vector. OpenMP assigns complete angular blocks to workers; SIMD evaluates
+their weighted sums while preserving the radial addition order. This
+organization changes neither the supplied matter model nor the Limber
+approximation, and it does not add SSC or discrete-catalog noise terms.
 
 ## Super-sample covariance: `ssc_cov.c` <a name="ssc"></a>
 

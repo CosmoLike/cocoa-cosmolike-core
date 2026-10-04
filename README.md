@@ -173,15 +173,16 @@ survey covariance when a likelihood loads a covariance file.
 | [halo_wrapper.cpp](cosmolike/halo_wrapper.cpp) | Halo statistics and mass-dependent quantities. |
 | [cosmo2D_scuts_wrapper.cpp](cosmolike/cosmo2D_scuts_wrapper.cpp) | Scale-response diagnostics. |
 | [generic_interface_cov.cpp](cosmolike/covariances/generic_interface_cov.cpp) | Covariance radial inputs and all-pairs Limber spectra. |
-| [covariance_wrapper_cov.cpp](cosmolike/covariances/covariance_wrapper_cov.cpp) | Whole real/Fourier Gaussian matrices from supplied spectra and operators. |
+| [covariance_wrapper_cov.cpp](cosmolike/covariances/covariance_wrapper_cov.cpp) | Whole real/Fourier Gaussian matrices and connected projections from supplied matter tables and catalog windows. |
 | [python_components_cov.cpp](cosmolike/covariances/python_components_cov.cpp) | NumPy access to Gaussian, mask, transform, halo and SSC components. |
 
 Each project binds the supported wrappers with pybind11 in its own
 `interface/interface.cpp`. Its `interface/MakefileCosmolike` selects the
 sources to compile. The LSST Y1, DES Y3, DES×Planck, DES cluster,
 Roman real, Roman Fourier and Roman KL interfaces bind the galaxy/shear
-covariance components. C++ returns whole Gaussian matrices; shared Python
-assembles SSC and cNG using the same compiled components.
+covariance components. C++ returns whole Gaussian matrices and projects
+connected matter tables through every catalog pair. Shared Python
+prepares those tables and assembles G, SSC and cNG into the forecast.
 
 # Covariance calculations <a name="covariance"></a>
 

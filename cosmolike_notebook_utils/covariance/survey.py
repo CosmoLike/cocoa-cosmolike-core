@@ -122,10 +122,12 @@ def project_connected(interface, rows, pair_window, projected, measure):
     matter trispectrum. Each covariance block weights it by W_A W_B W_C
     W_D dchi/(area*f_K^6). The C contraction integrates all bin-pair
     combinations for one pair of angular bins together, including crossed
-    lens families. Symmetric entries are copied from one computation.
+    lens families. The wrapper distributes complete angular blocks over
+    one thread team, retaining each radial sum's order. Symmetric entries
+    are copied from one computation.
 
     Arguments:
-        interface = compiled project interface exposing covariance_project.
+        interface = compiled project exposing covariance_project_connected.
         rows = int [nobservable,3] from observable_rows.
         pair_window = float [nobservable,nradial], each W_A W_B, in
             (c/H0)^-2; this already includes the linear lens biases.
@@ -135,41 +137,19 @@ def project_connected(interface, rows, pair_window, projected, measure):
         Dimensionless symmetric [nobservable*ntheta,nobservable*ntheta]
         cNG covariance, retaining the supplied signed contributions.
     """
-    ntheta = projected.shape[0]//4
-    result = np.empty((len(rows)*ntheta, len(rows)*ntheta))
-    groups = []
-    for probe in range(4):
-        groups.append(np.flatnonzero(rows[:, 0] == probe))
-    # At a fixed pair of angular bins, every catalog pair uses the same
-    # projected matter trispectrum. Only its two radial windows differ.
-    # Grouping catalog pairs lets C integrate the entire rectangular block
-    # with one shared radial weight and enough outputs for eight workers.
-    for left_probe in range(4):
-        left_rows = groups[left_probe]
-        if len(left_rows) == 0:
-            continue
-        left = np.ascontiguousarray(pair_window[left_rows])
-        for right_probe in range(left_probe, 4):
-            right_rows = groups[right_probe]
-            if len(right_rows) == 0:
-                continue
-            right = np.ascontiguousarray(pair_window[right_rows])
-            for first in range(ntheta):
-                start = first if left_probe == right_probe else 0
-                for second in range(start, ntheta):
-                    weight = measure*projected[
-                        left_probe*ntheta+first, right_probe*ntheta+second
-                    ]
-                    block = interface.covariance_project(
-                        left=left, right=right, weight=weight
-                    )
-                    if left_probe == right_probe and first == second:
-                        block = np.triu(block)+np.triu(block, k=1).T
-                    i = left_rows*ntheta+first
-                    j = right_rows*ntheta+second
-                    result[np.ix_(i, j)] = block
-                    result[np.ix_(j, i)] = block.T
-    return result
+    indices = np.asarray(rows)
+    if (indices.ndim != 2 or indices.shape[1] != 3
+            or not np.issubdtype(indices.dtype, np.integer)):
+        raise ValueError("rows must be an integer [nobservable,3] array")
+    probes = indices[:, 0]
+    if np.any(probes < 0) or np.any(probes > 3):
+        raise ValueError("row probe IDs must lie in 0..3")
+    return interface.covariance_project_connected(
+        probes=np.ascontiguousarray(probes, dtype=np.int32),
+        pair_window=np.ascontiguousarray(pair_window),
+        projected=np.ascontiguousarray(projected),
+        measure=np.ascontiguousarray(measure),
+    )
 
 
 def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
