@@ -355,6 +355,15 @@ void halo_moments_cov(
       const double* restrict u1 = profile[row][next];
       const double* restrict weight = weights[0][row];
 
+      // Scalar equivalent for either wavenumber j=index,next:
+      //   sum = 0;
+      //   for (int node=0; node<nmass; node++) {
+      //     sum = fma(profile[row][j][node], weight[node], sum);
+      //   }
+      //   i11[row][j] = sum+completion[row]*profile[row][j][nmass];
+      // The weighted halo profiles describe the resolved mass population;
+      // the last term supplies the missing low-mass response. SIMD keeps
+      // these complete mass integrals separate for the two wavenumbers.
       // Start the two I11 mass sums at zero, without mixing wavenumbers.
       v2d vsum = simde_mm_setzero_pd();
 
@@ -410,6 +419,18 @@ void halo_moments_cov(
       const double* restrict uq0 = profile[row][pairs[1][index]];
       const double* restrict uk1 = profile[row][pairs[0][next]];
       const double* restrict uq1 = profile[row][pairs[1][next]];
+      // Scalar updates at one mass node for either pair j=index,next:
+      //   uk = profile[row][pairs[0][j]][node];
+      //   uq = profile[row][pairs[1][j]][node];
+      //   product = uk*uq;
+      //   sum[0] = fma(product, weights[1][row][node], sum[0]);
+      //   sum[1] = fma(product, weights[2][row][node], sum[1]);
+      //   sum[2] = fma(product*uq, weights[3][row][node], sum[2]);
+      //   sum[3] = fma(product*uk, weights[3][row][node], sum[3]);
+      //   sum[4] = fma(product*product, weights[4][row][node], sum[4]);
+      // Initialize all five sums to zero, then visit every mass in order.
+      // Each extra profile represents another density factor in one halo.
+      // SIMD carries two copies of these five sums for independent pairs.
       v2d vsums[5];
 
       for (int role=0; role<5; role++) {

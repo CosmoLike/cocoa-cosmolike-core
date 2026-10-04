@@ -131,6 +131,19 @@ static double** lensing_efficiency_cov(
   for (int field=0; field<nfield; field++) {
     double* restrict row = efficiency[field];
 
+    // Scalar equivalent, starting with A=B=previous_A=previous_B=0:
+    //   current_A = density;
+    //   current_B = density*inverse_distance;
+    //   if (node > 0) {
+    //     A = fma(da/2, previous_A+current_A, A);
+    //     B = fma(da/2, previous_B+current_B, B);
+    //   }
+    //   row[node] = A-distance*B;
+    //   previous_A = current_A;
+    //   previous_B = current_B;
+    // Here density and inverse_distance are evaluated below at each node.
+    // A counts sources behind the lens; B weights them by inverse distance.
+    // The two lanes hold these different integrals at the same radial step.
     // Initialize the two previous integrands to zero. Lane 0 represents
     // n_z/a^2 for A; lane 1 represents n_z/(a^2 chi) for B.
     v2d vprevious = simde_mm_setzero_pd();
@@ -671,6 +684,16 @@ void limber_spectra_cov(
       const double* restrict left1 = window[index][pairs[0][next_pair]];
       const double* restrict right1 = window[index][pairs[1][next_pair]];
 
+      // Scalar equivalent for either catalog pair p:
+      //   sum = 0;
+      //   for (int node=0; node<nnode; node++) {
+      //     product = window[index][pairs[0][p]][node]
+      //               *window[index][pairs[1][p]][node];
+      //     sum = fma(product, power[0][node][index], sum);
+      //   }
+      //   spectra[p][index] = sum;
+      // The shared power table already includes dchi/f_K^2. SIMD carries
+      // these sums for p=first_pair,next_pair in separate lanes.
       // Start two independent C_AB sums at zero. Lane 0 owns first_pair;
       // lane 1 owns next_pair. Neither lane is part of the other's sum.
       v2d vtotal = simde_mm_setzero_pd();

@@ -323,6 +323,18 @@ void realspace_operator_cov(
       // separate even/odd-node sums until their final addition. All allowed
       // rules are even, so each two-node load has two real angular samples.
       for (int degree=0; degree<=ell_max-first_ell; degree++) {
+        // Scalar equivalent for one angular node j, with coefficients
+        // A=coefficient[probe][0][degree], and similarly B (1) and C (2):
+        //   subtotal[j%2] = fma(weight[j], current[j], subtotal[j%2]);
+        //   linear = fma(A, cosine[j], B);
+        //   next = fma(linear, current[j], -(C*previous[j]));
+        //   previous[j] = current[j];
+        //   current[j] = next;
+        // The first line integrates the current polynomial over the bin.
+        // The other lines prepare the next polynomial degree. Even and odd
+        // nodes have separate subtotals, initialized to zero for this degree;
+        // they are added only after all angles have contributed. SIMD uses
+        // one lane for each parity, preserving that scalar summation order.
         // Copy A_n to both lanes: the recurrence coefficient is the same
         // at the two angles, even though the polynomial values differ.
         const v2d va = simde_mm_set1_pd(coefficient[probe][0][degree]);
@@ -481,6 +493,12 @@ void bandpower_operator_cov(
     int node = first[band]-ell_min;
     const int end = last[band]-ell_min;
 
+    // Scalar equivalent for j=node,node+1 inside this band:
+    //   mode = 2*(ell_min+j)+1;
+    //   row[j] = mode*(1.0/modes);
+    // The numerator counts full-sky modes at that multipole; the common
+    // denominator makes their weights sum to one across the whole band.
+    // SIMD writes two separate weights, not their sum.
     // Fill two adjacent multipoles together only when both are in the band.
     // The scalar operation for each is row[node] = (2 ell+1)/N_band.
     for (; node+1<=end; node+=2) {

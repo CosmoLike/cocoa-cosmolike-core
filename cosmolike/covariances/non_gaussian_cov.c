@@ -112,6 +112,17 @@ void halo_response_cov(
     const int next = point+1 < npoint ? point+1 : point;
     v2d values[6];
 
+    // Scalar equivalent at either point j=point,next:
+    //   p2h = (inputs[2][j]*inputs[2][j])*inputs[0][j];
+    //   phalo = p2h+inputs[3][j];
+    //   factor = fma(-dilation_coefficient, inputs[5][j],
+    //                growth_coefficient);
+    //   response = fma(factor, p2h, inputs[4][j]);
+    //   if (fractional) response = (response/phalo)*inputs[1][j];
+    //   output[0][j] = phalo;
+    //   output[1][j] = response;
+    // This is a response of one power spectrum at one (k,a) point.
+    // The SIMD code below carries out two such responses side by side.
     // --- 2. LOAD THE SIX PHYSICAL INPUTS AT BOTH POINTS ---
 
     // A response needs both the unperturbed power and how it changes.
@@ -274,6 +285,18 @@ void halo_trispectrum_cov(
     v2d vm[5];
     v2d vt[3];
 
+    // Scalar equivalent for one configuration j=point or next:
+    //   product = i11[0][j]*i11[1][j];
+    //   left13 = (pk[0][j]*i11[0][j])*moments[2][j];
+    //   right13 = (pk[1][j]*i11[1][j])*moments[3][j];
+    //   terms[0][j] = moments[4][j];
+    //   terms[1][j] = 2*(left13+right13);
+    //   terms[2][j] = (2*(moments[1][j]*moments[1][j]))*tree[0][j];
+    //   terms[3][j] = (4*(moments[1][j]*product))*tree[1][j];
+    //   terms[4][j] = (product*product)*tree[2][j];
+    // These are the five allocations of density factors among halos.
+    // SIMD evaluates both configurations without multiplying across them;
+    // K and Q remain distinct inputs within each configuration.
     // --- 1. PACK THE INPUTS WITHOUT MIXING K AND Q ---
 
     // One trispectrum value combines two physical scales, K and Q, at the

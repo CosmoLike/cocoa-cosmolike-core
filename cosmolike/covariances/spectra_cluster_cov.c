@@ -109,6 +109,10 @@ void limber_cluster_cov(
       const double* restrict b = bias[cluster];
       double* restrict qb = weighted[cluster];
 
+      // Scalar equivalent for the two shells j=node,node+1:
+      //   qb[j] = q[j]*b[j];
+      // The radial probability q places the catalog in distance; bias b
+      // sets its response to matter. SIMD retains one shell in each lane.
       if (node+1 < nnode) {
         // Load two adjacent q_c samples into low/high lanes. loadu does
         // not require alignment, but both node addresses must be valid.
@@ -204,6 +208,19 @@ void limber_cluster_cov(
       const double* restrict own0 = own[0];
       const double* restrict own1 = own[1];
 
+      // Scalar equivalent for either pair lane s=0,1:
+      //   total = 0;
+      //   for (int node=0; node<nnode; node++) {
+      //     halo = own[s] == NULL ? 0 : own[s][node];
+      //     left = qb[s][node]*pk[node]+q[s][node]*halo;
+      //     product = left*right[s][node];
+      //     total = fma(product, measure[node], total);
+      //   }
+      //   result[s] = total;
+      // The halo's own mass contributes only for source partners. Its
+      // weight is q, while the correlated matter term has weight q*b.
+      // SIMD carries the two projected spectra in distinct lanes; the
+      // shear conversion factor is applied when storing the results.
       // Both pair sums start at zero. setzero does not mix the lanes.
       v2d vtotal = simde_mm_setzero_pd();
 

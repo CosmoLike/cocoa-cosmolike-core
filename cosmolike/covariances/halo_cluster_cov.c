@@ -148,6 +148,12 @@ void halo_samples_cluster_cov(
           const double second = prob_richness_bin_given_m(
               lnm[node+1], 1.0/a[state]-1.0, bin);
 
+          // Scalar equivalent for the two adjacent mass samples:
+          //   selected[node] = number[0]*first;
+          //   selected[node+1] = number[1]*second;
+          // Each membership probability selects objects from its own mass
+          // interval. SIMD performs these two multiplications together;
+          // it does not combine probabilities from different masses.
           // Low/high lanes contain neighboring masses' unselected dn.
           // loadu accepts this stack array without alignment constraints.
           const v2d vnumber = simde_mm_loadu_pd(number);
@@ -200,6 +206,12 @@ void halo_samples_cluster_cov(
           const double second = u_nfw_c(concentration[node+1],
               k[state][mode], mass[node+1], a[state]);
 
+          // Scalar equivalent for the two adjacent mass samples:
+          //   output[node] = volume[node]*first;
+          //   output[node+1] = volume[node+1]*second;
+          // Here volume=M/rho and first/second are normalized NFW profiles
+          // at those masses. Each product is one halo's density factor.
+          // SIMD evaluates both products with one mass in each lane.
           // Read adjacent M/rho values into low/high lanes. These are
           // halo volumes, converting normalized u into a density leg.
           const v2d vvolume = simde_mm_loadu_pd(volume+node);

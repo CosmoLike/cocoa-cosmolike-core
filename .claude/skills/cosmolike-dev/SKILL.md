@@ -102,6 +102,15 @@ uses linearly biased matter tracers and its count crosses contain SSC
 only. It is not a complete selected/discrete-halo covariance. Archive
 those omissions with the matrix and retain the defined Y null-row map.
 
+**Optional covariance build.** Each project's
+`IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE` installation key defaults to 1.
+Its Makefile omits `_cov` sources and objects and defines
+`COSMOLIKE_NO_COVARIANCE` so the project interface omits covariance bindings.
+Keep ordinary data-vector evaluation and supplied-covariance inversion usable
+in that build. Document activation/recompilation in each project README;
+test both build modes and do not add covariance dependencies to data-vector
+C files. The module's `has_covariance` attribute reports the compiled mode.
+
 **Notebook C++ wrappers.** Follow `halo_wrapper_cluster.cpp` and
 `cosmo2D_wrapper.cpp`: numeric inputs, results and working arrays use
 `arma::Col`, `arma::Mat` and `arma::Cube`, with named axes and units.
@@ -587,8 +596,14 @@ SIMD means applying the same operation to several numbers at once; each
 number occupies a vector position called a lane. Do not assume a physics
 student already knows these terms or the intrinsic naming conventions.
 
-- Before each block, state the scalar equation and identify what each
-  lane represents: adjacent nodes, different bins, or independent sums.
+- Immediately above each substantial SIMD block, show the analogous scalar
+  calculation as a short commented C example using the surrounding array
+  names. Explain why that calculation gives the physical quantity, then map
+  its indices to lanes: adjacent nodes, different bins, or independent sums.
+  Keep the scalar example in comments, not a production fallback. Use `fma`
+  for fused steps, and state when a summary describes the mathematics rather
+  than the exact reduction order. The example complements the per-call
+  explanations below; it does not replace them.
 - Put one intrinsic per statement, with named intermediate results.
   Immediately before **each call**, explain its inputs, operation and
   result in terms of those physical quantities. A glossary elsewhere,

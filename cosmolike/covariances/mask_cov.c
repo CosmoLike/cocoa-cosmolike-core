@@ -129,6 +129,13 @@ void mask_pair_area_cov(
     const double* restrict kernel0 = scalar_kernel[bin];
     const double* restrict kernel1 = scalar_kernel[next];
 
+    // Scalar equivalent for either angular bin b=bin,next:
+    //   sum = 0;
+    //   for (int ell=0; ell<nmask; ell++) {
+    //     sum = fma(scalar_kernel[b][ell], mask_cl[ell], sum);
+    //   }
+    // The later area factor converts this mask-correlation average into
+    // an ordered-pair area. SIMD accumulates two bin averages separately.
     // Initialize the two bin-specific sums of K_bin,L*C_L^W to zero.
     v2d vsum = simde_mm_setzero_pd();
 

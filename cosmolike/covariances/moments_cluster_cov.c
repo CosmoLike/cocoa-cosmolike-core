@@ -102,6 +102,14 @@ void moments_cluster_cov(
       const double* restrict measure = weight[state][bin]; // dn*S_i
       const double* restrict halo_bias = bias[state]; // b(M) at this a
 
+      // Scalar equivalent, with number=response=0 initially:
+      //   for (int mass=0; mass<nmass; mass++) {
+      //     number = fma(measure[mass], 1.0, number);
+      //     response = fma(measure[mass], halo_bias[mass], response);
+      //   }
+      // The first sum counts the selected halos per volume; bias weights
+      // how their abundance changes with background density. SIMD assigns
+      // one lane to number and one to response, not to different masses.
       // Both integrals start at zero: no mass node has contributed yet.
       v2d sum = simde_mm_setzero_pd();
 
@@ -145,6 +153,17 @@ void moments_cluster_cov(
         const double* restrict first = profile[state][mode]; // p(K|M)
         const double* restrict second = profile[state][next]; // p(Q|M)
 
+        // Scalar equivalent for either mode j=mode,next:
+        //   mean = 0;
+        //   response = 0;
+        //   for (int mass=0; mass<nmass; mass++) {
+        //     p = profile[state][j][mass];
+        //     mean = fma(measure[mass], p, mean);
+        //     response = fma(measure[mass]*halo_bias[mass], p, response);
+        //   }
+        // The profile gives the matter associated with each selected halo;
+        // bias weights the change in their abundance. SIMD keeps one mode
+        // per lane and separate accumulators for the mean and its response.
         // Lane 0 integrates K, lane 1 integrates Q; neither has a mass yet.
         v2d mean = simde_mm_setzero_pd();
 
@@ -219,6 +238,17 @@ void moments_cluster_cov(
         const double* restrict k1 = profile[state][modes[0][next]]; // K1
         const double* restrict q1 = profile[state][modes[1][next]]; // Q1
 
+        // Scalar updates at mass m for either pair j=item,next:
+        //   k = profile[state][modes[0][j]][m];
+        //   q = profile[state][modes[1][j]][m];
+        //   product = k*q;
+        //   sum2 = fma(measure[m], product, sum2);
+        //   sum3k = fma(measure[m], product*k, sum3k);
+        //   sum3q = fma(measure[m], product*q, sum3q);
+        // Start these three sums at zero and integrate all masses in order.
+        // The profiles describe several matter legs in one selected halo,
+        // so its membership probability appears only once in measure[m].
+        // SIMD evaluates two complete pairs without mixing their profiles.
         // No mass has contributed to the two-profile moments yet.
         v2d sum2 = simde_mm_setzero_pd();
 

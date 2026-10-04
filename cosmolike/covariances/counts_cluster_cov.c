@@ -106,6 +106,13 @@ void counts_shell_cluster_cov(
       double* restrict count_shell = shell[bin];
       double* restrict count_response = response[bin];
 
+      // Scalar equivalent for the two shells j=node and j=node+1:
+      //   volume = area_sr*(distance[j]*distance[j]);
+      //   count_shell[j] = volume*number[j];
+      //   count_response[j] = volume*change[j];
+      // The shell volume converts number per comoving volume into dN/dchi;
+      // the same factor converts its density response into dN/dchi/delta_b.
+      // The SIMD block evaluates these three lines at both shells together.
       if (node+1 < nnode) {
         // loadu puts f_K[node] in lane 0 and f_K[node+1] in lane 1.
         // It accepts an ordinary double array without special alignment.

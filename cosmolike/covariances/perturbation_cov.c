@@ -191,6 +191,17 @@ void tree_averages_cov(
 
     // --- 2. PRECOMPUTE THE ANGLE-INDEPENDENT PARTS OF G ---
 
+    // Scalar setup for each pair j=pair,next, where K=k[0][j],
+    // Q=k[1][j], PK=pk[0][j] and PQ=pk[1][j]:
+    //   diff = Q-K;
+    //   diff2 = diff*diff;
+    //   twoKQ = 2*(K*Q);
+    //   base = (-1.0/28.0)*(PK+PQ);
+    //   slope = 0.5*((K*PQ)/Q+(Q*PK)/K);
+    //   correction = 0.25*((diff*(Q+K))*(PQ-PK));
+    // These pieces of the combined perturbation kernel are independent
+    // of angle. Computing them once avoids repeating work at every
+    // quadrature node. Each SIMD lane holds all pieces for one pair.
     // Copy 1/2 into both lanes for the coefficient of cos(theta) in G.
     const v2d vhalf = simde_mm_set1_pd(0.5);
 
@@ -264,6 +275,23 @@ void tree_averages_cov(
 
     // --- 3. INTEGRATE P_s, P_s*G AND P_s*G^2 OVER ANGLE ---
 
+    // Scalar integrand and updates for one pair at angle node n:
+    //   c = corner[n];
+    //   mu = c-1;
+    //   s2 = fma(twoKQ, c, diff2);
+    //   projectionQ = fma(K, c, diff);
+    //   projectionK = Q*c-diff;
+    //   numerator = fma(2.0/7.0,
+    //       PQ*(projectionQ*projectionQ)+PK*(projectionK*projectionK),
+    //       -correction);
+    //   G = fma(-mu, slope, base)+numerator/s2;
+    //   weightedP = weight[n]*ps[j][n];
+    //   sumP += weightedP;
+    //   sumB = fma(weightedP, G, sumB);
+    //   sumT = fma(weightedP, G*G, sumT);
+    // Starting from zero sums, these updates integrate three powers of
+    // the coupling kernel: 1, G and G^2. SIMD follows the same angular
+    // order for two pairs; no term multiplies values from different pairs.
     // Initialize both pairs' P_s integrals to zero.
     v2d vsum_p = simde_mm_setzero_pd();
 

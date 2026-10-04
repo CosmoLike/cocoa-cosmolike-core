@@ -251,6 +251,17 @@ void gaussian_project_cov(
       v2d vtotals_low[tile_rows];
       v2d vtotals_high[tile_rows];
 
+      // Scalar equivalent for one valid output entry (i,j) in this block:
+      //   total = 0;
+      //   for (int node=0; node<nell; node++) {
+      //     total = fma(weighted_left[i][node], kernel_right[j][node],
+      //                 total);
+      //   }
+      //   covariance[i][j] = total;
+      // The left weight already contains the harmonic covariance. Thus
+      // this sum transforms the other measurement into its bin as well.
+      // The SIMD block evaluates sixteen such entries together, keeping
+      // one sum per lane and the same multipole order for every entry.
       for (int row=0; row<tile_rows; row++) {
         const int index = left+row < nleft ? left+row : nleft-1;
         weighted_rows[row] = weighted_left[index];

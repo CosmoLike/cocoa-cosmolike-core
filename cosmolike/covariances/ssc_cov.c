@@ -120,6 +120,15 @@ void ssc_mask_variance_cov(
     const double* restrict power0 = power[node];
     const double* restrict power1 = power[next];
 
+    // Scalar equivalent at each of the two distances j=node,next:
+    //   sum = 0;
+    //   for (int ell=0; ell<nmask; ell++) {
+    //     weight = (2*ell+1)*mask_cl[ell]*inv_area2;
+    //     sum = fma(power[j][ell], weight, sum);
+    //   }
+    //   sigma2[j] = sum/(distance[j]*distance[j]);
+    // Each mask mode contributes background power at that distance.
+    // SIMD carries two independent sums; it does not add their distances.
     // Start both distance-specific sums at zero: vsum = [0,0].
     v2d vsum = simde_mm_setzero_pd();
 
@@ -234,6 +243,12 @@ void ssc_shell_response_cov(
     const double* restrict dp = power_response[row];
     double* restrict phi = response[row];
 
+    // Scalar equivalent at each shell j of this spectrum:
+    //   local = pair[j]*dp[j]/(distance[j]*distance[j]);
+    //   phi[j] = fma(-mean[j], signal[row], local);
+    // The first line projects the matter response. The second subtracts
+    // the change caused by normalizing galaxy counts by their survey mean.
+    // Two SIMD lanes apply these lines to adjacent shells independently.
     // The same complete C_AB multiplies both local mean responses.
     // set1_pd copies that spectrum into lanes 0 and 1.
     const v2d vsignal = simde_mm_set1_pd(signal[row]);
