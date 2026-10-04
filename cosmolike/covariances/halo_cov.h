@@ -12,6 +12,7 @@ extern "C" {
 // k[a][node] uses (c/H0)^-1. a is inside [limits.a_min,1), mass-panel
 // edges are increasing ln(M/[M_sun/h]) inside the core sigma-table range.
 // All arrays are supplied by the caller; writable arrays do not overlap.
+// moments may be NULL to request only I11, without pair integrations.
 void halo_moments_cov(
     const int na,                  // number of scale factors
     const double* a,              // [na] scale factors

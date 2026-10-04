@@ -75,6 +75,10 @@ typedef simde__m128d v2d;
 // Pair order is (0,0),(0,1),...,(1,1),... in the supplied k grid.
 // Roles are I02(K,Q), I12(K,Q), I13(K,Q,Q), I13(K,K,Q), I04(K,K,Q,Q).
 // Their dimensions are L^3,L^3,L^6,L^6,L^9 with L=c/H0.
+// Passing NULL for moments requests I11 alone. The SSC logarithmic
+// slope needs I11 at two nearby wavenumbers, but its higher moments
+// are already known at the central wavenumber. In that case no pair
+// table is allocated and no two-, three- or four-profile sum is done.
 //
 // Calls are serial at the entry point. Lazy core tables are warmed before
 // workers read them. There is no covariance static cache; grouped scratch
@@ -91,7 +95,7 @@ void halo_moments_cov(
     const double* lnm_edges,      // increasing logarithmic mass edges
     const int nquad,               // quadrature nodes per panel
     double* const* i11,            // one-profile biased moment
-    double** const* moments        // five pair-moment roles
+    double** const* moments        // five roles, or NULL for I11 only
   )
 {
   if (na < 1
@@ -147,7 +151,7 @@ void halo_moments_cov(
   // --- 1. COMMON MASS QUADRATURE AND PAIR ORDER ---
 
   const int nmass = npanel*nquad;
-  const int npair = nk*(nk+1)/2;
+  const int npair = moments == NULL ? 0 : nk*(nk+1)/2; // requested pairs
   const double rho_cb = cosmology.rho_crit*omega_halo_field();
 
   if (!isfinite(rho_cb)
@@ -160,7 +164,11 @@ void halo_moments_cov(
   // supplies the density prefactor of dn/dlnM before f(nu)*nu*dlnnu/dlnM.
   const double mass_min = exp(lnm_edges[0]);
   double** mass = (double**) malloc2d(3, nmass);
-  int** pairs = (int**) malloc2d_int(2, npair);
+  int** pairs = NULL; // no pair indices are needed for I11 alone
+
+  if (npair > 0) {
+    pairs = (int**) malloc2d_int(2, npair);
+  }
 
   // Map the same Gaussian integration rule onto each logarithmic interval.
   gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);
@@ -190,12 +198,15 @@ void halo_moments_cov(
 
   // Enumerate the upper triangle once. Each output pair can then locate
   // its two profile rows directly, without searching the wavenumber grid.
-  int pair = 0;
-  for (int first=0; first<nk; first++) {
-    for (int second=first; second<nk; second++) {
-      pairs[0][pair] = first;
-      pairs[1][pair] = second;
-      pair++;
+  if (npair > 0) {
+    int pair = 0; // position in the common upper-triangle pair list
+
+    for (int first=0; first<nk; first++) {
+      for (int second=first; second<nk; second++) {
+        pairs[0][pair] = first;
+        pairs[1][pair] = second;
+        pair++;
+      }
     }
   }
 
@@ -386,7 +397,8 @@ void halo_moments_cov(
   // Each worker handles two pairs at one scale factor. SIMD lane 0 owns
   // the first pair's mass integrals and lane 1 the second pair's; they
   // remain separate because they describe different covariance entries.
-  #pragma omp parallel for collapse(2) schedule(static)
+  // An I11-only request has no pairs: avoid starting an empty team.
+  #pragma omp parallel for collapse(2) schedule(static) if(npair > 0)
   for (int row=0; row<na; row++) {
     // At this scale factor, compute and store five moments for each pair
     // group. SIMD handles two pairs together without adding their results.

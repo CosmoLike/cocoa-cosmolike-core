@@ -198,6 +198,12 @@ that outer region. Preserve the fixed multipole sum order and per-worker
 scratch ownership. Measurements and checks are recorded in
 `references/covariance_gaussian_scaling.md`; the complete survey still
 requires separate scaling measurements, especially its shared matter tables.
+The seven-project real/Fourier baseline is recorded in
+`references/covariance_survey_scaling.md`. Shared matter preparation now
+groups eight radial shells and requests only I11 at displaced derivative
+endpoints; see `references/covariance_halo_scaling.md` for measurements,
+bitwise checks and the bounded-memory choice. Small projection calls
+remain a scaling target; do not claim that the complete problem is solved.
 
 **Notebook covariance workflows.**
 Develop the first public examples in `projects/lsst_y1/covariance/`, using

@@ -375,11 +375,14 @@ static cov_array covariance_ssc_shell_response(
 // NumPy arrays own the values after the C routine releases its workspace.
 // The temporary pointers merely give C access to [role][a][pair] rows;
 // no moment is copied and no covariance approximation is chosen here.
+// A response slope can request I11 alone: its other moments are already
+// available at the central k. Return None for the omitted pair array.
 static py::tuple covariance_halo_moments(
     const cov_array& a,         // scale factors
     const cov_array& k,         // [na,nk], inverse c/H0
     const cov_array& lnm_edges, // logarithmic halo-mass panel boundaries
-    const int nquad            // Gaussian mass nodes per panel
+    const int nquad,           // Gaussian mass nodes per panel
+    const bool pair_moments    // also compute the five pair-moment roles
   )
 {
   vector_cov(a, "a");
@@ -421,9 +424,16 @@ static py::tuple covariance_halo_moments(
   const py::ssize_t nk = k.shape(1);
   const py::ssize_t npair = nk*(nk+1)/2;
   cov_array i11({na, nk});
-  cov_array moments({(py::ssize_t) 5, na, npair});
   auto k_rows = input_rows_cov(k);
   auto i11_rows = output_rows_cov(i11);
+
+  if (!pair_moments) {
+    halo_moments_cov(na, a.data(), nk, k_rows.data(), lnm_edges.size()-1,
+        lnm_edges.data(), nquad, i11_rows.data(), nullptr);
+    return py::make_tuple(i11, py::none());
+  }
+
+  cov_array moments({(py::ssize_t) 5, na, npair});
   std::vector<std::vector<double*>> moment_rows(5);
   std::vector<double**> roles(5);
 
@@ -631,9 +641,12 @@ void bind_covariance_components(py::module_& module)
       py::arg("power_response").noconvert());
 
   module.def("covariance_halo_moments", &covariance_halo_moments,
-      "Return I11 [na,nk] and moments [5,na,nk*(nk+1)/2]; cb halo convention.",
+      "Return I11 [na,nk] and moments [5,na,nk*(nk+1)/2]. "
+      "pair_moments=False omits pair sums and returns (I11, None). "
+      "Both use the cb halo convention.",
       py::arg("a").noconvert(), py::arg("k").noconvert(),
-      py::arg("lnm_edges").noconvert(), py::arg("nquad"));
+      py::arg("lnm_edges").noconvert(), py::arg("nquad"),
+      py::arg("pair_moments") = true);
 
   module.def("covariance_power", &covariance_power,
       "Read power for a k vector or matrix at one a; retain its shape. "

@@ -277,6 +277,13 @@ Only $I_1^1$ receives an unresolved-low-mass completion, chosen so that
 $I_1^1(0)=1$ on that quadrature. The higher moments require convergence
 with the mass range and integration resolution.
 
+When only $I_1^1$ is needed, pass `pair_moments=False` to the notebook
+interface's `covariance_halo_moments`. It returns `(i11, None)` and skips
+the higher moments. For example, the SSC response needs $I_1^1$ at nearby
+wavenumbers to measure a logarithmic slope, while its other moments are
+evaluated at the central wavenumber. All requested integrals retain the
+same mass quadrature and low-mass completion.
+
 ### Gravitational mode coupling: `perturbation_cov.c`
 
 Gravitational evolution couples initially independent density modes.

@@ -219,83 +219,112 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
     unit_weight = np.ones(len(coarse_ell))
     shift = np.exp(np.array([-settings["response_step"], 0.0,
                              settings["response_step"]]))
+    shift = shift[[0, 2]]
+    diagonal = np.flatnonzero(first == second)
+    mask_modes = np.arange(mask_nell)+0.5
 
-    # A given multipole probes a different physical k at each distance.
-    # Each shell therefore evaluates its own halo moments and tree terms.
-    # The two angular projections contract T(k,k') with the pre-summed
-    # interpolation weights; the final stored object no longer has k axes.
-    for node, a in enumerate(geometry[0]):
-        distance = geometry[2, node]
-        k = modes/distance
+    # Halos at different distances have independent mass integrals. A
+    # small group of shells shares the mass rule and gives OpenMP enough
+    # independent (a,k) rows to occupy eight workers. Only eight shells
+    # are held at once, rather than the entire refined radial grid.
+    # This grouping changes scheduling only, never the integration nodes.
+    batch_size = 8
+    for begin in range(0, nnode, batch_size):
+        end = min(begin+batch_size, nnode)
+        scale_factor = geometry[0, begin:end].copy()
+        wave = modes[None, :]/geometry[2, begin:end, None]
         single, moments = interface.covariance_halo_moments(
-            a=np.array([a]), k=k[None, :], lnm_edges=settings["lnm_edges"],
+            a=scale_factor, k=wave, lnm_edges=settings["lnm_edges"],
             nquad=settings["halo_mass_nquad"],
         )
 
-        # Tree-level terms couple the two external wavevectors through
-        # P(|K+Q|). Reuse the common relative-angle geometry from above,
-        # changing only its physical length scale at this distance.
-        linear = interface.covariance_power(a=a, k=k, linear=True)
-        pk = np.array([linear[first], linear[second]])
-        internal = interface.covariance_power(
-            a=a, k=magnitude/distance, linear=True
-        )
-        angular = interface.covariance_tree_averages(
-            k=np.array([k[first], k[second]]), pk=pk, corner=corner,
-            weight=angle_weight, ps=internal,
-        )
-        terms = interface.covariance_halo_trispectrum(
-            pk=pk, i11=np.array([single[0, first], single[0, second]]),
-            moments=np.ascontiguousarray(moments[:, 0]), tree=angular,
-        )
-
-        # Both axes use the same matter field, so T(K,Q)=T(Q,K).
-        # Expand the triangular table, then contract one axis at a time.
-        trispectrum = np.empty((len(k), len(k)))
-        total = np.sum(terms, axis=0)
-        trispectrum[first, second] = total
-        trispectrum[second, first] = total
-        half = interface.covariance_project(
-            left=transform, right=trispectrum, weight=unit_weight
-        )
-        projected[:, :, node] = interface.covariance_project(
-            left=half, right=transform, weight=unit_weight
-        )
-
-        # Only I11 needs shifted k for the logarithmic two-halo slope.
-        # Keep the independently integrated central moments for I02/I12.
-        shifted_k = k[:, None]*shift
+        # The logarithmic slope of I11^2 P needs two displaced k values.
+        # Keep all of them on their parent shell's row so the mass function,
+        # bias and concentration are evaluated once per shell. Pair moments
+        # belong to the central k grid above; they are not used here.
+        shifted_k = wave[:, :, None]*shift
         shifted_single, unused = interface.covariance_halo_moments(
-            a=np.full(len(k), a), k=shifted_k,
+            a=scale_factor, k=shifted_k.reshape(end-begin, -1),
             lnm_edges=settings["lnm_edges"],
-            nquad=settings["halo_mass_nquad"],
+            nquad=settings["halo_mass_nquad"], pair_moments=False,
         )
-        shifted_power = interface.covariance_power(a=a, k=shifted_k, linear=True)
-        two_halo = shifted_single**2*shifted_power
-        slope = np.log(two_halo[:, 2]/two_halo[:, 0])/(2*settings["response_step"])
-        diagonal = np.flatnonzero(first == second)
+        shifted_single = shifted_single.reshape(shifted_k.shape)
 
-        # The halo model predicts the fractional response to background
-        # density. Transfer that fraction to the chosen nonlinear power;
-        # this defines the stated SSC approximation, not a tidal response.
-        target = interface.covariance_power(a=a, k=k, linear=False)
-        dimensional = interface.covariance_halo_response(
-            inputs=np.array([linear, target, single[0], moments[0, 0, diagonal],
-                             moments[1, 0, diagonal], slope]),
-            growth_coefficient=47.0/21.0, dilation_coefficient=1.0/3.0,
-            fractional=True,
-        )[1]
-        response[:, node] = interface.covariance_project(
-            left=transform, right=dimensional[None, :], weight=unit_weight
-        )[:, 0]
+        # A fixed multipole samples k=(ell+1/2)/chi, so each shell still
+        # needs its own power spectrum and tree-level angular terms. Keep
+        # those physical k values and both final projections unchanged.
+        for row, node in enumerate(range(begin, end)):
+            a = scale_factor[row]
+            distance = geometry[2, node]
+            k = wave[row]
 
-        # The footprint weights much longer wavelengths than the measured
-        # angular bins. Its background variance uses linear matter power.
-        long_power[node] = interface.covariance_power(
-            a=a, k=(np.arange(mask_nell)+0.5)/distance, linear=True
-        )
-        if progress is not None and node % 32 == 0:
-            progress(node+1, nnode)
+            # Tree-level terms couple the two external wavevectors through
+            # P(|K+Q|). Reuse the common relative-angle geometry from above,
+            # changing only its physical length scale at this distance.
+            linear = interface.covariance_power(a=a, k=k, linear=True)
+            pk = np.array([linear[first], linear[second]])
+            internal = interface.covariance_power(
+                a=a, k=magnitude/distance, linear=True
+            )
+            angular = interface.covariance_tree_averages(
+                k=np.array([k[first], k[second]]), pk=pk, corner=corner,
+                weight=angle_weight, ps=internal,
+            )
+            terms = interface.covariance_halo_trispectrum(
+                pk=pk, i11=np.array([single[row, first], single[row, second]]),
+                moments=np.ascontiguousarray(moments[:, row]), tree=angular,
+            )
+
+            # Both axes use the same matter field, so T(K,Q)=T(Q,K).
+            # Expand the triangular table, then contract one axis at a time.
+            trispectrum = np.empty((len(k), len(k)))
+            total = np.sum(terms, axis=0)
+            trispectrum[first, second] = total
+            trispectrum[second, first] = total
+            half = interface.covariance_project(
+                left=transform, right=trispectrum, weight=unit_weight
+            )
+            projected[:, :, node] = interface.covariance_project(
+                left=half, right=transform, weight=unit_weight
+            )
+
+            # Evaluate the same centered difference at k*exp(+/-step).
+            # Omitting the unused central sample does not change either
+            # endpoint or their logarithmic separation of twice the step.
+            shifted_power = interface.covariance_power(
+                a=a, k=shifted_k[row], linear=True
+            )
+            two_halo = shifted_single[row]**2*shifted_power
+            slope = np.log(two_halo[:, 1]/two_halo[:, 0])
+            slope /= 2*settings["response_step"]
+
+            # The halo model predicts the fractional response to background
+            # density. Transfer that fraction to the chosen nonlinear power;
+            # this defines the stated SSC approximation, not a tidal response.
+            target = interface.covariance_power(a=a, k=k, linear=False)
+            dimensional = interface.covariance_halo_response(
+                inputs=np.array([
+                    linear,
+                    target,
+                    single[row],
+                    moments[0, row, diagonal],
+                    moments[1, row, diagonal],
+                    slope,
+                ]),
+                growth_coefficient=47.0/21.0, dilation_coefficient=1.0/3.0,
+                fractional=True,
+            )[1]
+            response[:, node] = interface.covariance_project(
+                left=transform, right=dimensional[None, :], weight=unit_weight
+            )[:, 0]
+
+            # The footprint weights much longer wavelengths than the measured
+            # angular bins. Its background variance uses linear matter power.
+            long_power[node] = interface.covariance_power(
+                a=a, k=mask_modes/distance, linear=True
+            )
+            if progress is not None and node % 32 == 0:
+                progress(node+1, nnode)
     return {
         "projected": projected,
         "response": response,
