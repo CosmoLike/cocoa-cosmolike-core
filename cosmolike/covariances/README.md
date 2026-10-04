@@ -491,9 +491,14 @@ with fluctuations of halos inside the survey, is additional; see
 
 The shared Python `counts_cluster.py` integrates these supplied responses
 and returns count means, Poisson noise, count SSC and count–two-point SSC
-separately. This component does **not** supply a cluster selection model,
-cluster spectra or the non-SSC count–spectrum term, and does not yet
-generate a complete cluster $`6\times2\mathrm{pt}+N`$ matrix.
+separately. Its `count_matter_cross` helper also projects the non-SSC
+count–matter kernel described [below](#cluster_moments), using the
+existing C weighted projection. The one- and two-halo pieces are returned
+separately. Their explicit survey area cancels between the absolute count
+and the inverse-area covariance; the SSC retains its footprint dependence.
+Discrete cluster partners and shared-object catalog terms need further
+calculations. These components do not yet generate a complete cluster
+$`6\times2\mathrm{pt}+N`$ matrix.
 
 ## Cluster cross spectra: `spectra_cluster_cov.c` <a name="cluster_spectra"></a>
 

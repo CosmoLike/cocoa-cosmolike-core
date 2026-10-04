@@ -18,9 +18,9 @@ profile/growth/dilation or observed-mean response.
 References checked directly: To et al. (2021), arXiv:2008.10757,
 Eqs. 20--21; Schaan, Takada & Spergel (2014), arXiv:1406.3330, Eq. 35.
 The latter's non-SSC count-matter kernel is
-J02(K,K)+2 P_lin(K) I11(K) J11(K), with all-halo I11. Its angular
-projection, catalog normalization and general cluster partners still
-need implementation; the new moment boundary is not a joint generator.
+J02(K,K)+2 P_lin(K) I11(K) J11(K), with all-halo I11. The shared Python
+projection below implements this matter cross block. Catalog normalization
+for discrete cluster partners and the full joint generator remain open.
 
 For exclusive observed categories, membership indicators obey I_i^2=I_i,
 and I_i I_j=0 for i!=j. Therefore same-halo terms use one selection
@@ -67,7 +67,36 @@ External evidence: `test/covariance_reference/cluster_moments_pilot.py`,
 `check_cluster_moments_debug.py`, their results and session logs. Public
 tests are `des_cluster/tests/covariance/test_moments_cluster.py`.
 
-## Didactic review
+## Non-SSC count-matter cross projection
+
+`counts_cluster.count_matter_cross` projects the above kernel using
+dchi W_A W_B/f_K^2. The selected moment weight already contains the
+observed count selection, which must not be applied again. A supplied
+transfer fixes source-leg conventions. Output keeps one- and two-halo
+contributions separate; its total means ONLY this non-SSC cross block.
+The explicit footprint area cancels here, unlike the SSC dependence.
+Only projected matter and a constant linear-bias galaxy approximation
+are covered. Discrete cluster partners and shared-object noise are not.
+
+The mass kernel is assembled with vectorized NumPy. All radial sums reuse
+the existing SIMDe/OpenMP C weighted projection in one batch per component;
+there is no new C loop, scalar fallback or duplicate projection engine.
+Four independent tests pass: closed shell integrals and spin transfers;
+bitwise 1/2/4/8-worker projection; length-unit conversion; malformed inputs;
+and exact Poisson enumeration of detected/missed/other halo populations.
+The latter computes count-power covariances from factorial halo-pair
+estimators in two volumes. It independently recovers the two-halo factor
+two and volume cancellation, with 3e-13 relative agreement. Other algebra
+comparisons use 2e-14. It is not a survey accuracy or timing measurement.
+
+The subsequent manual didactic review checked the first versus second
+mass-moment indices, full-halo I11 versus selected J11, why a count's
+area cancels, the f_K^-2 projection, source transfers and the distinction
+between matter partners and discrete cluster partners. The docstrings and
+public README state units and output shapes and do not call this a full
+cluster covariance. The notebook package exports both count helpers.
+
+## Didactic review of the mass integrator
 
 Completed after the analytic, debug and physical checks, before the next
 major implementation ticket. The manual pass checked dimensions, selection

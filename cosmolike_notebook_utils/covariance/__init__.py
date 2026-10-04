@@ -16,3 +16,4 @@ from .halo import halo_power_response, halo_trispectrum
 from .accuracy import covariance_accuracy
 
 from .survey import realspace_covariance, fourier_covariance, observable_rows
+from .counts_cluster import count_statistics, count_matter_cross

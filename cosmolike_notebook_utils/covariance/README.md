@@ -36,7 +36,7 @@ fluctuations larger than the survey. See
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
 | `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
-| `counts_cluster.py` | Integrate supplied selected cluster abundances and responses into count means, Poisson noise, count SSC and count–two-point SSC. This is not a full cluster forecast. |
+| `counts_cluster.py` | Integrate supplied selected abundances into count means, Poisson noise and SSC. Project the separate non-SSC count–matter-spectrum cross terms from selected halo moments. This is not a full cluster forecast. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
 | `diagnostics.py` | Check symmetry, diagonal variances, raw/correlation eigenvalues and generalized covariance ratios. No clipping or diagonal correction is applied. |
 | `reference/` | Independent NumPy/SciPy/mpmath algorithms for component tests. Production assembly never calls these oracles. |
@@ -102,6 +102,23 @@ with `covariance_project` gives the SSC matrix. Keep every cross-lens
 block. Removing selected cross correlations can make a covariance indefinite.
 
 ## Real-space and Fourier assembly <a name="real_space_and_fourier_assembly"></a>
+
+For cluster counts, `count_statistics` integrates supplied selected
+abundances and their long-mode responses. It returns count means,
+Poisson noise, count SSC and optional count–two-point SSC separately.
+`count_matter_cross` adds the non-SSC cross correlation with projected
+matter spectra, returning separate one- and two-halo terms. It receives
+the selected moments from `interface.covariance_cluster_moments`, along
+with the same radial selection, distances, matter windows and spin
+conventions. Its two-halo term contains the full-population moment
+$`I_{11}`$, not another selected cluster moment. See
+[Schaan, Takada & Spergel, Eq. 35](https://arxiv.org/abs/1406.3330).
+
+This cross-spectrum helper covers matter/shear fields and a constant
+linear-bias galaxy approximation. It does not supply discrete cluster
+legs or shared-object noise terms. A full cluster joint matrix also
+needs cluster SSC/cNG, count–cluster-spectrum terms, consistent catalog
+normalizations and the project's estimator transforms.
 
 `survey.realspace_covariance` and `survey.fourier_covariance` receive an initialized project interface,
 resolved integration settings, the observable row map and catalog noise.
