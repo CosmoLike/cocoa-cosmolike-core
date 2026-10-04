@@ -1,6 +1,14 @@
 ---
 name: cosmolike-dev
-description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c, halo.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, tomographic C_ell, halo model, or HOD appear in a C-code context, even if optimization isn't mentioned explicitly. Use it as well for the Python of the Cosmolike repositories: cosmolike_notebook_utils (the data-vector plotting functions such as plot_datavectors and plot_datavectors_cluster, the CAMB helper, the Fisher helpers), cocoa_testing.py, and each project's likelihood, notebook wrappers, notebooks, tests and scripts.
+description: >-
+  Development, optimization, review and debugging of CosmoLike/Cocoa C and
+  Python. Use for C patches, hot loops, OpenMP/SIMD, GSL, FFTW/FAST-PT,
+  nondeterministic chi2, perf benchmarks and performance claims. Applies to
+  Limber and non-Limber calculations, TATT, NLA, 3x2pt, Legendre sums,
+  tomographic C_ell, halo models and HOD, even without optimization work.
+  Also covers cosmolike_notebook_utils (data-vector and covariance plotting,
+  CAMB and Fisher helpers), cocoa_testing.py, and each project's likelihoods,
+  notebook wrappers, notebooks, tests and scripts.
 ---
 
 # CosmoLike Development
@@ -40,7 +48,7 @@ Which growth factor the D^1.15 of the Bhattacharya concentration takes with
 neutrinos (no paper says; recommended: the cb growth at halo scales in both
 the prefactor and nu): `references/fable_review_concentration_growth.md`.
 
-**Neutrino halo model (owner approved Phases 2 and 3, 2026-10-03).**
+**Neutrino halo model.**
 Plan and decisions: `references/neutrino_growth_plan.md`. Implementation
 and measured checks: `references/sigma_fftlog_implementation.md`.
 The C FFTLog tables expose both matter and cb variances and mass slopes
@@ -55,7 +63,7 @@ implementation remain separate decisions. p_mm/p_my/p_yy remain outside
 the compiled code. The cfastpt frequency-window comments already describe
 the tapered top fraction correctly.
 
-**Covariance rewrite (owner request, 2026-10-03).** Before covariance work,
+**Covariance rewrite.** Before covariance work,
 read `references/covariance_rewrite.md` and the external study at
 `test/cosmocov_port_study/PLAN.md`. The implementation lives in the plural
 `cosmolike/covariances/` directory. Do not modify any existing C file
@@ -78,7 +86,7 @@ study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
 do not build elaborate recovery paths. Never push; local commits are allowed.
 
-**Public documentation (owner clarification, 2026-10-03).** READMEs are
+**Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.
 Explain the physics, define symbols and approximations, and describe each
 source file and how its calculation fits into the module. Cite the papers
@@ -91,13 +99,18 @@ from the repository; do not present a developer's external harness as a
 public test interface. State implemented capabilities and remaining limits
 without turning the README into a development log.
 
-**Survey accuracy and Roman (owner clarification, 2026-10-03).** The
+Write skill instructions as impersonal project guidance for all
+contributors. State the requirement and its rationale directly, without
+personal names, quotations or conversational attributions. Retain
+scientific citations and dates that identify measurements or sources.
+
+**Survey accuracy and Roman.** The
 old study's 1e-6 per-entry reference-refinement target is not a universal
 production covariance requirement. Do not transfer the data-vector
 |delta chi2| < 0.2 rule to covariance convergence. Assess numerical
 refinement through marginalized Figure of Merit and parameter errors,
 with positive-definiteness checks and relative covariance-mode diagnostics.
-The owner's suggested 1e-3 scale is a starting numerical target, not a
+The proposed 1e-3 scale is a starting numerical target, not a
 literature-mandated accuracy of the physical covariance model. See
 `references/covariance_accuracy.md` for papers, proposals and limitations.
 Keep tight algebra, units and determinism checks separate.
@@ -140,7 +153,7 @@ quiet machine and one benchmark at a time, with no concurrent tests,
 builds, CAMB jobs or other computational experiments. Do not report
 contended preflight timings as optimization evidence.
 
-**Covariance parallelism (owner clarification, 2026-10-03).** Strong
+**Covariance parallelism.** Strong
 scaling to 8--10 OpenMP cores per process is a primary requirement.
 Measure 1, 2, 4 and 8 threads on this laptop; do not accept good 2--3-core
 scaling as sufficient. Audit small outer-loop counts, serial setup and
@@ -156,7 +169,7 @@ five MPI processes times eight threads or four times ten. Keep shared
 tables reusable within a process and make block inputs explicit; do not
 implement an MPI layer or a speculative block framework before needed.
 
-**Notebook covariance workflows (owner clarification, 2026-10-03).**
+**Notebook covariance workflows.**
 Develop the first public examples in `projects/lsst_y1/covariance/`, using
 explicit LSST Y1 survey inputs. Keep reusable Python calculations in
 `cosmolike_notebook_utils`, with the initialized project interface passed
@@ -195,8 +208,8 @@ overlap; combining lens families introduces the failing mode. Never copy
 the legacy writer's equal-lens-only NG rule into the rewrite. Compute
 cross-lens covariance terms even when those spectra are absent from the
 data vector; their C implementation stays covariance-owned.
-The owner prioritizes the future Roman generator over recovering the old
-file's provenance. Use its failure to design regression tests: recompute
+Prioritize the future Roman generator over recovering the old file's
+provenance. Use its failure to design regression tests: recompute
 physical cross-lens responses, retain complete subblock coverage, and
 check full and selected total matrices. Do not make historical attribution
 a prerequisite for developing and validating the new covariance.
@@ -218,8 +231,8 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
 1. **Correctness is non-negotiable, at the scale physics can see.** The
    pass criterion of a frozen-reference test is |chi2 - reference| < 0.2
    (`CHI2_TOLERANCE`): no physics is detectable below that (CAMB settings,
-   CAMB versus CLASS already move chi2 by that much), so the owner does not
-   tighten it. Record chi2 and its difference to at least four decimals so
+   CAMB versus CLASS already move chi2 by that much). Keep this threshold
+   unchanged. Record chi2 and its difference to at least four decimals so
    drift below the threshold stays visible. Separately, an optimization or
    refactor that is not meant to change the physics is checked on the full
    unmasked data vector, not on chi2 alone (see the validation protocol).
@@ -234,8 +247,8 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    isolation. Never bundle a refactor with an optimization in one commit.
 5. **Keep a checkable reference for optimizations.** Scalar comparison
    implementations belong in external tests, not selectable production
-   branches. The owner retired `COSMO2D_NOT_USE_SIMD`, `HALO_NOT_USE_SIMD`
-   and the covariance scalar switch: optimized and debug builds always
+   branches. `COSMO2D_NOT_USE_SIMD`, `HALO_NOT_USE_SIMD` and the covariance
+   scalar switch are retired: optimized and debug builds always
    compile the existing SIMDe paths. Keep scalar single-point kernels and
    vector tails where the algorithm needs them. See the retirement record
    for the pinned historical source and independent validation checks.
@@ -248,8 +261,8 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    grids. Do not reintroduce binary searches into these optimized paths:
    they add branches and scattered table reads that the existing metadata
    was designed to avoid. This applies to every build, including debug:
-   the owner retired COSMO3D_ASSUME_PIECEWISE_UNIFORM and its binary-search
-   alternatives. Setters always construct and validate the metadata.
+   COSMO3D_ASSUME_PIECEWISE_UNIFORM and its binary-search alternatives are
+   retired. Setters always construct and validate the metadata.
 7. **Determinism is a correctness test.** If chi2 varies run-to-run or with
    `OMP_NUM_THREADS`, there is a race or uninitialized memory. Full stop. Do
    not proceed until it is found.
@@ -308,7 +321,7 @@ Run all of these before declaring a change correct:
   - default: strict IEEE-754 (`-fno-fast-math -frounding-math
     -ftrapping-math -fsignaling-nans`) with LTO + unrolling. This is the
     bit-reproducibility reference.
-  - Aggressive mode is retired (owner decision, 2026-10-03). Makefiles
+  - Aggressive mode is retired. Makefiles
     reject `COSMOLIKE_AGGRESSIVE_MODE`: the fast-math build produced incorrect
     covariance inverses even with OpenBLAS at one thread. Do not reintroduce
     it or enable `-ffast-math`, `-Ofast`, `-funsafe-math-optimizations`,
@@ -371,15 +384,14 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
 ## Which model reviews and writes documentation
 
 Documentation passes and reviews go to **Fable 5** (model id
-`claude-fable-5`), never Fable 5.1 - Vivian (2026-09-29): "I am
-comfortable with Fable 5 - not 5.1". The Agent tool's generic `fable`
-setting does not pin the version: use the `fable5` agent type
+`claude-fable-5`), not Fable 5.1. The Agent tool's generic `fable` setting
+does not pin the version: use the `fable5` agent type
 (`.claude/agents/fable5.md`, frontmatter `model: claude-fable-5`) for
 every Fable task.
 
 ## Clean & Human-Readable Code Style Guide
 
-**Ticket completion gate (owner clarification, 2026-10-03).** After the
+**Ticket completion gate.** After the
 implementation and tests for each major ticket, make a separate didactic
 red-eye review pass before starting the next major ticket. A ticket is a
 substantial component, such as the Gaussian covariance foundation; it is
@@ -390,14 +402,11 @@ can be followed without unstated specialist knowledge. Fix unclear prose
 and dense code, and rerun relevant checks if the review changes behavior.
 Record the review and any remaining limitations with the ticket's results.
 
-(Vivian, 2026-09-29: "you wrote the code to be fast - you got that - but
-at the same time you wrote a code in a way only another AI understand -
-student is not AI".)
-
 ### Mission
 You MUST prioritize human scannability, structural clarity, and
 junior-developer (i.e., student) readability over compact or clever code
-syntax.
+syntax. Optimized code must remain understandable to a physics student;
+runtime performance does not replace clear explanations.
 
 ### Non-Negotiable Formatting Boundaries
 1. **Vertical Breathing Room:** Always separate logical blocks, variable
@@ -428,13 +437,13 @@ syntax.
    Wrap function arguments, comparisons, and intrinsic calls at natural
    boundaries. Check line lengths during the ticket's didactic review.
 
-Also (same review): variable names say the physics (`n_gal`, `b_gal`,
+Variable names say the physics (`n_gal`, `b_gal`,
 not `ng`, `bg`, `tq`, `occ`); logs are `ln<quantity>` (`lnk`, `lnx`,
 `ln1c` — a bare `l` prefix like `l1c` or `lc` is banned); one statement
 per line. Speed is never the excuse: names, blank lines and comments
 cost nothing at run time.
 
-### Visual Code Geography (Vivian, 2026-09-29, second guide)
+### Visual Code Geography
 
 - **Section banners.** Major logical sections are wrapped in distinct
   banners:
@@ -450,14 +459,13 @@ cost nothing at run time.
   functions or mathematical definitions; 1 blank line inside a function
   between phases (pre-computation vs the integration loop).
 
-### SIMD code a student can read (Vivian, 2026-09-29)
+### SIMD code a student can read
 
-On a nested call like `nfw_um4(simde_mm256_loadu_pd(conc_gal + q),
-simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)), ...)`: "very
-hard to understand - put comments right in front of lines that use
-simde and split the calls in multiple lines so a student can
-understand". The owner's clarification (2026-10-03) applies to **every
-SIMDe call**, including repetitions of a previously explained intrinsic.
+Split nested expressions such as
+`nfw_um4(simde_mm256_loadu_pd(conc_gal + q),
+simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)), ...)` into named
+steps. Explain **every SIMDe call** immediately before it, including
+repetitions of a previously explained intrinsic.
 SIMD means applying the same operation to several numbers at once; each
 number occupies a vector position called a lane. Do not assume a physics
 student already knows these terms or the intrinsic naming conventions.
@@ -753,14 +761,12 @@ integral family:
   > 1; all three together 0.09 / 0.13 for ~0.1 s - most of the whole
   code's 0.2 budget for nothing. Re-open only if a profile shows the
   halo builds hot again (then with coarse-exact + spline upsample, not
-  plain linear reads). Vivian (2026-09-29): the acceptance rule is the
-  BUDGET - "all we need is the sum of all errors in the code to be at
-  <~ 0.2 in chi2" - so 128 nodes (2.1e-8) is not even close to
-  mattering; no purist margins while the builds cost MCMC time. Her
-  floor: never below 64 nodes ("the lowest I go is 64"). Her comment
-  rule: source comments never quote a knob's current value (the code
-  and this file carry the numbers; comments carry the physics and the
-  algorithm).
+  plain linear reads). Acceptance depends on the total numerical error
+  budget, |delta chi2| < 0.2 across the code. The 128-node result (2.1e-8)
+  is far below that threshold; additional numerical precision must be
+  justified against its MCMC runtime cost. Keep at least 64 nodes.
+  Source comments explain the physics and algorithm rather than quoting
+  a knob's current value; the code and this reference hold the settings.
   P(k)-level convergence is slow at HIGH k only (the NFW ringing is
   sampled in ln M; worst over k up to 330 h/Mpc: I02 1e-4 / 8e-4 at
   512 / 256 nodes, and at 256 nodes `p_gg` moves by up to 2.4e-3), but
@@ -835,13 +841,11 @@ Trapezoid rules, uniform in a log variable:
 
 ### Accuracy tests must see the small scales (masks hide them)
 
-Vivian (2026-09-29): "HoD is important on small scales - if your test
-is being done on a conservative masking that masks small scales - you
-will improperly conclude that you can lower accuracy settings more
-than you really should." Worse than hiding them: the data vector is
-evaluated MASKED - the model is not even computed at cut points
-(delta = 0 there exactly) - so a test under a production mask is
-structurally blind to them.
+HOD effects are important on small scales. Tests using conservative
+scale cuts can miss numerical errors there and incorrectly support
+lower accuracy settings. The data vector is evaluated with the mask:
+the model is not computed at cut points, so delta is exactly zero there.
+A production-mask test alone cannot assess accuracy on those scales.
 
 Protocol for any halo/HOD/small-scale knob:
 1. Evaluate the model with no cuts: a scratch dataset with ones.mask
@@ -991,14 +995,14 @@ independent Python (numpy/mpmath) reference:
 `*_nointerp` functions with real C callers (table fills, other
 integrands) stay until deep unrolling folds them into their owner.
 
-## When the maintainer's intent is unclear
+## When a request is unclear
 
-If a request from the maintainer (Vivian) is ambiguous, or a first
-reading keeps getting corrected, do not act on a guess and do not ask
-her to re-explain first. Launch a subagent with `model: "fable"`: give
-it her words verbatim, the relevant code paths and the current reading,
-and ask what she wants, what she does not want, and the concrete next
-action. Act on that interpretation and state it to her in one line.
+If a request is ambiguous, or its interpretation repeatedly needs
+correction, do not act on a guess. Before asking for another explanation,
+launch a subagent with `model: "fable"`, supplying the request verbatim,
+the relevant code paths and the current interpretation. Ask it to identify
+the intended scope, exclusions and concrete next action. Act on that
+interpretation and state it to the requester in one line.
 Clear requests need no consult.
 
 ## Patch review checklist
