@@ -84,6 +84,12 @@ void halo_response_cov(
 
   // --- 1. COEFFICIENTS SHARED BY EVERY WAVENUMBER ---
 
+  // The response prescription separates a change in clustering strength
+  // from a shift in physical length scale. Its two coefficients apply to
+  // every point; the power and its slope carry the dependence on k and a.
+  // Giving both lanes the same coefficients lets the following loop apply
+  // that prescription to two different points at once.
+
   // Copy the growth coefficient to both lanes, so each point receives
   // the same response prescription without mixing their power spectra.
   const v2d vgrowth = simde_mm_set1_pd(growth_coefficient);
@@ -108,6 +114,11 @@ void halo_response_cov(
 
     // --- 2. LOAD THE SIX PHYSICAL INPUTS AT BOTH POINTS ---
 
+    // A response needs both the unperturbed power and how it changes.
+    // P_lin, I11 and I02 build the halo power; I12 and the supplied slope
+    // describe its response. P_target is used only for fractional rescaling.
+    // Each iteration selects one quantity and copies its values at the two
+    // points into separate lanes, keeping all six quantities aligned.
     for (int role=0; role<6; role++) {
       // set_pd takes lane 1 first: lane 0 gets inputs[role][point],
       // lane 1 gets inputs[role][next]. Role order is defined above.
@@ -115,6 +126,12 @@ void halo_response_cov(
     }
 
     // --- 3. P_halo = I11^2 P_lin + I02 ---
+
+    // Two density factors can belong to the same halo or to separate halos.
+    // I02 includes their common halo profile and abundance in the first
+    // case. In the second, P_lin correlates the halo positions, with one
+    // bias-weighted profile factor I11 for each halo. Adding both cases
+    // gives the power whose fractional change is needed below.
 
     // Square I11 independently at each point; no cross-point product.
     const v2d vi11_squared = simde_mm_mul_pd(values[2], values[2]);
@@ -126,6 +143,13 @@ void halo_response_cov(
     const v2d vhalo = simde_mm_add_pd(vp2h, values[3]);
 
     // --- 4. D_halo = (growth - dilation*slope) P_2h + I12 ---
+
+    // D_halo is the derivative of power with respect to a background
+    // overdensity, evaluated at zero overdensity. The slope term accounts
+    // for shifting k along a nonconstant spectrum; the growth term changes
+    // its amplitude. I12 adds the response of the one-halo contribution.
+    // The optional rescaling keeps D_halo/P_halo while replacing the power
+    // amplitude by P_target. This is a model choice, not another halo term.
 
     // fnmadd means -(first*second)+third: here growth-dilation*slope.
     // Each lane uses one fused rounding on native FMA hardware.
@@ -145,6 +169,10 @@ void halo_response_cov(
     }
 
     // --- 5. WRITE THE TWO PHYSICAL OUTPUT ROWS ---
+
+    // Return power and response separately so the caller can inspect their
+    // ratio and form the survey's SSC response. The two SIMD lanes describe
+    // different points, so they become adjacent entries rather than a sum.
 
     double result[2][2];
 
@@ -169,6 +197,9 @@ void halo_response_cov(
 // ---------------------------------------------------------------------------
 // Assemble the five connected halo contributions at each (K,Q,a).
 //
+// Here K=|k| and Q=|q| are wavenumber magnitudes; a is the scale factor.
+// A density "leg" means one of the four Fourier factors delta(k),
+// delta(-k), delta(q), delta(-q) in the power-spectrum covariance.
 // Four density legs can occupy one, two, three or four halos. Two halos
 // have two different partitions: one leg plus three, or two plus two.
 // For the covariance parallelogram (k,-k,q,-q), angular averaging gives
@@ -245,6 +276,18 @@ void halo_trispectrum_cov(
 
     // --- 1. PACK THE INPUTS WITHOUT MIXING K AND Q ---
 
+    // One trispectrum value combines two physical scales, K and Q, at the
+    // same time a. Both scales must stay inside one SIMD lane. Lane 0 holds
+    // the whole configuration at point; lane 1 holds the one at next.
+    // For example, vp[0] contains [P_K(point), P_K(next)], while vp[1]
+    // contains [P_Q(point), P_Q(next)]; K and Q are not the two lanes.
+    // This arrangement evaluates the same physics twice without coupling
+    // unrelated configurations. The three loops collect its ingredients:
+    // single-leg factors, shared-halo moments, and correlations among halos.
+
+    // P_lin describes the correlation linking two halo positions. I11 adds
+    // a halo's bias-weighted density profile for one leg. Read both at K,
+    // then both at Q, so the 1+3 terms can attach the correct isolated leg.
     for (int role=0; role<2; role++) {
       // set_pd takes lane 1 first, so lane 0 gets P at point and lane 1
       // P at next. role selects K or Q; lanes select independent pairs.
@@ -255,19 +298,36 @@ void halo_trispectrum_cov(
       vi[role] = simde_mm_set_pd(i11[role][next], i11[role][point]);
     }
 
+    // A mass moment combines density profiles whose legs share one halo,
+    // weighted by halo abundance and, where needed, bias. Preserve the
+    // supplied row order: I02, I12, I13(K,Q,Q), I13(K,K,Q), I04. The two
+    // I13 rows differ because the halo can contain two Q legs or two K legs.
     for (int role=0; role<5; role++) {
       // Pack one halo-moment role for both points. set_pd puts its last
       // argument in lane 0; vm[role] is [moment(point), moment(next)].
       vm[role] = simde_mm_set_pd(moments[role][next], moments[role][point]);
     }
 
+    // Separate halos still need correlations between their positions.
+    // AvgP, AvgB and AvgT supply the two-, three- and connected four-point
+    // correlations, already averaged over the relative angle of k and q.
+    // This loop aligns each average with its own K,Q configuration; it
+    // performs no new angular integral and never averages the SIMD lanes.
     for (int role=0; role<3; role++) {
       // Pack AvgP, AvgB or AvgT in point/next lane order. set_pd receives
       // the next-point value first because it fills the high lane first.
       vt[role] = simde_mm_set_pd(tree[role][next], tree[role][point]);
     }
 
-    // --- 2. ONE HALO AND THE TWO 1+3 PARTITIONS ---
+    // --- 2. ONE-HALO TERM AND 1+3 TWO-HALO TERM ---
+
+    // If all four legs share a halo, I04 already contains the full term.
+    // For two halos with one leg in one and three in the other, a linear
+    // power links I11 for the isolated leg to I13 for the remaining legs.
+    // Isolating k leaves magnitudes K,Q,Q; isolating q leaves K,K,Q.
+    // Isolating -k or -q gives the same respective contribution, explaining
+    // the factor two on each group. Thus there are four partitions, grouped
+    // into two products. Every product stays within its configuration's lane.
 
     // Multiply I11(K)*I11(Q) within each pair for the later 3h/4h terms.
     const v2d vi_product = simde_mm_mul_pd(vi[0], vi[1]);
@@ -297,6 +357,13 @@ void halo_trispectrum_cov(
 
     // --- 3. TWO HALOS WITH TWO LEGS EACH ---
 
+    // Each halo now contains one K leg and one Q leg, giving two factors
+    // of I12(K,Q). Their positions correlate through the exchanged power.
+    // Pairing k with q or with -q gives two channels with the same angular
+    // average AvgP, hence 2*I12^2*AvgP. The zero-exchange pairing (k,-k)
+    // with (q,-q) is excluded from this cNG term; survey-background effects
+    // are handled separately in SSC.
+
     // Square I12(K,Q) independently for each pair of external magnitudes.
     const v2d vi12_squared = simde_mm_mul_pd(vm[1], vm[1]);
 
@@ -307,6 +374,13 @@ void halo_trispectrum_cov(
     vterms[2] = simde_mm_mul_pd(vtwo_i12_squared, vt[0]);
 
     // --- 4. THREE HALOS AND FOUR HALOS ---
+
+    // With three halos, one contains two legs and the others one each.
+    // Their mass weights are I12*I11(K)*I11(Q); AvgB correlates the three
+    // halo positions. Four surviving choices of the paired legs give the
+    // multiplicity four. With four halos, every leg has its own I11 factor,
+    // giving I11(K)^2*I11(Q)^2. AvgT then supplies the connected correlation
+    // between those four halos. Neither step mixes different SIMD points.
 
     // Join the two-leg halo I12 to the two single-leg I11 factors.
     const v2d vthree_halo_weight = simde_mm_mul_pd(vm[1], vi_product);
@@ -325,6 +399,11 @@ void halo_trispectrum_cov(
 
     // --- 5. KEEP EACH HALO CONTRIBUTION IN ITS OWN OUTPUT ROW ---
 
+    // Keep the five physical contributions separate so their signs and
+    // relative sizes can be checked before survey projection. One iteration
+    // writes a halo term's two point values into the matching output row:
+    // 1h, 2h(1+3), 2h(2+2), 3h or 4h. These lanes are never added together;
+    // if the last point was duplicated for reading, write it only once.
     for (int role=0; role<5; role++) {
       double result[2];
 

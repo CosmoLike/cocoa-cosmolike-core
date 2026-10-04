@@ -459,6 +459,15 @@ runtime performance does not replace clear explanations.
    lines.
 2. **Visual Banners:** Use distinct, short uppercase comment banners to
    section out complex algorithms (e.g., `// --- 1. CONFIGURATION ---`).
+   A banner is a navigation label, not an explanation. Before a substantial
+   sequence, follow it with a short paragraph connecting the physical
+   purpose to the calculation: define the quantities, explain why these
+   inputs or terms belong together, and state the result this stage supplies
+   to the next one. For SIMD, distinguish physical indices from vector lanes
+   and explain which quantities interact within one lane. Keep the detailed
+   per-call comments too. During didactic review, read each stage introduction
+   without its code: it must explain the reasoning, not repeat the heading
+   or list operations such as "pack, multiply, store."
 3. **Assignment Alignment:** Where clear and practical, vertically align
    consecutive `=` assignment operators to keep variable declarations
    neat and organized.
