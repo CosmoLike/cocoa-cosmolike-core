@@ -77,6 +77,7 @@ Function comments explain equations, units and array contents.
 | [counts_cluster_cov.c](counts_cluster_cov.c), [header](counts_cluster_cov.h) | Shell volumes convert supplied selected cluster abundances and their density responses into count quantities. |
 | [spectra_cluster_cov.c](spectra_cluster_cov.c), [header](spectra_cluster_cov.h) | Project supplied cluster windows, biases and mass profiles into every cluster–galaxy, cluster–shear and cluster–cluster spectrum. |
 | [moments_cluster_cov.c](moments_cluster_cov.c), [header](moments_cluster_cov.h) | Integrate supplied selected halo populations, their abundance responses and one-, two- and three-profile mass moments. |
+| [halo_cluster_cov.c](halo_cluster_cov.c), [header](halo_cluster_cov.h) | Sample the initialized halo and richness model on a supplied covariance mass rule, for use by the selected-moment integrator. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
 | [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
@@ -580,6 +581,23 @@ mass function, quadrature, density convention and selection. There is
 no low-mass completion for unobserved clusters. Angular projection,
 catalog normalization, environmental selection changes and assembly of
 the complete cluster covariance remain separate calculations.
+
+`halo_cluster_cov.c` prepares those inputs from the initialized massless
+halo model and lognormal richness relation. It reads the cold variance,
+halo bias, concentration and NFW profile through public core functions.
+The cluster HMF setting selects either the fixed Tinker amplitude 0.368
+or the amplitude normalized by the mass-weighted bias integral. The
+wavenumber and mass integration grids are supplied separately from the
+data-vector grids. See [Tinker et al.](https://arxiv.org/abs/1001.3162)
+for the multiplicity function and its bias normalization.
+
+The Python binding returns selected mass weights, halo biases and
+mass-weighted profiles, retaining their mass axis for inspection or
+integration. Richness membership is included once. Photometric redshift
+membership, catalog normalization and an environmental selection response
+are not added. The supported setting has `selection_model=0`; fitted
+lensing-selection factors cannot be identified with a count response
+without a physical model for that relation.
 
 ## From spectra to measured bins: `operators_cov.c` <a name="operators"></a>
 

@@ -107,3 +107,59 @@ operation. Loop overviews explain the physical sum and independent work.
 C/header and added C++ lines fit 80 columns; declarations and predicates
 are separated. Public README text defines the selected moments and links
 the primary papers, with no machine-local harness or bot-skill dependency.
+
+## Batched physical sample reader (2026-10-04)
+
+`halo_cluster_cov.c/h` and `covariance_cluster_halo_samples` prepare selected
+mass weights, linear halo biases and (M/rho_m)*u profiles on supplied mass
+and wavenumber nodes. The massless/NFW/lognormal/selection_model=0 contract
+is checked before C. Public sigma_cb, slope, fnu, bias, concentration and
+profile readers are warmed serially and then read by independent OpenMP
+iterations. No data-vector setting or C file is changed. The exact k=0
+profile is handled as u=1: the scalar public NFW expression itself yields
+NaN at zero, which the first integration check exposed. The tests now
+explicitly require finite output before comparing reference arrays.
+
+The initialized cluster HMF mode selects fixed alpha=0.368 or normalized
+fnu. Fixed mode rescales public fnu by the fixed/public ratio at nu=1,
+computed once per scale factor. Both functions have the same nu shape;
+the wrapper requires HMF_TINKER_2010. An independent direct evaluation of
+the fixed-alpha formula tests this identity at every mass, including
+scale factors 0.20/0.25 on either side of the z=3 fit boundary. No
+low-mass completion or photo-z selection is added. The output can feed
+the existing supplied-weight integrator without a second physical model.
+
+The complete optimized DES covariance checks pass 39 tests, ten of which
+test this reader. Mass counts 1/2/9/257, both HMF modes, four scale
+factors and three wavenumbers per state agree with scalar references.
+Weight tolerance is 5e-14 relative, profile tolerance 3e-15; bias is
+bitwise equal. Outputs repeat bitwise at 1/2/4/8 threads, remain owned
+after later calls, and integrate to the independently summed abundance.
+
+A two-shell physical-profile finite difference independently perturbs
+the mass weights by (1+b*delta), recomputes the angular numerator AND the
+total selected catalog denominator, and agrees with the existing C SSC
+shell response within 3e-8 relative at delta=1e-6. The local own-profile
+response is J11/n with a fixed reference n. Survey-mean subtraction uses
+the full projected signal times U(chi)=f_K^2 B/nbar. Subtracting b*P
+locally first and then applying the projected subtraction would double
+count the normalization response. This test covers the fixed-profile,
+fixed-selection one-halo piece, not the unimplemented full cluster SSC.
+
+An isolated O0/UBSan/float-divide-by-zero build of this production C file
+shares the initialized core readers with the optimized project. All 32
+combinations of HMF mode, mass count and 1/2/4/8 threads pass; debug and
+optimized arrays agree within 3e-15 relative, and debug thread results are
+bitwise equal. The optimized project is not relinked to debug. External
+driver: `test/covariance_reference/check_cluster_halo_samples_debug.py`.
+No timing result is claimed while the project regressions are running.
+
+The separate didactic review read the full C/header, binding, tests and
+public README after those checks. It checked: dn versus selected dn;
+rho_cb versus the massless restriction; the HMF amplitude convention;
+one-factor membership; fixed versus observed normalization; the k=0
+Fourier limit; serial warmup; scratch lifetime; collapse over independent
+outputs; every SIMD lane/load/multiply/store; and 80-column C/C++ lines.
+Public documentation explains the physical samples and their limits,
+without linking developer harnesses or bot instructions. README rendering,
+anchors and local links pass.

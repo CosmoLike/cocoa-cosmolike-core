@@ -7,6 +7,10 @@
 #include "counts_cluster_cov.h"
 #include "spectra_cluster_cov.h"
 #include "moments_cluster_cov.h"
+#include "halo_cluster_cov.h"
+#include "cosmolike/halo.h"
+#include "cosmolike/structs.h"
+#include "cosmolike/structs_cluster.h"
 
 namespace py = pybind11;
 
@@ -368,8 +372,144 @@ static py::dict covariance_cluster_moments(
 }
 
 
+// ---------------------------------------------------------------------------
+// Read physical halo inputs on a caller-owned covariance mass rule.
+//
+// This is separate from the supplied-weight moment integrator: notebooks
+// can inspect the abundance/profile samples or pass an independent model
+// to that integrator. All state and shape guards precede lazy core reads,
+// allocation and parallel work. The output arrays own their storage.
+// ---------------------------------------------------------------------------
+static py::dict covariance_cluster_halo_samples(
+    const cluster_cov_array& a,       // scale factors [state]
+    const cluster_cov_array& k,       // core wavenumbers [state,k]
+    const cluster_cov_array& lnm,     // log masses [mass]
+    const cluster_cov_array& dlnm     // positive quadrature measures [mass]
+  )
+{
+  if (a.ndim() != 1
+      || a.size() < 1
+      || k.ndim() != 2
+      || k.shape(0) != a.size()
+      || k.shape(1) < 1
+      || lnm.ndim() != 1
+      || lnm.size() < 1
+      || dlnm.ndim() != 1
+      || dlnm.size() != lnm.size()) {
+    throw std::invalid_argument(
+        "need nonempty a[state], k[state,k], lnm[mass], dlnm[mass]");
+  }
+  if (cosmology.Omega_nu != 0.0
+      || cosmology.Omega_m <= 0.0
+      || like.halo_model[0] != HMF_TINKER_2010
+      || like.halo_model[3] != HALO_PROFILE_NFW
+      || cluster.richness_nbin < 1
+      || cluster.mor_model != CLUSTER_MOR_LOGNORMAL
+      || cluster.selection_model != CLUSTER_SELECTION_NONE
+      || cluster.mor[2] <= 0.0
+      || cluster.mor_pivot_mass <= 0.0
+      || cluster.mor_pivot_1pz <= 0.0) {
+    throw std::invalid_argument(
+        "initialize massless cosmology, NFW halos, richness bins and a "
+        "lognormal MOR with positive scatter and selection_model=0");
+  }
+  if (cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_FIXED
+      && cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_NORMALIZED) {
+    throw std::invalid_argument("cluster hmf_alpha_mode must be 0 or 1");
+  }
+  for (const auto* input : {&a, &k, &lnm, &dlnm}) {
+    for (py::ssize_t entry=0; entry<input->size(); entry++) {
+      if (!std::isfinite(input->data()[entry])) {
+        throw std::invalid_argument("halo sample inputs must be finite");
+      }
+    }
+  }
+  for (py::ssize_t state=0; state<a.size(); state++) {
+    if (a.data()[state] < limits.a_min
+        || a.data()[state] >= 1.0) {
+      throw std::invalid_argument("a must lie in [limits.a_min,1)");
+    }
+  }
+  for (py::ssize_t entry=0; entry<k.size(); entry++) {
+    if (k.data()[entry] < 0.0) {
+      throw std::invalid_argument("k must be nonnegative in core units");
+    }
+  }
+  for (py::ssize_t node=0; node<lnm.size(); node++) {
+    if (lnm.data()[node] < std::log(limits.halo_m[RANGE_MIN])
+        || lnm.data()[node] > std::log(limits.halo_m[RANGE_MAX])
+        || dlnm.data()[node] <= 0.0) {
+      throw std::invalid_argument(
+          "lnm must lie in the core sigma mass range; dlnm must be > 0");
+    }
+  }
+
+  const py::ssize_t na = a.size(); // independent scale-factor states
+  const py::ssize_t nk = k.shape(1); // wavenumbers per state
+  const py::ssize_t nmass = lnm.size(); // mass quadrature nodes
+  const py::ssize_t nrichness = cluster.richness_nbin; // selection bins
+  cluster_cov_array weight({na, nrichness, nmass}); // selected dn, L^-3
+  cluster_cov_array bias({na, nmass}); // dimensionless linear halo bias
+  cluster_cov_array profile({na, nk, nmass}); // (M/rho)*u, L^3
+  std::vector<const double*> k_rows(na); // input row views
+  std::vector<double*> weight_rows(na*nrichness); // output mass rows
+  std::vector<double**> weight_planes(na); // state views of richness rows
+  std::vector<double*> bias_rows(na); // output bias mass rows
+  std::vector<double*> profile_rows(na*nk); // output profile mass rows
+  std::vector<double**> profile_planes(na); // state views of k rows
+
+  // Numerical values stay in NumPy-owned contiguous arrays. Only these
+  // small pointer maps translate their axes into C's row-pointer format.
+  for (py::ssize_t state=0; state<na; state++) {
+    k_rows[state] = k.data(state, 0);
+    weight_planes[state] = weight_rows.data()+state*nrichness;
+    bias_rows[state] = bias.mutable_data(state, 0);
+    profile_planes[state] = profile_rows.data()+state*nk;
+    for (py::ssize_t bin=0; bin<nrichness; bin++) {
+      weight_rows[state*nrichness+bin] = weight.mutable_data(state, bin, 0);
+    }
+    for (py::ssize_t mode=0; mode<nk; mode++) {
+      profile_rows[state*nk+mode] = profile.mutable_data(state, mode, 0);
+    }
+  }
+  halo_samples_cluster_cov(na, a.data(), nk, k_rows.data(), nmass,
+      lnm.data(), dlnm.data(), weight_planes.data(), bias_rows.data(),
+      profile_planes.data());
+
+  py::dict result;
+  result["weight"] = weight;
+  result["bias"] = bias;
+  result["profile"] = profile;
+  return result;
+}
+
+
 void bind_covariance_cluster(py::module_& module)
 {
+  module.def("covariance_cluster_halo_samples",
+      &covariance_cluster_halo_samples,
+      R"doc(Sample the initialized halo/richness model on covariance nodes.
+
+Arguments (contiguous float64):
+    a: [state], limits.a_min <= a < 1.
+    k: [state,k], nonnegative wavenumbers in inverse c/H0.
+    lnm: [mass], ln(M/[Msun/h]) inside the core sigma mass range.
+    dlnm: [mass], positive quadrature weights for dlnM.
+Returns:
+    Owned weight[state,richness,mass], selected dn in (c/H0)^-3;
+    bias[state,mass], dimensionless linear halo bias;
+    profile[state,k,mass], (M/rho_m)*u_NFW in (c/H0)^3.
+    Pass these arrays to covariance_cluster_moments for mass integration.
+Scope:
+    Requires initialized massless cosmology, NFW, lognormal richness
+    selection and selection_model=0. The HMF amplitude follows the
+    initialized cluster hmf_alpha_mode. No redshift-bin selection, low-mass
+    completion, catalog normalization or environmental response is added.
+    Core reader tables are warmed serially; model settings are not changed.
+)doc",
+      py::arg("a").noconvert(), py::arg("k").noconvert(),
+      py::arg("lnm").noconvert(), py::arg("dlnm").noconvert());
+
   module.def("covariance_cluster_moments", &covariance_cluster_moments,
       R"doc(Integrate selected halo moments with supplied mass quadrature.
 
