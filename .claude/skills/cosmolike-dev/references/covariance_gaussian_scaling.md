@@ -70,3 +70,33 @@ The external development record contains `benchmark_gaussian_blocks.py`,
 under `test/covariance_reference/`. Their JSON/NumPy results are internal
 measurement records, not public test prerequisites. Project regression
 results are appended after the sequential rebuild and test pass.
+
+## Complete project regression pass
+
+Every project was rebuilt and checked sequentially on 2026-10-04. The
+ordinary OpenMP build passed all covariance and data-vector suites:
+
+| Project | Covariance tests | Data-vector tests |
+|---|---:|---:|
+| lsst_y1 | 72 | 57 |
+| des_cluster | 46 | 29 |
+| roman_real | 1 | 104 |
+| roman_fourier | 1 | 45 |
+| roman_kl | 1 | 49 |
+| des_y3 | 1 | 63 |
+| desy1xplanck | 1 | 45 |
+| Total | 123 | 392 |
+
+Roman's optional slow halo checks were enabled. No frozen result or
+manifest was changed. Existing advisory accuracy scans report numerical
+differences without imposing the covariance convergence criterion; their
+completion is not a certification of an inference accuracy setting.
+
+The Gaussian C file also compiled successfully without OpenMP. Its
+OpenMP header is conditional, and ignored parallel pragmas introduce no
+serial-build dependency on the runtime.
+
+Subsequent covariance-only scheduling changes should rerun every project's
+covariance suite and frozen likelihood examples. Repeating all advisory
+baryon/accuracy scans is unnecessary unless the change or a failure gives
+a reason to revisit the data-vector baseline.
