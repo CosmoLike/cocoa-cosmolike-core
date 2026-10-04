@@ -78,6 +78,19 @@ study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
 do not build elaborate recovery paths. Never push; local commits are allowed.
 
+**Public documentation (owner clarification, 2026-10-03).** READMEs are
+for human readers, including advanced undergraduate physics students.
+Explain the physics, define symbols and approximations, and describe each
+source file and how its calculation fits into the module. Cite the papers
+directly. Never send readers to Claude/bot skills or untracked study
+directories for an explanation. Port the necessary physics into the
+README itself. Keep machine-local library paths, build commands, internal
+benchmark recipes and development history in the skill references.
+Document test suites in public documentation when they are reproducible
+from the repository; do not present a developer's external harness as a
+public test interface. State implemented capabilities and remaining limits
+without turning the README into a development log.
+
 **Survey accuracy and Roman (owner clarification, 2026-10-03).** The
 old study's 1e-6 per-entry reference-refinement target is not a universal
 production covariance requirement. Do not transfer the data-vector

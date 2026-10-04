@@ -243,3 +243,49 @@ Roman FoM convergence has not yet been measured.
 The full rewrite remains open in Cocoa's execution backlog. No claim of
 delta-chi-squared < 0.2 or of survey covariance convergence follows from
 the primitive tests or timing table.
+
+## Developer-only Gaussian reference workflow
+
+Moved from the public covariance README after the owner's documentation
+clarification. These commands depend on the owner's external checkout and
+local build environment; they are not instructions for a fresh core clone.
+The public README now explains the physics and each source file directly,
+with paper citations and no links to bot skills or untracked studies.
+
+The independent NumPy/mpmath reference lives outside git, at the owner's
+requested `test/covariance_reference/`. Its `build_primitives.sh` compiles
+the Gaussian production functions into an isolated library without relinking
+any project. From `test/`, with the Cocoa conda environment active on macOS:
+
+```bash
+bash covariance_reference/build_primitives.sh scalar
+bash covariance_reference/build_primitives.sh simd
+bash covariance_reference/build_primitives.sh debug
+bash covariance_reference/build_primitives.sh debug_simd
+export OPENBLAS_NUM_THREADS=1
+export COSMOLIKE_COVARIANCE_REFERENCE="$PWD/covariance_reference"
+export COSMOLIKE_COVARIANCE_LIBRARY="$PWD/covariance_reference/results/gaussian_simd.dylib"
+python cocoa/Cocoa/projects/lsst_y1/tests/test_covariance_primitives.py -v
+```
+
+Run the same test with each library. The project's pytest suite discovers
+it too, and reports a clear skip when the external paths are not set.
+For the kernel benchmark, with no other CPU-heavy jobs running:
+
+```bash
+OMP_PROC_BIND=disabled python covariance_reference/benchmark_projection.py \
+  covariance_reference/results/gaussian_scalar.dylib \
+  covariance_reference/results/gaussian_simd.dylib \
+  --repeats 51 --output covariance_reference/results/final_timing.json
+```
+
+The benchmark includes the C weighting pass and excludes input generation
+and allocation. It measures a supplied-spectrum projection, not CAMB,
+spectrum generation, or a full covariance. It does not establish a
+production accuracy setting.
+
+The scalar comparison compiles the pinned core baseline `6f055d0` with
+an explicit scalar `fma` sum; the production projection always uses SIMDe.
+Bitwise agreement was checked on native FMA/NEON. Targets that emulate
+FMA require their own rounding comparison. This historical workflow
+covers the Gaussian primitives, not every later covariance component.
