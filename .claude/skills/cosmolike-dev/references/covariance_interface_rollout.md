@@ -21,6 +21,11 @@ No C MPI calls. Preserve one BLAS thread and explicit 8--10-worker OpenMP
 parallelism. Numerical settings resolve from one user accuracy boost;
 retain the resolved settings alongside outputs.
 
+The first cluster component and its independent checks are recorded in
+`covariance_cluster_counts.md`: count-shell responses, Poisson counts and
+SSC from supplied selected abundances. The full cluster generator remains
+to be implemented; do not describe the galaxy/shear notebook as 6x2pt+N.
+
 ## First C++ wrapper ticket
 
 The current component bindings expose spectra, geometry, halo moments,

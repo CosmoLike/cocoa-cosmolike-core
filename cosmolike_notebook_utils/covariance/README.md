@@ -36,6 +36,7 @@ fluctuations larger than the survey. See
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
 | `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
+| `counts_cluster.py` | Integrate supplied selected cluster abundances and responses into count means, Poisson noise, count SSC and count–two-point SSC. This is not a full cluster forecast. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
 | `diagnostics.py` | Check symmetry, diagonal variances, raw/correlation eigenvalues and generalized covariance ratios. No clipping or diagonal correction is applied. |
 | `reference/` | Independent NumPy/SciPy/mpmath algorithms for component tests. Production assembly never calls these oracles. |

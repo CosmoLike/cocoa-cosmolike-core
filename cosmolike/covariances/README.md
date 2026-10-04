@@ -39,7 +39,7 @@ Thus $\mathcal C=\mathcal C^{\rm G}+\mathcal C^{\rm SSC}
 of an uncertainty before adding the terms.
 
 **Current scope:** these files provide numerical components. The shared
-Python `covariance/survey.py` assembles full real-space G+SSC+cNG forecasts
+Python `covariance/survey.py` assembles full real/Fourier G+SSC+cNG forecasts
 for massless neutrinos, Limber spectra, linear galaxy bias, zero IA,
 magnification and RSD, and a spherical-cap footprint. Independently
 validated survey accuracy settings and all-pairs non-Limber corrections
@@ -59,11 +59,13 @@ Function comments explain equations, units and array contents.
 | [perturbation_cov.c](perturbation_cov.c), [header](perturbation_cov.h) | Angular averages of leading-order gravitational mode coupling. |
 | [non_gaussian_cov.c](non_gaussian_cov.c), [header](non_gaussian_cov.h) | Halo trispectrum terms and the power-spectrum response to a background density change. |
 | [ssc_cov.c](ssc_cov.c), [header](ssc_cov.h) | Survey-averaged background fluctuations and the response of projected observables. |
+| [counts_cluster_cov.c](counts_cluster_cov.c), [header](counts_cluster_cov.h) | Shell volumes convert supplied selected cluster abundances and their density responses into count quantities. |
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
 | [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
 | [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, reusing arrays across observable pairs. |
 | [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
+| [generic_interface_cluster_cov.cpp](generic_interface_cluster_cov.cpp) | Cluster-specific NumPy access to count-shell quantities, with input checks and owned outputs. |
 
 ## From three-dimensional matter to angular spectra
 
@@ -428,6 +430,54 @@ beyond the scalar density change used above.
 derive density and tidal SSC, including curved-sky predictions beyond
 Limber for the long modes.
 
+## Cluster counts and their common background: `counts_cluster_cov.c`
+
+A cluster count is an absolute number of objects, whereas a clustering
+field is a density contrast normalized by a mean. Their radial weights
+are therefore different. Let $`n_i(\chi)`$ be the comoving abundance
+selected into observed richness/redshift bin $`i`$, including scatter
+and completeness. A shell has comoving volume
+$`dV=\Omega_s f_K^2d\chi`$, giving
+
+```math
+S_i(\chi)=\frac{d\bar N_i}{d\chi}
+            =\Omega_s f_K^2n_i(\chi).
+```
+
+Let $`B_i=\partial n_i/\partial\delta_b`$ describe the selected
+abundance's response to a background overdensity. The count response is
+$`\Phi_i^N=\Omega_s f_K^2B_i`$. The C function accepts both abundances
+and derivatives explicitly: a bias fitted to cluster lensing need not
+describe how environmental selection changes the counts.
+
+For exclusive observed bins and Poisson sampling at fixed background,
+the long-mode Limber model gives
+
+```math
+\operatorname{Cov}(N_i,N_j)
+ =\delta_{ij}\bar N_i+
+   \int d\chi\,\sigma_b^2(\chi)\Phi_i^N(\chi)\Phi_j^N(\chi).
+```
+
+Disjoint observed labels can have overlapping true-mass and true-redshift
+distributions; their SSC cross term must still be integrated. The count
+noise remains diagonal because each observed object has one label.
+See [Takada & Spergel (2014), Sec. 4.1](https://arxiv.org/abs/1307.4399).
+
+For count–spectrum SSC, replace one count response by the same two-point
+response used in the two-point SSC. Its local part contains
+$`W_AW_B f_K^{-2}\partial P/\partial\delta_b`$. That distance denominator
+cancels the count response's volume factor. The resulting covariance is
+independent of the length unit. The non-SSC count–spectrum term, associated
+with fluctuations of halos inside the survey, is additional; see
+[Schaan, Takada & Spergel (2014), Eq. 35](https://arxiv.org/abs/1406.3330).
+
+The shared Python `counts_cluster.py` integrates these supplied responses
+and returns count means, Poisson noise, count SSC and count–two-point SSC
+separately. This component does **not** supply a cluster selection model,
+cluster spectra or the non-SSC count–spectrum term, and does not yet
+generate a complete cluster $`6\times2\mathrm{pt}+N`$ matrix.
+
 ## From spectra to measured bins: `operators_cov.c`
 
 Measurements average over finite angular intervals. For an angular bin
@@ -519,11 +569,15 @@ complete survey runtime is asserted by these component interfaces.
 
 The [shared Python tools](../../cosmolike_notebook_utils/covariance/README.md)
 prepare survey-independent inputs, build requested Gaussian blocks and
-inspect covariance eigenvalues. Project adapters supply redshift files,
-cosmology and number densities. The LSST Y1 project contains the executable
-`EXAMPLE_EVALUATE_COVARIANCE.ipynb` and a `covariance/` input adapter.
-The example computes a single-source Gaussian shear covariance; it is not
-a full G+SSC+cNG survey generator.
+assemble SSC/cNG and inspect covariance eigenvalues. Project adapters supply
+redshift files, cosmology and number densities. Each project's executable
+`EXAMPLE_EVALUATE_COVARIANCE.ipynb` uses a thin `covariance/` input adapter.
+The notebooks compute full galaxy/shear G+SSC+cNG matrices in real and
+Fourier space, compare accuracy boosts, plot the components and save the
+resolved inputs with the outputs. The DES cluster and DESxPlanck examples
+currently cover galaxy/shear only; cluster and CMB observables need their
+own models. The example boosts demonstrate refinement, not a validated
+inference accuracy.
 
 [Shared Matplotlib functions](../../cosmolike_notebook_utils/plot_covariances.py)
 show split-triangle correlation comparisons, component maps and histograms,
