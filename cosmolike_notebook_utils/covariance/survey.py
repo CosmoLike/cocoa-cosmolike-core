@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-from .gaussian import observed_spectra, realspace_block
+from .gaussian import observed_spectra
 from .geometry import angular_rule, cap_mask
 
 
@@ -260,26 +260,11 @@ def realspace_covariance(interface, settings, rows, noise, progress=None):
     # A block covariance needs crossed spectra, including lens cross bins
     # absent from the data vector. The snapshot retains that full matrix.
     tick = time.perf_counter()
-    gaussian = np.empty((ndata, ndata))
-    for first, (probe_left, a, b) in enumerate(rows):
-        i = slice(first*ntheta, (first+1)*ntheta)
-        for second in range(first, len(rows)):
-            probe_right, c, d = rows[second]
-            j = slice(second*ntheta, (second+1)*ntheta)
-            block = realspace_block(
-                interface=interface, spectra=signal, noise=noise,
-                fields=np.array([a, b, c, d], dtype=np.int32),
-                operators=operators, probe_left=int(probe_left),
-                probe_right=int(probe_right), pair_area_sr2=pair_area,
-                area_sr=settings["area_sr"],
-            )
-            if first == second:
-                block = np.triu(block)+np.triu(block, k=1).T
-            gaussian[i, j] = block
-            gaussian[j, i] = block.T
-        if progress is not None and first % 16 == 0:
-            progress(f"Gaussian row {first+1}/{len(rows)}",
-                     time.perf_counter()-started)
+    gaussian = interface.covariance_gaussian_real(
+        spectra=signal, noise=np.ascontiguousarray(noise),
+        rows=np.ascontiguousarray(rows, dtype=np.int32), operators=kernels,
+        ell_min=2, area_sr=settings["area_sr"], pair_area_sr2=pair_area,
+    )
     checkpoint("gaussian_blocks", tick)
 
     # The SSC mean subtraction uses the full angular signal of each

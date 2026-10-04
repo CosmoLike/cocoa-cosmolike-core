@@ -62,6 +62,7 @@ Function comments explain equations, units and array contents.
 | [operators_cov.c](operators_cov.c), [header](operators_cov.h) | Full-sky transformations into angular bins and weights for multipole bands. |
 | [mask_cov.c](mask_cov.c), [header](mask_cov.h) | Available galaxy-pair area within the survey footprint. |
 | [generic_interface_cov.cpp](generic_interface_cov.cpp) | Python access to all-pairs Limber spectra and copies of their radial inputs. |
+| [covariance_wrapper_cov.cpp](covariance_wrapper_cov.cpp) | Whole real-space and Fourier Gaussian matrices from supplied spectra, reusing arrays across observable pairs. |
 | [python_components_cov.cpp](python_components_cov.cpp) | Shape-checked NumPy access to Gaussian, mask, angular, halo, response and projection components; it adds no covariance physics. |
 
 ## From three-dimensional matter to angular spectra

@@ -5,6 +5,7 @@
 
 #include <pybind11/numpy.h>
 #include "generic_interface_cov.hpp"
+#include "covariance_wrapper_cov.hpp"
 #include "spectra_cov.h"
 #include "cosmolike/IA.h"
 #include "cosmolike/structs.h"
@@ -165,6 +166,7 @@ static py::dict covariance_limber_spectra(
 void bind_covariance(py::module_& module)
 {
   bind_covariance_components(module);
+  bind_covariance_wrappers(module);
 
   module.def("covariance_limber_spectra", &covariance_limber_spectra,
       R"doc(Build all lens/source Limber spectra on common radial nodes.
