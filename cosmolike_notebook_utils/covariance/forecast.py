@@ -124,7 +124,8 @@ def initialize_forecast(interface, settings, project):
     return tables
 
 
-def compute_forecast(interface, settings, space="real", rows=None, progress=None):
+def compute_forecast(interface, settings, space="real", rows=None,
+                     progress=None, backend=None):
     """Compute all 3x2pt rows, or a supplied subset, with separate components.
 
     Arguments:
@@ -133,6 +134,8 @@ def compute_forecast(interface, settings, space="real", rows=None, progress=None
             cosmology, densities, area_deg2, theta_edges_arcmin, a_edges,
             lnm_edges, excluded_gammat, band_first and band_last.
         space = "real" for angular bins, "fourier" for E-mode bandpowers.
+        backend = None uses notebook wrappers; interface.covariance uses
+            the direct production bindings to the same C calculations.
         rows = optional int32 [nobservable,3] (type,A,B) table. None selects
             the project's full galaxy/shear forecast layout. A subset only
             reduces measured rows; all internal crossed spectra remain.
@@ -152,6 +155,8 @@ def compute_forecast(interface, settings, space="real", rows=None, progress=None
         accuracy_boost=settings["core_accuracyboost"],
         integration_accuracy=settings["integration_accuracy"],
     )
+    if backend is not None:
+        interface = backend
     nlens = len(settings["lens_density_arcmin2"])
     nsource = len(settings["source_density_arcmin2"])
     if rows is None:

@@ -94,6 +94,14 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
                     interface=interface, settings=settings,
                     space=space, rows=rows,
                 )
+                # The CLI bypasses Armadillo, but it must use the same C
+                # calculation and return identical physical axes and values.
+                production = survey.compute(
+                    interface=interface, settings=settings, space=space,
+                    rows=rows, backend=interface.covariance,
+                )
+                for name in ("gaussian", "ssc", "cng", "total", "signal"):
+                    np.testing.assert_array_equal(production[name], result[name])
                 for component in ("gaussian", "ssc", "cng", "total"):
                     matrix = result[component]
                     assert matrix.shape == (6, 6)

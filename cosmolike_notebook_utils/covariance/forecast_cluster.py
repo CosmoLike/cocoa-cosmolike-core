@@ -101,7 +101,7 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     return projected.reshape(len(transform), nrichness, nstate).transpose(1, 0, 2)
 
 
-def compute_forecast(interface, settings, progress=None):
+def compute_forecast(interface, settings, progress=None, backend=None):
     """Return the joint angular forecast with separate G, SSC and cNG.
 
     Arguments:
@@ -114,6 +114,8 @@ def compute_forecast(interface, settings, progress=None):
             bool. The latter applies the mean model's exact Y operator to
             every cluster-lensing row and both covariance axes. Numerical
             controls come from the common covariance accuracy boost.
+        backend = None uses notebook wrappers; interface.covariance selects
+            the direct production bindings to the same C calculations.
         progress = optional callable receiving stage and elapsed seconds.
     Returns:
         Dict with owned gaussian, ssc, cng, total [ndata,ndata]; signal
@@ -163,6 +165,8 @@ def compute_forecast(interface, settings, progress=None):
             raise ValueError(
                 "Y operator shape differs from bins; initialize matching binning"
             )
+    if backend is not None:
+        interface = backend
     started = time.perf_counter()
     stages = {}
 
