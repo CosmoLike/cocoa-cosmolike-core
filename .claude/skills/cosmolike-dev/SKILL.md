@@ -102,6 +102,32 @@ uses linearly biased matter tracers and its count crosses contain SSC
 only. It is not a complete selected/discrete-halo covariance. Archive
 those omissions with the matrix and retain the defined Y null-row map.
 
+**Notebook C++ wrappers.** Follow `halo_wrapper_cluster.cpp` and
+`cosmo2D_wrapper.cpp`: numeric inputs, results and working arrays use
+`arma::Col`, `arma::Mat` and `arma::Cube`, with named axes and units.
+Keep Python conversion in the binding files. Copy inputs without mutation;
+CARMA exports the Armadillo results at the return boundary. Do not
+use `py::array_t` aliases, `std::vector` numeric containers, or vectors of
+row/plane pointers in notebook wrappers. If a batched C routine requires
+C storage, use a short, explicit copy into/out of its ordinary workspace,
+as in the data-vector wrappers; do not invent pointer-adapter machinery.
+Keep callable C++ declarations in the wrapper header. Dictionaries and
+tuples may group independently meaningful Armadillo results; keep
+conversion at the return/binding boundary. Prefer named quantities over
+packing a fourth numerical axis into a Python-specific container.
+These wrappers support readable Jupyter experimentation. Copies and modest
+wrapper overhead are acceptable. Production optimization belongs in the
+normal interface and C kernels; never obscure the notebook API to avoid
+an array copy. Preserve axis order, ownership and input immutability, and
+test C-order, Fortran-order and sliced NumPy inputs through CARMA.
+
+**Integration validation limits.** The maximum covariance integration
+level to test is 4. On the M2 Pro laptop, Roman tests stop at level 3;
+reserve Roman level 4 for a server. Do not escalate above these limits
+when assessing default settings. Keep completed matrices and compare
+against the highest completed permitted level, stating which reference
+was actually used.
+
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.
 Explain the physics, define symbols and approximations, and describe each
