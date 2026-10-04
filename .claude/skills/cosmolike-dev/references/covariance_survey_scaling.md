@@ -65,3 +65,59 @@ run_scaling_projects.py. JSON records retain resolved settings, commit
 IDs, stage times and individual repetitions; NPZ files retain baseline
 arrays for exact before/after comparisons. These external files are
 development records, not public README prerequisites.
+
+## Fresh interfaces with grouped halo rows and connected blocks
+
+All seven interfaces now include the I11-only halo path and complete
+connected-block wrapper. The controlled Gaussian and halo comparisons
+are separate records; this pass measures the combined complete forecast.
+The model, boost, timing exclusions, warm-up and repetition rules above
+are unchanged. Each loaded binary and the relevant current source files
+are identified by SHA-256 in the new JSON records. The calculation is
+committed in `3ed7668`; LSST's added tests are in `89eabb0`.
+
+| Project | Space | Entries | 1 thread | 2 threads | 4 threads | 8 threads | 8-thread std. |
+|---|---|---:|---:|---:|---:|---:|---:|
+| lsst_y1 | real | 1560 | 4.242615 | 2.395021 | 1.554281 | 1.215490 | 0.003703 |
+| lsst_y1 | fourier | 675 | 2.341377 | 1.466187 | 0.918485 | 0.820210 | 0.010318 |
+| roman_real | real | 2115 | 5.781736 | 3.256858 | 2.002029 | 1.487069 | 0.003507 |
+| roman_real | fourier | 1575 | 2.981684 | 1.817336 | 1.165802 | 0.971709 | 0.003298 |
+| roman_fourier | real | 2025 | 5.500765 | 3.118422 | 1.907454 | 1.555230 | 0.112860 |
+| roman_fourier | fourier | 1485 | 2.906789 | 1.780623 | 1.149873 | 1.134465 | 0.016464 |
+| roman_kl | real | 3300 | 9.009092 | 4.949963 | 2.911474 | 2.051853 | 0.011565 |
+| roman_kl | fourier | 2200 | 3.617098 | 2.145501 | 1.356981 | 1.133316 | 0.014455 |
+| des_y3 | real | 900 | 3.104836 | 1.841860 | 1.212430 | 1.063423 | 0.024031 |
+| des_y3 | fourier | 525 | 2.306765 | 1.416699 | 0.926009 | 0.840503 | 0.014861 |
+| desy1xplanck | real | 1500 | 4.009489 | 2.344936 | 1.485338 | 1.235277 | 0.081350 |
+| desy1xplanck | fourier | 600 | 2.348958 | 1.401204 | 0.959068 | 0.775206 | 0.004855 |
+| des_cluster | real | 1000 | 3.249633 | 1.989111 | 1.330147 | 1.188814 | 0.009936 |
+| des_cluster | fourier | 600 | 2.373667 | 1.486694 | 0.991879 | 0.970412 | 0.016618 |
+
+Every G, SSC, cNG, total and mean entry matches the saved baseline bit for
+bit at 1/2/4/8 workers. All fourteen complete total matrices pass Cholesky
+without modification. The fresh project pass also passed 138 covariance
+tests and 100 frozen likelihood tests; no references were refrozen.
+
+The LSST real-space result means the complete 1560-by-1560 G+SSC+cNG
+matrix, including shared matter-table preparation. Its eight-thread mean
+is 1.215490 s, not the cost of one block. Roman real's complete
+2115-by-2115 matrix takes 1.487069 s under the same timing convention.
+These are boost-1 massless Limber forecasts, not accuracy certifications.
+The separate DES joint 2812-entry pilot averages 3.520034 s at eight
+threads; its model and Y null rows are documented in
+covariance_connected_scaling.md.
+
+Complete scaling remains limited by shared matter work. For LSST real
+space, four/eight-thread shared-table times are 1.0010/0.8786 s, whereas
+the final SSC/cNG projection is 0.0597/0.0404 s. Roman Fourier's Fourier
+shared tables take 0.8713/0.9184 s, and DES cluster's galaxy/shear Fourier
+tables take 0.9086/0.9024 s. Those forecasts therefore gain little beyond
+four workers despite better Gaussian and final-projection scaling.
+Profile small power reads and small shared-table projection calls next;
+test a work-size guard or larger batches before choosing another layout.
+
+The fresh records are in `test/covariance_reference/results/
+scaling_shared_blocks/`. The three previously stale projects include the
+Gaussian wrapper update in this comparison too: their improvement cannot
+be assigned solely to the two newer halo/projection changes. Apple
+measurements remain distinct from production x86 scaling.
