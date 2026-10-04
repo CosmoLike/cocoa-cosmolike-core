@@ -23,6 +23,7 @@ fluctuations larger than the survey. See
 | `gaussian.py` | Complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
+| `survey.py` | Assemble complete real-space G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
 | `diagnostics.py` | Check symmetry, diagonal variances, raw/correlation eigenvalues and generalized covariance ratios. No clipping or diagonal correction is applied. |
 | `reference/` | Independent NumPy/SciPy/mpmath algorithms for component tests. Production assembly never calls these oracles. |
@@ -87,6 +88,38 @@ it by the radial integration weight and contracting common shell responses
 with `covariance_project` gives the SSC matrix. Keep every cross-lens
 block. Removing selected cross correlations can make a covariance indefinite.
 
+## Full real-space assembly
+
+`survey.realspace_covariance` receives an initialized project interface,
+resolved integration settings, the observable row map and catalog noise.
+It returns separate Gaussian, SSC, cNG and total matrices, the projected
+mean signals and elapsed times by calculation stage. CAMB setup, output
+writing and eigenvalue diagnostics remain outside this function.
+`survey.observable_rows` puts angular bins inside each tomographic row,
+with xi+, xi-, galaxy--shear and galaxy clustering in that order.
+
+The supported model uses massless neutrinos, linear galaxy bias, zero
+intrinsic alignment, magnification and RSD, Limber spectra and a spherical
+cap footprint. SSC uses the isotropic fractional halo response transferred
+to the chosen nonlinear matter power, with galaxy survey-mean subtraction.
+The five halo cNG contributions are projected with every cross-lens block
+retained. These approximations define a forecast; they do not reproduce
+all physical choices of a supplied likelihood covariance.
+
+The costly matter trispectrum depends on distance and two wavenumbers,
+not on the observed catalog pair. The assembler computes it once per
+radial shell and shares it across all catalog pairs. Its multipole table
+is linearly interpolated in ln(ell+1/2), preserving signed values. The
+angular kernels still sum every integer multipole: the code first projects
+the interpolation weights, then contracts the smaller trispectrum table.
+This is algebraically the same angular projection of the interpolated
+table. Refining the coarse table is still necessary to test its accuracy.
+
+Numerical controls for this low-level assembly are explicit in its
+function documentation. The notebook's single-source Gaussian boost is
+not a certified full-survey setting. Complete matrices must pass positivity
+checks and resolution/Fisher comparisons before use for inference.
+
 ## One accuracy boost
 
 Use `covariance_accuracy(accuracy_boost=1)`, or set `accuracy_boost` in the
@@ -103,7 +136,7 @@ and 32,769 window nodes. These are numerical resolutions, not certified
 survey-accuracy labels. Check refinement and FoM/errors for the intended
 physical model. The same boost raises mass/angular resolution in the halo preparation
 helpers and reduces the response finite-difference step. It does not
-supply the missing full survey SSC/cNG assembly or its physical choices.
+certify the full survey assembly or its physical choices.
 
 ## Interpolation and numerical checks
 

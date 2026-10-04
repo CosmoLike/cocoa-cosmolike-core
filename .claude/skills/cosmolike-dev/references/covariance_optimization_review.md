@@ -483,3 +483,14 @@ full suites were not repeated for this covariance-only layout change.
 These measurements identify component costs and support one small halo
 layout change. Full Roman G+SSC+cNG generation, full/selected-matrix
 positivity and Fisher/FoM convergence remain separate unfinished work.
+
+## Full survey assembly follow-through
+
+The measured row-batched power reader is integrated in spectra_cov.c and
+used by the Python halo helper and full survey assembler. Roman now builds
+the same covariance bindings as LSST. Complete supported-model matrices
+have been computed, with separate G, SSC and cNG outputs. The full cold
+runtime and positivity checks are recorded in
+[covariance_full_survey_timing.md](covariance_full_survey_timing.md).
+The fixed-k radial spline acceleration above remains an independent
+experiment; the full runs evaluate every radial shell directly.

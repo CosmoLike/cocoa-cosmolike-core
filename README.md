@@ -51,8 +51,10 @@ describe the CosmoLike multiprobe framework.
 > Covariance components and an executable LSST Y1 Gaussian example are
 > available. A complete, validated Roman covariance including Gaussian,
 > super-sample (SSC) and connected non-Gaussian (cNG) terms is not yet
-> available from the new generator. Component tests and the Gaussian
-> notebook do not establish positivity of that full matrix.
+> available for inference. The shared Python assembler can compute full
+> matrices for a massless, Limber forecast, retaining every cross-bin
+> block. Numerical and Fisher convergence of that model remain to be
+> established; the Gaussian notebook alone cannot validate the total.
 
 # Running a likelihood example <a name="likelihood"></a>
 
@@ -240,8 +242,9 @@ compares variance ratios across all matrix directions. The highest tested
 boost is a numerical comparison reference, not a guarantee of convergence.
 
 > [!NOTE]
-> The example contains Gaussian covariance only. Full survey SSC/cNG
-> assembly, all-pairs non-Limber spectra and Roman Figure-of-Merit
+> The example contains Gaussian covariance only. A separate shared
+> assembler provides full G+SSC+cNG matrices for the supported Limber
+> forecast. All-pairs non-Limber spectra and Roman Figure-of-Merit
 > convergence remain unfinished. The combined matter halo-response and
 > trispectrum helpers currently require massless neutrinos; the cb-aware
 > halo statistics alone do not supply a massive-neutrino covariance model.
@@ -574,5 +577,6 @@ in every data-space direction.
 approximations through parameter estimation and goodness of fit. The
 data-vector $`\lvert\Delta\chi^2\rvert<0.2`$ regression criterion is not
 a covariance convergence criterion. The new Roman generator still needs
-full-matrix positivity and parameter-constraint convergence tests; the
-existing supplied Roman covariance has not been replaced by this work.
+positivity checks for each generated configuration and parameter-constraint
+convergence tests; the existing supplied Roman covariance has not been
+replaced by this work.

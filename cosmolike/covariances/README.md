@@ -38,11 +38,13 @@ Thus $\mathcal C=\mathcal C^{\rm G}+\mathcal C^{\rm SSC}
 +\mathcal C^{\rm cNG}$. The separation lets us inspect the physical origin
 of an uncertainty before adding the terms.
 
-**Current scope:** these files provide numerical components. A complete
-survey covariance generator, with independently validated accuracy
-settings and project output, is still being assembled. Covariance grids
-and integration choices are owned here, separately from the data-vector
-calculation.
+**Current scope:** these files provide numerical components. The shared
+Python `covariance/survey.py` assembles full real-space G+SSC+cNG forecasts
+for massless neutrinos, Limber spectra, linear galaxy bias, zero IA,
+magnification and RSD, and a spherical-cap footprint. Independently
+validated survey accuracy settings and all-pairs non-Limber corrections
+remain open. Covariance integration choices stay separate from the
+data-vector calculation.
 
 ## File guide
 
@@ -492,11 +494,11 @@ to several numbers, called vector lanes; the source comments identify
 what each lane represents. These choices accelerate the stated equations
 without selecting the physical approximation or its integration accuracy.
 
-The remaining survey integration must establish all required non-Limber
-cross spectra, consistent field and noise conventions, mask treatment,
-SSC and cNG projection, and project-specific ordering and output.
-The present spectrum builder is Limber-only, and the halo response
-choices do not constitute a validated survey accuracy setting.
+The shared survey assembly retains all cross-bin SSC/cNG blocks and uses
+common observed-field conventions for every probe. Its mask model is a
+spherical cap. All-pairs non-Limber cross spectra and a calibrated
+massive-neutrino model remain open. The halo response choices and finite
+integration grids do not constitute a validated survey accuracy setting.
 
 A usable covariance must give nonnegative variance to every linear
 combination of measurements: $v^{\mathsf T}\mathcal C v\ge0$.
