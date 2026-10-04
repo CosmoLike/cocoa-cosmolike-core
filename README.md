@@ -48,7 +48,7 @@ and likelihood. [Krause & Eifler](https://arxiv.org/abs/1601.05779)
 describe the CosmoLike multiprobe framework.
 
 > [!NOTE]
-> Covariance components and an executable LSST Y1 Gaussian example are
+> Covariance components and an executable LSST Y1 G+SSC+cNG notebook are
 > available. A complete, validated Roman covariance including Gaussian,
 > super-sample (SSC) and connected non-Gaussian (cNG) terms is not yet
 > available for inference. The shared Python assembler can compute full
@@ -109,13 +109,13 @@ and are using Bash in `cocoa/Cocoa`.
 | --- | --- |
 | `EXAMPLE_EVALUATE1.ipynb` | Calculate and inspect cosmic-shear predictions. |
 | `EXAMPLE_EVALUATE2.ipynb` | Calculate and inspect the joint 3x2pt prediction. |
-| `EXAMPLE_EVALUATE_COVARIANCE.ipynb` | Construct, refine and plot a single-source-bin Gaussian covariance. |
+| `EXAMPLE_EVALUATE_COVARIANCE.ipynb` | Construct, refine and plot real/Fourier G, SSC, cNG and total covariances. |
 
 **Step :five:**: select **Kernel → Restart Kernel and Run All Cells**.
 
 The covariance notebook uses the project's five lens and five source
-redshift distributions, then selects one source bin for its
-$`\xi_+`$/$`\xi_-`$ example. Its survey assumptions are explicit in
+redshift distributions and retains all 3x2pt measured rows. Its survey
+assumptions are explicit in
 `projects/lsst_y1/covariance/lsst_y1_covariance.py`; instructions are in
 that folder's `README.md`. It does not overwrite the likelihood covariance.
 
@@ -173,11 +173,12 @@ survey covariance when a likelihood loads a covariance file.
 | [halo_wrapper.cpp](cosmolike/halo_wrapper.cpp) | Halo statistics and mass-dependent quantities. |
 | [cosmo2D_scuts_wrapper.cpp](cosmolike/cosmo2D_scuts_wrapper.cpp) | Scale-response diagnostics. |
 | [generic_interface_cov.cpp](cosmolike/covariances/generic_interface_cov.cpp) | Covariance radial inputs and all-pairs Limber spectra. |
+| [covariance_wrapper_cov.cpp](cosmolike/covariances/covariance_wrapper_cov.cpp) | Whole real/Fourier Gaussian matrices from supplied spectra and operators. |
 | [python_components_cov.cpp](cosmolike/covariances/python_components_cov.cpp) | NumPy access to Gaussian, mask, transform, halo and SSC components. |
 
 Each project binds the supported wrappers with pybind11 in its own
 `interface/interface.cpp`. Its `interface/MakefileCosmolike` selects the
-sources to compile. LSST Y1 currently includes all covariance component
+sources to compile. LSST Y1 and Roman real include all covariance component
 bindings; other projects must enable them before using the shared
 covariance calculations.
 
@@ -218,8 +219,8 @@ spectra AC, BD, AD and BC. Some of those spectra may be excluded from the
 data vector. Their absence from the list of measured observables does not
 make their contribution to the covariance zero.
 
-The LSST Y1 notebook combines these tools into a single-source Gaussian
-example with Limber spectra, full-sky angular-bin averages and
+The LSST Y1 notebook combines these tools into real-space and Fourier
+G+SSC+cNG forecasts with Limber spectra, full-sky angular-bin averages and
 spherical-cap pair noise. It uses explicit forecast number densities,
 zero intrinsic alignment and massless neutrinos. The cap is an example
 footprint, not a measured survey mask.
@@ -236,13 +237,13 @@ integration resolution together; the shared halo helpers also refine
 mass and angular sampling. This setting does not change CAMB or the
 data-vector accuracy settings.
 
-The notebook computes boosts 1, 2 and 4 at fixed physical inputs, then
+The notebook computes boosts 1 and 2 at fixed physical inputs, then
 plots changes in correlations, error bars and covariance entries. It also
 compares variance ratios across all matrix directions. The highest tested
 boost is a numerical comparison reference, not a guarantee of convergence.
 
 > [!NOTE]
-> The example contains Gaussian covariance only. A separate shared
+> The example computes all three covariance components. The shared
 > assembler provides full G+SSC+cNG matrices for the supported Limber
 > forecast. All-pairs non-Limber spectra and Roman Figure-of-Merit
 > convergence remain unfinished. The combined matter halo-response and

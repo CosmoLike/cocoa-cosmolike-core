@@ -124,3 +124,27 @@ eight threads. All 61 LSST covariance checks pass. Manual didactic review
 checked mode-count weights, two-sided transformation, fixed scientific
 band endpoints during refinement, the single boost's NG grid, and the
 normalization distinction. No new C or SIMD arithmetic was introduced.
+
+## LSST notebook and reusable forecast boundary
+
+`forecast.py` owns initialization through ordinary galaxy/source setters,
+unit conversion, the real/Fourier dispatcher and output archives with
+fully resolved settings. Project adapters supply only survey choices.
+The LSST notebook executes complete 1560-row angular and 675-row bandpower
+G/SSC/cNG matrices at boosts 1 and 2, prints total positivity/generalized
+mode diagnostics, renders six figures and saves arrays/settings/CAMB inputs.
+All four totals are positive definite. Boost 1 versus 2 maximum variance
+ratios change by about 0.77 (real) and 0.25 (Fourier), and maximum individual
+error changes are about 4.5%/5.7%. These are teaching resolutions, not
+accepted inference defaults. Notebook stage timings are not controlled
+benchmark claims. Preserve that limitation in every project port.
+
+Validation: 62 LSST covariance checks passed, including archive roundtrip
+without pickle and Fourier-axis labeling. The committed LSST cells ran
+headlessly through nbconvert; figures were extracted and visually inspected.
+Manual didactic review checked dimensions, input/output ownership, unit
+conversions, band ordering, component labels, refinement interpretation and
+cold-path readability. README rendering with Markdown-it, tables and all
+local links/anchors passed. No quoted installation block was changed.
+Main README has a separate anchored covariance workflow with setup,
+compilation, notebook execution, accuracy control and saved-output paths.

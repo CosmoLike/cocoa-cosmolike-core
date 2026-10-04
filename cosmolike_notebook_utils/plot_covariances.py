@@ -221,11 +221,15 @@ def plot_covariance_components(total, components, block_sizes=None,
 
 
 def plot_covariance_diagonal(theta_arcmin, covariances, panel_labels,
-                             covariance_ref=None, figsize=None, show=1):
+                             covariance_ref=None, figsize=None, show=1,
+                             coordinate_label=r"$\theta$ [arcmin]"):
     """Plot standard deviations or their fractional changes by estimator.
 
     Arguments:
-        theta_arcmin = positive increasing [ntheta] angular bin centers.
+        theta_arcmin = positive increasing [ntheta] bin centers. For Fourier
+            plots, supply multipole centers and a multipole coordinate_label.
+            The historical argument name remains valid for angular callers.
+        coordinate_label = horizontal axis label, including the supplied units.
         covariances = ordered mapping of name to [ndata,ndata] covariance.
         panel_labels = estimator/tomographic labels; ndata=ntheta*len(labels).
         covariance_ref = optional matching reference matrix. If supplied,
@@ -277,7 +281,7 @@ def plot_covariance_diagonal(theta_arcmin, covariances, panel_labels,
                       linestyle=styles[curve % len(styles)], linewidth=1.6)
         axis.set_xscale(value="log")
         axis.set_title(label=label)
-        axis.set_xlabel(xlabel=r"$\theta$ [arcmin]")
+        axis.set_xlabel(xlabel=coordinate_label)
         if covariance_ref is None:
             axis.set_yscale(value="log")
             axis.set_ylabel(ylabel=r"$\sqrt{C_{ii}}$")

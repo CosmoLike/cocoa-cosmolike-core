@@ -23,7 +23,8 @@ fluctuations larger than the survey. See
 | `gaussian.py` | Complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
-| `survey.py` | Assemble complete real-space G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
+| `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
+| `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
 | `sampling.py` | `DenseLogTable`: coarse exact samples → cubic construction of a dense uniform log-k table → linear lookup by arithmetic index. Signed quantities remain signed. |
 | `diagnostics.py` | Check symmetry, diagonal variances, raw/correlation eigenvalues and generalized covariance ratios. No clipping or diagonal correction is applied. |
 | `reference/` | Independent NumPy/SciPy/mpmath algorithms for component tests. Production assembly never calls these oracles. |
@@ -167,6 +168,5 @@ errors and marginalized Fisher Figures of Merit at representative
 cosmologies. The data-vector $|\Delta\chi^2|<0.2$ rule is not a covariance
 convergence criterion.
 
-The included single-source Gaussian example is executable. A validated
-full survey G+SSC+cNG generator, all-pairs non-Limber corrections and
-production FoM convergence remain separate work.
+The notebook computes full G+SSC+cNG forecasts in both spaces. All-pairs
+non-Limber corrections and production FoM convergence remain separate work.
