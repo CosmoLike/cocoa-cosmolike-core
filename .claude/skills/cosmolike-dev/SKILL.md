@@ -192,6 +192,12 @@ to processes, each using OpenMP internally. Example 40-core layouts are
 five MPI processes times eight threads or four times ten. Keep shared
 tables reusable within a process and make block inputs explicit; do not
 implement an MPI layer or a speculative block framework before needed.
+The complete Gaussian wrapper now assigns whole observable blocks to
+workers; its C primitives suppress inner parallel teams when called from
+that outer region. Preserve the fixed multipole sum order and per-worker
+scratch ownership. Measurements and checks are recorded in
+`references/covariance_gaussian_scaling.md`; the complete survey still
+requires separate scaling measurements, especially its shared matter tables.
 
 **Notebook covariance workflows.**
 Develop the first public examples in `projects/lsst_y1/covariance/`, using
