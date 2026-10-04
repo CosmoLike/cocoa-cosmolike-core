@@ -79,6 +79,10 @@ def initialize_forecast(interface, settings, project):
     tables = dict(zip(names, arrays))
 
     interface.initial_setup()
+    interface.init_accuracy_boost(
+        accuracy_boost=settings["core_accuracyboost"],
+        integration_accuracy=settings["integration_accuracy"],
+    )
     interface.init_probes(possible_probes="3x2pt")
     interface.init_IA(ia_model=0, ia_redshift_evolution=2, ia_code=0)
     interface.init_bias(bias_model=[0, 0, 0, 0, 0])
@@ -134,6 +138,13 @@ def compute_forecast(interface, settings, space="real", rows=None, progress=None
     """
     if space not in ("real", "fourier"):
         raise ValueError("space must be 'real' or 'fourier'")
+    # A notebook may refine settings while retaining its CAMB inputs.
+    # Apply the reader-table boost on every calculation; the independent
+    # quadrature level remains exactly the value selected in the YAML.
+    interface.init_accuracy_boost(
+        accuracy_boost=settings["core_accuracyboost"],
+        integration_accuracy=settings["integration_accuracy"],
+    )
     nlens = len(settings["lens_density_arcmin2"])
     nsource = len(settings["source_density_arcmin2"])
     if rows is None:

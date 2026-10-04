@@ -234,10 +234,13 @@ settings = survey.configuration(accuracy_boost=1)
 ```
 
 Here `survey` is the LSST Y1 adapter imported by the notebook. The
-supported boosts are 1, 2, 4 and 8. They increase multipole cutoffs and
-integration resolution together; the shared halo helpers also refine
-mass and angular sampling. This setting does not change CAMB or the
-data-vector accuracy settings.
+supported boosts are 1, 2, 4 and 8. They refine multipole cutoffs and
+interpolation tables from the baseline in each project's
+`covariance/default.yaml`. A separate `integration_accuracy` selects
+precomputed GSL quadrature rules: levels 0/1/2/3/4 use
+96/128/256/512/1024 nodes per panel. The global boost leaves this rule
+unchanged. Wide angular bins use several panels to resolve oscillations.
+Neither setting reruns CAMB or changes the likelihood's YAML files.
 
 The notebook computes boosts 1 and 2 at fixed physical inputs, then
 plots changes in correlations, error bars and covariance entries. It also
@@ -520,8 +523,10 @@ defines field ordering, shapes, mask normalization and noise conventions.
 ## FAQ: How are accuracy and parallelism controlled? <a name="numerics"></a>
 
 The project YAML files and notebooks expose data-vector accuracy settings.
-Covariance has its own `accuracy_boost`; changing it does not refine the
-Boltzmann calculation or the likelihood prediction. Numerical convergence
+Covariance has its own `accuracy_boost` for tables/cutoffs and
+`integration_accuracy` for precomputed quadrature rules. Changing them
+does not rerun the Boltzmann calculation or the likelihood prediction.
+Numerical convergence
 and the validity of a physical approximation are separate questions.
 
 The code reuses expensive work across many outputs. FFTW plans are

@@ -24,7 +24,6 @@ import json
 import time
 
 import numpy as np
-from scipy.special import roots_legendre
 
 from .accuracy import non_gaussian_multipoles
 from .counts_cluster import count_statistics
@@ -57,11 +56,17 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
         It contains no cluster radial window or observed-mean subtraction.
     """
     lower, upper = settings['cluster_lnm_bounds']
-    # Twice the ordinary per-panel mass count resolves the full cluster
-    # interval in one Gaussian rule; the user's common boost scales both.
-    node, measure = roots_legendre(n=2*settings['halo_mass_nquad'])
-    lnm = 0.5*(lower+upper)+0.5*(upper-lower)*node
-    dlnm = 0.5*(upper-lower)*measure
+    # Two mass panels resolve the selected interval without requesting a
+    # generated GSL rule. Both use the precomputed rule selected by the
+    # independent integration level, including its 64-node minimum.
+    node, measure = interface.covariance_integration_rule(
+        nquad=settings['halo_mass_nquad'],
+    )
+    midpoint = 0.5*(lower+upper)
+    half_width = 0.25*(upper-lower)
+    centers = np.array([0.5*(lower+midpoint), 0.5*(midpoint+upper)])
+    lnm = (centers[:, None]+half_width*node).ravel()
+    dlnm = np.tile(half_width*measure, reps=2)
     nstate = geometry.shape[1]
     nrichness = catalogs['nrichness']
     response = np.zeros((nrichness, nstate, len(coarse_ell)))
@@ -135,6 +140,13 @@ def compute_forecast(interface, settings, progress=None):
     ]
     if resolved['mnu'] != 0.0:
         raise ValueError("cluster halo forecast requires mnu=0")
+    # Counts and selected profiles also read shared core tables. Refine
+    # those tables with the global boost, retaining the independent core
+    # quadrature level selected by integration_accuracy.
+    interface.init_accuracy_boost(
+        accuracy_boost=settings['core_accuracyboost'],
+        integration_accuracy=settings['integration_accuracy'],
+    )
     mass_bounds = np.asarray(settings['cluster_lnm_bounds'], dtype=float)
     if (mass_bounds.shape != (2,) or not np.all(np.isfinite(mass_bounds))
             or mass_bounds[1] <= mass_bounds[0]):

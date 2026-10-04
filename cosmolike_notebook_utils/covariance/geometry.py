@@ -6,7 +6,6 @@ per steradian. None of these helpers selects a survey's numerical accuracy.
 """
 
 import numpy as np
-from scipy.special import roots_legendre
 
 
 def noise_powers(lens_density, source_density, sigma_component):
@@ -79,12 +78,13 @@ def cap_mask(area_sr, ell_max):
     return np.pi*integral**2
 
 
-def angular_rule(nquad, npanel):
+def angular_rule(nquad, npanel, interface):
     """Build a planar dtheta/pi rule resolving nearly opposite wavevectors.
 
     Arguments:
-        nquad: positive Gaussian node count per angular panel.
+        nquad: precomputed GSL size: 64, 96, 128, 256, 512 or 1024.
         npanel: number of panels, between 1 and 40.
+        interface: project binding exposing covariance_integration_rule.
 
     Returns:
         theta, weight, corner: 1D float64 arrays, each length nquad*npanel.
@@ -97,11 +97,13 @@ def angular_rule(nquad, npanel):
     endpoint. Callers refine both counts rather than treating them as a
     universal production setting.
     """
-    if not isinstance(nquad, (int, np.integer)) or nquad < 1:
-        raise ValueError("nquad must be a positive integer")
+    if not isinstance(nquad, (int, np.integer)) or nquad not in (
+        64, 96, 128, 256, 512, 1024
+    ):
+        raise ValueError("nquad must be a precomputed GSL rule of at least 64 nodes")
     if not isinstance(npanel, (int, np.integer)) or not 1 <= npanel <= 40:
         raise ValueError("npanel must be an integer between 1 and 40")
-    nodes, weights = roots_legendre(n=nquad)
+    nodes, weights = interface.covariance_integration_rule(nquad=nquad)
     gaps = np.pi*2.0**(-np.arange(npanel))
     edges = np.append(arr=np.pi-gaps, values=np.pi)
     theta = np.empty(shape=nquad*npanel, dtype=float)

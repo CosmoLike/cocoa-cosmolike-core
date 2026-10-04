@@ -240,7 +240,23 @@ covariance. Keep test-only small grids explicit in tests.
 The global boost multiplies every internal refinement, rather than replacing
 or bypassing it: base factors 2 and 3 become effective factors 4 and 6 when
 the global boost changes from 1 to 2. This applies to internally tuned
-radial, angular, halo, non-Gaussian and window sampling. Multiply interval
+non-Gaussian and window tables and shared core reader refinements.
+**Quadrature is separate.** `integration_accuracy` selects precomputed GSL
+rules through an explicit level ladder, independently of `accuracy_boost`.
+Do not multiply radial, mass or angular rule orders by the global boost.
+Do not expose arbitrary rule sizes in project defaults. Covariance rules
+must use GSL's precomputed nodes, with 64 as the absolute minimum even if
+a 32-node test appears adequate. The notebook ladder is 96/128/256/512/1024
+for levels 0/1/2/3/4; low-level testing also accepts 64. Python-prepared
+production integrals obtain the same GSL rules through the C++ binding;
+independent references may generate their own rules. Split oscillatory
+angular integrals into physical panels rather than requesting generated
+2048-node rules. Level zero must be useful: test every consuming sector,
+including cluster selection and count responses, against higher levels.
+Check levels 2, 3 and 4 as well as 1, comparing the default directly with
+the highest level and verifying stability of the last refinement.
+Current implementation and evidence: `references/covariance_defaults.md`.
+Keep this level unchanged under global table refinements. Multiply interval
 counts in likelihoods too: `nonlimber_accuracyboost: 2` and
 `pk_z_refinement: 3` mean effective factors 4 and 6 at `accuracyboost: 2`.
 For covariance interpolation, multiply interval
@@ -787,6 +803,7 @@ Rules:
   integral quadratured on the sigma2 ln M nodes reads sigma2 exactly).
 - Code duplication across consumers is acceptable when it buys speed.
 - Gauss-Legendre sizes: always a size GSL has precomputed (tabulated).
+  The minimum accepted size is 64, even if a 32-node check seems adequate.
   The hdi ladders use 64, 96, 128, 256, 512, 1024, written inline at
   each site, e.g. redshift_spline.c:
   `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.

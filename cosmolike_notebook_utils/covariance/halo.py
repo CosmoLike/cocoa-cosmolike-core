@@ -14,7 +14,8 @@ from .geometry import angular_rule
 from .accuracy import covariance_accuracy
 
 
-def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu):
+def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu,
+                     integration_accuracy=0):
     """Compute five halo trispectrum contributions for all unordered k pairs.
 
     Arguments:
@@ -22,8 +23,9 @@ def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu):
         a = one scale factor inside the core's supported interval.
         k = positive [nk] wavenumbers in inverse c/H0 units.
         lnm_edges = increasing ln(M/[Msun/h]) panel edges.
-        accuracy_boost = 1, 2, 4 or 8; refines mass and angular integration.
+        accuracy_boost = 1, 2, 4 or 8; leaves integration rules unchanged.
         mnu = neutrino mass of the initialized cosmology, eV; must be zero.
+        integration_accuracy = 0..4, selecting precomputed GSL rules.
     Returns:
         dict with first/second k indices and terms [5,nk*(nk+1)/2].
         Term order is 1h, 2h(13), 2h(22), 3h, 4h; units are (c/H0)^9.
@@ -34,9 +36,12 @@ def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu):
     wave = np.ascontiguousarray(k, dtype=float)
     if wave.ndim != 1 or len(wave) == 0 or np.any(wave <= 0):
         raise ValueError("k must be a nonempty positive 1D array")
-    accuracy = covariance_accuracy(accuracy_boost=accuracy_boost)
+    accuracy = covariance_accuracy(
+        accuracy_boost=accuracy_boost, integration_accuracy=integration_accuracy,
+    )
     theta, weight, corner = angular_rule(
-        nquad=accuracy["tree_nquad"], npanel=accuracy["tree_npanel"]
+        nquad=accuracy["tree_nquad"], npanel=accuracy["tree_npanel"],
+        interface=interface,
     )
     single, moments = interface.covariance_halo_moments(
         a=np.array([a], dtype=float),
@@ -71,16 +76,17 @@ def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu):
     return {"first": first, "second": second, "terms": terms}
 
 
-def halo_power_response(interface, a, k, lnm_edges, accuracy_boost, mnu):
+def halo_power_response(interface, a, k, lnm_edges, accuracy_boost, mnu,
+                       integration_accuracy=0):
     """Compute the isotropic fractional-halo response transferred to Pdelta.
 
     Arguments:
         interface = initialized project interface.
         a = [na] scale factors; k = [na,nk] positive core wavenumbers.
         lnm_edges = mass panels as in halo_trispectrum.
-        accuracy_boost = 1, 2, 4 or 8; raises mass resolution and decreases
-            the centered finite-difference step in ln(k).
+        accuracy_boost = 1, 2, 4 or 8; decreases the centered derivative step.
         mnu = initialized neutrino mass in eV; this prescription needs zero.
+        integration_accuracy = 0..4, selecting the precomputed mass rule.
     Returns:
         [na,nk] dimensional dP/d(delta_b), in (c/H0)^3.
 
@@ -92,7 +98,9 @@ def halo_power_response(interface, a, k, lnm_edges, accuracy_boost, mnu):
     """
     if mnu != 0.0:
         raise ValueError("combined halo matter response requires mnu=0")
-    accuracy = covariance_accuracy(accuracy_boost=accuracy_boost)
+    accuracy = covariance_accuracy(
+        accuracy_boost=accuracy_boost, integration_accuracy=integration_accuracy,
+    )
     step = accuracy["response_step"]
     scale_factor = np.ascontiguousarray(a, dtype=float)
     wave = np.ascontiguousarray(k, dtype=float)

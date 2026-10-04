@@ -226,27 +226,46 @@ checks and resolution/Fisher comparisons before use for inference.
 
 ## One accuracy boost <a name="one_accuracy_boost"></a>
 
-Use `covariance_accuracy(accuracy_boost=1)`, or set `accuracy_boost` in the
-project's configuration function. Supported boosts are 1, 2, 4 and 8.
-Each step doubles signal and mask multipole cutoffs, radial and angular
-quadrature nodes, and window-grid intervals. The resolved dictionary is
-available for inspection and saving; ordinary notebook users need only
-change the boost. This control belongs to covariance and leaves CAMB and
-data-vector accuracy settings unchanged.
+Each project stores its integration baseline in `covariance/default.yaml`.
+The notebook reads it through the project's `configuration` function.
+`accuracy_boost=1` means that project baseline; small grids used only to test
+program wiring belong in tests. The project README records the numerical
+refinements used to assess its defaults.
 
-Boost 1 is a teaching resolution. For example, boost 8 resolves:
+The global boost multiplies every internal table refinement. For example,
+`non_gaussian_accuracyboost: 3` and `window_accuracyboost: 2` give effective
+factors 6 and 4 when only `accuracy_boost` changes from 1 to 2. The global
+boost also increases signal/mask cutoffs and divides the response derivative
+step. Physical bins, their Fourier-band endpoints, survey densities and
+CAMB inputs remain fixed.
 
-| Numerical quantity | Boost 8 |
+| Base control | Quantity refined by the global boost |
 | --- | --- |
-| Real-space signal maximum multipole | 80,000 |
-| Mask maximum multipole | 32,768 |
-| Radial nodes per panel | 512 |
-| Angular nodes per bin | 1,024 |
-| Lensing-window nodes | 32,769 |
+| `ell_max`, `mask_ell_max` | Signal and footprint harmonic cutoffs |
+| `ng_ell_intervals`, `non_gaussian_accuracyboost` | Intervals in the shared matter-response/trispectrum table |
+| `window_accuracyboost` | 16,384 intervals in each lensing-efficiency table |
+| `core_accuracyboost` | Shared halo/profile reader table resolution |
+| `response_step` | Half-width of the centered derivative in ln(k); divided by the boost |
 
-The same boost refines halo mass and angular integration and reduces the
-response finite-difference step. These are resolutions, not survey-accuracy
-labels. Check parameter errors and Fisher FoM for the intended physical model.
+The returned settings retain both `accuracy_parameters` (the base controls)
+and the effective node counts and grids. Internal controls can be varied one
+at a time when diagnosing convergence, for example
+`survey.configuration(accuracy_boost=1, non_gaussian_accuracyboost=3)`.
+Supported global values are 1, 2, 4 and 8.
+
+Quadrature has its own independent control, `integration_accuracy`. Levels
+0, 1, 2, 3 and 4 select GSL's precomputed 96, 128, 256, 512 and 1024-node
+rules, respectively. Raising the global boost leaves that rule unchanged.
+The same choice controls radial, halo-mass and relative-angle integrals,
+angular-bin averages, and selected-cluster profile responses. Wide angular
+bins are split into panels to resolve their high-multipole oscillations.
+Low-level tests may also use 64 nodes; smaller and generated rules are
+rejected. Compare, for example,
+`survey.configuration(accuracy_boost=1, integration_accuracy=1)` with the
+level-zero baseline to isolate quadrature refinement.
+
+Numerical convergence must be measured for the intended
+physical model; matching a data-vector cutoff does not certify a covariance.
 
 The interpolation grids retain their old nodes when the boost doubles.
 For example, a table with 16 points has 15 intervals; splitting each

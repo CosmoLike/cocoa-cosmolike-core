@@ -670,9 +670,23 @@ white shape noise remains $\sigma_{\rm component}^2/\bar n_s$.
 Spin-two rows have no $\ell<2$ contribution. Scalar rows retain the
 monopole and dipole; any estimator-specific removal must be consistent.
 
-The operator's angular quadrature and maximum multipole must be refined
-together. Evaluating a bin at its center does not perform the integral
-above.
+At high multipoles a wide angular bin contains many oscillations. The
+operator splits that bin into panels whose angular width satisfies
+$\ell_{\max}\Delta\theta\le128$. Every panel uses the same precomputed
+GSL rule; their contributions share the measured bin's full area
+normalization. Refining the rule tests integration accuracy without
+changing the measured bins. Evaluating a bin at its center does not
+perform this integral.
+
+In the notebook workflow `integration_accuracy` selects the
+96/128/256/512/1024-node rule at levels 0/1/2/3/4. These choices control
+radial, mass and angular integrals, including the Python-prepared tree
+and selected-cluster integrals. The C++ binding supplies GSL's precomputed
+nodes to Python. Low-level tests also accept the precomputed 64-node rule;
+smaller and generated rules are rejected. The independent `accuracy_boost`
+refines interpolation tables and multipole cutoffs, leaving these rule
+orders unchanged. Level zero must be checked against higher levels for
+the project's full covariance.
 
 ## Units, numerical structure and remaining scope <a name="numerics"></a>
 

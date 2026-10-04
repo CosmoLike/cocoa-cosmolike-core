@@ -1,82 +1,147 @@
-"""One covariance accuracy control with inspectable numerical settings.
+"""Project covariance baselines and nested numerical refinements.
 
-The boost changes covariance integration only. It does not alter CAMB,
-CosmoLike's data-vector tables, the physical covariance model, or the
-survey footprint. Higher resolution reduces numerical errors only within
-the specified model; convergence still needs to be measured.
+A project YAML defines its base accuracy. The public boost refines that
+baseline's interpolation and cutoffs. An independent integration level
+selects precomputed GSL rules. These controls change only numerical accuracy.
+They do not change CAMB inputs, the survey footprint or the measured bins.
 """
 
+from pathlib import Path
+
 import numpy as np
+import yaml
 
 
-def covariance_accuracy(accuracy_boost=1):
-    """Resolve a single boost into the covariance integration controls.
+def covariance_accuracy(
+    accuracy_boost=1, *, ell_max=100000, mask_ell_max=32768,
+    ng_ell_intervals=127, non_gaussian_accuracyboost=1,
+    window_accuracyboost=1, response_step=0.00005,
+    core_accuracyboost=1, integration_accuracy=0,
+):
+    """Resolve project-specific base controls and one overall refinement.
 
     Arguments:
-        accuracy_boost = 1, 2, 4 or 8. These increasing resolutions fit the
-            supported C Gaussian-quadrature rules without rounding a
-            requested value down. One is the inexpensive notebook pilot.
+        accuracy_boost = 1, 2, 4 or 8; refines tables and multipole cutoffs.
+        ell_max = base real-space signal cutoff. Fourier band edges stay fixed.
+        mask_ell_max = base cutoff of the survey-footprint spectrum.
+        ng_ell_intervals = base intervals in ln(ell+1/2), from 2 to ell_max.
+        non_gaussian_accuracyboost = refines only that interpolation grid.
+        window_accuracyboost = multiplies 16384 lensing-window intervals.
+        core_accuracyboost = multiplies the shared core reader table boost.
+        integration_accuracy = independent quadrature level, 0 through 4.
+            Selects 96, 128, 256, 512 or 1024 precomputed GSL nodes per
+            radial, mass or angular panel. It is also passed unchanged to
+            the shared core. accuracy_boost never changes these rules.
+        response_step = base half-width of the centered ln(k) derivative.
+            The overall boost divides this width. Input-power interpolation
+            can limit derivative convergence even with a very small step.
+
+    Internal table boosts are positive integers multiplying the public boost.
+    integration_accuracy=0 must already resolve the integrals. Angular
+    kernels split wide bins into panels to resolve their fastest oscillations.
+    Low-level tests may also use the precomputed 64-node rule; smaller or
+    generated rules are unsupported. Refinement never changes measured bins.
+
     Returns:
-        dict with the boost and integer ell_max, mask_ell_max,
-        radial_nquad, angle_nquad and nwindow, plus halo_mass_nquad,
-        tree_nquad, tree_npanel, response_step and the ng_ell sample array.
-        Passing resolved values to C does not modify data-vector accuracy.
+        Resolved settings, including the unboosted accuracy_parameters for
+        reproducibility. No data-vector or physical survey settings change.
 
-    Why all five grow:
-        ell_max retains more small-angle signal modes; mask_ell_max
-        resolves finer footprint structure; radial_nquad improves the
-        line-of-sight integral; angle_nquad resolves oscillations inside
-        angular bins; nwindow refines the lensing-efficiency integral.
-        Doubling intervals (nwindow-1) retains all old window-grid nodes.
-
-    Boost 8 reaches 80,000 signal multipoles, 32,768 mask multipoles,
-    512 radial nodes per panel, 1,024 angular nodes per bin and 32,769
-    window nodes. This can be expensive. It is a numerical stress setting,
-    not a promise of converged Fisher errors for an arbitrary survey.
-    The same boost controls standalone halo preparation: more mass and
-    angular nodes, an extra near-opposite angular panel per doubling, and
-    a smaller centered derivative step. These changes require refinement
-    checks against the underlying power-spectrum interpolation. They do
-    not certify the full survey SSC/cNG model. The same boost increases
-    ng_ell, the samples used to interpolate the matter trispectrum in
-    ln(ell+1/2). Each doubling inserts midpoint samples without moving old
-    ones. Extending the signal cutoff adds intervals to that same grid.
-    Scientific Fourier-band endpoints remain fixed. Gaussian quadrature
-    nodes are not interpolation-table nodes and do not follow this nesting.
+    Interpolation refinement divides intervals, retaining every old sample.
+    Raising ell_max extends the original logarithmic grid instead of moving
+    its anchors. Gaussian quadrature nodes and weights refine together; they
+    are not interpolation nodes and need not retain their old positions.
+    High resolution alone is not proof of covariance/Fisher convergence.
     """
-    if not isinstance(accuracy_boost, (int, np.integer)):
+    if isinstance(accuracy_boost, (bool, np.bool_)) or not isinstance(
+        accuracy_boost, (int, float, np.integer, np.floating)
+    ) or accuracy_boost not in (1, 2, 4, 8):
         raise ValueError("accuracy_boost must be one of the integers 1, 2, 4, 8")
-    if accuracy_boost not in (1, 2, 4, 8):
-        raise ValueError("accuracy_boost must be 1, 2, 4 or 8")
-    boost = int(accuracy_boost)
-
-    # The pilot has 15 logarithmic intervals from ell=2 to ell=10000.
-    # Doubling the number of INTERVALS puts each old node at an even index.
-    # Doubling a point count instead would displace all interior samples.
-    span = np.log(10000.5)-np.log(2.5)
-    required_span = np.log(10000*boost+0.5)-np.log(2.5)
-    base_intervals = int(np.ceil(15*required_span/span))
-    position = np.arange(base_intervals*boost+1)/(15*boost)
-    ng_ell = np.exp(np.log(2.5)+span*position)-0.5
-
-    # Fix the two physical anchors exactly, including on refined grids.
-    # The upper table edge can lie beyond the signal cutoff: it brackets
-    # the last requested mode without stretching any existing interval.
-    ng_ell[0] = 2.0
-    ng_ell[15*boost] = 10000.0
-    return {
-        "accuracy_boost": boost,
-        "ell_max": 10000*boost,
-        "mask_ell_max": 4096*boost,
-        "ng_ell": ng_ell,
-        "radial_nquad": 64*boost,
-        "angle_nquad": 128*boost,
-        "nwindow": 4096*boost+1,
-        "halo_mass_nquad": 128*boost,
-        "tree_nquad": 64*boost,
-        "tree_npanel": 16+int(np.log2(boost)),
-        "response_step": 0.01/boost,
+    internal = {
+        "non_gaussian_accuracyboost": non_gaussian_accuracyboost,
+        "window_accuracyboost": window_accuracyboost,
+        "core_accuracyboost": core_accuracyboost,
     }
+    for name, value in internal.items():
+        if isinstance(value, (bool, np.bool_)) or not isinstance(
+            value, (int, float, np.integer, np.floating)
+        ) or not np.isfinite(value) or value < 1 or value != int(value):
+            raise ValueError(f"{name} must be a positive integer")
+        internal[name] = int(value)
+    if isinstance(integration_accuracy, (bool, np.bool_)) or not isinstance(
+        integration_accuracy, (int, np.integer)
+    ) or integration_accuracy not in (0, 1, 2, 3, 4):
+        raise ValueError("integration_accuracy must be an integer from 0 to 4")
+    for name, value in (
+        ("ell_max", ell_max), ("mask_ell_max", mask_ell_max),
+        ("ng_ell_intervals", ng_ell_intervals),
+    ):
+        if isinstance(value, (bool, np.bool_)) or not isinstance(
+            value, (int, np.integer)
+        ) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if ell_max < 3 or not np.isfinite(response_step) or response_step <= 0:
+        raise ValueError("ell_max must exceed two and response_step must be positive")
+    boost = int(accuracy_boost)
+    intervals = int(ng_ell_intervals*non_gaussian_accuracyboost)
+
+    # Use one anchored grid: a doubled boost inserts midpoint samples;
+    # an increased signal cutoff appends complete cells to the same grid.
+    span = np.log(ell_max+0.5)-np.log(2.5)
+    required_span = np.log(ell_max*boost+0.5)-np.log(2.5)
+    base_intervals = int(np.ceil(intervals*required_span/span))
+    position = np.arange(base_intervals*boost+1)/(intervals*boost)
+    ng_ell = np.exp(np.log(2.5)+span*position)-0.5
+    ng_ell[0] = 2.0
+    ng_ell[intervals*boost] = float(ell_max)
+
+    parameters = dict(internal)
+    parameters.update({
+        "ell_max": int(ell_max),
+        "mask_ell_max": int(mask_ell_max),
+        "ng_ell_intervals": int(ng_ell_intervals),
+        "response_step": float(response_step),
+        "integration_accuracy": int(integration_accuracy),
+    })
+    result = {
+        "accuracy_boost": boost,
+        "accuracy_parameters": parameters,
+        "ell_max": int(ell_max*boost),
+        "mask_ell_max": int(mask_ell_max*boost),
+        "ng_ell": ng_ell,
+        "nwindow": int(16384*window_accuracyboost*boost+1),
+        "tree_npanel": 20+int(integration_accuracy),
+        "response_step": response_step/boost,
+        "core_accuracyboost": int(core_accuracyboost*boost),
+        "integration_accuracy": int(integration_accuracy),
+    }
+    # Resolve the integration ladder once, before calling any C kernel.
+    # Each size is a precomputed GSL rule, not an arbitrary requested count.
+    # Keep this independent of every interpolation-table refinement.
+    nodes = (96, 128, 256, 512, 1024)[integration_accuracy]
+    for name in ("radial_nquad", "angle_nquad", "halo_mass_nquad", "tree_nquad"):
+        result[name] = nodes
+    return result
+
+
+def load_covariance_accuracy(filename, accuracy_boost=None, **overrides):
+    """Read a project's YAML baseline and resolve optional explicit refinements.
+
+    Arguments:
+        filename = path to covariance/default.yaml, containing only the
+            covariance_accuracy keyword arguments.
+        accuracy_boost = optional overall boost; None uses the YAML value.
+        overrides = optional internal controls overriding that file.
+    Returns:
+        The resolved covariance_accuracy mapping. Unknown keys fail at the
+        function boundary, so misspelled accuracy controls are never ignored.
+    """
+    settings = yaml.safe_load(Path(filename).read_text())
+    if not isinstance(settings, dict):
+        raise ValueError(f"{filename} must contain a covariance accuracy mapping")
+    settings.update(overrides)
+    if accuracy_boost is not None:
+        settings["accuracy_boost"] = accuracy_boost
+    return covariance_accuracy(**settings)
 
 
 def non_gaussian_multipoles(samples, ell_max):

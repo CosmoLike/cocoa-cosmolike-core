@@ -55,9 +55,19 @@ typedef simde__m128d v2d;
 // NUMERICAL STEPS
 // A bin represents the spherical area average integral sin(theta) dtheta,
 // divided by cos(theta_low)-cos(theta_high). Tabulated Gauss-Legendre nodes
-// integrate this smooth finite interval in theta. This is a numerical bin
-// average, not a point approximation or an exact antiderivative. The caller
-// must refine nquad against ell_max and the widest bin before using it.
+// integrate finite panels in theta. At large ell the kernel oscillates
+// roughly as cos(ell*theta), so a wide bin contains many sign changes.
+// One low-order rule across the whole bin could miss those oscillations.
+// Split wide bins so ell_max*panel_width <= 128 radians, then use the same
+// precomputed rule in each panel. Even the minimum 64-node rule therefore
+// samples the fastest oscillations generously; refine nquad to test this.
+// To see the margin, map a panel to t in [-1,1]. Its oscillatory phase
+// varies as at most 64*t, whereas a 64-node Gaussian rule integrates
+// every polynomial through degree 127 exactly. This gives room to resolve
+// the oscillation's polynomial expansion. The analytic scalar-bin integral
+// supplies an independent high-ell check; the margin is not an error bound.
+// Panel boundaries depend on bin geometry and ell_max, not on nquad, so
+// changing integration accuracy tests the same panel integrals.
 // The cosine difference is evaluated as two sines to avoid cancellation.
 //
 // At every angular node, Jacobi polynomials follow the three-term relation
@@ -85,7 +95,7 @@ void realspace_operator_cov(
     const int nbin,            // number of angular bins
     const double* edges_rad,   // [nbin+1], increasing angles in radians
     const int ell_max,         // highest included multipole
-    const int nquad,           // angular quadrature nodes per bin
+    const int nquad,           // precomputed GSL nodes per angular panel
     double* const* kernel      // [4*nbin][ell_max+1], caller-owned rows
   )
 {
@@ -121,10 +131,25 @@ void realspace_operator_cov(
 
   // --- 1. SAMPLE THE GEOMETRY OF EACH ANGULAR BIN ---
 
+  // More panels resolve more oscillations without constructing a new GSL
+  // rule. A narrow bin needs only one panel. Store each bin's node count
+  // and allocate enough shared scratch for the widest bin's calculation.
+  int* nnode = (int*) malloc1d_int(nbin); // total nodes in each angular bin
+  int max_nodes = 0; // largest count, setting the padded workspace size
+
+  for (int bin=0; bin<nbin; bin++) {
+    const double phase = ell_max*(edges_rad[bin+1]-edges_rad[bin]);
+    const int npanel = (int) fmax(1.0, ceil(phase/128.0)); // resolved panels
+    nnode[bin] = npanel*nquad;
+    if (nnode[bin] > max_nodes) {
+      max_nodes = nnode[bin];
+    }
+  }
+
   // Allocate all four geometry tables together. Their indices are
   // [quantity][angular bin][quadrature node]. The quantities are cos(theta),
   // normalized area weight, sin^2(theta/2), and cos^2(theta/2).
-  double*** geometry = (double***) malloc3d(4, nbin, nquad);
+  double*** geometry = (double***) malloc3d(4, nbin, max_nodes);
 
   // A Gauss-Legendre rule supplies sample angles and integration weights.
   // Reuse this rule for every bin, mapping it onto that bin's boundaries.
@@ -150,16 +175,25 @@ void realspace_operator_cov(
       exit(1);
     }
 
-    // Sample one angle inside this annulus, turn its dtheta weight into
-    // an area-average weight, and save its full-angle and half-angle factors.
-    for (int node=0; node<nquad; node++) {
+    // Each panel contributes part of the SAME measured annulus; its
+    // weights use the full annulus area above, not a separate panel area.
+    const int npanel = nnode[bin]/nquad; // fixed across integration levels
+    const double step = (upper-lower)/npanel; // angular panel width
+
+    // The flat node index visits panels in angle order. Its quotient
+    // selects a panel; its remainder selects the precomputed Gaussian
+    // node inside that panel. Every later multipole reuses this geometry.
+    for (int node=0; node<nnode[bin]; node++) {
       // GSL returns theta and its weight for integral f(theta) dtheta.
       // The spherical sin(theta) factor is added explicitly below.
       double theta;   // angle at this Gaussian node, in radians
       double measure; // integration weight for dtheta
 
-      gsl_integration_glfixed_point(lower, upper, node, &theta, &measure,
-                                    rule);
+      const int panel = node/nquad; // panel containing this angular node
+      const double begin = lower+panel*step; // lower panel boundary
+      const double end = lower+(panel+1)*step; // upper panel boundary
+      gsl_integration_glfixed_point(begin, end, node % nquad,
+                                    &theta, &measure, rule);
 
       // The spin-two rotation kernels use powers of these half angles.
       // Evaluating them directly retains precision at tiny separations.
@@ -233,7 +267,7 @@ void realspace_operator_cov(
   // [worker][previous/current/weighted prefactor][node]. Every worker
   // reuses its rows for the next bin; no allocation occurs inside OpenMP.
   const int nthreads = omp_get_max_threads();
-  double*** work = (double***) malloc3d(nthreads, 3, nquad);
+  double*** work = (double***) malloc3d(nthreads, 3, max_nodes);
 
   // A measured angular bin averages correlations over an annulus, rather
   // than observing the correlation at just its center. For each multipole
@@ -261,7 +295,7 @@ void realspace_operator_cov(
 
       // Start with P_(-1)=0 and P_0=1. Attach the probe's half-angle
       // factor to the area weight; it does not change with degree.
-      for (int node=0; node<nquad; node++) {
+      for (int node=0; node<nnode[bin]; node++) {
         const double sine2 = geometry[2][bin][node];
         const double cosine2 = geometry[3][bin][node];
         double prefactor = 1.0;
@@ -306,7 +340,7 @@ void realspace_operator_cov(
         // Process two angles together: accumulate weight*P_n, advance both
         // polynomials to P_(n+1), and save them for the next degree. Lane 0
         // owns node and lane 1 owns node+1; their sums stay separate here.
-        for (int node=0; node<nquad; node+=2) {
+        for (int node=0; node<nnode[bin]; node+=2) {
           // Load P_n at node and node+1 into lanes 0 and 1. loadu accepts
           // an address without special vector alignment; both nodes exist.
           const v2d vcurrent = simde_mm_loadu_pd(current+node);
@@ -368,6 +402,7 @@ void realspace_operator_cov(
   free(work);
   free(coefficient);
   free(geometry);
+  free(nnode);
 }
 
 // ---------------------------------------------------------------------------

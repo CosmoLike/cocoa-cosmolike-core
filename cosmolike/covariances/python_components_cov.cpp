@@ -13,6 +13,7 @@
 #include "perturbation_cov.h"
 #include "ssc_cov.h"
 #include "spectra_cov.h"
+#include "cosmolike/basics.h"
 #include "cosmolike/cosmo3D.h"
 #include "cosmolike/halo.h"
 #include "cosmolike/structs.h"
@@ -100,6 +101,30 @@ static void angles_cov(const cov_array& edges)
       throw std::invalid_argument("angle edges must increase strictly");
     }
   }
+}
+
+// Supply the same precomputed GSL rule to Python-prepared integrals as to
+// the C radial, mass and angular kernels. Row 0 contains nodes on [-1,1];
+// row 1 contains positive weights for integration over that interval.
+// Python maps these onto its physical panels without generating another
+// rule. The supported sizes all have at least 64 nodes. NumPy owns the
+// copy, so releasing GSL's descriptor cannot invalidate the returned data.
+static cov_array covariance_integration_rule(
+    const int nquad // precomputed rule size: 64,96,128,256,512,1024
+  )
+{
+  quadrature_cov(nquad);
+  cov_array output({2, nquad});
+  gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);
+
+  // Copy each node and its matching weight before releasing the rule.
+  for (int node=0; node<nquad; node++) {
+    gsl_integration_glfixed_point(-1.0, 1.0, node,
+        output.mutable_data(0, node), output.mutable_data(1, node), rule);
+  }
+
+  gsl_integration_glfixed_table_free(rule);
+  return output;
 }
 
 // ---------------------------------------------------------------------------
@@ -623,6 +648,11 @@ static cov_array covariance_halo_response(
 
 void bind_covariance_components(py::module_& module)
 {
+
+  module.def("covariance_integration_rule", &covariance_integration_rule,
+      "Precomputed GSL nodes and weights [2,nquad] on [-1,1]. "
+      "Allowed sizes: 64,96,128,256,512,1024; smaller rules are rejected.",
+      py::arg("nquad"));
 
   module.def("covariance_mask_pair_area", &covariance_mask_pair_area,
       "Ordered-pair area [nbin] in sr^2 from a raw mask and bin kernel.",

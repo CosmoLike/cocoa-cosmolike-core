@@ -188,7 +188,8 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
     response = np.empty((len(transform), nnode))
     long_power = np.empty((nnode, mask_nell))
     unused, angle_weight, corner = angular_rule(
-        nquad=settings["tree_nquad"], npanel=settings["tree_npanel"]
+        nquad=settings["tree_nquad"], npanel=settings["tree_npanel"],
+        interface=interface,
     )
     first, second = np.triu_indices(n=len(coarse_ell))
     # K,Q both scale as 1/chi along a Limber shell. Build the angular

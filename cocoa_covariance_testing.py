@@ -47,7 +47,14 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
     refined = survey.configuration(accuracy_boost=2)
     for key in ("band_first", "band_last", "theta_edges_arcmin"):
         np.testing.assert_array_equal(settings[key], refined[key])
-    assert refined["radial_nquad"] > settings["radial_nquad"]
+    # Table refinement must leave the GSL rule fixed. Only the independent
+    # integration level advances radial, mass and angular quadrature.
+    integrated = survey.configuration(integration_accuracy=1)
+    for key in ("radial_nquad", "angle_nquad", "halo_mass_nquad", "tree_nquad"):
+        assert refined[key] == settings[key]
+        assert settings[key] == 96
+        assert integrated[key] == 128
+    assert len(refined["ng_ell"]) > len(settings["ng_ell"])
 
     # Use each real redshift distribution and the project's noise inputs,
     # while reducing the quadrature size for this assembly check. These
