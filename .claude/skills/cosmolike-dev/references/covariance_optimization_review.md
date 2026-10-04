@@ -209,3 +209,77 @@ signed quantities, initialization/warm-up scope and the distinction
 between construction and hot lookup. It also separates interpolation
 errors from quadrature refinement and from projected covariance accuracy.
 This is a didactic self-review; Fable 5 was unavailable.
+
+## Follow-up: eight-core scaling and the process boundary
+
+The owner requires useful scaling to 8--10 OpenMP workers per process,
+with 1/2/4/8-thread measurements on this laptop. C must not call MPI.
+A later Python driver, through the C++ interface, may divide larger
+matrix subblocks among MPI processes. A 40-core node can then run five
+processes with eight threads or four with ten, keeping BLAS single
+threaded. Core-state initialization and table warm-up remain serial
+within each process before independent OpenMP work begins.
+
+The review checks the number of *independent output tasks*, not merely
+whether a loop has an OpenMP pragma:
+
+| Calculation | Existing task count | Eight/ten-thread implication |
+|---|---|---|
+| Halo mass weights | na | One-shell calls made this expensive setup serial. |
+| NFW profiles | na * nk | A two/three-k derivative batch underfilled the team. |
+| Halo moment sums | na * ceil(npair/2) | Large pair tables fill the team; batch small independent requests rather than split deterministic sums. |
+| Perturbation averages | ceil(npair/2) | Thousands of pair tasks for realistic tables; angular reductions stay within each lane. |
+| Lensing efficiency | nfield | Roman has 16 fields, enough for eight; each radial sweep is cumulative and cannot be naively collapsed. |
+| Limber spectra | nell * ceil(npair/2) | Already collapsed over independent outputs. |
+| Real-space operators | 4 * ntheta | Roman has 60 complete recurrence tasks; multipole recurrence itself is dependent. |
+| Gaussian projection | ceil(nleft/4) * ceil(nright/4) | A 15-by-15 block gives 16 tiles, suited to eight; larger dispatched blocks provide more tasks for ten. |
+| Mask pair area | ceil(ntheta/2) | Fifteen bins give only eight tasks, but this geometry is reusable; profile before changing its sum order. |
+| SSC mask variance | ceil(nradial/2) | Supply a radial batch, not one call per shell. |
+| SSC shell response | nrow | Small row batches can underfill; larger independent matrix blocks avoid that limit. |
+| Halo response/trispectrum assembly | ceil(npoint/2) | Batch independent physical points; retain SIMDe. |
+
+Two minimal halo-loop candidates were implemented and kept separately in
+the external comparison:
+
+- Collapse mass-weight preparation over (a,mass). Compute the small
+  low-mass completion sum afterward, in the original mass order.
+- Collapse profile preparation over (a,k,mass), because every NFW value
+  is independent. This exposes enough work even for a small k batch.
+
+No integration-node order, physics reader, quadrature, profile formula or
+SIMDe moment sum changes. There is no thread reduction, MPI call, new
+cache, extra workspace or duplicated fallback implementation. The
+existing mass-weight table supplies the subsequent completion sum.
+
+The external `check_halo_scaling.py` compares the pinned `f497d1b`
+baseline, the mass-only change and both changes. Workloads cover
+(na,nk,nmass)=(1,2,4096), (1,32,4096), (1,128,4096), (8,16,2048).
+Every result is bitwise equal across the three layouts and 1/2/4/8
+threads. The dedicated small-batch project test also compares the
+one-a/two-k result with its entries in a larger table.
+
+The first timing attempt encountered desktop activity and was archived
+as `halo_thread_scaling_contended.json`. It is explicitly excluded from
+performance evidence. A five-second CPU-time measurement subsequently
+found 1.27 cores of desktop/background work, so clean timings were deferred
+and correctness work continued. No speedup should be inferred from those
+discarded samples. The eight performance cores are the primary scaling
+target; the laptop also has four efficiency cores.
+
+A future SSC builder has another clear reuse opportunity: the external
+response adapter requests a separate small shifted-k halo batch per
+wavenumber. It consequently repeats mass-weight preparation at the same
+scale factor. Design the production response-table build around shared
+mass weights and profiles, and measure a diagonal-moment path before
+adding it; computing an entire quadratic pair table solely for its
+diagonal would waste work. This is an identified next experiment, not an
+implemented API or claimed speedup.
+
+The separate didactic review checked that the new loop overviews explain
+why mass weights and profiles are independent, why the completion sum
+stays ordered, and how small batches use all workers. New C lines stay
+within 80 columns. Existing SIMD calls and their lane explanations are
+unchanged. Debug tests cover all halo and SSC checks, including physical
+mass refinement, thread repeatability and complete rectangular subblock
+assembly. This remains a self-review; no unavailable model review is
+claimed.
