@@ -494,3 +494,109 @@ runtime and positivity checks are recorded in
 [covariance_full_survey_timing.md](covariance_full_survey_timing.md).
 The fixed-k radial spline acceleration above remains an independent
 experiment; the full runs evaluate every radial shell directly.
+
+
+## Four-wavenumber linear power experiment (2026-10-05, branch `simde`)
+
+Base: released core v5.07 (`ac49fc3`). This is an isolated experiment;
+there is no measured Intel speedup and no change to release defaults.
+The trial is deliberately bounded before considering further work.
+Python batching, vector log/exp, resampling and data-vector changes are
+outside this experiment.
+
+### Implementation and arithmetic
+
+Only `covariances/spectra_cov.c` changes executable behavior. The linear
+matrix reader copies the existing log10(k) axis and two needed redshift
+columns into one three-row allocation. It shares this immutable snapshot
+across the existing OpenMP rows, uses SIMDe gathers for four independent
+wavenumbers, and retains scalar log10/exp and the scalar remainder. The
+nonlinear reader, public signatures, supplied grids, extrapolation and
+physical models are unchanged. There is no persistent cache.
+
+The first unfused draft failed the bitwise comparison. Inspection of the
+existing Clang/ARM reader and the supplied GCC/Intel assembly showed the
+same three fused multiply-adds: term01 is multiplied separately, then
+terms 00, 10 and 11 are accumulated with FMA. The candidate now reproduces
+that order. The bundled 256-bit SIMDe FMA is unfused on ARM, so a private
+helper follows `halo.c::nfw_fmadd4`: two native 128-bit fused operations
+on ARM, one native 256-bit operation on x86 with FMA. This is not a
+selectable scalar model or an accuracy-setting change.
+
+A Clang cross-compilation for x86-64 Haswell emits six `vgatherdpd`,
+vector division and three four-wide `vfmadd231pd` instructions in the
+new interpolation loop. This verifies native instruction generation;
+it is not a Linux/GCC runtime benchmark. Linux correctness and timings
+must still be measured with the actual production compiler.
+
+### Isolated checks and local timing
+
+Isolated optimized and O0 sanitizer builds each pass 206 bitwise comparisons,
+covering 5,332,170 power values. The probes include every input k node,
+its adjacent representable values, interior queries, extrapolation,
+redshift-segment joins, changed table amplitudes, uneven vector tails,
+both linear/nonlinear choices and 1/2/4/8 threads. Output padding remains
+untouched. UBSan and floating-divide-by-zero checks report no failures.
+
+The local component benchmark uses 8,256 pairs by 1,920 angular samples
+at a=0.7, the saved LSST multipole grid and saved Roman CAMB inputs.
+Each call includes snapshot construction and OpenMP work, but excludes
+input generation and caller-owned output allocation. Two warmups precede
+nine measurements, alternating baseline/candidate order. Only one
+numerical job ran; ordinary desktop applications remained open.
+
+| Threads | Scalar median (ms) | SIMD median (ms) |
+|---:|---:|---:|
+| 1 | 166.748 | 173.330 |
+| 2 | 86.657 | 89.297 |
+| 4 | 44.191 | 45.970 |
+| 8 | 22.628 | 23.401 |
+
+The M2 Pro result is a 3--4% local slowdown. It neither establishes nor
+rules out an Intel gain: the gather and arithmetic implementations differ.
+Retain the branch for controlled Linux testing; do not promote it based
+on expected hardware behavior. No fast-math flag or vector-math library
+was introduced to improve these numbers.
+
+External evidence is under
+`test/covariance_reference/results/simde_power_20261005/`, with drivers
+`check_simde_power.py` and `benchmark_simde_power.py`. These paths are
+internal development records, not public README instructions.
+
+### Linked validation and didactic review
+
+All seven strict optimized project interfaces were rebuilt sequentially.
+Their covariance suites and frozen data-vector checks pass:
+
+| Project | Covariance tests | Frozen data-vector checks |
+|---|---:|---:|
+| LSST Y1 | 119 | 6 |
+| Roman real | 1 | 6 |
+| Roman Fourier | 1 | 6 |
+| Roman KL | 1 | 6 |
+| DES Y3 | 1 | 12 |
+| DES x Planck | 1 | 6 |
+| DES cluster | 50 | 8 |
+| Total | 174 | 50 |
+
+DES x Planck was rebuilt with its actual covariance key,
+`IGNORE_COSMOLIKE_DESXPLANCK_COVARIANCE`, unset. Its earlier skipped run
+does not count as validation. Roman KL's first frozen check could not
+import its module; adding the project's interface directory to the test
+process's `PYTHONPATH` resolved it. No source or reference changes were
+needed for either setup issue.
+
+The complete 1,560-by-1,560 LSST Y1 production CLI result is bitwise equal
+to the saved v5.07 result for G, SSC, cNG, total, both signal conventions,
+coordinates, geometry, row ordering, multipole samples and pair areas.
+Resolved settings match apart from the output filename. The total is thus
+identical to the already verified positive-definite reference. Evidence:
+`full_comparison.json` and `lsst_y1_full.npz` in the experiment directory.
+This run took 49.708 s at eight threads; it is a validation run, not a
+controlled fresh full-runtime comparison with the baseline.
+
+The source review checks the scalar equivalent above the SIMD block,
+redshift versus wavenumber axes, gather lane order, fused rounding,
+extrapolation, scratch ownership and unchanged OpenMP row scheduling.
+Every new C line stays within 80 columns. The unavailable Fable review
+was not claimed; this is an explicit self-review.

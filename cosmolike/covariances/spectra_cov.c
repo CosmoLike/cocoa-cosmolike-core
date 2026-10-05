@@ -10,7 +10,7 @@
 #include "cosmolike/redshift_spline.h"
 #include "cosmolike/structs.h"
 #include "log.c/src/log.h"
-#include "simde/x86/sse2.h"
+#include "simde/x86/avx2.h"
 #include "simde/x86/fma.h"
 
 // SIMD applies one operation to two doubles in positions called lanes.
@@ -23,6 +23,227 @@
 // bytes. They still require two valid adjacent doubles in the array.
 typedef simde__m128d v2d;
 
+// Four lanes below represent four independent wavenumbers at one redshift.
+typedef simde__m256d v4d;
+
+// ---------------------------------------------------------------------------
+// Match the core reader's fused a*b+c on four independent wavenumbers.
+//
+// Follow halo.c::nfw_fmadd4: the bundled SIMDe maps its 256-bit FMA to
+// separate multiplication and addition on ARM. Splitting into two native
+// NEON pairs preserves one rounding there; x86 with FMA uses one 256-bit
+// instruction. Both paths keep each wavenumber in its original lane.
+// This is instruction selection, not a selectable scalar physics model.
+// ---------------------------------------------------------------------------
+static inline v4d power_fmadd4_cov(
+    const v4d va, // four multiplicands
+    const v4d vb, // four multipliers
+    const v4d vc  // four values to add after multiplication
+  )
+{
+#ifdef SIMDE_X86_FMA_NATIVE
+  // fmadd computes a*b+c once per lane with a single final rounding.
+  return simde_mm256_fmadd_pd(va, vb, vc);
+#else
+  // castpd keeps lanes 0,1; extractf128 selects lanes 2,3. Split each
+  // operand identically so no multiplication combines different queries.
+  const v2d va_low = simde_mm256_castpd256_pd128(va);
+  const v2d vb_low = simde_mm256_castpd256_pd128(vb);
+  const v2d vc_low = simde_mm256_castpd256_pd128(vc);
+  const v2d va_high = simde_mm256_extractf128_pd(va, 1);
+  const v2d vb_high = simde_mm256_extractf128_pd(vb, 1);
+  const v2d vc_high = simde_mm256_extractf128_pd(vc, 1);
+
+  // Each two-lane fmadd becomes a native fused NEON operation on ARM64.
+  const v2d vlow = simde_mm_fmadd_pd(va_low, vb_low, vc_low);
+  const v2d vhigh = simde_mm_fmadd_pd(va_high, vb_high, vc_high);
+
+  // set_m128d takes the high half first, restoring lanes 0,1,2,3.
+  return simde_mm256_set_m128d(vhigh, vlow);
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// Read linear matter power at one scale factor with four-wavenumber SIMD.
+//
+// The supplied table contains ln(P) on a (log10(k),z) grid. At fixed a,
+// all queries share z=1/a-1 and the same two redshift columns. Copy those
+// columns into contiguous rows, together with the log10(k) coordinates.
+// This is a different memory layout of the SAME samples, not a new grid
+// or a new interpolation approximation. Workers share this small snapshot.
+//
+// For each query, dx and dy locate k and z between the four cell corners:
+//   L = (1-dx)*(1-dy)*L00 + (1-dx)*dy*L01
+//       + dx*(1-dy)*L10 + dx*dy*L11,
+//   P = exp(L)/(c/H0)^3.
+// Each SIMD lane computes this expression for its own k. Keep its four
+// terms in p_lin_at_a's order. The strict optimized scalar builds on both
+// Clang/ARM and GCC/x86 contract the last multiply of terms 00, 10 and 11
+// with their following addition. Match those three fused operations here;
+// do not regroup into nested interpolation. Actual coordinates determine dx.
+// Clamped cell indices retain the core's edge extrapolation: dx and dy
+// themselves may lie outside [0,1]. Scalar log10 and exp are unchanged.
+//
+// Inputs are validated by the covariance interface: a is in its initialized
+// range and all k are finite and positive. Units are (c/H0)^-1 for k and
+// (c/H0)^3 for P. Output rows must be disjoint from inputs and each other.
+// Call outside OpenMP after initializing the cosmology. Each worker owns
+// complete rows; there is no reduction, persistent cache or core mutation.
+// The scalar core reader handles up to three remaining samples per row.
+// ---------------------------------------------------------------------------
+static void linear_power_rows_cov(
+    const double a,                 // common scale factor
+    const int nrow,                 // independent integration rows
+    const int ncol,                 // wavenumbers per row
+    const double* const* k,         // positive physical wavenumbers
+    double* const* power            // caller-owned output power
+  )
+{
+  // --- 1. SELECT THE TWO REDSHIFT COLUMNS ---
+  // The setter describes a few uniform redshift segments. Follow the
+  // same direct indexing as cosmo3D.c::piecewise_index: find the segment,
+  // then use its spacing instead of searching the full redshift table.
+  const double z = 1.0/a-1.0;
+  const int nk = cosmology.lnPL_nk;
+  const int nz = cosmology.lnPL_nz;
+  int segment = 0;
+  while (segment < cosmology.lnPL_z_nseg-1
+         && z >= cosmology.lnPL_z_seg_xmin[segment+1]) {
+    segment++;
+  }
+  int redshift = cosmology.lnPL_z_seg_start[segment]
+      +(int) ((z-cosmology.lnPL_z_seg_xmin[segment])
+              *cosmology.lnPL_z_seg_inv_dx[segment]);
+  if (redshift < 0) redshift = 0;
+  if (redshift > nz-2) redshift = nz-2;
+
+  const double z0 = cosmology.lnPL[nk][redshift];
+  const double z1 = cosmology.lnPL[nk][redshift+1];
+  const double dy = (z-z0)/(z1-z0);
+  const double coverH0 = cosmology.coverH0;
+  const double volume = coverH0*coverH0*coverH0;
+
+  // A fixed-redshift query otherwise follows a different table-row pointer
+  // at each k. Contiguous columns let SIMD fetch four selected entries with
+  // one gather instruction on AVX2. malloc2d owns all three padded rows.
+  double** table = (double**) malloc2d(3, nk);
+  for (int node=0; node<nk; node++) {
+    table[0][node] = cosmology.lnPL[node][nz];
+    table[1][node] = cosmology.lnPL[node][redshift];
+    table[2][node] = cosmology.lnPL[node][redshift+1];
+  }
+
+  // set1 broadcasts each scalar to all four lanes. The grid constants
+  // locate k cells; zero/nk-2 limit their left endpoints. dy and 1-dy
+  // are the common redshift weights, while one forms each lane's 1-dx.
+  const v4d vmin = simde_mm256_set1_pd(cosmology.lnPL_log10k_min);
+  const v4d vstep = simde_mm256_set1_pd(cosmology.lnPL_log10k_inv_dx);
+  const v4d vzero = simde_mm256_set1_pd(0.0);
+  const v4d vlast = simde_mm256_set1_pd(nk-2);
+  const v4d vdy = simde_mm256_set1_pd(dy);
+  const v4d vdy0 = simde_mm256_set1_pd(1.0-dy);
+  const v4d vone = simde_mm256_set1_pd(1.0);
+
+  // Integer set1 supplies +1 in four index lanes to reach the right node.
+  const simde__m128i vnext = simde_mm_set1_epi32(1);
+
+  // --- 2. INTERPOLATE INDEPENDENT WAVENUMBERS ---
+  // Different rows use the same snapshot but write separate output arrays.
+  // Within a row, four k values share SIMD instructions, not an integral:
+  // no lane ever adds its answer to another lane's answer. The scalar
+  // calculation in each lane is the four-corner formula documented above.
+  #pragma omp parallel for schedule(static)
+  for (int row=0; row<nrow; row++) {
+    const double* restrict wave = k[row];
+    double* restrict output = power[row];
+    int node = 0;
+
+    for (; node <= ncol-4; node+=4) {
+      double logarithm[4]; // scalar log10 inputs, then interpolated ln(P)
+      for (int lane=0; lane<4; lane++) {
+        logarithm[lane] = log10(wave[node+lane]/coverH0);
+      }
+
+      // loadu reads the four stack values without an alignment requirement.
+      const v4d vlogk = simde_mm256_loadu_pd(logarithm);
+
+      // Subtract the grid origin, then divide by its spacing through the
+      // stored inverse: each lane now holds a fractional cell position.
+      const v4d vposition = simde_mm256_mul_pd(
+          simde_mm256_sub_pd(vlogk, vmin), vstep);
+
+      // Clamp before converting to integer. For interior positive indices,
+      // truncation selects the left node, as in p_lin_at_a. Queries outside
+      // the table retain the first or last cell for later extrapolation.
+      const v4d vcell = simde_mm256_min_pd(
+          simde_mm256_max_pd(vposition, vzero), vlast);
+      const simde__m128i vleft = simde_mm256_cvttpd_epi32(vcell);
+
+      // Add one independently to all four indices to obtain right nodes.
+      const simde__m128i vright = simde_mm_add_epi32(vleft, vnext);
+
+      // Gather follows a different index in each lane. Scale 8 means each
+      // index addresses one double. Read actual left/right log10(k) values
+      // so the fractional offset uses exactly the core's endpoint spacing.
+      const v4d vx0 = simde_mm256_i32gather_pd(table[0], vleft, 8);
+      const v4d vx1 = simde_mm256_i32gather_pd(table[0], vright, 8);
+
+      // Subtractions form log10(k)-x0 and x1-x0; division gives dx per lane.
+      const v4d vdx = simde_mm256_div_pd(
+          simde_mm256_sub_pd(vlogk, vx0), simde_mm256_sub_pd(vx1, vx0));
+
+      // Each lane's complementary wavenumber weight is 1-dx.
+      const v4d vdx0 = simde_mm256_sub_pd(vone, vdx);
+
+      // Four gathers fetch the cell corners: the first index denotes the
+      // k endpoint, the second the redshift endpoint. Every lane uses its
+      // own k cell and the same two redshift columns.
+      const v4d vp00 = simde_mm256_i32gather_pd(table[1], vleft, 8);
+      const v4d vp01 = simde_mm256_i32gather_pd(table[2], vleft, 8);
+      const v4d vp10 = simde_mm256_i32gather_pd(table[1], vright, 8);
+      const v4d vp11 = simde_mm256_i32gather_pd(table[2], vright, 8);
+
+      // Scalar equivalent, with the optimized core's fused rounding:
+      //   term01 = ((1-dx)*dy)*L01;
+      //   value = fma((1-dx)*(1-dy), L00, term01);
+      //   value = fma(dx*(1-dy), L10, value);
+      //   value = fma(dx*dy, L11, value).
+      // fma rounds a multiply-plus-add once. The weights themselves are
+      // separate products; preserving that distinction matches the reader.
+      // mul_pd forms those k*z weights independently in each query lane.
+      const v4d vweight00 = simde_mm256_mul_pd(vdx0, vdy0);
+      const v4d vweight01 = simde_mm256_mul_pd(vdx0, vdy);
+      const v4d vweight10 = simde_mm256_mul_pd(vdx, vdy0);
+      const v4d vweight11 = simde_mm256_mul_pd(vdx, vdy);
+
+      // Multiply the 01 weight by its corner value first, as the scalar
+      // compiler does before fusing the 00 multiplication with the sum.
+      const v4d vterm01 = simde_mm256_mul_pd(vweight01, vp01);
+
+      // Add corner 00 with one fused rounding per lane, then corners 10
+      // and 11 in the same order. No horizontal sum mixes wavenumbers.
+      v4d vpower = power_fmadd4_cov(vweight00, vp00, vterm01);
+      vpower = power_fmadd4_cov(vweight10, vp10, vpower);
+      vpower = power_fmadd4_cov(vweight11, vp11, vpower);
+
+      // storeu writes four ln(P) values to an ordinary stack array.
+      // Scalar exp and the unchanged volume conversion finish each query.
+      simde_mm256_storeu_pd(logarithm, vpower);
+      for (int lane=0; lane<4; lane++) {
+        output[node+lane] = exp(logarithm[lane])/volume;
+      }
+    }
+
+    // Rows need not contain a multiple of four samples. The original
+    // reader finishes the last zero to three values without padded reads.
+    if (node < ncol) {
+      p_lin_at_a(a, wave+node, ncol-node, output+node);
+    }
+  }
+
+  free(table);
+}
+
 // ---------------------------------------------------------------------------
 // Prepare matter power for independent covariance integration rows.
 //
@@ -32,9 +253,9 @@ typedef simde__m128d v2d;
 // within a row. Different rows only read the initialized cosmology tables
 // and write separate outputs; they can therefore be assigned to workers.
 //
-// The existing reader still performs every interpolation. This changes
-// neither the power model nor its arithmetic, and introduces no cache or
-// reduction. Wavenumbers have units (c/H0)^-1 and power has units (c/H0)^3.
+// Linear power uses the covariance-owned SIMD reader above; nonlinear
+// power retains the existing core reader. No grid, physical model or
+// reduction changes. Wavenumber units are (c/H0)^-1 and power (c/H0)^3.
 // Call outside an OpenMP region, after initializing the core power tables.
 // ---------------------------------------------------------------------------
 void power_rows_cov(
@@ -52,16 +273,17 @@ void power_rows_cov(
     exit(1);
   }
 
+  if (linear) {
+    linear_power_rows_cov(a, nrow, ncol, k, power);
+    return;
+  }
+
   // Each worker reads a complete row at the common redshift. Its output
   // does not depend on any other row, so no synchronization is needed
   // between samples and no sum changes with the number of workers.
   #pragma omp parallel for schedule(static)
   for (int row=0; row<nrow; row++) {
-    if (linear) {
-      p_lin_at_a(a, k[row], ncol, power[row]);
-    } else {
-      Pdelta_at_a(a, k[row], ncol, power[row]);
-    }
+    Pdelta_at_a(a, k[row], ncol, power[row]);
   }
 }
 
