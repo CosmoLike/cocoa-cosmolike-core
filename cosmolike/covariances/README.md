@@ -67,6 +67,7 @@ Function comments explain equations, units and array contents.
 
 | Implementation and interface | Physical role |
 | --- | --- |
+| [fftlog_cov.c](fftlog_cov.c), [header](fftlog_cov.h) | Reusable spherical-Bessel transforms for density and lensing radial functions. |
 | [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, and all lens/source Limber cross spectra. |
 | [gaussian_cov.c](gaussian_cov.c), [header](gaussian_cov.h) | Gaussian pairings, projection of their covariance, and analytic pair noise. |
 | [assembly_cov.c](assembly_cov.c), [header](assembly_cov.h) | Shared Gaussian matrix assembly and connected radial projections, including block scheduling. |
@@ -131,6 +132,27 @@ for inspecting and plotting the calculation. Both share the same Python
 survey assembly and the same C kernels.
 
 ## From three-dimensional matter to angular spectra <a name="spectra"></a>
+
+### Spherical-Bessel transforms: `fftlog_cov.c`
+
+A non-Limber projection retains the radial oscillations of a matter mode.
+For density the radial kernel is $`j_\ell(k\chi)`$, where $`j_\ell`$ is a
+spherical Bessel function. Lensing uses $`j_\ell(k\chi)/(k\chi)^2`$ before
+applying its angular spin factor. Keeping this denominator inside the
+integration kernel avoids dividing the input window by a vanishing
+$`\chi^2`$ near the observer.
+
+FFTLog expands a smooth radial input into powers of distance. Each power
+has an analytic Bessel integral; an inverse Fourier transform adds these
+integrals at the requested wavenumbers. The implementation follows
+[Fang et al.](https://arxiv.org/abs/1911.11947) and the lensing formulation
+in [Leonard et al.](https://arxiv.org/abs/2212.04291).
+
+The caller prepares a workspace once and reuses its Fourier coefficients
+for successive multipole blocks. FFTW plans are created serially; workers
+execute the same plan with separate buffers. This component supplies
+transforms, not a complete non-Limber survey covariance. Survey spectra
+and their accuracy settings require separate validation.
 
 ### Radial windows: `spectra_cov.c`
 

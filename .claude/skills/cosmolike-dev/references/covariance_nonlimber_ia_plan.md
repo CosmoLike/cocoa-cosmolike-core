@@ -1,9 +1,29 @@
 # Planned covariance non-Limber spectra and intrinsic alignment
 
-Status: **planned, not implemented by this ticket** (2026-10-05 UTC).
-Implementation was explicitly deferred. Do not start it merely because
-this plan exists. The stopped LSST integration validation stays stopped.
-This record accompanies two open tickets in Cocoa's execution backlog.
+Status: **Gaussian implementation authorized and in progress**.
+The active scope is non-Limber gg/gs and NLA/TATT in Gaussian covariance.
+SSC/cNG calculations are explicitly excluded. The stopped LSST integration
+validation stays stopped. Implement and commit in small tested blocks.
+
+### Completed transform component
+
+`fftlog_cov.c/.h` owns shared FFTW plans and per-worker buffers. Forward
+transforms are retained across 16-multipole blocks. Gamma and phase
+recurrences reduce special-function calls; density and lensing use the
+same radial bias with different Mellin kernels. The lensing denominator
+stays inside the kernel, following N5K Eq. 24.
+
+The tracked LSST `test_covariance_fftlog.py` runs against the normal
+project library. Four optimized tests pass: analytic Gaussian-Bessel
+integrals for ell 2, 3, 17, 32, 33, 47, 96, 97, 111 and both kernel
+choices; an observer-endpoint lensing integral; reuse after a different
+multipole block; and bitwise one/eight-thread agreement. Peak-scaled
+errors are below 1e-8. Doubling radial resolution from 2049 to 4097 did
+not remove the roughly 3e-9 floor in the most demanding high-ell Gaussian
+test over its extended reciprocal range. This is a component check, not
+a selected survey setting or a speed benchmark. Debug validation and
+survey integration remain pending. Didactic review checked scalar SIMD
+equivalents, buffer ownership, phase/padding explanation and 80 columns.
 
 ## Verified starting point
 
@@ -311,8 +331,8 @@ TATT/B modes, stochastic IA and IA-specific nonlinear/tidal responses
 remain separate extensions. A converged numerical calculation is not
 proof that any of these physical approximations is adequate for a survey.
 
-No new integrations or implementation are authorized by this planning
-update. When validation resumes by request, never test integration above
+The Gaussian-only implementation authorization supersedes the original
+planning-only status. Never test integration above
 level 4; Roman on this laptop stops at level 3. Preserve completed LSST
 levels 0–3 and both interrupted level-4 folders. Never restart the paused
 overnight validation automatically.
