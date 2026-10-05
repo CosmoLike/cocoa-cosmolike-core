@@ -30,8 +30,12 @@ using cov_int_array = py::array_t<int, py::array::c_style>;
 
 static void finite_cov(const cov_array& values, const char* name)
 {
-  for (py::ssize_t index=0; index<values.size(); index++) {
-    if (!std::isfinite(values.data()[index])) {
+  // size() multiplies the array dimensions; do it once before the scan.
+  const py::ssize_t count = values.size(); // number of elements to check
+  const double* data = values.data(); // borrowed contiguous array storage
+
+  for (py::ssize_t index=0; index<count; index++) {
+    if (!std::isfinite(data[index])) {
       throw std::invalid_argument(std::string(name)+" must be finite");
     }
   }
