@@ -2,6 +2,9 @@
 
 Status: source study, not an implementation or validation claim.
 The covariance implementation must remain inside `cosmolike/covariances/`.
+The ordered implementation and acceptance plan, including NLA integration,
+is in [the non-Limber and IA plan](covariance_nonlimber_ia_plan.md).
+Implementation is currently deferred; this study does not authorize a run.
 
 ## Physics boundary
 

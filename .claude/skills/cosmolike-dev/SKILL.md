@@ -70,6 +70,18 @@ read `references/covariance_rewrite.md` and the external study at
 outside that directory for the port. Every new covariance C filename ends
 in `_cov.c`, including future cluster extensions (`*_cluster_cov.c`).
 Data-vector and covariance numerical choices remain separately owned.
+Covariance generation is an offline calculation and never runs inside
+MCMC. Reuse explicit shared inputs across its blocks; do not add persistent
+cosmology caches just to imitate the data-vector lifetime. Shared core
+readers can still have caches and require serial initialization before
+parallel reads. Explain this distinction in `cosmolike/README.md`.
+The non-Limber and NLA follow-up is detailed in
+`references/covariance_nonlimber_ia_plan.md`. It is planning only:
+implementation is deferred until requested. The data-vector non-Limber
+path and low-level covariance NLA windows already exist, but the full
+forecast uses Limber and zero IA. Do not describe either follow-up as
+complete or switch defaults without its independent checks. Non-Limber
+Gaussian spectra do not remove the separate SSC/cNG approximations.
 Study the actual `cosmo2D.c`, `cosmo3D.c`, and `halo.c` implementations;
 some older study and pattern descriptions predate their current behavior.
 Carry over serial FFTW planning/reuse, precomputed node tables, direct grid
