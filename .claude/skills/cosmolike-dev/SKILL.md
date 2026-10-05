@@ -96,6 +96,17 @@ Covariance production code always uses SIMDe for its bulk arithmetic.
 Keep scalar comparisons in the external test harness, with no covariance
 preprocessor fallback. The same rule now applies to existing data-vector
 SIMDe paths; see `references/simd_retirement.md`.
+
+**Rejected power-reader optimization.** Do not promote or repeat the
+four-wavenumber gather-based linear-power reader on branch `simde`
+(`0c6b2ce`) without a new, measured reason. It was slower on both M2 and
+Intel: the Intel full LSST covariance increased from 99.11 to 102.23 s
+at eight threads, despite fewer instructions and more 256-bit arithmetic.
+Keep the existing `p_lin_at_a` row reader in production. This finding is
+specific to that experiment, not a rejection of other SIMDe kernels.
+See `references/covariance_optimization_review.md` for measurements and
+the limits of the comparison.
+
 Krause and Takada papers are primary physics sources; CosmoCov code and the
 study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
