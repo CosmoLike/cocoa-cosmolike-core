@@ -38,7 +38,8 @@ static arma::Mat<double> gaussian_matrix_cpp(
     const int ell_min,                   // first consecutive multipole
     const double area_sr,                // survey solid angle, sr
     const arma::Col<double>& pair_area,  // real-space ordered-pair area, sr^2
-    const bool realspace                 // pure-noise convention
+    const bool realspace,                // pure-noise convention
+    const arma::Cube<double>& b_spectra   // optional BB, empty omits it
   )
 {
   // --- 1. CHECK THE PHYSICAL AXES BEFORE ENTERING C ---
@@ -93,6 +94,14 @@ static arma::Mat<double> gaussian_matrix_cpp(
     }
   }
 
+  if (!b_spectra.is_empty()
+      && (b_spectra.n_rows != spectra.n_rows
+          || b_spectra.n_cols != spectra.n_cols
+          || b_spectra.n_slices != spectra.n_slices
+          || !b_spectra.is_finite())) {
+    throw std::invalid_argument("b_spectra must be finite and match spectra");
+  }
+
   // --- 2. COPY NOTEBOOK AXES TO THE SHARED C ROW LAYOUT ---
 
   // Armadillo stores columns contiguously; C sums contiguous ell rows.
@@ -102,6 +111,10 @@ static arma::Mat<double> gaussian_matrix_cpp(
   const int nfield = noise.n_elem; // catalogs in each spectrum axis
   const int nprobe = realspace ? 4 : 1; // operator roles
   double** power = (double**) malloc2d(nfield*nfield, nell);
+  double** b_power = nullptr;
+  if (!b_spectra.is_empty()) {
+    b_power = (double**) malloc2d(nfield*nfield, nell);
+  }
   double** kernels = (double**) malloc2d(nprobe*nbin, nell);
   double** result = (double**) malloc2d(ndata, ndata);
   arma::Mat<int> layout(3, nobs); // column-major triples, flat (probe,A,B)
@@ -110,6 +123,9 @@ static arma::Mat<double> gaussian_matrix_cpp(
     for (int second=0; second<nfield; second++) {
       for (int ell=0; ell<nell; ell++) {
         power[first*nfield+second][ell] = spectra(ell, first, second);
+        if (b_power != nullptr) {
+          b_power[first*nfield+second][ell] = b_spectra(ell, first, second);
+        }
       }
     }
   }
@@ -127,7 +143,7 @@ static arma::Mat<double> gaussian_matrix_cpp(
   }
 
   gaussian_matrix_cov(nell, nfield, nobs, nbin, layout.memptr(), power,
-      noise.memptr(), kernels, ell_min, area_sr,
+      b_power, noise.memptr(), kernels, ell_min, area_sr,
       realspace ? pair_area.memptr() : nullptr, realspace, result);
 
   for (int row=0; row<ndata; row++) {
@@ -136,6 +152,7 @@ static arma::Mat<double> gaussian_matrix_cpp(
     }
   }
   free(power);
+  free(b_power);
   free(kernels);
   free(result);
   return output;
@@ -151,11 +168,12 @@ arma::Mat<double> covariance_gaussian_real_cpp(
     const arma::Cube<double>& operators,
     const int ell_min,
     const double area_sr,
-    const arma::Col<double>& pair_area_sr2
+    const arma::Col<double>& pair_area_sr2,
+    const arma::Cube<double>& b_spectra
   )
 {
   return gaussian_matrix_cpp(spectra, noise, rows, operators, ell_min,
-                             area_sr, pair_area_sr2, true);
+                             area_sr, pair_area_sr2, true, b_spectra);
 }
 
 arma::Mat<double> covariance_gaussian_fourier_cpp(
@@ -175,7 +193,7 @@ arma::Mat<double> covariance_gaussian_fourier_cpp(
   }
   const arma::Col<double> unused;
   return gaussian_matrix_cpp(spectra, noise, pairs, kernels, ell_min,
-                             area_sr, unused, false);
+                             area_sr, unused, false, arma::Cube<double>());
 }
 
 // ---------------------------------------------------------------------------

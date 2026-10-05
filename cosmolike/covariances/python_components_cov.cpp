@@ -322,7 +322,8 @@ sum order. No input or cosmology/likelihood state is changed.
           const py::object& operators,
           const int ell_min,
           const double area_sr,
-          const py::object& pair_area_sr2) {
+          const py::object& pair_area_sr2,
+          const py::object& b_spectra) {
         const arma::Cube<double> spectra_input =
             notebook_input_cov<arma::Cube<double>>(spectra, 3);
         const arma::Col<double> noise_input =
@@ -333,15 +334,22 @@ sum order. No input or cosmology/likelihood state is changed.
             notebook_input_cov<arma::Cube<double>>(operators, 3);
         const arma::Col<double> pair_area_sr2_input =
             notebook_input_cov<arma::Col<double>>(pair_area_sr2, 1);
+        arma::Cube<double> b_input;
+        if (!b_spectra.is_none()) {
+          b_input = notebook_input_cov<arma::Cube<double>>(b_spectra, 3);
+        }
         return covariance_gaussian_real_cpp(
             spectra_input,
             noise_input, rows_input, operators_input, ell_min, area_sr,
-            pair_area_sr2_input);
+            pair_area_sr2_input, b_input);
       },
       R"doc(Compute a real-space Gaussian matrix from supplied field spectra.
 
 spectra[ell,field,field] contains signal in the observed-shear convention;
 noise[field] gives independent white shot/shape powers per steradian.
+Optional b_spectra has the same axes and units as spectra and contains
+source-source BB signals, with galaxy rows/columns zero. EB and gB vanish
+by parity. The xi+/xi- BB signs are applied in C; pure noise is not doubled.
 rows[observable,3] contains (probe,A,B), with probe=0 xi+, 1 xi-,
 2 gamma_t, 3 w. operators[4,bin,ell] covers the same consecutive ell
 values as spectra, starting at ell_min>=2. Supply angular-bin-averaged
@@ -358,7 +366,7 @@ calculation, not exact cut-sky mode coupling or non-Gaussian covariance.
       py::arg("spectra"), py::arg("noise"),
       py::arg("rows"), py::arg("operators"),
       py::arg("ell_min"), py::arg("area_sr"),
-      py::arg("pair_area_sr2"));
+      py::arg("pair_area_sr2"), py::arg("b_spectra") = py::none());
 
   module.def("covariance_gaussian_fourier",
       [](

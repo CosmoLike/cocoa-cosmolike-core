@@ -42,7 +42,8 @@ static matrix_array_cov gaussian_matrix_cpp(
     const int ell_min,                 // first consecutive input multipole
     const double area_sr,              // common footprint area, steradians
     const matrix_array_cov& pair_area, // real: [bin], ordered-pair area in sr^2
-    const bool realspace               // selects the stated noise convention
+    const bool realspace,              // selects the stated noise convention
+    const matrix_array_cov& b_spectra   // empty or [ell,field,field] BB
   )
 {
   // --- 1. CHECK THE ARRAY CONTRACT BEFORE ALLOCATION OR C CALLS ---
@@ -125,17 +126,41 @@ static matrix_array_cov gaussian_matrix_cpp(
     }
   }
 
+  if (b_spectra.size() != 0) {
+    if (b_spectra.ndim() != 3
+        || b_spectra.shape(0) != nell
+        || b_spectra.shape(1) != nfield
+        || b_spectra.shape(2) != nfield) {
+      throw std::invalid_argument("b_spectra must match spectra");
+    }
+    for (py::ssize_t index=0; index<b_spectra.size(); index++) {
+      if (!std::isfinite(b_spectra.data()[index])) {
+        throw std::invalid_argument("b_spectra must be finite");
+      }
+    }
+  }
+
   // --- 2. PREPARE CONTIGUOUS SPECTRA AND REUSABLE BLOCK SCRATCH ---
 
   // C integrates along ell. In the input, adjacent values instead belong
   // to different fields. This one transpose gives each Wick input a full
   // contiguous ell row, reused by every observable that needs that pair.
   std::vector<double> power((size_t) nfield*nfield*nell);
+  std::vector<double> b_power;
+  std::vector<const double*> b_rows;
+  if (b_spectra.size() != 0) {
+    b_power.resize(power.size());
+    b_rows.resize(nfield*nfield);
+  }
   for (int first=0; first<nfield; first++) {
     for (int second=0; second<nfield; second++) {
       double* row = power.data()+((size_t) first*nfield+second)*nell;
       for (int ell=0; ell<nell; ell++) {
         row[ell] = spectra.at(ell, first, second);
+        if (!b_power.empty()) {
+          b_power[((size_t) first*nfield+second)*nell+ell] =
+              b_spectra.at(ell, first, second);
+        }
       }
     }
   }
@@ -149,6 +174,9 @@ static matrix_array_cov gaussian_matrix_cpp(
   std::vector<double*> output_rows(ndata);
   for (int pair=0; pair<nfield*nfield; pair++) {
     power_rows[pair] = power.data()+(size_t) pair*nell;
+    if (!b_rows.empty()) {
+      b_rows[pair] = b_power.data()+(size_t) pair*nell;
+    }
   }
   for (size_t row=0; row<kernel_rows.size(); row++) {
     kernel_rows[row] = operators.data()+row*nell;
@@ -163,7 +191,8 @@ static matrix_array_cov gaussian_matrix_cpp(
   }
 
   gaussian_matrix_cov(nell, nfield, nobs, nbin, layout.data(),
-      power_rows.data(), noise.data(), kernel_rows.data(), ell_min,
+      power_rows.data(), b_rows.empty() ? nullptr : b_rows.data(),
+      noise.data(), kernel_rows.data(), ell_min,
       area_sr, realspace ? pair_area.data() : nullptr, realspace,
       output_rows.data());
   return output;
@@ -279,14 +308,18 @@ sum order. No input or cosmology/likelihood state is changed.
       [](const matrix_array_cov& spectra, const matrix_array_cov& noise,
          const index_array_cov& rows, const matrix_array_cov& operators,
          const int ell_min, const double area_sr,
-         const matrix_array_cov& pair_area_sr2) {
+         const matrix_array_cov& pair_area_sr2,
+         const matrix_array_cov& b_spectra) {
         return gaussian_matrix_cpp(spectra, noise, rows, operators, ell_min,
-                                   area_sr, pair_area_sr2, true);
+                                   area_sr, pair_area_sr2, true, b_spectra);
       },
       R"doc(Compute a real-space Gaussian matrix from supplied field spectra.
 
 spectra[ell,field,field] contains signal in the observed-shear convention;
 noise[field] gives independent white shot/shape powers per steradian.
+Optional b_spectra has the same axes and units as spectra and contains
+source-source BB signals, with galaxy rows/columns zero. EB and gB vanish
+by parity. The xi+/xi- BB signs are applied in C; pure noise is not doubled.
 rows[observable,3] contains (probe,A,B), with probe=0 xi+, 1 xi-,
 2 gamma_t, 3 w. operators[4,bin,ell] covers the same consecutive ell
 values as spectra, starting at ell_min>=2. Supply angular-bin-averaged
@@ -303,7 +336,8 @@ calculation, not exact cut-sky mode coupling or non-Gaussian covariance.
       py::arg("spectra").noconvert(), py::arg("noise").noconvert(),
       py::arg("rows").noconvert(), py::arg("operators").noconvert(),
       py::arg("ell_min"), py::arg("area_sr"),
-      py::arg("pair_area_sr2").noconvert());
+      py::arg("pair_area_sr2").noconvert(),
+      py::arg("b_spectra").noconvert() = matrix_array_cov(0));
 
   module.def("covariance_gaussian_fourier",
       [](const matrix_array_cov& spectra, const matrix_array_cov& noise,
@@ -311,7 +345,7 @@ calculation, not exact cut-sky mode coupling or non-Gaussian covariance.
          const int ell_min, const double area_sr) {
         const matrix_array_cov unused((py::ssize_t) 0);
         return gaussian_matrix_cpp(spectra, noise, pairs, operators, ell_min,
-                                   area_sr, unused, false);
+                                   area_sr, unused, false, unused);
       },
       R"doc(Compute a Gaussian bandpower matrix from supplied field spectra.
 

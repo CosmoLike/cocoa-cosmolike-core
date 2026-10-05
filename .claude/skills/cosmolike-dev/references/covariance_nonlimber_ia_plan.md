@@ -46,6 +46,28 @@ These checks do not establish each project's cutoff or covariance/Fisher
 accuracy. Full forecast wiring, Gaussian TATT/B modes, project settings,
 all-project regressions and sanitizer checks remain pending.
 
+### Gaussian TATT component
+
+`ia_cov.c` adds all-pairs TATT E corrections and BB, retaining core FAST-PT
+normalization, growth and finite-k support. NLA is recovered bitwise when
+A2=bTA=0. `assembly_cov.c` adds BB signal/mixed-noise contractions with the
+xi+/xi- sign product; analytic pure noise is included once. Both C++ paths
+share these routines; production accepts contiguous arrays and notebook
+wrappers retain Armadillo cubes. The result's optional `b_spectra` is None
+outside TATT. TATT+RSD is rejected; non-Limber corrects only the linear
+alignment part of gg/gs, with the loop terms staying Limber.
+
+Nineteen optimized tests pass (IA, production and notebook-array suites).
+The new tests compare with the independent data-vector projection: TATT
+E corrections agree at 3.4e-5 and BB at 9.7e-5, normalized by each pair's
+peak over ell=10..5000. The reference uses core integration level 2;
+covariance uses 256 nodes per panel. A direct Wick sum verifies BB signs,
+mixed noise and zero-B recovery. Production/notebook arrays and one/eight
+threads agree bitwise. These checks validate model plumbing and component
+projection, not survey-level accuracy or a complete nonlinear IA covariance.
+Didactic review covered TATT signs, kernel meanings, E/B lane separation,
+core interpolation support and the distinct Gaussian/SSC/cNG scope.
+
 ## Verified starting point
 
 | Layer | Available behavior | Missing behavior |

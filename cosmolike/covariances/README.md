@@ -67,6 +67,7 @@ Function comments explain equations, units and array contents.
 
 | Implementation and interface | Physical role |
 | --- | --- |
+| [ia_cov.c](ia_cov.c), [header](ia_cov.h) | All-pairs TATT E corrections and B-mode spectra using the core FAST-PT tables. |
 | [nonlimber_cov.c](nonlimber_cov.c), [header](nonlimber_cov.h) | All-pairs separable-linear spectra and their matched Limber subtraction for Gaussian gg/gs corrections. |
 | [fftlog_cov.c](fftlog_cov.c), [header](fftlog_cov.h) | Reusable spherical-Bessel transforms for density and lensing radial functions. |
 | [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, and all lens/source Limber cross spectra. |
@@ -176,6 +177,32 @@ are retained. This entry requires flat geometry, massless neutrinos and
 zero RSD. The log-distance resolution, near boundary and multipole cutoff
 need survey-specific refinement tests; the example cutoff above is not a
 convergence certificate. SSC and cNG retain their separate approximations.
+
+### Intrinsic shapes in Gaussian covariance: `ia_cov.c`
+
+Observed shapes contain gravitational shear and intrinsic alignment (IA).
+NLA uses a signed local alignment window. Its products with lensing give
+GI and IG; two alignment windows give II. Galaxy–shear spectra also need
+gI. `include_ia=True` reads the configured core amplitudes for these terms.
+
+TATT adds density-weighted tidal alignment, quadratic tidal torquing and
+their cross correlations. These are the one-loop spectra described by
+[Blazek et al.](https://arxiv.org/abs/1708.09247). The implementation reads
+the core's dense FAST-PT tables with linear interpolation, retaining its
+normalization and growth convention. It computes every source pair and
+galaxy–source pair, independently of the measured-row selection.
+
+The returned `spectra` contains E modes; `b_spectra` contains TATT B modes.
+For NLA or disabled IA, `b_spectra` is `None`. B modes contribute to
+$`\xi_+`$ with a plus sign and $`\xi_-`$ with a minus sign. Pass them to
+`covariance_gaussian_real(..., b_spectra=...)` together with E spectra.
+The assembler applies the signs and keeps the analytic pure shape noise
+only once. Fourier examples measure E spectra, so they use the E matrix.
+
+Non-Limber gg/gs corrects the linear-alignment part; higher-order TATT
+terms remain Limber. Gaussian TATT currently requires zero RSD. These
+Gaussian IA terms do not supply an IA response or connected four-point
+model for SSC/cNG.
 
 ### Radial windows: `spectra_cov.c`
 

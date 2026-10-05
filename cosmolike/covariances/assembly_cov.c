@@ -37,6 +37,7 @@ void gaussian_matrix_cov(
     const int nbin,                       // angular or Fourier bins
     const int* rows,                      // flat [nobs,3] (probe,A,B)
     const double* const* spectra,         // [nfield*nfield,nell], signal
+    const double* const* b_spectra,       // optional BB rows, NULL for E only
     const double* noise,                  // [nfield], white noise powers
     const double* const* kernels,         // [4*nbin,nell], or [nbin,nell]
     const int ell_min,                    // first input multipole
@@ -77,7 +78,8 @@ void gaussian_matrix_cov(
   // thread count. For a single observable, C parallelizes its bins instead.
   #pragma omp parallel if(nobs > 1)
   {
-    double* harmonic = malloc((size_t) nell*sizeof(double)); // Wick power
+    double** harmonics = (double**) malloc2d(2, nell); // E and B Wick power
+    double* harmonic = harmonics[0]; // combined angular covariance
     double** weighted = (double**) malloc2d(nbin, nell); // left times power
     double** block = (double**) malloc2d(nbin, nbin); // one projected block
 
@@ -108,6 +110,45 @@ void gaussian_matrix_cov(
 
       gaussian_wick_cov(ell_min, nell, area_sr/(4.0*M_PI), cross,
           cross_noise, !realspace, harmonic);
+      if (realspace
+          && b_spectra != NULL
+          && left_probe <= XI_MINUS_COV
+          && right_probe <= XI_MINUS_COV) {
+        // xi+ measures EE+BB; xi- measures EE-BB. With parity-symmetric
+        // fields EB vanishes, so their Gaussian covariances add with the
+        // product of these signs. Shape-noise BB*BB is already included
+        // in the analytic pair term below: add only BB signal and B-noise.
+        const double* cross_b[4] = {
+          b_spectra[a*nfield+c],
+          b_spectra[b*nfield+d],
+          b_spectra[a*nfield+d],
+          b_spectra[b*nfield+c]
+        };
+        gaussian_wick_cov(ell_min, nell, area_sr/(4.0*M_PI), cross_b,
+            cross_noise, 0, harmonics[1]);
+        const double sign = left_probe == right_probe ? 1.0 : -1.0;
+
+        // Scalar equivalent: harmonic[l] += sign*B_wick[l]. SIMD handles
+        // adjacent multipoles, without changing either Wick contraction.
+        // set1 copies the xi sign product into both lanes.
+        const simde__m128d vsign = simde_mm_set1_pd(sign);
+        int ell = 0;
+        for (; ell+1<nell; ell+=2) {
+          // loadu reads two E covariance values from ordinary storage.
+          const simde__m128d ve = simde_mm_loadu_pd(harmonic+ell);
+          // Load the B covariance at the same multipoles into matching lanes.
+          const simde__m128d vb = simde_mm_loadu_pd(harmonics[1]+ell);
+          // mul applies the xi sign to each B contribution independently.
+          const simde__m128d vchange = simde_mm_mul_pd(vsign, vb);
+          // add combines E and signed B without mixing the two multipoles.
+          const simde__m128d vtotal = simde_mm_add_pd(ve, vchange);
+          // storeu returns both sums to the harmonic projection input.
+          simde_mm_storeu_pd(harmonic+ell, vtotal);
+        }
+        if (ell < nell) {
+          harmonic[ell] += sign*harmonics[1][ell];
+        }
+      }
       gaussian_project_cov(nbin, nbin, nell, kernels+left_probe*nbin,
           kernels+right_probe*nbin, harmonic, weighted, block);
 
@@ -132,7 +173,7 @@ void gaussian_matrix_cov(
         }
       }
     }
-    free(harmonic);
+    free(harmonics);
     free(weighted);
     free(block);
   }

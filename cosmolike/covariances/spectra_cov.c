@@ -378,9 +378,9 @@ static void fill_radial_cov(
 //   source: window[1] = W_kappa; window[2] = -W_source A1.
 // Source window[0] also stores the unbiased source density for input
 // audits; it does not enter the shear spectrum. All windows have units of
-// inverse distance. NLA is the only supported IA model in this builder;
-// higher-order IA and galaxy-bias terms cannot be represented by these
-// single-field windows. This function deliberately uses linear bias.
+// inverse distance. This builder supplies the linear/NLA part of IA;
+// higher-order TATT correlations are added separately by ia_cov.c.
+// They cannot be represented by a single deterministic field window. This function deliberately uses linear bias.
 //
 // Parameters and ownership:
 //   npanel, a_edges - common integration intervals, strictly inside (0,1)
@@ -427,8 +427,9 @@ struct radial_cov* radial_inputs_cov(
     exit(1);
   }
   if (include_ia
-      && nuisance.IA_MODEL != IA_MODEL_NLA) {
-    log_fatal("radial_inputs_cov supports NLA only; IA_MODEL=%d",
+      && nuisance.IA_MODEL != IA_MODEL_NLA
+      && nuisance.IA_MODEL != IA_MODEL_TATT) {
+    log_fatal("radial_inputs_cov supports NLA/TATT linear windows; IA_MODEL=%d",
               nuisance.IA_MODEL);
     exit(1);
   }

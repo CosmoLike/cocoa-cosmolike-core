@@ -125,7 +125,8 @@ arma::Mat<double> covariance_gaussian_real_cpp(
     const arma::Cube<double>& operators,
     const int ell_min,
     const double area_sr,
-    const arma::Col<double>& pair_area_sr2
+    const arma::Col<double>& pair_area_sr2,
+    const arma::Cube<double>& b_spectra
   );
 
 arma::Mat<double> covariance_gaussian_fourier_cpp(

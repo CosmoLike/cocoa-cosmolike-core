@@ -16,6 +16,7 @@ void gaussian_matrix_cov(
     const int nbin,                       // angular or Fourier bins
     const int* rows,                      // flat [nobs,3] (probe,A,B)
     const double* const* spectra,         // [nfield*nfield,nell], signal
+    const double* const* b_spectra,       // optional BB rows, NULL for E only
     const double* noise,                  // [nfield], white noise powers
     const double* const* kernels,         // [4*nbin,nell], or [nbin,nell]
     const int ell_min,                    // first input multipole

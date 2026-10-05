@@ -15,6 +15,7 @@
 #include "ssc_cov.h"
 #include "spectra_cov.h"
 #include "nonlimber_cov.h"
+#include "ia_cov.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/IA.h"
 #include "cosmolike/cosmo3D.h"
@@ -71,9 +72,10 @@ py::dict covariance_limber_spectra_cpp(
         "initialize lens/source samples and set_cosmology before spectra");
   }
   if (include_ia
-      && nuisance.IA_MODEL != IA_MODEL_NLA) {
+      && nuisance.IA_MODEL != IA_MODEL_NLA
+      && nuisance.IA_MODEL != IA_MODEL_TATT) {
     throw std::invalid_argument(
-        "covariance_limber_spectra supports NLA; initialize IA model 0");
+        "covariance_spectra supports NLA or TATT; initialize IA model 0 or 1");
   }
   for (arma::uword index=0; index<ell.n_elem; index++) {
     if (!std::isfinite(ell(index))
@@ -127,6 +129,12 @@ py::dict covariance_limber_spectra_cpp(
     }
   }
 
+  if (include_ia
+      && nuisance.IA_MODEL == IA_MODEL_TATT
+      && include_rsd) {
+    throw std::invalid_argument("Gaussian TATT currently requires no RSD");
+  }
+
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
 
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
@@ -151,6 +159,13 @@ py::dict covariance_limber_spectra_cpp(
   limber_spectra_cov(radial.get(), nell, ell.memptr(), linear, include_rsd,
                      triangular);
 
+  double** b_triangular = nullptr;
+  if (include_ia
+      && nuisance.IA_MODEL == IA_MODEL_TATT) {
+    b_triangular = (double**) malloc2d(npair, nell);
+    tatt_spectra_cov(radial.get(), nell, ell.memptr(), triangular, b_triangular);
+  }
+
   if (nonlimber_lmax > 0) {
     apply_nonlimber_cov(radial.get(), a_edges(0), nwindow, include_ia,
         nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
@@ -161,6 +176,10 @@ py::dict covariance_limber_spectra_cpp(
 
   // Store both triangles from the same computed number. This makes the
   // returned field matrix exactly symmetric, independent of thread count.
+  arma::Cube<double> b_spectra;
+  if (b_triangular != nullptr) {
+    b_spectra.set_size(nell, nfield, nfield);
+  }
   int pair = 0;
 
   for (int first=0; first<nfield; first++) {
@@ -168,12 +187,18 @@ py::dict covariance_limber_spectra_cpp(
       for (int node=0; node<nell; node++) {
         spectra(node, first, second) = triangular[pair][node];
         spectra(node, second, first) = triangular[pair][node];
+        if (b_triangular != nullptr) {
+          b_spectra(node, first, second) = b_triangular[pair][node];
+          b_spectra(node, second, first) = b_triangular[pair][node];
+        }
       }
       pair++;
     }
   }
 
   free(triangular);
+
+  free(b_triangular);
 
   // --- 4. COPY THE INTEGRATION INPUTS BEFORE RELEASING THE SNAPSHOT ---
 
@@ -197,6 +222,10 @@ py::dict covariance_limber_spectra_cpp(
   // All returned arrays now own their values independently of the C state.
   py::dict result;
   result["spectra"] = carma::cube_to_arr(spectra);
+  result["b_spectra"] = py::none();
+  if (!b_spectra.is_empty()) {
+    result["b_spectra"] = carma::cube_to_arr(b_spectra);
+  }
   result["geometry"] = carma::mat_to_arr(geometry);
   result["windows"] = carma::cube_to_arr(windows);
   result["nlens"] = radial->nlens;

@@ -7,6 +7,7 @@
 #include "production_interface_cov.hpp"
 #include "spectra_cov.h"
 #include "nonlimber_cov.h"
+#include "ia_cov.h"
 #include "cosmolike/IA.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/structs.h"
@@ -63,9 +64,10 @@ static py::dict covariance_limber_spectra(
         "initialize lens/source samples and set_cosmology before spectra");
   }
   if (include_ia
-      && nuisance.IA_MODEL != IA_MODEL_NLA) {
+      && nuisance.IA_MODEL != IA_MODEL_NLA
+      && nuisance.IA_MODEL != IA_MODEL_TATT) {
     throw std::invalid_argument(
-        "covariance_limber_spectra supports NLA; initialize IA model 0");
+        "covariance_spectra supports NLA or TATT; initialize IA model 0 or 1");
   }
   for (py::ssize_t index=0; index<ell.size(); index++) {
     if (!std::isfinite(ell.data()[index])
@@ -119,6 +121,12 @@ static py::dict covariance_limber_spectra(
     }
   }
 
+  if (include_ia
+      && nuisance.IA_MODEL == IA_MODEL_TATT
+      && include_rsd) {
+    throw std::invalid_argument("Gaussian TATT currently requires no RSD");
+  }
+
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
 
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
@@ -146,6 +154,13 @@ static py::dict covariance_limber_spectra(
   limber_spectra_cov(radial.get(), nell, ell.data(), linear, include_rsd,
                      rows.data());
 
+  double** b_triangular = nullptr;
+  if (include_ia
+      && nuisance.IA_MODEL == IA_MODEL_TATT) {
+    b_triangular = (double**) malloc2d(npair, nell);
+    tatt_spectra_cov(radial.get(), nell, ell.data(), rows.data(), b_triangular);
+  }
+
   if (nonlimber_lmax > 0) {
     apply_nonlimber_cov(radial.get(), a_edges.data()[0], nwindow, include_ia,
         nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
@@ -157,6 +172,10 @@ static py::dict covariance_limber_spectra(
   // Store both triangles from the same computed number. This makes the
   // returned field matrix exactly symmetric, independent of thread count.
   py::array_t<double> spectra({nell, nfield, nfield});
+  py::array_t<double> b_spectra;
+  if (b_triangular != nullptr) {
+    b_spectra = py::array_t<double>({nell, nfield, nfield});
+  }
   int pair = 0;
 
   for (int first=0; first<nfield; first++) {
@@ -164,10 +183,16 @@ static py::dict covariance_limber_spectra(
       for (int node=0; node<nell; node++) {
         *spectra.mutable_data(node, first, second) = rows[pair][node];
         *spectra.mutable_data(node, second, first) = rows[pair][node];
+        if (b_triangular != nullptr) {
+          *b_spectra.mutable_data(node, first, second) = b_triangular[pair][node];
+          *b_spectra.mutable_data(node, second, first) = b_triangular[pair][node];
+        }
       }
       pair++;
     }
   }
+
+  free(b_triangular);
 
   // --- 4. COPY THE INTEGRATION INPUTS BEFORE RELEASING THE SNAPSHOT ---
 
@@ -191,6 +216,10 @@ static py::dict covariance_limber_spectra(
   // All returned arrays now own their values independently of the C state.
   py::dict result;
   result["spectra"] = spectra;
+  result["b_spectra"] = py::none();
+  if (b_spectra.size() > 0) {
+    result["b_spectra"] = b_spectra;
+  }
   result["geometry"] = geometry;
   result["windows"] = windows;
   result["nlens"] = radial->nlens;
@@ -215,7 +244,7 @@ Arguments:
         full source/lens support and the foreground to a close to 1.
     nquad: nodes per panel from 64,96,128,256,512,1024.
     nwindow: uniform-a nodes for covariance-owned lensing efficiencies.
-    include_ia: include NLA in the source windows; TATT is unsupported.
+    include_ia: include the configured NLA or TATT Gaussian spectra.
     include_rsd: use the same lens RSD window in every spectrum.
     linear: use linear total-matter P instead of the current Pdelta mode.
     nonlimber_lmax: 0 keeps Limber; >=2 corrects all gg/gs pairs through
@@ -226,7 +255,8 @@ Arguments:
         Non-Limber currently requires massless neutrinos and no RSD.
 
 Returns a dict of owned arrays:
-    spectra [nell,nfield,nfield], dimensionless, core C_ell convention;
+    spectra [nell,nfield,nfield], dimensionless E, core C_ell convention;
+    b_spectra: same axes for TATT B; None for NLA or disabled IA;
     geometry [4,nnode]: a, chi, f_K, positive dchi quadrature weights;
     windows [3,nfield,nnode]: density, lensing, signed NLA contributions;
     nlens, nsource: field counts. Lenses precede sources in nfield.

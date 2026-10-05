@@ -42,7 +42,7 @@ Arguments:
         full source/lens support and the foreground to a close to 1.
     nquad: nodes per panel from 64,96,128,256,512,1024.
     nwindow: uniform-a nodes for covariance-owned lensing efficiencies.
-    include_ia: include NLA in the source windows; TATT is unsupported.
+    include_ia: include the configured NLA or TATT Gaussian spectra.
     include_rsd: use the same lens RSD window in every spectrum.
     linear: use linear total-matter P instead of the current Pdelta mode.
     nonlimber_lmax: 0 keeps Limber; >=2 corrects all gg/gs pairs through
@@ -53,7 +53,8 @@ Arguments:
         Non-Limber currently requires massless neutrinos and no RSD.
 
 Returns a dict of owned arrays:
-    spectra [nell,nfield,nfield], dimensionless, core C_ell convention;
+    spectra [nell,nfield,nfield], dimensionless E, core C_ell convention;
+    b_spectra: same axes for TATT B; None for NLA or disabled IA;
     geometry [4,nnode]: a, chi, f_K, positive dchi quadrature weights;
     windows [3,nfield,nnode]: density, lensing, signed NLA contributions;
     nlens, nsource: field counts. Lenses precede sources in nfield.
