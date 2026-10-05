@@ -124,6 +124,47 @@ The external reproduction scripts/results are under
 record, not in public human README instructions. Tracked component and
 project-boundary tests are the portable regression coverage.
 
+### Build and interface verification
+
+The 26 selected FFTLog, non-Limber, IA, production and Armadillo-wrapper
+checks also pass under COSMOLIKE_DEBUG_MODE with undefined-behavior and
+floating-division sanitizers (204.90 s on this laptop). The existing debug
+Makefile runs C loops serially; optimized tests separately check one/eight
+OpenMP agreement. All seven covariance-enabled project libraries rebuilt.
+
+An LSST data-vector-only build also completed: `has_covariance` is false,
+and neither covariance_spectra nor the covariance production submodule is
+bound. The ordinary interface imports. The previously validated optimized
+covariance-enabled binary was restored afterwards. The extra C code is
+still wholly inside covariances/, with no data-vector C modification.
+
+### Final project regressions
+
+Sequential optimized project runs passed 174 covariance tests: LSST 119,
+Roman real/Fourier/KL and DES Y3/DESxPlanck one adapter test each, and DES
+cluster 50. The adapter checks compare real/Fourier notebook and production
+outputs, one/eight OpenMP threads, positivity and saved settings on reduced
+assembly grids with the actual catalogs. DES cluster includes an explicit
+rejection of unsupported joint non-Limber/NLA requests.
+
+The frozen `test_example1.py` and `test_example2.py` suites passed in all
+seven projects: 52 tests total, including repeated-cosmology race checks.
+The six galaxy/shear projects test NLA and TATT; cluster examples test their
+supported NLA model. No data-vector references were refrozen. Roman KL's
+first attempt failed to locate its interface in worker subprocesses;
+adding the actual project interface directory to PYTHONPATH fixed the
+launch environment, with no source or reference change.
+
+All seven CLI YAML files resolve through Cobaya's reader and parameterization
+with OMP_NUM_THREADS=8, and their notebook code cells pass syntax checks.
+Six notebook outputs were cleared because their new default Gaussian model
+would make the old Limber results misleading. Full G+SSC+cNG notebooks
+were not re-executed; the full-matrix checks above concern Gaussian only.
+The cluster notebook retains its unchanged joint-model outputs. The source
+review checked physical stage explanations, scalar SIMD equivalents,
+per-intrinsic comments, source ownership and 80-column new C/header lines.
+All changes were committed locally; no push was performed.
+
 ## Original starting point (historical)
 
 
