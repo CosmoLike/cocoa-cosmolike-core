@@ -23,6 +23,19 @@ CosmoLike projects. A project supplies its survey data, redshift bins,
 likelihood configuration and compiled Python interface. This repository
 supplies the calculations that those projects share.
 
+> [!WARNING]
+> **CLI for production; notebook wrappers for exploration.**
+>
+> Run production and HPC calculations from YAML through the optimized
+> `_interface` bindings. Notebook `_wrapper` APIs expose intermediate
+> quantities for exploration; copying and rearranging their arrays adds
+> overhead. Both routes call the same C kernels.
+>
+> In a matched **LSST Y1 covariance** test on an M2 Pro with eight threads,
+> the CLI averaged **68.34 s** (three runs); one wrapper run took **177.74 s**.
+> The CLI was **2.60× faster**, with bitwise-identical covariance components.
+> Use project CLI entry points as the production performance baseline.
+
 The principal observables are galaxy clustering, galaxy–galaxy lensing
 and cosmic shear, collectively called **3x2pt**. Galaxy clustering
 measures correlations of galaxy positions. Galaxy–galaxy lensing measures

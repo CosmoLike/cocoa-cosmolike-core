@@ -188,6 +188,10 @@ timings are a different baseline; quantify conversion overhead with matched
 inputs and identical output checks. Current seven-project measurements and
 the matched interface comparison are in
 `references/covariance_cli_timing.md`.
+Make the production/exploration distinction prominent in each project's
+opening README and beside Cocoa's code-comparison timing notes. Explain
+that the notebook array-conversion overhead is separate from the shared
+C kernels; scope any quoted overhead factor to its matched measurement.
 
 Write skill instructions as impersonal project guidance for all
 contributors. State the requirement and its rationale directly, without
