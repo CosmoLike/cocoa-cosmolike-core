@@ -494,3 +494,48 @@ runtime and positivity checks are recorded in
 [covariance_full_survey_timing.md](covariance_full_survey_timing.md).
 The fixed-k radial spline acceleration above remains an independent
 experiment; the full runs evaluate every radial shell directly.
+
+## Rejected: four-wavenumber SIMD linear power reader (2026-10-05)
+
+**Status: did not improve runtime on either tested machine. Do not
+promote this experiment to production or repeat it without new evidence.**
+The implementation is retained on branch `simde`, commit `0c6b2ce`,
+based on core v5.07. Production retains the existing scalar `p_lin_at_a`
+inside the OpenMP row loop.
+
+The candidate copies the two needed redshift columns into contiguous
+scratch, then interpolates four independent wavenumbers with SIMDe AVX2
+gathers and fused arithmetic. It retains scalar log10/exp, the supplied
+grid, extrapolation and scalar tail. No accuracy settings change.
+Optimized and isolated O0 sanitizer checks each compared 5,332,170
+values bitwise, and the complete M2 LSST G/SSC/cNG matrices remained
+bitwise identical. Numerical correctness was not the reason for rejection.
+
+The M2 component benchmark used 8,256 rows by 1,920 samples, two warmups
+and nine alternating baseline/candidate measurements. At eight threads,
+the median rose from 22.628 to 23.401 ms (3.4%). It was also slower at
+one, two and four threads. Allocation and snapshot preparation were timed.
+
+The subsequent Intel/Linux eight-thread production CLI measurements,
+reported from the same LSST YAML and `perf stat -r 1`, were:
+
+| Measurement | v5.07 baseline | SIMD candidate |
+|---|---:|---:|
+| Covariance construction (s) | 99.11 | 102.23 |
+| Shared matter stage (s) | 85.72 | 88.75 |
+| Process elapsed time (s) | 101.0812 | 104.1122 |
+| Retired instructions | 2,854,664,806,508 | 2,659,523,489,010 |
+| Scalar-double arithmetic events | 819,559,827,721 | 606,567,676,280 |
+| 256-bit packed-double events | 7,457,838,329 | 58,055,890,169 |
+
+The stage times subtract the preceding cumulative progress timestamp:
+98.93-13.21 s for the baseline, 102.06-13.31 s for the candidate.
+The full covariance was 3.1% slower, and the shared matter stage 3.5%
+slower. Increased SIMD instruction counts did not produce a speedup.
+
+These Intel observations are individual runs, not a repeated statistical
+study. They are sufficient to withhold promotion, not to identify which
+operation caused the slowdown. Do not infer memory-bandwidth saturation
+from cache-miss ratios or blame gathers, scalar math or allocation without
+isolating their costs. The outcome is specific to this implementation;
+other SIMDe kernels retain their independently measured benefits.

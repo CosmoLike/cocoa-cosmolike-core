@@ -68,6 +68,75 @@ def _finish(figure, axes, show):
     return figure, axes
 
 
+def plot_trispectrum_terms(k_hmpc, components, redshift, linthresh=1.0,
+                          figsize=(9, 6), show=1):
+    """Show signed halo contributions to the matter trispectrum diagonal.
+
+    Arguments:
+        k_hmpc = positive increasing [nk] wavenumbers in h/Mpc.
+        components = ordered mapping of labels to finite [nk] arrays,
+            each containing one contribution to T(k,k) in (Mpc/h)^9.
+            Supply disjoint terms, e.g. 1h, combined 2h, 3h and 4h;
+            their sum is drawn as Total. Do not also supply the total.
+        redshift = finite nonnegative redshift shared by these arrays.
+        linthresh = positive threshold in (Mpc/h)^9 for the y axis:
+            linear between -linthresh and +linthresh, logarithmic outside.
+        figsize = figure size in inches.
+        show = 1 to display; None to return the figure and axis.
+    Returns:
+        None or (figure, axis). Invalid inputs raise ValueError before
+        creating a figure. Inputs are neither modified nor saved.
+
+    The supplied terms are averaged over the relative wavevector angle,
+    before survey projection. They exclude SSC. A signed logarithmic
+    scale keeps negative terms and zero crossings visible; no absolute
+    value, clipping or covariance normalization changes the data.
+    """
+    wave = np.asarray(a=k_hmpc, dtype=float)
+    if wave.ndim != 1 or len(wave) == 0 or not np.all(np.isfinite(wave)):
+        raise ValueError("k_hmpc must be nonempty, finite and 1D")
+    if np.any(wave <= 0) or np.any(np.diff(wave) <= 0):
+        raise ValueError("k_hmpc must be positive and increasing")
+    if not np.isfinite(redshift) or redshift < 0:
+        raise ValueError("redshift must be finite and nonnegative")
+    if not np.isfinite(linthresh) or linthresh <= 0:
+        raise ValueError("linthresh must be finite and positive")
+    if not components:
+        raise ValueError("components must contain at least one named halo term")
+
+    # Check every term before drawing. Adding the disjoint contributions
+    # reconstructs cNG's matter trispectrum, not the full G+SSC+cNG covariance.
+    curves = {}
+    total = np.zeros_like(a=wave)
+    for name, values in components.items():
+        term = np.asarray(a=values, dtype=float)
+        if term.shape != wave.shape or not np.all(np.isfinite(term)):
+            raise ValueError(f"{name} must be finite with shape {wave.shape}")
+        curves[name] = term
+        total += term
+
+    figure, axis = plt.subplots(figsize=figsize, constrained_layout=True)
+    # Set the scales before plotting so margins are measured in log space,
+    # rather than adding a large linear margin to a many-decade range.
+    axis.set_xscale(value="log")
+    axis.set_yscale(value="symlog", linthresh=linthresh)
+    styles = ["solid", "dashed", "dashdot", "dotted"]
+    for index, (name, term) in enumerate(curves.items()):
+        # Matplotlib takes plotting coordinates as positional x,y arguments.
+        axis.plot(wave, term, label=name, linewidth=1.8,
+                  linestyle=styles[index % len(styles)])
+    axis.plot(wave, total, label="Total", color="black", linewidth=2.0)
+    axis.set_xlabel(xlabel=r"$k\;[h/\mathrm{Mpc}]$", fontsize=17)
+    axis.set_ylabel(ylabel=r"$\overline{T}(k,k)\;[(\mathrm{Mpc}/h)^9]$",
+                    fontsize=17)
+    axis.set_title(label=f"Matter trispectrum diagonal, z = {redshift:g}")
+    axis.tick_params(axis="both", labelsize=14)
+    handles, labels = axis.get_legend_handles_labels()
+    figure.legend(handles=handles, labels=labels, loc="outside upper center",
+                  ncol=len(curves)+1, frameon=False)
+    return _finish(figure=figure, axes=axis, show=show)
+
+
 def plot_correlation(covariance, covariance_ref=None, block_sizes=None,
                      block_labels=None, labels=("Calculation", "Reference"),
                      cmap="RdBu_r", figsize=(7, 6), show=1):
