@@ -137,7 +137,7 @@ comments define their inputs, units and equations.
 
 | Folder or file | Responsibility |
 | --- | --- |
-| [cosmolike/](cosmolike/) | Data-vector physics, halo statistics, cluster extensions and C++ interfaces. |
+| [cosmolike/](cosmolike/README.md) | Source guide to data-vector physics, halo statistics, cluster extensions and C++ interfaces. |
 | [cosmolike/covariances/](cosmolike/covariances/README.md) | Covariance components with their own numerical grids and integrations. |
 | [cfastpt/](cfastpt/) | C implementation of FAST-PT mode-coupling integrals. |
 | [cosmolike_notebook_utils/](cosmolike_notebook_utils/) | Shared cosmology preparation, plotting, Fisher and covariance tools. |

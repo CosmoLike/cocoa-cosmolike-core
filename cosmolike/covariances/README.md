@@ -550,7 +550,7 @@ For exclusive observed bins and Poisson sampling at fixed background,
 the long-mode Limber model gives
 
 ```math
-\operatorname{Cov}(N_i,N_j)
+\mathrm{Cov}(N_i,N_j)
  =\delta_{ij}\bar N_i+
    \int d\chi\,\sigma_b^2(\chi)\Phi_i^N(\chi)\Phi_j^N(\chi).
 ```
