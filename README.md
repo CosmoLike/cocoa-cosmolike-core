@@ -49,9 +49,10 @@ describe the CosmoLike multiprobe framework.
 
 > [!NOTE]
 > Each project provides a real/Fourier G+SSC+cNG notebook for its galaxy
-> and shear fields. The matrices use massless neutrinos, Limber spectra
-> and a spherical-cap footprint, retaining every internal cross-bin
-> spectrum. Numerical and Fisher convergence remain to be established
+> and shear fields. Gaussian spectra support non-Limber gg/gs and NLA/TATT,
+> retaining every internal cross-bin spectrum. SSC/cNG keep their zero-IA
+> Limber model. Forecasts use massless neutrinos and a spherical-cap
+> footprint. Numerical and Fisher convergence remain to be established
 > before inference. DES cluster also has a joint angular 6x2pt+N forecast
 > with explicitly limited cluster cNG and count-cross approximations.
 > DES×Planck covers galaxy–shear only; CMB covariance remains separate work.
@@ -282,6 +283,8 @@ the equations, conventions and approximations for each component.
 
 | C source | Calculation |
 | --- | --- |
+| [fftlog_cov.c](cosmolike/covariances/fftlog_cov.c), [nonlimber_cov.c](cosmolike/covariances/nonlimber_cov.c) | Shared-plan FFTLog and all-pairs Gaussian gg/gs non-Limber corrections. |
+| [ia_cov.c](cosmolike/covariances/ia_cov.c) | Higher-order Gaussian TATT E and B spectra from core IA amplitudes and FAST-PT kernels. |
 | [spectra_cov.c](cosmolike/covariances/spectra_cov.c) | Common radial windows and all lens/source Limber cross spectra. |
 | [operators_cov.c](cosmolike/covariances/operators_cov.c) | Full-sky, bin-averaged real-space transformations and multipole-band weights. |
 | [gaussian_cov.c](cosmolike/covariances/gaussian_cov.c) | Gaussian spectrum pairings, rectangular matrix projection and analytic pair noise. |
@@ -298,10 +301,27 @@ data vector. Their absence from the list of measured observables does not
 make their contribution to the covariance zero.
 
 The LSST Y1 notebook combines these tools into real-space and Fourier
-G+SSC+cNG forecasts with Limber spectra, full-sky angular-bin averages and
-spherical-cap pair noise. It uses explicit forecast number densities,
-zero intrinsic alignment and massless neutrinos. The cap is an example
+G+SSC+cNG forecasts with full-sky angular-bin averages and spherical-cap
+pair noise. Gaussian gg/gs can use non-Limber spectra and NLA/TATT;
+SSC/cNG retain their zero-IA Limber model. The forecast specifies number
+densities and massless neutrinos explicitly. The cap is an example
 footprint, not a measured survey mask.
+
+Gaussian physics is selected separately from numerical accuracy:
+
+```python
+settings = survey.configuration(
+    gaussian={"nonlimber": True, "ia": "NLA", "A1": 0.6},
+)
+```
+
+The amplitude is an illustrative constant; a list supplies one value per
+source bin. TATT also accepts `A2` and `B_TA`. Its B modes enter real-space
+shear covariance with the appropriate xi+/xi- signs. The CLI uses the same
+mapping under `covariance.gaussian` in its Cobaya-style YAML.
+
+The joint selected-cluster forecast retains its separate Limber, zero-IA
+restriction. Its galaxy/shear-only adapter supports the new Gaussian options.
 
 The notebook's configuration cell exposes one covariance accuracy setting:
 
@@ -340,9 +360,10 @@ explains those limits, the known Y null rows, and the saved row positions.
 
 > [!NOTE]
 > The example computes all three covariance components. The shared
-> assembler provides full G+SSC+cNG matrices for the supported Limber
-> forecast. All-pairs non-Limber spectra and Roman Figure-of-Merit
-> convergence remain unfinished. The combined matter halo-response and
+> assembler retains separate Gaussian, SSC and cNG model choices.
+> Gaussian non-Limber/IA support does not extend those effects into SSC/cNG.
+> Survey cutoff, interpolation and Figure-of-Merit checks remain separate.
+> The combined matter halo-response and
 > trispectrum helpers currently require massless neutrinos; the cb-aware
 > halo statistics alone do not supply a massive-neutrino covariance model.
 

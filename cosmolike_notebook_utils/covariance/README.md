@@ -50,7 +50,7 @@ fluctuations larger than the survey. See
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
 | `halo.py` | Arrange physical power and halo moments for the five trispectrum contributions and isotropic density response. The combined matter prescription requires massless neutrinos. |
 | `forecast.py` | Initialize a project forecast, bind survey settings, compute either space and save arrays with resolved settings. |
-| `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks under the specified massless, Limber forecast model. |
+| `survey.py` | Assemble real/Fourier G, SSC and cNG matrices with all cross-bin blocks with Gaussian non-Limber/NLA/TATT options and separate zero-IA Limber SSC/cNG. |
 | `survey_cluster.py` | Prepare the joint cluster row layout, absolute count densities, normalized cluster windows and every internal cluster cross spectrum. |
 | `forecast_cluster.py` | Assemble the joint angular forecast with count Poisson noise, common SSC, biased-tracer cNG and the optional Y transformation. Archive its omitted physics with the result. |
 | `counts_cluster.py` | Integrate supplied selected abundances into count means, Poisson noise and SSC. Project the separate non-SSC count–matter-spectrum cross terms from selected halo moments. This is not a full cluster forecast. |
@@ -212,8 +212,9 @@ mean signals and elapsed times by calculation stage. CAMB setup, output
 writing and eigenvalue diagnostics remain outside this function.
 `survey.observable_rows` puts angular bins inside each tomographic row,
 with xi+, xi-, galaxy--shear and galaxy clustering in that order.
-Fourier rows omit xi-: one E-mode spectrum supplies both real-space shear
-correlations. Integer band endpoints are inclusive, and each multipole
+Fourier rows measure E-mode spectra. Real-space xi+ and xi- use distinct
+angular kernels and, for TATT, include B modes with opposite signs.
+Integer band endpoints are inclusive, and each multipole
 receives weight proportional to its mode count, $`2\ell+1`$. Refinement
 holds those endpoints fixed so it compares the same measurement.
 
@@ -225,8 +226,11 @@ The low-level supplied-spectrum wrappers let users state their own field
 conventions explicitly; see their Python `help(...)` documentation.
 
 The supported model uses massless neutrinos, linear galaxy bias, zero
-intrinsic alignment, magnification and RSD, Limber spectra and a spherical
-cap footprint. SSC uses the isotropic fractional halo response transferred
+magnification/RSD and a spherical-cap footprint. Gaussian spectra have
+the [non-Limber and IA choices](#gaussian-physics-in-notebooks-and-yaml)
+described below; SSC/cNG retain zero IA and Limber projection.
+
+SSC uses the isotropic fractional halo response transferred
 to the chosen nonlinear matter power, with galaxy survey-mean subtraction.
 The five halo cNG contributions are projected with every cross-lens block
 retained. These approximations define a forecast; they do not reproduce
@@ -361,11 +365,36 @@ in a raw eigensolver can overwhelm the smallest eigenvalues. The function
 also returns the raw eigenvalues for inspection. Rescaling neither removes
 negative modes nor adds variance to make a matrix pass.
 
-The notebook computes full G+SSC+cNG forecasts in both spaces. All-pairs
-non-Limber corrections and production FoM convergence remain separate work.
+The notebook computes full G+SSC+cNG forecasts in both spaces.
+Selected-cluster non-Limber corrections and production FoM convergence
+remain separate work.
 
 Selected cluster mass moments are returned by physical name: `density` and
 `biased_density` have shape `[state,selection]`; `J01` and `J11` have shape
 `[state,selection,k]`; `J02`, `J03_KKQ` and `J03_KQQ` have shape
 `[state,selection,kpair]`. The count–matter helper reads `J11` and `J02`
 directly. These named results replace packed `single` and `pair` role axes.
+
+## Gaussian physics in notebooks and YAML
+
+`survey.configuration(gaussian={"nonlimber": True, "ia": "NLA", "A1": 0.6})`
+selects non-Limber gg/gs and a constant per-bin NLA amplitude. The CLI reads
+the same mapping from `covariance.gaussian`. Use `ia: none` to omit IA;
+`ia: TATT` additionally accepts `A2` and `B_TA`. Each amplitude may be a
+scalar or a list with one value per source bin.
+
+The C kernels own the model calculation. `forecast.py` validates and
+installs the amplitudes; `survey.py` selects Gaussian spectra and passes
+TATT B modes to the real-space assembler. E-only Fourier measurements
+use the E spectra. SSC/cNG keep their zero-IA Limber inputs and original
+SSC normalization signal, independently of these Gaussian choices.
+
+`nonlimber_lmax` sets the base correction cutoff.
+`nonlimber_accuracyboost` multiplies the 4096 logarithmic radial intervals.
+The global boost refines the cutoff and grid together, preserving old
+radial nodes. `integration_accuracy` independently selects GSL rules.
+The low-level `covariance_spectra` exposes the same model for diagnostics.
+
+The joint selected-cluster forecast still requires Limber and zero IA;
+it rejects unsupported Gaussian model requests. Its separate galaxy/shear
+adapter supports the choices described here.

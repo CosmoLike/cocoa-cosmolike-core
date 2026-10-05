@@ -12,6 +12,7 @@
    1. [Which units and array axes matter?](#units)
    2. [How are expensive calculations reused?](#numerics)
    3. [Where do covariance calculations belong?](#covariances)
+   4. [Gaussian spectra and the data-vector boundary](#gaussian_boundary)
 
 # What this directory calculates <a name="overview"></a>
 
@@ -503,3 +504,23 @@ generation is omitted from the build. Conversely, a covariance calculation
 can require crossed redshift-bin spectra that are absent from the measured
 data vector. Keep those additional calculations in `covariances/`, with
 their own numerical settings.
+
+## Gaussian spectra and the data-vector boundary <a name="gaussian_boundary"></a>
+
+The covariance source directory now owns its all-pairs non-Limber gg/gs
+calculation in [nonlimber_cov.c](covariances/nonlimber_cov.c), using
+[fftlog_cov.c](covariances/fftlog_cov.c). Its FFTW plans are constructed
+serially and reused with workers' separate arrays, following the
+new-array execution strategy explained above.
+
+[ia_cov.c](covariances/ia_cov.c) supplies the higher-order TATT E/B terms.
+It reads the same IA amplitudes and dense FAST-PT tables as the data-vector
+sector, but integrates every field cross pair on covariance-owned radial
+grids. The shared C Gaussian assembler handles the B-mode signs and noise.
+No additional cross-bin function is added to the data-vector C files.
+
+Both production interfaces and Armadillo notebook wrappers call these C
+routines. Project YAMLs select Gaussian non-Limber and IA independently
+of numerical boosts. SSC/cNG keep their existing Limber, lensing-only
+model and normalization signal. See the
+[covariance physics guide](covariances/README.md) for equations and scope.

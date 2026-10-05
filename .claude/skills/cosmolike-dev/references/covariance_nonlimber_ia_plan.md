@@ -1,6 +1,6 @@
 # Planned covariance non-Limber spectra and intrinsic alignment
 
-Status: **Gaussian implementation authorized and in progress**.
+Status: **Gaussian kernels and survey workflows implemented; validation below**.
 The active scope is non-Limber gg/gs and NLA/TATT in Gaussian covariance.
 SSC/cNG calculations are explicitly excluded. The stopped LSST integration
 validation stays stopped. Implement and commit in small tested blocks.
@@ -21,8 +21,7 @@ multipole block; and bitwise one/eight-thread agreement. Peak-scaled
 errors are below 1e-8. Doubling radial resolution from 2049 to 4097 did
 not remove the roughly 3e-9 floor in the most demanding high-ell Gaussian
 test over its extended reciprocal range. This is a component check, not
-a selected survey setting or a speed benchmark. Debug validation and
-survey integration remain pending. Didactic review checked scalar SIMD
+a selected survey setting or a speed benchmark. The survey validation below extends these component checks. Didactic review checked scalar SIMD
 equivalents, buffer ownership, phase/padding explanation and 80 columns.
 
 ### All-pairs gg/gs component
@@ -43,8 +42,7 @@ FFT radial grid 4097 -> 8193 changes spectra by 1.7e-7. Both backends and
 one/eight threads agree bitwise; sampled hybrid matrices are positive
 definite and ell=300 corrections are below 1% of variance normalization.
 These checks do not establish each project's cutoff or covariance/Fisher
-accuracy. Full forecast wiring, Gaussian TATT/B modes, project settings,
-all-project regressions and sanitizer checks remain pending.
+accuracy. The TATT and survey sections below record subsequent work.
 
 ### Gaussian TATT component
 
@@ -68,7 +66,66 @@ projection, not survey-level accuracy or a complete nonlinear IA covariance.
 Didactic review covered TATT signs, kernel meanings, E/B lane separation,
 core interpolation support and the distinct Gaussian/SSC/cNG scope.
 
-## Verified starting point
+### Shared workflows and tested non-Limber baselines (2026-10-05)
+
+The shared configuration resolves `gaussian.nonlimber`, `ia`, `A1`, `A2`
+and `B_TA`; amplitudes are per-bin constants or scalar broadcasts. The
+core supplies growth evolution, not an inferred redshift power law.
+CLI threads come only from `OMP_NUM_THREADS`. Both C++ paths call the
+same C kernels. Saving includes the Gaussian mean and the separate
+`ssc_normalization_signal`; legacy no-IA results remain saveable.
+
+A small full G+SSC+cNG test changes zero-IA Limber to non-Limber NLA and
+TATT. SSC, cNG and their normalization signal remain bitwise unchanged.
+Gaussian changes and total positivity are checked. All 119 LSST covariance
+tests passed in the optimized build after workflow wiring.
+
+Actual survey tests use full real/Fourier Gaussian matrices, all internal
+pairs, the supplied forecast noise and ell_max=100000 for real space.
+The table reports max |lambda-1| for C_fine v = lambda C_base v.
+The finer run doubles both the correction cutoff and logarithmic radial
+interval count. Other integration/interpolation settings remain fixed.
+
+| Galaxy/shear project | Base cutoff | Base radial samples | Real modes | Fourier modes |
+| --- | ---: | ---: | ---: | ---: |
+| lsst_y1 | 1000 | 4097 | 0.01160% | 0.01047% |
+| roman_real | 1000 | 8193 | 0.01260% | 0.01363% |
+| roman_fourier | 1000 | 8193 | 0.01730% | 0.01851% |
+| roman_kl | 4000 | 8193 | 0.00270% | 0.00272% |
+| des_y3 | 1000 | 4097 | 0.00298% | 0.00290% |
+| desy1xplanck | 1000 | 4097 | 0.00413% | 0.00362% |
+| des_cluster | 1000 | 4097 | 0.00517% | 0.00494% |
+
+All 28 base/refined matrices are positive definite without likelihood
+cuts or eigenvalue repair. DES cluster here means its galaxy/shear adapter,
+not joint 6x2pt+N. The joint adapter rejects non-Limber or IA until its
+cluster transfers are implemented. DESxPlanck still excludes CMB fields.
+These values test the new non-Limber controls at zero IA, not convergence
+of all quadratures, angular transforms, interpolation, cosmologies or
+Fisher derivatives. No full G+SSC+cNG integration run was restarted.
+
+A separate all-project test checks finite NLA/TATT spectra and bitwise
+production/notebook agreement with actual catalog inputs. The broad-bin
+surveys use cutoff 1000; narrow Roman KL requires 4000. Roman examples
+use 8193 radial samples; the other examples use 4097. Global boost refines
+both settings, while integration_accuracy remains independent.
+
+The partial hybrid (non-Limber gg/gs, Limber ss) is not automatically a
+positive signal matrix: Roman real/Fourier have negative low-ell noiseless
+field modes, including ell=2. Their catalog shot/shape noise restores
+positive observed-field matrices, and the complete Gaussian matrices
+above are positive. Do not generalize this to arbitrary lower-noise
+surveys or repair modes. Extending ss consistently is separate physics
+work. Keep these diagnostics when changing the model or source densities.
+
+The external reproduction scripts/results are under
+`test/covariance_reference/check_gaussian_{projects,matrices}.py` and
+`results/gaussian_project_checks/`. Their paths belong in this development
+record, not in public human README instructions. Tracked component and
+project-boundary tests are the portable regression coverage.
+
+## Original starting point (historical)
+
 
 | Layer | Available behavior | Missing behavior |
 | --- | --- | --- |
@@ -142,7 +199,7 @@ components, never silently ignored requested options. Massive-neutrino
 unequal-time growth, TATT, stochastic IA, nonlinear/tidal IA responses,
 and non-Limber SSC/cNG need separate physical extensions.
 
-## Non-Limber ticket: deliverables in order
+## Original non-Limber ticket and remaining extensions
 
 ### N1. Freeze the field and normalization contract
 
@@ -295,7 +352,7 @@ equivalent, explanation of every intrinsic, ownership, paragraph breaks,
 one declaration/comparison per line and 80-column C/header lines. Commit
 each validated ticket locally; never push.
 
-## Intrinsic-alignment ticket: deliverables in order
+## Original IA ticket; connected IA remains outside the current scope
 
 ### I1. Make the forecast model explicit
 
@@ -370,8 +427,8 @@ SSC or unequal-time approximations from cNG. Archive these model choices
 separately; never change a single blanket label to “fully non-Limber.”
 
 I1–I4 complete the explicitly validated NLA forecast approximation only.
-TATT/B modes, stochastic IA and IA-specific nonlinear/tidal responses
-remain separate extensions. A converged numerical calculation is not
+Gaussian TATT/B modes are now implemented as recorded above. Stochastic
+IA and IA-specific nonlinear/tidal responses remain separate extensions. A converged numerical calculation is not
 proof that any of these physical approximations is adequate for a survey.
 
 The Gaussian-only implementation authorization supersedes the original

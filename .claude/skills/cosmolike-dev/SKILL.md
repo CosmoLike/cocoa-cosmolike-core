@@ -78,8 +78,10 @@ parallel reads. Explain this distinction in `cosmolike/README.md`.
 The non-Limber and NLA follow-up is detailed in
 `references/covariance_nonlimber_ia_plan.md`. Gaussian gg/gs non-Limber
 and NLA/TATT work is authorized in small tested commits. Covariance-owned
-FFTLog and all-pairs gg/gs components are now available; survey wiring and
-Gaussian TATT remain in progress. SSC/cNG changes are excluded from this
+FFTLog, all-pairs gg/gs, Gaussian NLA/TATT E/B and survey wiring are
+implemented. Project defaults follow full Gaussian non-Limber refinement
+checks, recorded in that reference; these do not establish Fisher or all
+integration convergence. The selected-cluster joint extension remains open. SSC/cNG changes are excluded from this
 implementation block. Never describe Gaussian non-Limber or IA support as
 a corresponding extension of SSC/cNG. Keep stopped overnight validation
 stopped. Do not enable survey defaults before their independent checks.

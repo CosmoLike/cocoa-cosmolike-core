@@ -60,6 +60,8 @@ void tatt_spectra_cov(
   const int nnode = radial->nnode;
   double*** amplitude = (double***) malloc3d(3, nsource, nnode);
   double*** loop = (double***) malloc3d(nell, nnode, 10);
+  // Store each unordered field pair once. Symmetric spectra need the
+  // same physical integral for (A,B) and (B,A), including unmeasured pairs.
   int** pairs = (int**) malloc2d_int(2, npair);
   int pair = 0;
   for (int first=0; first<nfield; first++) {
@@ -143,8 +145,20 @@ void tatt_spectra_cov(
       // Scalar equivalent: E += measure*delta_E; B += measure*delta_B.
       // setzero initializes the independent E (lane 0) and B (lane 1) sums.
       v2d integral = simde_mm_setzero_pd();
+
+      // Each foreground shell contributes its local shape correlations,
+      // weighted by the number of sources there and by lensing geometry.
+      // The two SIMD sums integrate E and B over exactly the same shells.
       for (int node=0; node<nnode; node++) {
         const double* power = loop[index][node];
+
+        // FAST-PT rows follow the shared core convention:
+        //   0/1: quadratic tidal auto power, E/B;
+        //   2+3: density with density-weighted alignment;
+        //   4/5: density-weighted alignment auto power, E/B;
+        //   6+7: density with the quadratic tidal field;
+        //   8/9: weighted alignment with the quadratic tidal field, E/B.
+        // These rows contain D^4 but no source-bin amplitudes yet.
         const double ta_delta = power[2]+power[3];
         const double mix_delta = power[6]+power[7];
         const double c12 = amplitude[0][source2][node];
@@ -192,11 +206,14 @@ void tatt_spectra_cov(
         // set_pd takes its high lane first: lane 0 receives delta_E,
         // lane 1 delta_B. These are different parity channels, not bins.
         const v2d values = simde_mm_set_pd(delta_b, delta_e);
+
         // set1 gives both channels the common dchi/f_K^2 measure.
         const v2d weight = simde_mm_set1_pd(measure);
+
         // fmadd appends one weighted shell to each channel independently.
         integral = simde_mm_fmadd_pd(weight, values, integral);
       }
+
       double values[2];
       // storeu copies E and B sums to adjacent ordinary doubles.
       simde_mm_storeu_pd(values, integral);

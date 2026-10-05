@@ -17,7 +17,7 @@ def covariance_accuracy(
     ng_ell_intervals=127, non_gaussian_accuracyboost=1,
     window_accuracyboost=1, response_step=0.00005,
     core_accuracyboost=1, integration_accuracy=0,
-    nonlimber_lmax=300, nonlimber_accuracyboost=1,
+    nonlimber_lmax=1000, nonlimber_accuracyboost=1,
 ):
     """Resolve project-specific base controls and one overall refinement.
 

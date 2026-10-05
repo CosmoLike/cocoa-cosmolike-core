@@ -26,16 +26,16 @@ void nonlimber_spectra_cov(
 // Add exact-minus-matched only to galaxy-containing rows at integer ell.
 // Multipoles outside [2,lmax] and all source-source rows remain unchanged.
 void apply_nonlimber_cov(
-    const struct radial_cov* radial,
-    const double amin,
-    const int nwindow,
-    const int include_ia,
-    const int lmax,
-    const int nchi,
-    const double chi_min,
-    const int nell,
-    const double* ell,
-    double* const* spectra
+    const struct radial_cov* radial, // common Limber rule and windows
+    const double amin,              // far boundary in scale factor
+    const int nwindow,               // efficiency interpolation samples
+    const int include_ia,            // signed linear alignment
+    const int lmax,                  // last corrected integer multipole
+    const int nchi,                  // logarithmic radial samples
+    const double chi_min,            // near distance in c/H0
+    const int nell,                  // requested output multipoles
+    const double* ell,               // [nell], same order as spectra
+    double* const* spectra           // [triangular pair][nell], in/out
   );
 
 #ifdef __cplusplus

@@ -5,6 +5,12 @@ in progress. Do not publish the retired ell_max=10000 pilot timings as
 usable covariance timings. The 128-node non-Gaussian table at ell_max=100000
 also fails the proposed 1e-3 full-mode refinement diagnostic.
 
+The integration results below retain their original Limber, zero-IA model.
+The 2026-10-05 Gaussian non-Limber/NLA/TATT implementation and its separate
+cutoff/grid checks are recorded in `covariance_nonlimber_ia_plan.md`.
+Do not compare a new Gaussian model to these archives and label the change
+integration error. The stopped level-4 validation remains stopped.
+
 ## Control contract
 
 Each project owns `covariance/default.yaml`. Its loader resolves and saves

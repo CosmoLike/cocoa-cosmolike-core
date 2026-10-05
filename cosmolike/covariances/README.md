@@ -54,11 +54,11 @@ of an uncertainty before adding the terms.
 
 **Current scope:** these files provide numerical components. The shared
 Python `covariance/survey.py` assembles full real/Fourier G+SSC+cNG forecasts
-for massless neutrinos, Limber spectra, linear galaxy bias, zero IA,
-magnification and RSD, and a spherical-cap footprint. Independently
-validated survey accuracy settings and all-pairs non-Limber corrections
-remain open. Covariance integration choices stay separate from the
-data-vector calculation.
+for massless neutrinos, linear galaxy bias, zero magnification/RSD and a
+spherical-cap footprint. Gaussian spectra can include non-Limber gg/gs and
+NLA/TATT. SSC/cNG retain their zero-IA Limber model. Survey cutoff,
+interpolation and Fisher convergence require separate assessment.
+Covariance integration choices stay separate from the data-vector calculation.
 
 ## File guide <a name="files"></a>
 
@@ -153,14 +153,14 @@ in [Leonard et al.](https://arxiv.org/abs/2212.04291).
 The caller prepares a workspace once and reuses its Fourier coefficients
 for successive multipole blocks. FFTW plans are created serially; workers
 execute the same plan with separate buffers. This component supplies
-transforms, not a complete non-Limber survey covariance. Survey spectra
-and their accuracy settings require separate validation.
+transforms to `nonlimber_cov.c`; it does not choose the survey cutoff or
+alter SSC/cNG.
 
 ### Non-Limber galaxy spectra: `nonlimber_cov.c`
 
 The Gaussian contractions can use non-Limber clustering and galaxy–shear
 spectra, including crossed pairs absent from the measured data vector.
-`covariance_spectra(..., nonlimber_lmax=300, include_rsd=False)` requests
+`covariance_spectra(..., nonlimber_lmax=1000, include_rsd=False)` requests
 this correction through the stated multipole; zero retains Limber.
 Both the production interface and the notebook wrapper call the same C
 calculation. Shear–shear spectra remain Limber.
@@ -177,6 +177,25 @@ are retained. This entry requires flat geometry, massless neutrinos and
 zero RSD. The log-distance resolution, near boundary and multipole cutoff
 need survey-specific refinement tests; the example cutoff above is not a
 convergence certificate. SSC and cNG retain their separate approximations.
+
+The project defaults use a correction cutoff of 1,000, or 4,000 for the
+narrow Roman KL lens bins. Roman uses 8,193 distance samples; the other
+examples use 4,097. The global accuracy boost refines both controls.
+
+Doubling the cutoff and distance intervals changed every generalized
+variance mode of the complete Gaussian matrices by less than 0.019% in
+the seven galaxy/shear examples, in both real and Fourier space. All
+base and refined matrices were positive definite with their catalog noise.
+This check held the other numerical settings fixed and used zero IA;
+it does not establish integration or Fisher convergence.
+
+The mixed approximation still needs care when changing survey inputs.
+Keeping shear–shear Limber while correcting gg/gs does not guarantee a
+positive *noiseless* field matrix. Some low-multipole Roman signal matrices
+fail that check; their catalog noise and complete Gaussian matrices pass.
+Check positivity again for a lower-noise survey, rather than clipping
+negative modes. A consistent non-Limber shear–shear extension is separate
+work.
 
 ### Intrinsic shapes in Gaussian covariance: `ia_cov.c`
 
@@ -848,7 +867,7 @@ The shared survey assembly retains all cross-bin SSC/cNG blocks and uses
 common observed-field conventions for every probe. Its mask model is a
 spherical cap.
 
-All-pairs non-Limber cross spectra and a calibrated
+Selected-cluster non-Limber cross spectra and a calibrated
 massive-neutrino model remain open. The halo response choices and finite
 integration grids do not constitute a validated survey accuracy setting.
 
