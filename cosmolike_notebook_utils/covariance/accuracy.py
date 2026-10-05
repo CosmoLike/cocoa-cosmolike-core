@@ -17,6 +17,7 @@ def covariance_accuracy(
     ng_ell_intervals=127, non_gaussian_accuracyboost=1,
     window_accuracyboost=1, response_step=0.00005,
     core_accuracyboost=1, integration_accuracy=0,
+    nonlimber_lmax=300, nonlimber_accuracyboost=1,
 ):
     """Resolve project-specific base controls and one overall refinement.
 
@@ -28,6 +29,10 @@ def covariance_accuracy(
         non_gaussian_accuracyboost = refines only that interpolation grid.
         window_accuracyboost = multiplies 16384 lensing-window intervals.
         core_accuracyboost = multiplies the shared core reader table boost.
+        nonlimber_lmax = base gg/gs correction cutoff, multiplied by the global boost.
+        nonlimber_accuracyboost = 1, 2, 4 or 8; multiplies 4096 log-distance
+            intervals and the global boost. Padding scales with the interval
+            count, preserving every old radial sample and Fourier period.
         integration_accuracy = independent quadrature level, 0 through 4.
             Selects 96, 128, 256, 512 or 1024 precomputed GSL nodes per
             radial, mass or angular panel. It is also passed unchanged to
@@ -60,6 +65,7 @@ def covariance_accuracy(
         "non_gaussian_accuracyboost": non_gaussian_accuracyboost,
         "window_accuracyboost": window_accuracyboost,
         "core_accuracyboost": core_accuracyboost,
+        "nonlimber_accuracyboost": nonlimber_accuracyboost,
     }
     for name, value in internal.items():
         if isinstance(value, (bool, np.bool_)) or not isinstance(
@@ -67,6 +73,12 @@ def covariance_accuracy(
         ) or not np.isfinite(value) or value < 1 or value != int(value):
             raise ValueError(f"{name} must be a positive integer")
         internal[name] = int(value)
+    if nonlimber_accuracyboost not in (1, 2, 4, 8):
+        raise ValueError("nonlimber_accuracyboost must be 1, 2, 4 or 8")
+    if (isinstance(nonlimber_lmax, (bool, np.bool_))
+            or not isinstance(nonlimber_lmax, (int, np.integer))
+            or nonlimber_lmax < 2):
+        raise ValueError("nonlimber_lmax must be an integer >= 2")
     if isinstance(integration_accuracy, (bool, np.bool_)) or not isinstance(
         integration_accuracy, (int, np.integer)
     ) or integration_accuracy not in (0, 1, 2, 3, 4):
@@ -100,12 +112,15 @@ def covariance_accuracy(
         "mask_ell_max": int(mask_ell_max),
         "ng_ell_intervals": int(ng_ell_intervals),
         "response_step": float(response_step),
+        "nonlimber_lmax": int(nonlimber_lmax),
         "integration_accuracy": int(integration_accuracy),
     })
     result = {
         "accuracy_boost": boost,
         "accuracy_parameters": parameters,
         "ell_max": int(ell_max*boost),
+        "nonlimber_lmax": int(nonlimber_lmax*boost),
+        "nonlimber_nchi": int(4096*nonlimber_accuracyboost*boost+1),
         "mask_ell_max": int(mask_ell_max*boost),
         "ng_ell": ng_ell,
         "nwindow": int(16384*window_accuracyboost*boost+1),

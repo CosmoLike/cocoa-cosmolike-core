@@ -4,9 +4,10 @@ A project supplies its redshift files, cosmology, catalog densities and
 measurement bins. This module installs that forecast through the ordinary
 project setters and binds those inputs to the shared G/SSC/cNG calculation.
 It imports no project interface and reads no supplied likelihood covariance.
-The forecast uses massless neutrinos, linear bias and zero IA/magnification,
-photo-z shifts and shear calibration. CMB and cluster fields need separate
-models; they cannot be created by increasing the galaxy-bin count here.
+The forecast uses massless neutrinos, linear bias, zero magnification,
+photo-z shifts and shear calibration. Gaussian IA/non-Limber choices are
+explicit; SSC/cNG keep their original zero-IA Limber model. CMB and cluster
+fields need separate models; increasing the galaxy-bin count is insufficient.
 """
 
 import json
@@ -17,6 +18,56 @@ import numpy as np
 from ..camb_cosmology import get_camb_cosmology
 from .geometry import noise_powers
 from .survey import observable_rows, realspace_covariance, fourier_covariance
+
+
+def gaussian_model(gaussian, nsource):
+    """Resolve Gaussian-only spectra choices before changing core state.
+
+    gaussian = optional mapping with nonlimber, ia (none/NLA/TATT), A1,
+        A2 and B_TA. Amplitudes are constants per source bin: a scalar
+        applies to all bins; an array needs one value per bin. The core
+        supplies the standard growth dependence. No redshift power law is
+        inferred from a two-element list. SSC/cNG retain zero IA and Limber.
+    nsource = number of source bins.
+    Returns a new mapping with explicit per-bin amplitude lists.
+    """
+    choices = {} if gaussian is None else dict(gaussian)
+    allowed = {"nonlimber", "ia", "A1", "A2", "B_TA"}
+    unknown = set(choices)-allowed
+    if unknown:
+        raise ValueError(f"unknown Gaussian model choices: {sorted(unknown)}")
+    nonlimber = choices.get("nonlimber", True)
+    model = choices.get("ia", "none")
+    if not isinstance(nonlimber, bool):
+        raise ValueError("gaussian.nonlimber must be true or false")
+    if model not in ("none", "NLA", "TATT"):
+        raise ValueError("gaussian.ia must be none, NLA or TATT")
+    result = {"nonlimber": nonlimber, "ia": model}
+    for name in ("A1", "A2", "B_TA"):
+        values = np.asarray(choices.get(name, 0.0), dtype=float)
+        if values.ndim == 0:
+            values = np.full(nsource, float(values))
+        if values.shape != (nsource,) or not np.all(np.isfinite(values)):
+            raise ValueError(f"gaussian.{name} needs a finite scalar or {nsource} values")
+        if model == "none" and np.any(values != 0):
+            raise ValueError("nonzero IA amplitudes require gaussian.ia=NLA or TATT")
+        if model == "NLA" and name != "A1" and np.any(values != 0):
+            raise ValueError("NLA permits A1 only; A2 and B_TA require TATT")
+        result[name] = values.tolist()
+    return result
+
+
+def set_gaussian_model(interface, settings):
+    """Install explicitly resolved per-bin IA for the Gaussian calculation."""
+    nsource = len(settings["source_density_arcmin2"])
+    # Legacy low-level settings retain their original zero-IA state.
+    requested = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
+    model = gaussian_model(gaussian=requested, nsource=nsource)
+    interface.init_IA(
+        ia_model=1 if model["ia"] == "TATT" else 0,
+        ia_redshift_evolution=2, ia_code=0,
+    )
+    interface.set_nuisance_ia(A1=model["A1"], A2=model["A2"], B_TA=model["B_TA"])
 
 
 def initialize_forecast(interface, settings, project):
@@ -112,7 +163,7 @@ def initialize_forecast(interface, settings, project):
         B1=settings["bias"], B2=lens_zero, B_MAG=lens_zero,
         B3nl=lens_zero, BK=lens_zero,
     )
-    interface.set_nuisance_ia(A1=source_zero, A2=source_zero, B_TA=source_zero)
+    set_gaussian_model(interface=interface, settings=settings)
     interface.set_nuisance_shear_photoz(bias=source_zero)
     if "lens_photoz_stretch" in settings:
         interface.set_nuisance_clustering_photoz(
@@ -155,6 +206,7 @@ def compute_forecast(interface, settings, space="real", rows=None,
         accuracy_boost=settings["core_accuracyboost"],
         integration_accuracy=settings["integration_accuracy"],
     )
+    set_gaussian_model(interface=interface, settings=settings)
     if backend is not None:
         interface = backend
     nlens = len(settings["lens_density_arcmin2"])
@@ -224,6 +276,10 @@ def save_forecast(result, filename):
         Archive CAMB input tables separately when exact input reuse is needed.
     """
     settings = json.dumps(result["settings"], default=_json_array, allow_nan=False)
+    # Before Gaussian-only model choices, both means were the same. Keep
+    # older notebook results saveable while recording the separate SSC mean
+    # whenever the Gaussian spectrum now contains non-Limber or IA terms.
+    ssc_signal = result.get("ssc_normalization_signal", result["signal"])
     np.savez(
         file=filename,
         gaussian=result["gaussian"],
@@ -231,6 +287,7 @@ def save_forecast(result, filename):
         cng=result["cng"],
         total=result["total"],
         signal=result["signal"],
+        ssc_normalization_signal=ssc_signal,
         rows=result["rows"],
         coordinate=result["coordinate"],
         coordinate_label=result["coordinate_label"],

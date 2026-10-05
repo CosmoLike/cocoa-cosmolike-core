@@ -13,6 +13,7 @@ cNG, their sum, measurement coordinates and fully resolved settings.
 
 import argparse
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -36,7 +37,8 @@ def load_run_configuration(filename, survey, default_space="real", joint=False):
         joint = True restricts the selected-cluster forecast to real space.
     Returns:
         (settings, run): resolved survey/cosmology settings and run options
-        containing space, threads, output, timing and optional CAMB path.
+        containing space, threads from OMP_NUM_THREADS, output, timing
+        and optional CAMB path. The environment must specify the team size.
     Raises:
         ValueError for unsupported blocks, missing cosmology values or
         sampling requests. Fixed params and Cobaya input expressions are
@@ -135,13 +137,23 @@ def load_run_configuration(filename, survey, default_space="real", joint=False):
         raise ValueError(f"CAMB directory does not exist: {camb_path}")
 
     controls = dict(info.get("covariance") or {})
+    if "threads" in controls:
+        raise ValueError("remove covariance.threads; set OMP_NUM_THREADS "
+                         "in the environment instead")
     space = controls.pop("space", default_space)
-    threads = controls.pop("threads", 8)
     spaces = ["real"] if joint else ["real", "fourier"]
     if space not in spaces:
         raise ValueError(f"covariance.space must be one of {spaces}")
-    if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
-        raise ValueError("covariance.threads must be a positive integer")
+
+    # The shell or HPC job defines the available OpenMP team. Keep that
+    # resource choice out of the scientific YAML and record it in outputs.
+    try:
+        threads = int(os.environ.get("OMP_NUM_THREADS", ""))
+    except ValueError:
+        raise ValueError("set OMP_NUM_THREADS to a positive integer "
+                         "before running the covariance command") from None
+    if threads < 1:
+        raise ValueError("OMP_NUM_THREADS must be a positive integer")
 
     # Unknown accuracy keys fail in the shared resolver. Fine controls
     # refine the project's baseline, under the same global boost as Jupyter.
@@ -175,14 +187,13 @@ def run_covariance(interface, survey, default_space="real", joint=False,
     Returns:
         Path of the written .npz archive. --help prints usage and exits.
     Side effects:
-        Resolves the YAML, initializes CAMB and the project, sets OpenMP
-        threads and saves G/SSC/cNG/total. No plots or eigenproblems run.
+        Resolves the YAML, initializes CAMB and the project, applies
+        OMP_NUM_THREADS and saves G/SSC/cNG/total. No plots or eigenproblems run.
         Invalid options or a disabled build stop before numerical setup.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="covariance evaluate YAML")
     parser.add_argument("--output", type=Path, help="override YAML output path")
-    parser.add_argument("--threads", type=int, help="override YAML OpenMP workers")
     parser.add_argument("--overwrite", action="store_true",
                         help="replace an existing output archive")
     args = parser.parse_args(args=argv)
@@ -196,12 +207,7 @@ def run_covariance(interface, survey, default_space="real", joint=False,
     )
     if args.output is not None:
         run["output"] = args.output
-    if args.threads is not None:
-        run["threads"] = args.threads
-
     output = run["output"]
-    if run["threads"] < 1:
-        parser.error("--threads must be positive")
     if output.suffix != ".npz":
         parser.error("output must name a .npz archive")
     if output.exists() and not args.overwrite:

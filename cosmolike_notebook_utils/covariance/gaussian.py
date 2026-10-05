@@ -65,7 +65,11 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
             # replace the first block before that block has been copied.
             snapshot = dict(block)
             snapshot["spectra"] = np.empty((len(modes), nfield, nfield))
+            if block.get("b_spectra") is not None:
+                snapshot["b_spectra"] = np.empty((len(modes), nfield, nfield))
         snapshot["spectra"][first:last] = block["spectra"]
+        if block.get("b_spectra") is not None:
+            snapshot["b_spectra"][first:last] = block["b_spectra"]
     return snapshot
 
 

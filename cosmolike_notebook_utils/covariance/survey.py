@@ -4,10 +4,11 @@ The Gaussian, super-sample and connected terms follow the decomposition
 in Krause & Eifler (2017), Appendix A, arXiv:1601.05779. SSC uses the
 isotropic halo response of Takada & Hu (2013), corrected Eq. 44 and
 Appendix A, arXiv:1302.6994. The mask is a spherical cap; long and short
-modes both use Limber. This is not a calibrated nonlinear tidal response.
+modes in SSC/cNG use Limber. Gaussian gg/gs can retain radial mode coupling. This is not a calibrated nonlinear tidal response.
 
 All cross-bin blocks are retained. The first survey assembly supports
-massless neutrinos, linear galaxy bias, zero magnification and zero IA.
+massless neutrinos, linear galaxy bias and zero magnification. Gaussian
+IA is selectable; SSC/cNG retain zero IA and their original mean signal.
 It returns a forecast, not a replacement for a project's supplied matrix.
 Numerical refinement and Fisher convergence remain separate checks.
 """
@@ -455,18 +456,46 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         raise ValueError("noise count must match the initialized field count")
     if np.any(rows[:, 1:] >= base.shape[1]):
         raise ValueError("an observable field ID exceeds the initialized count")
+    # SSC/cNG keep their established lensing-only, Limber normalization.
+    # Gaussian spectra below are a separate snapshot; changing their IA or
+    # radial-mode treatment must not alter the SSC mean-subtraction signal.
+    lensing_spectra = snapshot["spectra"]
+    model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
+    if model["ia"] != "none":
+        snapshot = limber_spectra(
+            interface=interface, ell=ell, a_edges=settings["a_edges"],
+            nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
+            include_ia=True, include_rsd=False, linear=False,
+        )
+    if model["nonlimber"]:
+        cutoff = min(settings["nonlimber_lmax"], ell_max)
+        selected = ell <= cutoff
+        low = interface.covariance_spectra(
+            ell=ell[selected], a_edges=np.ascontiguousarray(settings["a_edges"]),
+            nquad=settings["radial_nquad"], nwindow=settings["nwindow"],
+            include_ia=model["ia"] != "none", include_rsd=False, linear=False,
+            nonlimber_lmax=cutoff, nonlimber_nchi=settings["nonlimber_nchi"],
+        )
+        # Copy when Gaussian and SSC still reference the same no-IA array.
+        snapshot["spectra"] = snapshot["spectra"].copy()
+        snapshot["spectra"][selected] = low["spectra"]
+    b_signal = snapshot.get("b_spectra")
     source_factor = None
     if space == "real":
         # The core angular transforms carry an additional source-leg
         # factor relative to unit-normalized Wigner kernels. Preserve that
         # real-space convention in the mean, G, SSC and cNG together.
         signal = observed_spectra(snapshot["spectra"], ell=ell, nlens=nlens)
+        ssc_signal = observed_spectra(lensing_spectra, ell=ell, nlens=nlens)
+        if b_signal is not None:
+            b_signal = observed_spectra(b_signal, ell=ell, nlens=nlens)
     else:
         # A Fourier band averages the core C_ell directly. Do not apply
         # the conversion used only to match the real-space transforms.
         signal = np.ascontiguousarray(snapshot["spectra"])
+        ssc_signal = np.ascontiguousarray(lensing_spectra)
         source_factor = np.sqrt((ell-1)*ell*(ell+1)*(ell+2))/(ell+0.5)**2
-    checkpoint("all_pairs_limber_spectra", started)
+    checkpoint("all_pairs_gaussian_spectra", started)
 
     # --- 2. Measurement operators and the common survey footprint ---
     # Real-space white noise extends above any finite ell cutoff, so its
@@ -510,10 +539,14 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # absent from the data vector. The snapshot retains that full matrix.
     tick = time.perf_counter()
     if space == "real":
+        b_options = {}
+        if b_signal is not None:
+            b_options["b_spectra"] = np.ascontiguousarray(b_signal)
         gaussian = interface.covariance_gaussian_real(
             spectra=signal, noise=np.ascontiguousarray(noise),
             rows=np.ascontiguousarray(rows, dtype=np.int32), operators=kernels,
             ell_min=2, area_sr=settings["area_sr"], pair_area_sr2=pair_area,
+            **b_options,
         )
     else:
         gaussian = interface.covariance_gaussian_fourier(
@@ -527,12 +560,21 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # measured observable, rather than its local radial integrand.
     tick = time.perf_counter()
     observable_signal = np.empty((len(rows), nbin))
+    gaussian_signal = np.empty_like(observable_signal)
     for probe in range(4):
         selected = np.flatnonzero(rows[:, 0] == probe)
         if len(selected) == 0:
             continue
         fields = rows[selected, 1:]
-        spectra = np.ascontiguousarray(signal[:, fields[:, 0], fields[:, 1]].T)
+        spectra = np.ascontiguousarray(ssc_signal[:, fields[:, 0], fields[:, 1]].T)
+        gaussian_power = signal[:, fields[:, 0], fields[:, 1]].T.copy()
+        if b_signal is not None and space == "real" and probe in (0, 1):
+            sign = 1.0 if probe == 0 else -1.0
+            gaussian_power += sign*b_signal[:, fields[:, 0], fields[:, 1]].T
+        gaussian_signal[selected] = interface.covariance_project(
+            left=np.ascontiguousarray(gaussian_power), right=kernels[probe],
+            weight=np.ones(len(ell)),
+        )
         observable_signal[selected] = interface.covariance_project(
             left=spectra, right=kernels[probe], weight=np.ones(len(ell))
         )
@@ -610,6 +652,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         "geometry": geometry,
         "coarse_ell": coarse_ell,
         "pair_area_sr2": pair_area,
-        "signal": observable_signal,
+        "signal": gaussian_signal,
+        "ssc_normalization_signal": observable_signal,
         "stages_s": stages,
     }
