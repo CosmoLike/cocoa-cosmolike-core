@@ -1,0 +1,120 @@
+# Covariance non-Limber source study
+
+Status: source study, not an implementation or validation claim.
+The covariance implementation must remain inside `cosmolike/covariances/`.
+The ordered implementation and acceptance plan, including NLA integration,
+is in [the non-Limber and IA plan](covariance_nonlimber_ia_plan.md).
+Implementation is currently deferred; this study does not authorize a run.
+
+## Physics boundary
+
+[Fang, Krause, Eifler & MacCrann (2019), Sections 2--3](https://arxiv.org/html/1911.11947)
+separate a coherently growing linear field from a nonlinear correction
+projected with Limber. Their Eqs. 10--12 rearrange the unequal-distance
+linear projection into two single-Bessel transforms and one k integral.
+The same construction gives every internal field pair required by Wick's
+theorem; exclusion from the measured data vector is no reason to omit a
+cross-bin spectrum. [DES Y6, Appendix F](https://arxiv.org/html/2503.13631v1)
+explicitly identifies non-Limber covariance as a cross-tomographic improvement.
+
+For a dimensionless density contrast projected with a window W of inverse
+distance, the density transfer is integral dlnchi [chi W D] j_l(k chi).
+A shear transfer instead has the spin-2 angular derivative factor
+sqrt((l-1)l(l+1)(l+2))/k^2 and radial integrand W D/chi. Lensing
+magnification uses l(l+1)/k^2 with its own radial window. These factors
+must agree with the existing harmonic convention before any additional
+real-space source-leg conversion is applied.
+
+Retaining non-Limber spectra in the Gaussian contractions is distinct from
+removing the long-mode Limber approximation in SSC or the projected
+equal-time approximation in cNG. Do not claim those latter extensions
+merely because the Gaussian spectra change. The existing joint selected
+cluster one-halo spectrum remains part of its nonlinear correction.
+
+## Actual data-vector implementation inspected
+
+The current `cosmo2D.c` pipeline is `cfftlog_ells_p1`,
+`cfftlog_ells_p2`, then `C_cl_tomo_core`/`C_gs_tomo_core`.
+The inspected source provides these reusable optimization ideas:
+
+- Transform each active radial component forward once. That transform
+  does not depend on l and is reused by all multipoles and field pairs.
+- Construct FFTW plans serially. Reuse them when transform dimensions are
+  unchanged; execute with each worker's own new-array buffers.
+- Use even transform lengths factorizable into 2, 3, 5 and 7, with zero
+  guards. Keep the guards' logarithmic extent fixed under grid refinement.
+- Process inverse transforms in blocks of 16 multipoles, keeping scratch
+  bounded. The covariance adaptation should distribute fields AND block
+  multipoles together, rather than launch one team for each field.
+- Compute the gamma ratio explicitly for two seed multipoles, then use
+  Gamma(z+1)=z Gamma(z) separately for even and odd multipoles.
+- Share the reciprocal k grid and k^3 P(k) among all field pairs. The
+  current galaxy--shear code already moves these reads outside pair sums.
+- Replace repeated phase trigonometry with a complex phase recurrence,
+  periodically recomputed from the exact phase to bound accumulated error.
+- Precompute powers of the reversed distance grid. SIMDe normalizes
+  several adjacent inverse-transform samples without repeated pow calls.
+- Keep complete per-output sums on one worker. A covariance adaptation
+  can use SIMD lanes for distinct field pairs, retaining deterministic
+  summation order when the OpenMP worker count changes.
+
+## Covariance-specific decisions still requiring tests
+
+The data-vector code uses a lens-bin pivot spectrum and freezes individual
+pairs when their correction is small relative to that pair's Limber value.
+A covariance contains sign-changing and nearly zero cross spectra, so that
+relative stopping criterion must not be copied without testing. Shared
+field transfers and a common positive k measure also make the linear
+field matrix a Gram matrix. Preserve that consistency when choosing the
+growth anchor, subtraction and transition to Limber.
+
+The forward and inverse linear terms must use the same separable growth
+convention. Subtracting a differently evolved linear spectrum would leave
+an artificial high-l residual. A common growth anchor needs comparison
+against direct radial integration and the supplied linear-power tables;
+massless neutrinos alone do not prove perfectly scale-independent growth.
+
+Refine uniform log-distance grids by adding intervals without moving old
+nodes. Test padding, radial limits, multipole cutoff and interpolated power
+separately. Analytic Gaussian-Bessel integrals provide normalization and
+phase checks; direct oscillatory quadrature provides a separate check for
+catalog windows, including narrow/discontinuous cluster selections.
+Check all field-pair spectra, matrix positivity, thread determinism and
+the complete projected covariance. No eigenvalue clipping or diagonal
+jitter may hide a failed physical or numerical construction.
+
+## Lensing-kernel stability check to carry out
+
+[Leonard et al., N5K, Eq. 24](https://arxiv.org/html/2212.04291)
+keeps j_l(k chi)/(k chi)^2 inside the shear transform. Unlike the current
+data-vector implementation's W D/chi input and external k^-2, its radial
+input is chi W D, with the denominator absorbed into the Mellin kernel.
+If M_l(s) is the ordinary spherical-Bessel Mellin integral, gamma
+recurrence gives M_l(s-2)=M_l(s)/[(l+s-2)(l+3-s)]. This is algebraically
+the same physical projection but avoids amplifying the radial input by
+chi^-2 near the observer. The paper explicitly motivates its numerical
+stability. Compare both formulations and analytic Gaussian transforms
+before choosing the covariance implementation; no data-vector change is
+authorized by this study.
+
+## Logarithmic grid and phase bookkeeping
+
+The zero guards change the FFT's coordinate origin. If the first supplied
+distance is chi_min and there are p guard nodes before it, FFT index zero
+represents chi_origin = chi_min exp(-p dlnchi). Choose the reciprocal grid
+so FFT output index p represents the desired first physical wavenumber k0.
+Its index-zero value is then k_origin = k0 exp(-p dlnchi). Multiplying these
+two origins explains the factor exp(-2 p dlnchi) in the existing phase;
+it is not a rescaling of physical distances. Reading output indices before
+p extends the integration to smaller k without changing that phase anchor.
+Test this offset separately from the transform's normalization.
+
+Nested radial nodes alone do not fix the FFT's logarithmic period.
+Independently rounding each refined length to a friendly size can change
+N_fft*dlnchi. For example, 3073 required slots round to 3136, whereas
+6145 round to 6174, not twice 3136. In a controlled refinement experiment,
+round the base even length once and multiply it by the power-of-two boost.
+Its factors remain small, and its period remains fixed when dlnchi is
+divided by that boost. The external analytic study already uses this
+fixed-period construction. It still needs numerical validation; this
+bookkeeping is not evidence for a production grid or cutoff.

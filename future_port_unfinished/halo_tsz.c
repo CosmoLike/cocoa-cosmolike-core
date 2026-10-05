@@ -325,17 +325,7 @@ double p_my(
         double sum_I11m = 0.0;  // 2-halo matter leg: sum_q w2hm_q um
         double sum_I11y = 0.0;  // 2-halo pressure leg: sum_q w2hy_q uy
 
-#ifdef HALO_NOT_USE_SIMD
-        for (int q=0; q<n_nodes; q++) {
-          const double um = nfw_um(conc_q[q], kj*rs_q[q],
-                                   lnk + lnrs_q[q], ln1c_q[q]);
-          const double uy = u_KS(conc_q[q], kj, rdelta_q[q]);
-          sum_I02  += w1h_q[q]*uy*um;
-          sum_I11m += w2hm_q[q]*um;
-          sum_I11y += w2hy_q[q]*uy;
-        }
-#else
-        // the scalar loop above, four nodes q, q+1, q+2, q+3 per step
+        // Evaluate the weighted sums above at four nodes per step
         // (one per lane, as in p_mm): the NFW leg through nfw_um4 (nfw_um
         // on each lane, bitwise), the pressure leg u_KS lane by lane;
         // four-lane partial sums added in a fixed lane order
@@ -421,7 +411,6 @@ double p_my(
           sum_I11m += w2hm_q[q]*um;
           sum_I11y += w2hy_q[q]*uy;
         }
-#endif
 
         // the damping S = x/(1 + x), x = (k/k_s)^4 (header)
         const double x4  = (kj/k_s)*(kj/k_s)*(kj/k_s)*(kj/k_s);
@@ -1465,7 +1454,7 @@ double u_KS(
 
       // u(c_i, w_j) = sum_q wthp[q] sin_kern[q][j]/f0, all w nodes at
       // once (four per SIMDe step, then a scalar tail;
-      // COSMO2D_NOT_USE_SIMD selects the plain loop)
+      // the plain loop is retained in the historical scalar reference)
       double* restrict u_row = u_coarse[i];
       for (int j=0; j<nwp; j++) {
         u_row[j] = 0.0;
@@ -1473,11 +1462,6 @@ double u_KS(
       for (int k=0; k<ngl; k++) {
         const double wthp_k = wthp[k];
         const double* restrict kern_k = sin_kern[k];
-#ifdef COSMO2D_NOT_USE_SIMD
-        for (int j=0; j<nwp; j++) {
-          u_row[j] += wthp_k*kern_k[j];
-        }
-#else
         // scalar: u_row[j] += wthp_k*kern_k[j], four w nodes j, j+1,
         // j+2, j+3 per step (one per lane of a v4d)
 
@@ -1505,7 +1489,6 @@ double u_KS(
         for (; j < nwp; j++) {
           u_row[j] += wthp_k*kern_k[j];
         }
-#endif
       }
       for (int j=0; j<nwp; j++) {
         u_row[j] /= f0;
@@ -1534,12 +1517,6 @@ double u_KS(
         const double g_re_k = g_re[k];
         const double g_im_k = g_im[k];
         const double* restrict Qwgt_k = Qwgt[k];
-#ifdef COSMO2D_NOT_USE_SIMD
-        for (int j=0; j<nzp; j++) {
-          Qre_row[j] += Qwgt_k[j]*g_re_k;
-          Qim_row[j] += Qwgt_k[j]*g_im_k;
-        }
-#else
         // scalar: Qre_row[j] += Qwgt_k[j]*g_re_k and
         //         Qim_row[j] += Qwgt_k[j]*g_im_k, four z nodes j..j+3
         // per step (set1, loadu, mul, add, storeu as in the u sum above)
@@ -1580,7 +1557,6 @@ double u_KS(
           Qre_row[j] += Qwgt_k[j]*g_re_k;
           Qim_row[j] += Qwgt_k[j]*g_im_k;
         }
-#endif
       }
     }
 

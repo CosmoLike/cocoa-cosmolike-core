@@ -250,15 +250,7 @@ double p_mm(
         double sum_I02 = 0.0;  // 1-halo: sum_q w1h_q um^2
         double sum_I11 = 0.0;  // 2-halo: sum_q w2h_q um
 
-#ifdef HALO_NOT_USE_SIMD
-        for (int q=0; q<n_nodes; q++) {
-          const double um = nfw_um(conc_q[q], kj*rs_q[q],
-                                   lnk + lnrs_q[q], ln1c_q[q]);
-          sum_I02 += w1h_q[q]*um*um;
-          sum_I11 += w2h_q[q]*um;
-        }
-#else
-        // the scalar loop above, four nodes q, q+1, q+2, q+3 per step:
+        // Evaluate the weighted sums above at four nodes per step:
         // each lane of a v4d holds one node (nfw_um4 = nfw_um on each
         // lane, bitwise). The four lanes accumulate four partial sums,
         // added in a fixed lane order at the end (simd_horizontal_sum),
@@ -328,7 +320,6 @@ double p_mm(
           sum_I02 += w1h_q[q]*um*um;
           sum_I11 += w2h_q[q]*um;
         }
-#endif
 
         const double I11 = sum_I11 + A_hmx*u_c(conc_min, kj, m_min, ai);
         table[i][j] = log(sum_I02 + I11*I11*p_lin(kj, ai));

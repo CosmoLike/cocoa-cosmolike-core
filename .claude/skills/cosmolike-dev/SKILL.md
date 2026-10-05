@@ -1,6 +1,14 @@
 ---
 name: cosmolike-dev
-description: Development, optimization, review, and debugging practices for the CosmoLike/Cocoa C codebase (cosmo2D.c, pt_cfastpt.c, redshift_spline.c, cfastpt.c, cfftlog, IA.c, basics.c, halo.c). Use this skill whenever working on CosmoLike or Cocoa C code in any way — writing or reviewing patches, optimizing hot loops, adding OpenMP/SIMD, replacing GSL calls, touching FFTW/FAST-PT code, debugging non-deterministic chi2, benchmarking with perf, or evaluating performance claims. Also use it when terms like Limber, non-Limber, TATT, NLA, 3x2pt, FAST-PT, Legendre summation, tomographic C_ell, halo model, or HOD appear in a C-code context, even if optimization isn't mentioned explicitly. Use it as well for the Python of the Cosmolike repositories: cosmolike_notebook_utils (the data-vector plotting functions such as plot_datavectors and plot_datavectors_cluster, the CAMB helper, the Fisher helpers), cocoa_testing.py, and each project's likelihood, notebook wrappers, notebooks, tests and scripts.
+description: >-
+  Development, optimization, review and debugging of CosmoLike/Cocoa C and
+  Python. Use for C patches, hot loops, OpenMP/SIMD, GSL, FFTW/FAST-PT,
+  nondeterministic chi2, perf benchmarks and performance claims. Applies to
+  Limber and non-Limber calculations, TATT, NLA, 3x2pt, Legendre sums,
+  tomographic C_ell, halo models and HOD, even without optimization work.
+  Also covers cosmolike_notebook_utils (data-vector and covariance plotting,
+  CAMB and Fisher helpers), cocoa_testing.py, and each project's likelihoods,
+  notebook wrappers, notebooks, tests and scripts.
 ---
 
 # CosmoLike Development
@@ -40,7 +48,7 @@ Which growth factor the D^1.15 of the Bhattacharya concentration takes with
 neutrinos (no paper says; recommended: the cb growth at halo scales in both
 the prefactor and nu): `references/fable_review_concentration_growth.md`.
 
-**Neutrino halo model (owner approved Phases 2 and 3, 2026-10-03).**
+**Neutrino halo model.**
 Plan and decisions: `references/neutrino_growth_plan.md`. Implementation
 and measured checks: `references/sigma_fftlog_implementation.md`.
 The C FFTLog tables expose both matter and cb variances and mass slopes
@@ -55,6 +63,337 @@ implementation remain separate decisions. p_mm/p_my/p_yy remain outside
 the compiled code. The cfastpt frequency-window comments already describe
 the tapered top fraction correctly.
 
+**Covariance rewrite.** Before covariance work,
+read `references/covariance_rewrite.md` and the external study at
+`test/cosmocov_port_study/PLAN.md`. The implementation lives in the plural
+`cosmolike/covariances/` directory. Do not modify any existing C file
+outside that directory for the port. Every new covariance C filename ends
+in `_cov.c`, including future cluster extensions (`*_cluster_cov.c`).
+Data-vector and covariance numerical choices remain separately owned.
+Covariance generation is an offline calculation and never runs inside
+MCMC. Reuse explicit shared inputs across its blocks; do not add persistent
+cosmology caches just to imitate the data-vector lifetime. Shared core
+readers can still have caches and require serial initialization before
+parallel reads. Explain this distinction in `cosmolike/README.md`.
+The non-Limber and NLA follow-up is detailed in
+`references/covariance_nonlimber_ia_plan.md`. Gaussian gg/gs non-Limber
+and NLA/TATT work is authorized in small tested commits. Covariance-owned
+FFTLog, all-pairs gg/gs, Gaussian NLA/TATT E/B and survey wiring are
+implemented. Project defaults follow full Gaussian non-Limber refinement
+checks, recorded in that reference; these do not establish Fisher or all
+integration convergence. The selected-cluster joint extension remains open. SSC/cNG changes are excluded from this
+implementation block. Never describe Gaussian non-Limber or IA support as
+a corresponding extension of SSC/cNG. Keep stopped overnight validation
+stopped. Do not enable survey defaults before their independent checks.
+Study the actual `cosmo2D.c`, `cosmo3D.c`, and `halo.c` implementations;
+some older study and pattern descriptions predate their current behavior.
+Carry over serial FFTW planning/reuse, precomputed node tables, direct grid
+indexing, caller-owned grouped scratch, and deterministic OpenMP loops.
+Explicitly evaluate SIMDe vectorization: do not assume an OpenMP SIMD
+pragma vectorizes strict floating-point arithmetic. Measure loop layouts,
+thread counts, precision, and generated instructions before choosing them.
+Covariance production code always uses SIMDe for its bulk arithmetic.
+Keep scalar comparisons in the external test harness, with no covariance
+preprocessor fallback. The same rule now applies to existing data-vector
+SIMDe paths; see `references/simd_retirement.md`.
+Krause and Takada papers are primary physics sources; CosmoCov code and the
+study's inferred corrections are comparison targets, not a physics oracle.
+Keep the implementation simple, with short guards for unsupported cases;
+do not build elaborate recovery paths. Never push; local commits are allowed.
+Cluster count responses and all-pairs Limber projection are recorded in
+`references/covariance_cluster_counts.md` and
+`references/covariance_cluster_spectra.md`. They are validated components,
+not a completed cluster 6x2pt+N covariance. Retain the distinct count and
+two-point response conventions and test all internal field cross spectra.
+Selected mass moments and their exclusive-category convention are in
+`references/covariance_cluster_moments.md`; do not replace one membership
+probability by its powers when several legs belong to the same halo.
+Joint cluster-lensing localization and its deterministic zero rows are
+recorded in `references/covariance_cluster_localization.md`. Transform
+every cross block before applying the likelihood's scale selection.
+The joint angular notebook forecast and its explicit approximations are
+recorded in `references/covariance_cluster_joint.md`. Its connected term
+uses linearly biased matter tracers and its count crosses contain SSC
+only. It is not a complete selected/discrete-halo covariance. Archive
+those omissions with the matrix and retain the defined Y null-row map.
+
+**Optional covariance build.** Each project's
+`IGNORE_COSMOLIKE_<PROJECT>_COVARIANCE` installation key defaults to 1.
+Its Makefile omits `_cov` sources and objects and defines
+`COSMOLIKE_NO_COVARIANCE` so the project interface omits covariance bindings.
+Keep ordinary data-vector evaluation and supplied-covariance inversion usable
+in that build. Document activation/recompilation in each project README;
+test both build modes and do not add covariance dependencies to data-vector
+C files. The module's `has_covariance` attribute reports the compiled mode.
+
+**Production interfaces and notebook wrappers are separate layers.**
+`_interface` serves CLI/production runs; covariance production bindings
+borrow contiguous NumPy arrays without Armadillo/CARMA conversions.
+`_wrapper` serves Jupyter exploration, exposing intermediate quantities
+through readable Armadillo types. Wrappers perform validation, allocation
+and layout conversion only. Heavy integration, table construction, SIMD,
+OpenMP scheduling and matrix assembly belong in shared covariance C
+routines, called by both layers. Never duplicate a physical calculation
+or maintain a second optimized implementation in either C++ layer.
+Keep the shared Python survey workflow common too; select its numerical
+backend explicitly. Test agreement of both paths, array ownership and
+one/eight-thread determinism. Explain this division clearly in human
+READMEs, with separate production and notebook subsections.
+
+**Notebook C++ wrappers.** Follow `halo_wrapper_cluster.cpp` and
+`cosmo2D_wrapper.cpp`: numeric inputs, results and working arrays use
+`arma::Col`, `arma::Mat` and `arma::Cube`, with named axes and units.
+Keep Python conversion in the binding files. Copy inputs without mutation;
+CARMA exports the Armadillo results at the return boundary. Do not
+use `py::array_t` aliases, `std::vector` numeric containers, or vectors of
+row/plane pointers in notebook wrappers. If a batched C routine requires
+C storage, use a short, explicit copy into/out of its ordinary workspace,
+as in the data-vector wrappers; do not invent pointer-adapter machinery.
+Keep callable C++ declarations in the wrapper header. Dictionaries and
+tuples may group independently meaningful Armadillo results; keep
+conversion at the return/binding boundary. Prefer named quantities over
+packing a fourth numerical axis into a Python-specific container.
+These wrappers support readable Jupyter experimentation. Copies and modest
+wrapper overhead are acceptable. Production optimization belongs in the
+normal interface and C kernels; never obscure the notebook API to avoid
+an array copy. Preserve axis order, ownership and input immutability, and
+test C-order, Fortran-order and sliced NumPy inputs through CARMA.
+
+**Integration validation limits.** The maximum covariance integration
+level to test is 4. On the M2 Pro laptop, Roman tests stop at level 3;
+reserve Roman level 4 for a server. Do not escalate above these limits
+when assessing default settings. Keep completed matrices and compare
+against the highest completed permitted level, stating which reference
+was actually used.
+
+**Public documentation.** READMEs are
+for human readers, including advanced undergraduate physics students.
+Explain the physics, define symbols and approximations, and describe each
+source file and how its calculation fits into the module. Cite the papers
+directly. Never send readers to Claude/bot skills or untracked study
+directories for an explanation. Port the necessary physics into the
+README itself. Keep machine-local library paths, build commands, internal
+benchmark recipes and development history in the skill references.
+Document test suites in public documentation when they are reproducible
+from the repository; do not present a developer's external harness as a
+public test interface. State implemented capabilities and remaining limits
+without turning the README into a development log.
+
+Published covariance timings use the **production CLI** and each project's
+shipped evaluate YAML. Measure complete G + SSC + cNG construction, including
+first-use tables, on a quiet machine with sequential runs. Distinguish that
+interval from startup/CAMB and file writing. Label a joint cluster Limber
+example separately from galaxy/shear non-Limber examples. Notebook wrapper
+timings are a different baseline; quantify conversion overhead with matched
+inputs and identical output checks. Current seven-project measurements and
+the matched interface comparison are in
+`references/covariance_cli_timing.md`.
+Make the production/exploration distinction prominent in each project's
+opening README and beside Cocoa's code-comparison timing notes. Explain
+that the notebook array-conversion overhead is separate from the shared
+C kernels; scope any quoted overhead factor to its matched measurement.
+
+Write skill instructions as impersonal project guidance for all
+contributors. State the requirement and its rationale directly, without
+personal names, quotations or conversational attributions. Retain
+scientific citations and dates that identify measurements or sources.
+
+**Survey accuracy and Roman.** The
+old study's 1e-6 per-entry reference-refinement target is not a universal
+production covariance requirement. Do not transfer the data-vector
+|delta chi2| < 0.2 rule to covariance convergence. Assess numerical
+refinement through marginalized Figure of Merit and parameter errors,
+with positive-definiteness checks and relative covariance-mode diagnostics.
+The proposed 1e-3 scale is a starting numerical target, not a
+literature-mandated accuracy of the physical covariance model. See
+`references/covariance_accuracy.md` for papers, proposals and limitations.
+Keep tight algebra, units and determinism checks separate.
+The immediate target is **roman_real**, with eight lens and eight source
+bins. Eifler et al., arXiv:2004.05271, provides survey guidance; do not
+replace the project's layout with the paper's ten-bin Fourier analysis.
+See `references/covariance_roman.md`. Every new all-pairs cross-bin and
+non-Limber C implementation belongs in `cosmolike/covariances/`.
+Start runtime estimates with small representative components, separating
+shared tables from work repeated per bin pair; do not start an hours-long
+full covariance just to estimate its cost. See
+`references/covariance_roman_timing.md` for the measured pilot and its limits.
+The module-wide didactic pass is recorded in
+`references/covariance_didactic_review.md`. Follow it with measured small
+component profiles and optimization experiments, including cubic-spline
+upsampling as used in `halo.c`, `cosmo2D.c` and `pt_cfastpt.c`. Verify both
+runtime and accuracy; do not infer a speedup from adding SIMD or unrolling.
+The intended spline architecture is coarse exact evaluation, cubic-spline
+upsampling during table construction, then linear interpolation on the
+dense table in the hot path. Do not replace the hot lookup with a cubic
+solve/evaluation. Test off-grid linear queries against direct calculations,
+in addition to checking the dense nodes, and distinguish interpolation in
+physical wavenumber from interpolation along k=(ell+1/2)/chi(a).
+When an accuracy boost refines interpolation tables, preserve existing
+sample positions: double intervals, not endpoint-inclusive point counts.
+If a cutoff grows, extend the same grid rather than stretching it. Test
+actual node retention and a high-boost convergence sequence; separate
+grid movement from interpolation density, cutoff error and fixed input
+power-table resolution. Gauss--Legendre quadrature nodes are a different
+case: refine their nodes and weights together and measure convergence.
+See `references/covariance_accuracy.md` for the measured grid audit.
+Study `cosmo2D.c::limber_fill_interp` and the `legendre_sums`/`xipm`
+transform helpers when designing covariance lookup and projection:
+share grid indices across tables, prefer SIMDe for bulk linear reads,
+and reuse spectra/kernels across several output sums.
+Measure lookup and contraction separately; preserve each sum's order
+and keep the covariance implementation inside its own directory.
+Production chains run on x86 supercomputers. Treat Apple/NEON timings as
+local diagnostics, not a reason to discard SIMDe or an x86-oriented
+optimization. Vector widths, gather costs, FMA mappings, cache sizes and
+register pressure differ. Retain unconditional SIMDe and benchmark the
+actual x86 production compiler/CPU before selecting architecture-sensitive
+unrolling, tiling or lookup layouts. Never label Mac timings as x86 gains.
+SIMDe is the default design choice for independent bulk arithmetic;
+measurements refine its layout rather than treating an unimpressive Mac
+result as a veto. Run accuracy checks first. Timing reports require a
+quiet machine and one benchmark at a time, with no concurrent tests,
+builds, CAMB jobs or other computational experiments. Do not report
+contended preflight timings as optimization evidence.
+
+**Covariance parallelism.** Strong
+scaling to 8--10 OpenMP cores per process is a primary requirement.
+Measure 1, 2, 4 and 8 threads on this laptop; do not accept good 2--3-core
+scaling as sufficient. Audit small outer-loop counts, serial setup and
+load imbalance. Test collapse over independent indices or larger input
+batches, preserving deterministic sums and the unconditional SIMDe paths.
+The laptop has eight performance cores; qualify any 10-thread result
+because it also uses efficiency cores. Production x86 scaling still needs
+measurement on that hardware. Keep BLAS at one thread.
+Covariance C must never call MPI. Cocoa/Cobaya's Python layer owns MPI;
+a future C++/Python interface can dispatch independent matrix subblocks
+to processes, each using OpenMP internally. Example 40-core layouts are
+five MPI processes times eight threads or four times ten. Keep shared
+tables reusable within a process and make block inputs explicit; do not
+implement an MPI layer or a speculative block framework before needed.
+The complete Gaussian C assembler assigns whole observable blocks to
+workers; its C primitives suppress inner parallel teams when called from
+that outer region. Preserve the fixed multipole sum order and per-worker
+scratch ownership. Measurements and checks are recorded in
+`references/covariance_gaussian_scaling.md`; the complete survey still
+requires separate scaling measurements, especially its shared matter tables.
+The seven-project real/Fourier baseline is recorded in
+`references/covariance_survey_scaling.md`, including its correction for
+three skipped project rebuilds. Check the actual compile flag and build
+log: most projects use upper-case `IGNORE_COSMOLIKE_*_CODE` names, while
+DES cluster uses lower-case `des_cluster`. A zero shell exit alone does
+not establish that a skip-guarded build script compiled anything.
+Shared matter preparation now
+groups eight radial shells and requests only I11 at displaced derivative
+endpoints; see `references/covariance_halo_scaling.md` for measurements,
+bitwise checks and the bounded-memory choice. The final connected
+projection also assigns complete angular blocks to one worker team;
+see `references/covariance_connected_scaling.md`. Keep its shared radial
+weights, per-worker scratch and exact triangular ownership. Shared-table
+power reads and smaller projections still need profiling; do not claim
+that the complete scaling problem is solved.
+
+**Covariance CLI workflows.** Each project supplies an
+`EXAMPLE_EVALUATE_COVARIANCE.yaml` and a thin Python runner. Use Cobaya's
+`yaml_load_file` and `Parameterization`, keeping familiar `theory`, `params`,
+`sampler: evaluate` and `output` blocks. Evaluate one explicit cosmology;
+never silently sample priors. `covariance` contains measurement and
+accuracy controls, inheriting the project's usable `default.yaml` baseline.
+CLI OpenMP threads come only from `OMP_NUM_THREADS` in the environment.
+Do not add a YAML thread key, a `--threads` override or a hard-coded team
+size. Save the resolved environment value with the execution metadata.
+Shared reading and assembly belong in `cosmolike_notebook_utils`; runners
+select the optimized production interface, not notebook wrappers. Document
+HPC usage independently of Jupyter. Explain Armadillo through the Python
+notebook API it makes convenient; C++ is a thin bridge to shared C physics.
+
+**Notebook covariance workflows.**
+Develop the first public examples in `projects/lsst_y1/covariance/`, using
+explicit LSST Y1 survey inputs. Keep reusable Python calculations in
+`cosmolike_notebook_utils`, with the initialized project interface passed
+by the caller. Project folders own survey choices and thin examples;
+design them for replication across projects without copying algorithms.
+Port useful Python from the external covariance reference work, not its
+bash scripts, machine-specific library paths or benchmark scaffolding.
+Keep independent numerical test references independent of production
+calculations. Separate test modules into `tests/data_vector/` and
+`tests/covariance/`, with clear commands for each sector. The ordinary
+documented test command selects data-vector tests. Do not refreeze or
+modify likelihood snapshots merely to reorganize the test files.
+The public entry point is `EXAMPLE_EVALUATE_COVARIANCE.ipynb` in LSST Y1.
+Expose one covariance `accuracy_boost`, resolving numerical controls in a
+shared helper; do not ask ordinary notebook users to tune a list of grids.
+**Boost 1 must be usable.** Each project's `covariance/default.yaml` owns
+the fine-tuned base controls needed for its bins and scale range. Establish
+their convergence against a high-resolution calculation and further
+refinement; a fast smoke configuration must not be the public default.
+Study that project's likelihood YAML accuracy choices when setting the
+starting baseline, without assuming data-vector convergence certifies a
+covariance. Keep test-only small grids explicit in tests.
+The global boost multiplies every internal refinement, rather than replacing
+or bypassing it: base factors 2 and 3 become effective factors 4 and 6 when
+the global boost changes from 1 to 2. This applies to internally tuned
+non-Gaussian and window tables and shared core reader refinements.
+**Quadrature is separate.** `integration_accuracy` selects precomputed GSL
+rules through an explicit level ladder, independently of `accuracy_boost`.
+Do not multiply radial, mass or angular rule orders by the global boost.
+Do not expose arbitrary rule sizes in project defaults. Covariance rules
+must use GSL's precomputed nodes, with 64 as the absolute minimum even if
+a 32-node test appears adequate. The notebook ladder is 96/128/256/512/1024
+for levels 0/1/2/3/4; low-level testing also accepts 64. Python-prepared
+production integrals obtain the same GSL rules through the C++ binding;
+independent references may generate their own rules. Split oscillatory
+angular integrals into physical panels rather than requesting generated
+2048-node rules. Level zero must be useful: test every consuming sector,
+including cluster selection and count responses, against higher levels.
+Check levels 2, 3 and 4 as well as 1, comparing the default directly with
+the highest level and verifying stability of the last refinement.
+Current implementation and evidence: `references/covariance_defaults.md`.
+Keep this level unchanged under global table refinements. Multiply interval
+counts in likelihoods too: `nonlimber_accuracyboost: 2` and
+`pk_z_refinement: 3` mean effective factors 4 and 6 at `accuracyboost: 2`.
+For covariance interpolation, multiply interval
+counts, preserving existing interpolation nodes under doubling; divide
+finite-difference step sizes by the boost. Do not multiply fixed physical
+bin edges or survey inputs. Expose and save both base controls and resolved
+effective settings, and test non-unit internal factors as well as defaults.
+For example, verify base factor 3 at global boosts 1 and 2, not only powers
+of two. Any implementation limit must raise a clear error, never silently
+cap a resolution and make the global boost ineffective.
+The notebook must compute several boosts and show changes in the covariance,
+its error bars and relative modes. A largest tested boost is a comparison
+reference, not an automatic claim of convergence. Covariance READMEs follow
+Cocoa's numbered contents, anchors, assumptions and Step flows; teach setup,
+compilation, notebook execution, accuracy changes and separate tests.
+Commit completed pieces incrementally; avoid commits of many thousands of
+lines. Keep mechanical test moves separate from numerical changes.
+Shared covariance plotting belongs in `cosmolike_notebook_utils`; consult
+Krause's papers for interpretable layouts, cite exact figures, and render
+and inspect the resulting panels. The plots must preserve signs and
+visibly mask undefined ratios, never repair eigenvalues or fabricate a
+missing component. See `references/covariance_notebook_workflows.md`.
+
+Then diagnose the negative eigenvalues reported in the existing Roman
+covariance, distinguishing the full matrix from the likelihood selection
+and tracing the responsible scales and components without clipping modes.
+The shipped-matrix localization and a controlled legacy interpolation
+failure are recorded in `references/covariance_roman_negative_modes.md`.
+The same review finds zero NG between different lens bins despite window
+overlap; combining lens families introduces the failing mode. Never copy
+the legacy writer's equal-lens-only NG rule into the rewrite. Compute
+cross-lens covariance terms even when those spectra are absent from the
+data vector; their C implementation stays covariance-owned.
+Prioritize the future Roman generator over recovering the old file's
+provenance. Use its failure to design regression tests: recompute
+physical cross-lens responses, retain complete subblock coverage, and
+check full and selected total matrices. Do not make historical attribution
+a prerequisite for developing and validating the new covariance.
+For SSC, interpolate common responses before forming their weighted outer
+products. Do not independently interpolate auto/cross covariance blocks
+with inconsistent value/log prescriptions and assume positivity survives.
+Then establish a stable high-resolution numerical reference and use Fisher
+FoM/errors to select practical settings. A chain is not needed for the
+initial local Fisher test; check several cosmologies before generalizing.
+
 Before doing any Docker work — Dockerfile edits, GPU-container debugging, 
 image size diagnosis, or container build failures — 
 read `references/docker-reference.md`. It contains 
@@ -66,8 +405,8 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
 1. **Correctness is non-negotiable, at the scale physics can see.** The
    pass criterion of a frozen-reference test is |chi2 - reference| < 0.2
    (`CHI2_TOLERANCE`): no physics is detectable below that (CAMB settings,
-   CAMB versus CLASS already move chi2 by that much), so the owner does not
-   tighten it. Record chi2 and its difference to at least four decimals so
+   CAMB versus CLASS already move chi2 by that much). Keep this threshold
+   unchanged. Record chi2 and its difference to at least four decimals so
    drift below the threshold stays visible. Separately, an optimization or
    refactor that is not meant to change the physics is checked on the full
    unmasked data vector, not on chi2 alone (see the validation protocol).
@@ -80,10 +419,13 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    Only vectorize a loop after its algorithm is already minimal.
 4. **One change at a time.** Each change is validated and measured in
    isolation. Never bundle a refactor with an optimization in one commit.
-5. **Every risky optimization gets an escape hatch.** Preprocessor guards
-   (`COSMO2D_NOT_USE_SIMD`, `DONT_NZ_FAST_SUMBSAMPLE`, ...) must allow falling
-   back to the simple reference implementation. The fallback is also the
-   ground truth for debugging.
+5. **Keep a checkable reference for optimizations.** Scalar comparison
+   implementations belong in external tests, not selectable production
+   branches. `COSMO2D_NOT_USE_SIMD`, `HALO_NOT_USE_SIMD` and the covariance
+   scalar switch are retired: optimized and debug builds always
+   compile the existing SIMDe paths. Keep scalar single-point kernels and
+   vector tails where the algorithm needs them. See the retirement record
+   for the pinned historical source and independent validation checks.
 6. **Preserve existing conventions.** Keep the file's variable naming, struct
    layout, and code structure when modifying. Renames happen only as their own
    dedicated, mechanical commits (e.g. `zdistr_photoz` → `nz_source_photoz`).
@@ -93,8 +435,8 @@ the GPU stack model, dependency-resolution patterns, and image-size diagnostics.
    grids. Do not reintroduce binary searches into these optimized paths:
    they add branches and scattered table reads that the existing metadata
    was designed to avoid. This applies to every build, including debug:
-   the owner retired COSMO3D_ASSUME_PIECEWISE_UNIFORM and its binary-search
-   alternatives. Setters always construct and validate the metadata.
+   COSMO3D_ASSUME_PIECEWISE_UNIFORM and its binary-search alternatives are
+   retired. Setters always construct and validate the metadata.
 7. **Determinism is a correctness test.** If chi2 varies run-to-run or with
    `OMP_NUM_THREADS`, there is a race or uninitialized memory. Full stop. Do
    not proceed until it is found.
@@ -138,8 +480,8 @@ Run all of these before declaring a change correct:
   entries (small scales cut by the scale cuts, which notebooks and other
   masks do use) or in a branch the frozen point never reaches (table edges,
   large photo-z shifts, out-of-grid fallbacks). Compare the full unmasked
-  data vector against the reference build (or the `COSMO2D_NOT_USE_SIMD`
-  fallback) at several parameter points. Bitwise equality is the default
+  data vector against an external reference build at several parameter
+  points. Bitwise equality is the default
   expectation when the operation order is unchanged: it is free and it
   catches a single misplaced rounding. Where an optimization cannot be
   bitwise (a vector libm replacement, reordered sums), say so in a comment
@@ -153,7 +495,7 @@ Run all of these before declaring a change correct:
   - default: strict IEEE-754 (`-fno-fast-math -frounding-math
     -ftrapping-math -fsignaling-nans`) with LTO + unrolling. This is the
     bit-reproducibility reference.
-  - Aggressive mode is retired (owner decision, 2026-10-03). Makefiles
+  - Aggressive mode is retired. Makefiles
     reject `COSMOLIKE_AGGRESSIVE_MODE`: the fast-math build produced incorrect
     covariance inverses even with OpenBLAS at one thread. Do not reintroduce
     it or enable `-ffast-math`, `-Ofast`, `-funsafe-math-optimizations`,
@@ -203,8 +545,9 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
   vectorized. SIMDe intrinsics do compile to vector instructions (verify
   by disassembly; the `u_KS` S/Q sums, now in `future_port_unfinished/`:
   `v4d` mul then add). SIMDe and scalar
-  agree to ~1e-12, not bitwise; `COSMO2D_NOT_USE_SIMD` selects the
-  scalar path.
+  may agree to ~1e-12 rather than bitwise when operation order changes.
+  Keep the scalar comparison in the external test harness. Native fused
+  operations that preserve order should still be checked bitwise.
 - Mind IPC interpretation: this workload is memory-bound (~1.1 IPC, ~25% LLC
   miss rate is normal). Low IPC is not by itself a problem to "fix".
 - Landmarks (June 2026 snapshot; re-measure, don't trust): full benchmark
@@ -215,22 +558,29 @@ threads, NLA 3x2pt, 2026-09-29): roman_real cosmolike 150 ms/step
 ## Which model reviews and writes documentation
 
 Documentation passes and reviews go to **Fable 5** (model id
-`claude-fable-5`), never Fable 5.1 - Vivian (2026-09-29): "I am
-comfortable with Fable 5 - not 5.1". The Agent tool's generic `fable`
-setting does not pin the version: use the `fable5` agent type
+`claude-fable-5`), not Fable 5.1. The Agent tool's generic `fable` setting
+does not pin the version: use the `fable5` agent type
 (`.claude/agents/fable5.md`, frontmatter `model: claude-fable-5`) for
 every Fable task.
 
 ## Clean & Human-Readable Code Style Guide
 
-(Vivian, 2026-09-29: "you wrote the code to be fast - you got that - but
-at the same time you wrote a code in a way only another AI understand -
-student is not AI".)
+**Ticket completion gate.** After the
+implementation and tests for each major ticket, make a separate didactic
+red-eye review pass before starting the next major ticket. A ticket is a
+substantial component, such as the Gaussian covariance foundation; it is
+not every helper function or intermediate edit. Read the complete changed
+component as an advanced undergraduate physics student: verify that the
+physics, units, array roles, numerical steps, threading and vectorization
+can be followed without unstated specialist knowledge. Fix unclear prose
+and dense code, and rerun relevant checks if the review changes behavior.
+Record the review and any remaining limitations with the ticket's results.
 
 ### Mission
 You MUST prioritize human scannability, structural clarity, and
 junior-developer (i.e., student) readability over compact or clever code
-syntax.
+syntax. Optimized code must remain understandable to a physics student;
+runtime performance does not replace clear explanations.
 
 ### Non-Negotiable Formatting Boundaries
 1. **Vertical Breathing Room:** Always separate logical blocks, variable
@@ -238,6 +588,15 @@ syntax.
    lines.
 2. **Visual Banners:** Use distinct, short uppercase comment banners to
    section out complex algorithms (e.g., `// --- 1. CONFIGURATION ---`).
+   A banner is a navigation label, not an explanation. Before a substantial
+   sequence, follow it with a short paragraph connecting the physical
+   purpose to the calculation: define the quantities, explain why these
+   inputs or terms belong together, and state the result this stage supplies
+   to the next one. For SIMD, distinguish physical indices from vector lanes
+   and explain which quantities interact within one lane. Keep the detailed
+   per-call comments too. During didactic review, read each stage introduction
+   without its code: it must explain the reasoning, not repeat the heading
+   or list operations such as "pack, multiply, store."
 3. **Assignment Alignment:** Where clear and practical, vertically align
    consecutive `=` assignment operators to keep variable declarations
    neat and organized.
@@ -250,19 +609,24 @@ syntax.
    statements or ternary operators into individual, well-named temporary
    variables or multi-line structures.
    For cache reuse/reallocation, follow cosmo2D.c: put the cache-change
-   conditions directly in the `if`, one logical group per line. Do not
-   introduce a single-use `rebuild` flag for that condition.
+   conditions directly in the `if`, one comparison or predicate per line.
+   This also applies to assignments combining `&&` or `||`, not only guards.
+   Use line breaks rather than unnecessary single-use boolean variables.
+   Do not introduce a single-use `rebuild` flag for that condition.
 5. **Guided Context:** Add bite-sized, purposeful inline comments before
    mathematical equations or data-transformation loops explaining *why*
    the code is performing that action, not just *what* it is doing.
+6. **80-Character Lines:** Keep C code and comments within 80 columns.
+   Wrap function arguments, comparisons, and intrinsic calls at natural
+   boundaries. Check line lengths during the ticket's didactic review.
 
-Also (same review): variable names say the physics (`n_gal`, `b_gal`,
+Variable names say the physics (`n_gal`, `b_gal`,
 not `ng`, `bg`, `tq`, `occ`); logs are `ln<quantity>` (`lnk`, `lnx`,
 `ln1c` — a bare `l` prefix like `l1c` or `lc` is banned); one statement
 per line. Speed is never the excuse: names, blank lines and comments
 cost nothing at run time.
 
-### Visual Code Geography (Vivian, 2026-09-29, second guide)
+### Visual Code Geography
 
 - **Section banners.** Major logical sections are wrapped in distinct
   banners:
@@ -278,20 +642,62 @@ cost nothing at run time.
   functions or mathematical definitions; 1 blank line inside a function
   between phases (pre-computation vs the integration loop).
 
-### SIMD code a student can read (Vivian, 2026-09-29)
+### SIMD code a student can read
 
-On a nested call like `nfw_um4(simde_mm256_loadu_pd(conc_gal + q),
-simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)), ...)`: "very
-hard to understand - put comments right in front of lines that use
-simde and split the calls in multiple lines so a student can
-understand". So, in every SIMD block:
-- one intrinsic per statement, each result in a named const v4d with a
-  physics name (vconc_gal, vkrs_gal = k r_s,g, ...) and a short comment
-  naming the scalar quantity held by the four lanes;
-- before the block, the scalar line it mirrors;
-- one plain sentence the first time an intrinsic kind appears (load,
-  mul, add, horizontal sum) - never a SIMD tutorial.
-Naming temporaries never changes the operation graph: bitwise safe.
+Split nested expressions such as
+`nfw_um4(simde_mm256_loadu_pd(conc_gal + q),
+simde_mm256_mul_pd(vk, simde_mm256_loadu_pd(r_sg + q)), ...)` into named
+steps. Explain **every SIMDe call** immediately before it, including
+repetitions of a previously explained intrinsic.
+SIMD means applying the same operation to several numbers at once; each
+number occupies a vector position called a lane. Do not assume a physics
+student already knows these terms or the intrinsic naming conventions.
+
+- Immediately above each substantial SIMD block, show the analogous scalar
+  calculation as a short commented C example using the surrounding array
+  names. Explain why that calculation gives the physical quantity, then map
+  its indices to lanes: adjacent nodes, different bins, or independent sums.
+  Keep the scalar example in comments, not a production fallback. Use `fma`
+  for fused steps, and state when a summary describes the mathematics rather
+  than the exact reduction order. The example complements the per-call
+  explanations below; it does not replace them.
+- Put one intrinsic per statement, with named intermediate results.
+  Immediately before **each call**, explain its inputs, operation and
+  result in terms of those physical quantities. A glossary elsewhere,
+  or one explanation for the entire loop, does not satisfy this rule.
+- Explain broadcasts, loads, arithmetic and stores individually. For
+  `set_pd(high, low)`, explicitly give lane order; for `loadu/storeu`,
+  give the array indices and explain that no vector-aligned address is
+  required. A store still requires enough valid array elements.
+- For fused calls, give the exact scalar expression, including the sign
+  of `fmsub` or `fnmadd`, and explain the fused rounding convention.
+  For reductions, say which entries are added and in what order.
+- Explain the two-at-a-time loop bounds, scalar remainder, or repeated
+  final lane. Identify where a duplicate result is discarded.
+- Use blank lines between loading, physical arithmetic, accumulation
+  and output. Within a long block, separate each conceptual step with a
+  short explanatory comment and whitespace. Apply this also to scalar
+  setup: allocation, boundaries, normalization, quadrature and storage
+  are separate steps, not one dense paragraph of code.
+- Immediately above every substantial loop, give an overview of its
+  purpose, what one iteration represents, which inputs it reads, and
+  what it computes or stores. For OpenMP put the overview before the
+  pragma. Explain nested loops at their own level too. When SIMD is used,
+  the overview must say what each lane represents, what work happens
+  together, and whether the lanes are eventually added or remain separate.
+  Detailed comments inside a loop do not replace this overview.
+- An overview must **explain the reasoning**, not merely narrate operations
+  such as "advance a sample, append a trapezoid, save the result." Define
+  the physical quantities and explain why this traversal, weighting or
+  approximation computes the desired quantity. For example, explain that
+  the lensing integrals count galaxies behind a foreground distance, and
+  that a trapezoid integrates a straight-line approximation between two
+  sampled endpoint values. State what the SIMD lanes mean in that reasoning.
+  A list of variable names and programming verbs is not a substitute.
+
+Preserve the original operation graph and test numerical equivalence
+when exposing nested calls as named steps. Do not combine operations or
+change a fused call into separately rounded multiplication and addition.
 
 ### Equation-to-Code Blueprinting
 
@@ -384,8 +790,9 @@ for (int l=lmin; l<Ntable.LMAX; l++) {
   document the role index and use named local pointers inside the loop.
   Keep arrays with different shapes separate; do not add an allocator
   abstraction merely to combine them.
-- Every SIMD/fast-path block is wrapped in a preprocessor guard with the slow
-  reference path in the `#else`/guarded branch.
+- Compile production SIMDe paths unconditionally, including in debug
+  builds. Keep scalar comparison implementations in external tests; do not
+  reintroduce production SIMD opt-out macros.
 - Fortran (custom CAMB): all modifications fenced with `!VM BEGINS` /
   `!VM ENDS` so they survive upstream rebases.
 - Function naming for the established decompositions: `<name>_work` for
@@ -494,6 +901,7 @@ Rules:
   integral quadratured on the sigma2 ln M nodes reads sigma2 exactly).
 - Code duplication across consumers is acceptable when it buys speed.
 - Gauss-Legendre sizes: always a size GSL has precomputed (tabulated).
+  The minimum accepted size is 64, even if a 32-node check seems adequate.
   The hdi ladders use 64, 96, 128, 256, 512, 1024, written inline at
   each site, e.g. redshift_spline.c:
   `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.
@@ -543,14 +951,12 @@ integral family:
   > 1; all three together 0.09 / 0.13 for ~0.1 s - most of the whole
   code's 0.2 budget for nothing. Re-open only if a profile shows the
   halo builds hot again (then with coarse-exact + spline upsample, not
-  plain linear reads). Vivian (2026-09-29): the acceptance rule is the
-  BUDGET - "all we need is the sum of all errors in the code to be at
-  <~ 0.2 in chi2" - so 128 nodes (2.1e-8) is not even close to
-  mattering; no purist margins while the builds cost MCMC time. Her
-  floor: never below 64 nodes ("the lowest I go is 64"). Her comment
-  rule: source comments never quote a knob's current value (the code
-  and this file carry the numbers; comments carry the physics and the
-  algorithm).
+  plain linear reads). Acceptance depends on the total numerical error
+  budget, |delta chi2| < 0.2 across the code. The 128-node result (2.1e-8)
+  is far below that threshold; additional numerical precision must be
+  justified against its MCMC runtime cost. Keep at least 64 nodes.
+  Source comments explain the physics and algorithm rather than quoting
+  a knob's current value; the code and this reference hold the settings.
   P(k)-level convergence is slow at HIGH k only (the NFW ringing is
   sampled in ln M; worst over k up to 330 h/Mpc: I02 1e-4 / 8e-4 at
   512 / 256 nodes, and at 256 nodes `p_gg` moves by up to 2.4e-3), but
@@ -625,13 +1031,11 @@ Trapezoid rules, uniform in a log variable:
 
 ### Accuracy tests must see the small scales (masks hide them)
 
-Vivian (2026-09-29): "HoD is important on small scales - if your test
-is being done on a conservative masking that masks small scales - you
-will improperly conclude that you can lower accuracy settings more
-than you really should." Worse than hiding them: the data vector is
-evaluated MASKED - the model is not even computed at cut points
-(delta = 0 there exactly) - so a test under a production mask is
-structurally blind to them.
+HOD effects are important on small scales. Tests using conservative
+scale cuts can miss numerical errors there and incorrectly support
+lower accuracy settings. The data vector is evaluated with the mask:
+the model is not computed at cut points, so delta is exactly zero there.
+A production-mask test alone cannot assess accuracy on those scales.
 
 Protocol for any halo/HOD/small-scale knob:
 1. Evaluate the model with no cuts: a scratch dataset with ones.mask
@@ -781,14 +1185,14 @@ independent Python (numpy/mpmath) reference:
 `*_nointerp` functions with real C callers (table fills, other
 integrands) stay until deep unrolling folds them into their owner.
 
-## When the maintainer's intent is unclear
+## When a request is unclear
 
-If a request from the maintainer (Vivian) is ambiguous, or a first
-reading keeps getting corrected, do not act on a guess and do not ask
-her to re-explain first. Launch a subagent with `model: "fable"`: give
-it her words verbatim, the relevant code paths and the current reading,
-and ask what she wants, what she does not want, and the concrete next
-action. Act on that interpretation and state it to her in one line.
+If a request is ambiguous, or its interpretation repeatedly needs
+correction, do not act on a guess. Before asking for another explanation,
+launch a subagent with `model: "fable"`, supplying the request verbatim,
+the relevant code paths and the current interpretation. Ask it to identify
+the intended scope, exclusions and concrete next action. Act on that
+interpretation and state it to the requester in one line.
 Clear requests need no consult.
 
 ## Patch review checklist
@@ -800,7 +1204,8 @@ Reject or push back unless all of these hold (details in
       full unmasked data vector bitwise equal to the reference build, or
       within a stated tolerance where the change documents why it cannot
       be bitwise; determinism sweep clean across thread counts.
-- [ ] Builds and runs clean in all three modes; DEBUG sanitizers quiet.
+- [ ] Builds and runs clean in both supported modes (strict and DEBUG);
+      DEBUG sanitizers quiet. Aggressive mode remains retired.
 - [ ] New hot loops inside `collapse(2)` regions use local `restrict` pointers.
 - [ ] No flat `memset`/`memcpy` over padded multi-dim allocations; uses
       `zero*d`.
@@ -810,7 +1215,8 @@ Reject or push back unless all of these hold (details in
       previously-shipped race — see pitfalls).
 - [ ] FFTW plans created once, cached, and creation is serialized; sizes
       passed through `next_fft_size`.
-- [ ] Preprocessor fallback guard exists and the fallback still works.
+- [ ] Production SIMDe remains unconditional; any scalar comparison stays
+      in external tests, without restoring a retired fallback switch.
 - [ ] Comments explain why, not what.
 - [ ] PR cites `perf stat -r 3` numbers (mean ± stddev), never single-eval
       timings; claims of "no perf change" are backed by counters, not vibes.

@@ -35,7 +35,7 @@
 // the grouping are given there): 4 spectra and 4 theta bins per pass over
 // l. The product keeps the order of the reference loop, (Pl*filter)*Cl,
 // and every (nz, i) keeps its own sum, so the results are bitwise those
-// of the reference (COSMO2D_NOT_USE_SIMD). Pl*filter is formed once per
+// of the scalar reference. Pl*filter is formed once per
 // theta bin of the group instead of once per (nz, i).
 //
 // Thread safety: call outside parallel regions.
@@ -61,26 +61,6 @@ static void legendre_sums_filtered(
     double* w_vec
   )
 {
-#ifdef COSMO2D_NOT_USE_SIMD
-  #pragma omp parallel for collapse(2) schedule(static)
-  for (int nz=0; nz<NSIZE; nz++) {
-    for (int i=0; i<ntheta; i++) {
-      // Local restrict pointers: without these, GCC cannot prove the
-      // Pl, filter and Cl rows don't alias (pointer-to-pointer
-      // indirection inside a collapse(2) OpenMP region) and gives up
-      // on the SIMD reduction below
-      const double* restrict c0 = Cl[nz];
-      const double* restrict cf = filter;
-      const double* restrict g0 = Pl[i];
-      double sum = 0.0;
-      #pragma omp simd reduction(+:sum)
-      for (int l=lmin; l<lmax; l++) {
-        sum += g0[l] * cf[l] * c0[l];
-      }
-      w_vec[nz*ntheta + i] = sum;
-    }
-  }
-#else
   // nz and i are the first spectrum and the first theta bin of the group,
   // which covers spectra nz .. nz+3 and theta bins i .. i+3
   #pragma omp parallel for collapse(2) schedule(static)
@@ -158,7 +138,6 @@ static void legendre_sums_filtered(
       }
     }
   }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -231,12 +210,8 @@ static struct { double**** tab; double lim[6]; int nlnk; int nell; }
 static struct { double*** tab; double lim[6]; int nlnk; int nell; }
     dCks_ = {0};
 
-// Under COSMO2D_NOT_USE_SIMD (the DEBUG build) basics.h does not include
-// the SIMDe headers, so the type below does not exist there; it is used
-// only inside the SIMD branches.
-#ifndef COSMO2D_NOT_USE_SIMD
+// basics.h supplies SIMDe in both optimized and debug builds.
 typedef simde__m256d v4d; // 4 doubles, AVX2-width (as in cosmo2D.c)
-#endif
 
 // ---------------------------------------------------------------------------
 // Blend two k-rows of a cached (ln k, ln l) table at one fixed weight.
@@ -282,13 +257,6 @@ static void limber_krow_blend(
     const int nell                // row length
   )
 {
-#ifdef COSMO2D_NOT_USE_SIMD
-  for (int q = 0; q < ntab; q++) {
-    for (int i = 0; i < nell; i++) {
-      out[q][i] = row0[q][i] + t*(row1[q][i] - row0[q][i]);
-    }
-  }
-#else
   const v4d vt = simde_mm256_set1_pd(t); // the weight in all 4 lanes
   for (int q = 0; q < ntab; q++) {
     const double* restrict a = row0[q];
@@ -306,7 +274,6 @@ static void limber_krow_blend(
       o[i] = a[i] + t*(b[i] - a[i]);
     }
   }
-#endif
 }
 
 // ---------------------------------------------------------------------------

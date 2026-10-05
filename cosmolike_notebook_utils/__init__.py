@@ -16,7 +16,7 @@ Design rule for this package: it never imports a project's compiled
 interface (cosmolike_<project>_interface). Each project compiles its
 own interface module, so a function that needs cosmolike receives the
 notebook's interface-bound callable as an argument instead (the `dv`
-and `ddv` parameters of the Fisher helpers). Three groups:
+and `ddv` parameters of the Fisher helpers). Shared groups:
 
   camb_cosmology     get_camb_cosmology: one CAMB run packaged into
                      the tuple set_cosmology consumes, on the nested
@@ -34,6 +34,11 @@ and `ddv` parameters of the Fisher helpers). Three groups:
                      injected data-vector function, Fisher-matrix
                      assembly, figures of merit, and Fisher contour
                      plots via getdist.
+
+  covariance         component preparation, Gaussian blocks, dense-linear
+                     lookup tables and covariance eigenvalue diagnostics.
+  plot_covariances   correlation triangles, component maps/histograms,
+                     and angular standard deviations, from supplied arrays.
 
 The notebooks keep everything project-specific: fiducial parameter
 values, tomographic-bin layouts, the interface init sequence, and
