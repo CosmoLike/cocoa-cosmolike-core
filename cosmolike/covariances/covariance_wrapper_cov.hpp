@@ -17,7 +17,10 @@ pybind11::dict covariance_limber_spectra_cpp(
     const int nwindow,      // uniform-a lensing-efficiency samples
     const bool include_ia,  // include the signed NLA window
     const bool include_rsd, // include the lens redshift-distortion window
-    const bool linear      // select linear rather than nonlinear matter P
+    const bool linear,     // select linear rather than nonlinear matter P
+    const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
+    const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
+    const double nonlimber_chi_min // positive near distance in c/H0
   );
 
 arma::Mat<double> covariance_integration_rule_cpp(

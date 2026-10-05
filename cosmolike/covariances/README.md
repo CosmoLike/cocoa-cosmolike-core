@@ -67,6 +67,7 @@ Function comments explain equations, units and array contents.
 
 | Implementation and interface | Physical role |
 | --- | --- |
+| [nonlimber_cov.c](nonlimber_cov.c), [header](nonlimber_cov.h) | All-pairs separable-linear spectra and their matched Limber subtraction for Gaussian gg/gs corrections. |
 | [fftlog_cov.c](fftlog_cov.c), [header](fftlog_cov.h) | Reusable spherical-Bessel transforms for density and lensing radial functions. |
 | [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, and all lens/source Limber cross spectra. |
 | [gaussian_cov.c](gaussian_cov.c), [header](gaussian_cov.h) | Gaussian pairings, projection of their covariance, and analytic pair noise. |
@@ -153,6 +154,28 @@ for successive multipole blocks. FFTW plans are created serially; workers
 execute the same plan with separate buffers. This component supplies
 transforms, not a complete non-Limber survey covariance. Survey spectra
 and their accuracy settings require separate validation.
+
+### Non-Limber galaxy spectra: `nonlimber_cov.c`
+
+The Gaussian contractions can use non-Limber clustering and galaxy–shear
+spectra, including crossed pairs absent from the measured data vector.
+`covariance_spectra(..., nonlimber_lmax=300, include_rsd=False)` requests
+this correction through the stated multipole; zero retains Limber.
+Both the production interface and the notebook wrapper call the same C
+calculation. Shear–shear spectra remain Limber.
+
+The calculation writes the linear density as $`D(a)\delta(k,1)`$. It
+projects this separable field exactly, then adds the nonlinear Limber
+spectrum minus the Limber projection of that **same** linear field.
+Consequently the exact term and subtraction share one growth convention,
+power-spectrum anchor and set of catalog windows. This is the hybrid
+prescription of [Fang et al.](https://arxiv.org/abs/1911.11947).
+
+Density, magnification and the signed linear-alignment source contribution
+are retained. This entry requires flat geometry, massless neutrinos and
+zero RSD. The log-distance resolution, near boundary and multipole cutoff
+need survey-specific refinement tests; the example cutoff above is not a
+convergence certificate. SSC and cNG retain their separate approximations.
 
 ### Radial windows: `spectra_cov.c`
 

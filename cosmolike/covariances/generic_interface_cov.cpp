@@ -21,19 +21,23 @@ void bind_covariance(py::module_& module)
           const int nwindow,
           const bool include_ia,
           const bool include_rsd,
-          const bool linear) {
+          const bool linear,
+          const int nonlimber_lmax,
+          const int nonlimber_nchi,
+          const double nonlimber_chi_min) {
         const arma::Col<double> ell_input =
             notebook_input_cov<arma::Col<double>>(ell, 1);
         const arma::Col<double> a_edges_input =
             notebook_input_cov<arma::Col<double>>(a_edges, 1);
         return covariance_limber_spectra_cpp(
             ell_input,
-            a_edges_input, nquad, nwindow, include_ia, include_rsd, linear);
+            a_edges_input, nquad, nwindow, include_ia, include_rsd, linear,
+            nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min);
       },
-      R"doc(Build all lens/source Limber spectra on common radial nodes.
+      R"doc(Build all lens/source spectra, optionally correcting Gaussian gg/gs.
 
 Arguments:
-    ell: float64 1D multipoles >= 1. Small ell are still Limber here.
+    ell: float64 1D multipoles >= 1; integer below a non-Limber cutoff.
     a_edges: float64 increasing panel edges inside (0,1). Include the
         full source/lens support and the foreground to a close to 1.
     nquad: nodes per panel from 64,96,128,256,512,1024.
@@ -41,6 +45,12 @@ Arguments:
     include_ia: include NLA in the source windows; TATT is unsupported.
     include_rsd: use the same lens RSD window in every spectrum.
     linear: use linear total-matter P instead of the current Pdelta mode.
+    nonlimber_lmax: 0 keeps Limber; >=2 corrects all gg/gs pairs through
+        that integer multipole. Shear-shear remains Limber.
+    nonlimber_nchi: 2^n+1 log-distance samples, default 4097.
+    nonlimber_chi_min: positive near distance in c/H0, default 1e-6.
+        The far edge is a_edges[0]. Refine support and resolution separately.
+        Non-Limber currently requires massless neutrinos and no RSD.
 
 Returns a dict of owned arrays:
     spectra [nell,nfield,nfield], dimensionless, core C_ell convention;
@@ -50,7 +60,10 @@ Returns a dict of owned arrays:
 Distances use c/H0 and windows its inverse. Spectra contain no noise,
 mask or pair exclusions. Bias is linear. The radial panels and node count
 belong to covariance and do not modify the data-vector accuracy settings.
-This computes spectra, not a full covariance or a non-Limber correction.
+The non-Limber correction adds exact separable linear minus its matched
+Limber approximation. Both use D(a)^2*P(k,1). Nonlinear residuals remain
+Limber. covariance_spectra is the preferred name; covariance_limber_spectra
+is retained for existing callers. This function does not compute SSC/cNG.
 )doc",
       py::arg("ell"),
       py::arg("a_edges"),
@@ -58,6 +71,10 @@ This computes spectra, not a full covariance or a non-Limber correction.
       py::arg("nwindow") = 4097,
       py::arg("include_ia") = true,
       py::arg("include_rsd") = true,
-      py::arg("linear") = false);
+      py::arg("linear") = false,
+      py::arg("nonlimber_lmax") = 0,
+      py::arg("nonlimber_nchi") = 4097,
+      py::arg("nonlimber_chi_min") = 1.e-6);
+  module.attr("covariance_spectra") = module.attr("covariance_limber_spectra");
 }
 }

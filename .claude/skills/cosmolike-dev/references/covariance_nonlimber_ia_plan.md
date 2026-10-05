@@ -25,6 +25,27 @@ a selected survey setting or a speed benchmark. Debug validation and
 survey integration remain pending. Didactic review checked scalar SIMD
 equivalents, buffer ownership, phase/padding explanation and 80 columns.
 
+### All-pairs gg/gs component
+
+`nonlimber_cov.c` projects density, magnification and signed NLA with a
+common z=0 power anchor and the supplied growth table. Its matched Limber
+subtraction uses exactly D(a)^2 P(k,1). The notebook and direct production
+`covariance_spectra` entries add this correction to all galaxy-containing
+pairs through an explicit cutoff. Shear-shear stays Limber. RSD and
+massive-neutrino requests are rejected. No SSC/cNG function was changed.
+
+Nine optimized LSST component tests pass, including the existing radial
+spectrum tests. A two-lens/two-source survey with nonzero signed
+magnification and NLA agrees with direct spherical-Bessel quadrature at
+ell 2/8/30 to 1.2e-6/9.5e-7/3.0e-6 in variance-normalized spectrum units.
+The independent k sum was refined from 2049 to 4097 samples. Doubling the
+FFT radial grid 4097 -> 8193 changes spectra by 1.7e-7. Both backends and
+one/eight threads agree bitwise; sampled hybrid matrices are positive
+definite and ell=300 corrections are below 1% of variance normalization.
+These checks do not establish each project's cutoff or covariance/Fisher
+accuracy. Full forecast wiring, Gaussian TATT/B modes, project settings,
+all-project regressions and sanitizer checks remain pending.
+
 ## Verified starting point
 
 | Layer | Available behavior | Missing behavior |

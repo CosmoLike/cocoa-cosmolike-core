@@ -76,12 +76,13 @@ cosmology caches just to imitate the data-vector lifetime. Shared core
 readers can still have caches and require serial initialization before
 parallel reads. Explain this distinction in `cosmolike/README.md`.
 The non-Limber and NLA follow-up is detailed in
-`references/covariance_nonlimber_ia_plan.md`. It is planning only:
-implementation is deferred until requested. The data-vector non-Limber
-path and low-level covariance NLA windows already exist, but the full
-forecast uses Limber and zero IA. Do not describe either follow-up as
-complete or switch defaults without its independent checks. Non-Limber
-Gaussian spectra do not remove the separate SSC/cNG approximations.
+`references/covariance_nonlimber_ia_plan.md`. Gaussian gg/gs non-Limber
+and NLA/TATT work is authorized in small tested commits. Covariance-owned
+FFTLog and all-pairs gg/gs components are now available; survey wiring and
+Gaussian TATT remain in progress. SSC/cNG changes are excluded from this
+implementation block. Never describe Gaussian non-Limber or IA support as
+a corresponding extension of SSC/cNG. Keep stopped overnight validation
+stopped. Do not enable survey defaults before their independent checks.
 Study the actual `cosmo2D.c`, `cosmo3D.c`, and `halo.c` implementations;
 some older study and pattern descriptions predate their current behavior.
 Carry over serial FFTW planning/reuse, precomputed node tables, direct grid
@@ -279,8 +280,11 @@ that the complete scaling problem is solved.
 `EXAMPLE_EVALUATE_COVARIANCE.yaml` and a thin Python runner. Use Cobaya's
 `yaml_load_file` and `Parameterization`, keeping familiar `theory`, `params`,
 `sampler: evaluate` and `output` blocks. Evaluate one explicit cosmology;
-never silently sample priors. `covariance` contains measurement, thread and
+never silently sample priors. `covariance` contains measurement and
 accuracy controls, inheriting the project's usable `default.yaml` baseline.
+CLI OpenMP threads come only from `OMP_NUM_THREADS` in the environment.
+Do not add a YAML thread key, a `--threads` override or a hard-coded team
+size. Save the resolved environment value with the execution metadata.
 Shared reading and assembly belong in `cosmolike_notebook_utils`; runners
 select the optimized production interface, not notebook wrappers. Document
 HPC usage independently of Jupyter. Explain Armadillo through the Python

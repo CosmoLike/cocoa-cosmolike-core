@@ -28,6 +28,16 @@ struct radial_cov* radial_inputs_cov(
     const int include_ia    // 0 ignores IA; 1 includes the core NLA amplitude
   );
 
+// Internal non-Limber sampling, after radial_inputs_cov validates the
+// cosmology and catalog setup. Same windows; uniform ln(chi), no weights.
+struct radial_cov* radial_logchi_cov(
+    const double amin,      // scale factor at the far radial boundary
+    const double chi_min,   // near distance in c/H0, positive
+    const int nchi,         // logarithmic grid samples
+    const int nwindow,      // cumulative efficiency samples
+    const int include_ia    // include signed NLA
+  );
+
 void free_radial_cov(struct radial_cov* radial); // release this snapshot
 
 // Read independent wavenumber rows at one scale factor. Inputs and outputs
@@ -52,7 +62,7 @@ void limber_spectra_cov(
     const struct radial_cov* radial, // immutable snapshot
     const int nell,                 // number of supplied ell nodes
     const double* ell,              // finite multipoles >= 1
-    const int linear,               // 0 = Pdelta, 1 = linear total matter
+    const int linear,               // 0=Pdelta, 1=p_lin(k,a), 2=D(a)^2 p_lin(k,1)
     const int include_rsd,          // same lens RSD field for every pair
     double* const* spectra          // output [nfield*(nfield+1)/2][nell]
   );

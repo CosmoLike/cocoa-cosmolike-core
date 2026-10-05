@@ -6,7 +6,9 @@
 #include <pybind11/numpy.h>
 #include "production_interface_cov.hpp"
 #include "spectra_cov.h"
+#include "nonlimber_cov.h"
 #include "cosmolike/IA.h"
+#include "cosmolike/basics.h"
 #include "cosmolike/structs.h"
 
 namespace py = pybind11;
@@ -33,7 +35,10 @@ static py::dict covariance_limber_spectra(
     const int nwindow,      // uniform-a lensing-efficiency samples
     const bool include_ia,  // include the signed NLA window
     const bool include_rsd, // include the lens redshift-distortion window
-    const bool linear      // select linear rather than nonlinear matter P
+    const bool linear,     // select linear rather than nonlinear matter P
+    const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
+    const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
+    const double nonlimber_chi_min // positive near distance in c/H0
   )
 {
   if (ell.ndim() != 1
@@ -88,6 +93,32 @@ static py::dict covariance_limber_spectra(
         "nquad must be a tabulated rule: 64,96,128,256,512,1024");
   }
 
+  if (nonlimber_lmax < 0
+      || nonlimber_lmax == 1
+      || nonlimber_nchi < 65
+      || ((nonlimber_nchi-1) & (nonlimber_nchi-2)) != 0
+      || !std::isfinite(nonlimber_chi_min)
+      || nonlimber_chi_min <= 0.0) {
+    throw std::invalid_argument(
+        "non-Limber requires lmax=0 or >=2, nchi=2^n+1 >=65, chi_min>0");
+  }
+  if (nonlimber_lmax > 0) {
+    if (include_rsd
+        || cosmology.Omega_nu != 0.0) {
+      throw std::invalid_argument(
+          "non-Limber covariance currently requires no RSD and mnu=0");
+    }
+    for (int index=0; index<ell.size(); index++) {
+      const double value = ell.data()[index];
+      if (value <= nonlimber_lmax
+          && value >= 2.0
+          && value != std::floor(value)) {
+        throw std::invalid_argument(
+            "non-Limber correction requires integer ell below its cutoff");
+      }
+    }
+  }
+
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
 
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
@@ -114,6 +145,12 @@ static py::dict covariance_limber_spectra(
 
   limber_spectra_cov(radial.get(), nell, ell.data(), linear, include_rsd,
                      rows.data());
+
+  if (nonlimber_lmax > 0) {
+    apply_nonlimber_cov(radial.get(), a_edges.data()[0], nwindow, include_ia,
+        nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
+        nell, ell.data(), rows.data());
+  }
 
   // --- 3. EXPAND THE FIELD-PAIR TRIANGLE FOR PYTHON ---
 
@@ -170,10 +207,10 @@ void bind_covariance_production(py::module_& parent)
   bind_production_matrices_cov(module);
 
   module.def("covariance_limber_spectra", &covariance_limber_spectra,
-      R"doc(Build all lens/source Limber spectra on common radial nodes.
+      R"doc(Build all lens/source spectra, optionally correcting Gaussian gg/gs.
 
 Arguments:
-    ell: float64 1D multipoles >= 1. Small ell are still Limber here.
+    ell: float64 1D multipoles >= 1; integer below a non-Limber cutoff.
     a_edges: float64 increasing panel edges inside (0,1). Include the
         full source/lens support and the foreground to a close to 1.
     nquad: nodes per panel from 64,96,128,256,512,1024.
@@ -181,6 +218,12 @@ Arguments:
     include_ia: include NLA in the source windows; TATT is unsupported.
     include_rsd: use the same lens RSD window in every spectrum.
     linear: use linear total-matter P instead of the current Pdelta mode.
+    nonlimber_lmax: 0 keeps Limber; >=2 corrects all gg/gs pairs through
+        that integer multipole. Shear-shear remains Limber.
+    nonlimber_nchi: 2^n+1 log-distance samples, default 4097.
+    nonlimber_chi_min: positive near distance in c/H0, default 1e-6.
+        The far edge is a_edges[0]. Refine support and resolution separately.
+        Non-Limber currently requires massless neutrinos and no RSD.
 
 Returns a dict of owned arrays:
     spectra [nell,nfield,nfield], dimensionless, core C_ell convention;
@@ -190,7 +233,10 @@ Returns a dict of owned arrays:
 Distances use c/H0 and windows its inverse. Spectra contain no noise,
 mask or pair exclusions. Bias is linear. The radial panels and node count
 belong to covariance and do not modify the data-vector accuracy settings.
-This computes spectra, not a full covariance or a non-Limber correction.
+The non-Limber correction adds exact separable linear minus its matched
+Limber approximation. Both use D(a)^2*P(k,1). Nonlinear residuals remain
+Limber. covariance_spectra is the preferred name; covariance_limber_spectra
+is retained for existing callers. This function does not compute SSC/cNG.
 )doc",
       py::arg("ell").noconvert(),
       py::arg("a_edges").noconvert(),
@@ -198,6 +244,10 @@ This computes spectra, not a full covariance or a non-Limber correction.
       py::arg("nwindow") = 4097,
       py::arg("include_ia") = true,
       py::arg("include_rsd") = true,
-      py::arg("linear") = false);
+      py::arg("linear") = false,
+      py::arg("nonlimber_lmax") = 0,
+      py::arg("nonlimber_nchi") = 4097,
+      py::arg("nonlimber_chi_min") = 1.e-6);
+  module.attr("covariance_spectra") = module.attr("covariance_limber_spectra");
 }
 }

@@ -14,6 +14,7 @@
 #include "perturbation_cov.h"
 #include "ssc_cov.h"
 #include "spectra_cov.h"
+#include "nonlimber_cov.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/IA.h"
 #include "cosmolike/cosmo3D.h"
@@ -44,7 +45,10 @@ py::dict covariance_limber_spectra_cpp(
     const int nwindow,      // uniform-a lensing-efficiency samples
     const bool include_ia,  // include the signed NLA window
     const bool include_rsd, // include the lens redshift-distortion window
-    const bool linear      // select linear rather than nonlinear matter P
+    const bool linear,     // select linear rather than nonlinear matter P
+    const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
+    const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
+    const double nonlimber_chi_min // positive near distance in c/H0
   )
 {
   if (ell.n_elem < 1
@@ -97,6 +101,32 @@ py::dict covariance_limber_spectra_cpp(
         "nquad must be a tabulated rule: 64,96,128,256,512,1024");
   }
 
+  if (nonlimber_lmax < 0
+      || nonlimber_lmax == 1
+      || nonlimber_nchi < 65
+      || ((nonlimber_nchi-1) & (nonlimber_nchi-2)) != 0
+      || !std::isfinite(nonlimber_chi_min)
+      || nonlimber_chi_min <= 0.0) {
+    throw std::invalid_argument(
+        "non-Limber requires lmax=0 or >=2, nchi=2^n+1 >=65, chi_min>0");
+  }
+  if (nonlimber_lmax > 0) {
+    if (include_rsd
+        || cosmology.Omega_nu != 0.0) {
+      throw std::invalid_argument(
+          "non-Limber covariance currently requires no RSD and mnu=0");
+    }
+    for (int index=0; index<ell.n_elem; index++) {
+      const double value = ell(index);
+      if (value <= nonlimber_lmax
+          && value >= 2.0
+          && value != std::floor(value)) {
+        throw std::invalid_argument(
+            "non-Limber correction requires integer ell below its cutoff");
+      }
+    }
+  }
+
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
 
   const int nfield = redshift.clustering_nbin+redshift.shear_nbin;
@@ -120,6 +150,12 @@ py::dict covariance_limber_spectra_cpp(
 
   limber_spectra_cov(radial.get(), nell, ell.memptr(), linear, include_rsd,
                      triangular);
+
+  if (nonlimber_lmax > 0) {
+    apply_nonlimber_cov(radial.get(), a_edges(0), nwindow, include_ia,
+        nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
+        nell, ell.memptr(), triangular);
+  }
 
   // --- 3. EXPAND THE FIELD-PAIR TRIANGLE FOR PYTHON ---
 

@@ -225,6 +225,131 @@ static double** lensing_efficiency_cov(
 }
 
 
+// -----------------------------------------------------------------------
+// Populate density, lensing and signed NLA windows at supplied a samples.
+//
+// Both Gaussian quadrature and FFTLog need the same physical windows.
+// Their sample positions differ, but the efficiency interpolation and
+// catalog conventions must not differ. geometry[0] already holds a;
+// geometry[3] initially holds da weights (unused by the FFTLog consumer).
+// The helper converts those weights to dchi and fills the other rows.
+// -----------------------------------------------------------------------
+static void fill_radial_cov(
+    struct radial_cov* radial, // owner of geometry and window arrays
+    const double amin,         // far edge for cumulative efficiencies
+    const int nwindow,         // uniform-a efficiency samples
+    const int include_ia       // include the signed linear alignment field
+  )
+{
+  const int nfield = radial->nlens+radial->nsource;
+  // --- 2. INITIALIZE CORE READERS BEFORE PARALLEL SAMPLING ---
+
+  // Warm the core's geometry and each per-bin window before workers read
+  // them. This is setup work, so an explicit serial pass is preferable to
+  // locks around individual table reads in the integration loops.
+  const double a_first = radial->geometry[0][0];
+  const struct chis distance = chi_all(a_first);
+  const double hubble_first = hoverh0v2(a_first, distance.dchida);
+  const double growth_first = growfac(a_first);
+
+  // Visit each catalog once to trigger any lazy core table construction.
+  // This serial pass prepares density, bias and IA readers for the later
+  // parallel sampling; it does not compute the covariance windows yet.
+  for (int field=0; field<nfield; field++) {
+    if (field < radial->nlens) {
+      (void) W_gal(a_first, field, hubble_first);
+      (void) gb1(1.0/a_first-1.0, field);
+      (void) gbmag(0.0, field);
+    } else {
+      const int source = field-radial->nlens;
+      (void) W_source(a_first, source, hubble_first);
+      if (include_ia) {
+        (void) IA_A1_Z1(a_first, growth_first, source);
+      }
+    }
+  }
+
+  // --- 3. BUILD THE EFFICIENCY GRID AND COMMON INTEGRATION NODES ---
+
+  // Efficiency uses uniform a spacing for direct interpolation; radial
+  // integration uses Gaussian nodes on the caller's supplied panels.
+  double** efficiency = lensing_efficiency_cov(amin, nwindow,
+                                               radial->nlens, nfield);
+  const double inv_da = (nwindow-1)/(1.0-amin);
+
+  // --- 4. CONVERT THE MEASURE AND SAMPLE EACH FIELD WINDOW ---
+
+  // Projected correlations add contributions along the line of sight,
+  // weighted by how strongly each catalog responds at that distance.
+  // These windows include local galaxy density, lensing by foreground
+  // matter, and intrinsic alignment. They must refer to the same shells
+  // so their products later describe correlations of the same matter.
+  // Each worker fills all windows at one common sample. Convert its da
+  // weight with |dchi/da|: increasing a moves toward us, but the physical
+  // integration measure must remain a positive distance interval.
+  #pragma omp parallel for schedule(static)
+  for (int node=0; node<radial->nnode; node++) {
+    const double a = radial->geometry[0][node];
+    const double z = 1.0/a-1.0;
+    const struct chis distance = chi_all(a);
+    const double fk = f_K(distance.chi);
+
+    if (!(fk > 0.0)
+        || !(distance.dchida > 0.0)) {
+      log_fatal("radial_inputs_cov: nonpositive distance or measure at "
+                "a=%g; check the distance table and panel endpoints", a);
+      exit(1);
+    }
+
+    const double hubble = hoverh0v2(a, distance.dchida);
+    const double growth = growfac(a);
+
+    // chi_all returns the positive magnitude |dchi/da|. Thus multiplying
+    // the positive Gaussian da weight gives a positive dchi measure.
+    radial->geometry[1][node] = distance.chi;
+    radial->geometry[2][node] = fk;
+    radial->geometry[3][node] *= distance.dchida;
+
+    // Direct indexing on the uniform efficiency grid: the integer part
+    // selects a left endpoint, and the fraction blends the two values.
+    const double position = (a-amin)*inv_da;
+    const int left = (int) position;
+    const double fraction = position-left;
+    const double prefactor = 1.5*cosmology.Omega_m*fk/a;
+
+    // At this fixed distance, interpolate each catalog's efficiency and
+    // form its physical windows. Store contributions separately because
+    // their ell-dependent factors are supplied by limber_spectra_cov.
+    for (int field=0; field<nfield; field++) {
+      // Interpolate g between its two bracketing uniform-a samples.
+      const double g = (1.0-fraction)*efficiency[field][left]
+                       +fraction*efficiency[field][left+1];
+
+      if (field < radial->nlens) {
+        // Galaxy density and magnification have different ell factors;
+        // keep their radial windows separate until the spectrum stage.
+        radial->window[0][field][node] = gb1(z, field)
+                                       *W_gal(a, field, hubble);
+        radial->window[1][field][node] = gbmag(z, field)
+                                       *prefactor*g;
+      } else {
+        // Store the source density for audits, the lensing efficiency
+        // for shear, and the negative NLA term in its own window role.
+        const int source = field-radial->nlens;
+        radial->window[0][field][node] = W_source(a, source, hubble);
+        radial->window[1][field][node] = prefactor*g;
+        if (include_ia) {
+          radial->window[2][field][node] = -W_source(a, source, hubble)
+                                         *IA_A1_Z1(a, growth, source);
+        }
+      }
+    }
+  }
+
+  free(efficiency);
+}
+
+
 // ---------------------------------------------------------------------------
 // Sample the radial windows on a common, positive quadrature rule.
 //
@@ -342,41 +467,6 @@ struct radial_cov* radial_inputs_cov(
   radial->window = (double***) malloc3d(3, nfield, radial->nnode);
   zero3d(radial->window, 3, nfield, radial->nnode);
 
-  // --- 2. INITIALIZE CORE READERS BEFORE PARALLEL SAMPLING ---
-
-  // Warm the core's geometry and each per-bin window before workers read
-  // them. This is setup work, so an explicit serial pass is preferable to
-  // locks around individual table reads in the integration loops.
-  const double a_first = (a_edges[0] + a_edges[1])/2.0;
-  const struct chis distance = chi_all(a_first);
-  const double hubble_first = hoverh0v2(a_first, distance.dchida);
-  const double growth_first = growfac(a_first);
-
-  // Visit each catalog once to trigger any lazy core table construction.
-  // This serial pass prepares density, bias and IA readers for the later
-  // parallel sampling; it does not compute the covariance windows yet.
-  for (int field=0; field<nfield; field++) {
-    if (field < radial->nlens) {
-      (void) W_gal(a_first, field, hubble_first);
-      (void) gb1(1.0/a_first-1.0, field);
-      (void) gbmag(0.0, field);
-    } else {
-      const int source = field-radial->nlens;
-      (void) W_source(a_first, source, hubble_first);
-      if (include_ia) {
-        (void) IA_A1_Z1(a_first, growth_first, source);
-      }
-    }
-  }
-
-  // --- 3. BUILD THE EFFICIENCY GRID AND COMMON INTEGRATION NODES ---
-
-  // Efficiency uses uniform a spacing for direct interpolation; radial
-  // integration uses Gaussian nodes on the caller's supplied panels.
-  double** efficiency = lensing_efficiency_cov(a_edges[0], nwindow,
-                                               radial->nlens, nfield);
-  const double inv_da = (nwindow-1)/(1.0-a_edges[0]);
-
   gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);
 
   // Map the Gaussian rule onto each scale-factor panel, then concatenate
@@ -400,76 +490,59 @@ struct radial_cov* radial_inputs_cov(
 
   gsl_integration_glfixed_table_free(rule);
 
-  // --- 4. CONVERT THE MEASURE AND SAMPLE EACH FIELD WINDOW ---
+  fill_radial_cov(radial, a_edges[0], nwindow, include_ia);
+  return radial;
+}
 
-  // Projected correlations add contributions along the line of sight,
-  // weighted by how strongly each catalog responds at that distance.
-  // These windows include local galaxy density, lensing by foreground
-  // matter, and intrinsic alignment. They must refer to the same shells
-  // so their products later describe correlations of the same matter.
-  // Each worker fills all windows at one common sample. Convert its da
-  // weight with |dchi/da|: increasing a moves toward us, but the physical
-  // integration measure must remain a positive distance interval.
-  #pragma omp parallel for schedule(static)
-  for (int node=0; node<radial->nnode; node++) {
-    const double a = radial->geometry[0][node];
-    const double z = 1.0/a-1.0;
-    const struct chis distance = chi_all(a);
-    const double fk = f_K(distance.chi);
 
-    if (!(fk > 0.0)
-        || !(distance.dchida > 0.0)) {
-      log_fatal("radial_inputs_cov: nonpositive distance or measure at "
-                "a=%g; check the distance table and panel endpoints", a);
-      exit(1);
-    }
-
-    const double hubble = hoverh0v2(a, distance.dchida);
-    const double growth = growfac(a);
-
-    // chi_all returns the positive magnitude |dchi/da|. Thus multiplying
-    // the positive Gaussian da weight gives a positive dchi measure.
-    radial->geometry[1][node] = distance.chi;
-    radial->geometry[2][node] = fk;
-    radial->geometry[3][node] *= distance.dchida;
-
-    // Direct indexing on the uniform efficiency grid: the integer part
-    // selects a left endpoint, and the fraction blends the two values.
-    const double position = (a-a_edges[0])*inv_da;
-    const int left = (int) position;
-    const double fraction = position-left;
-    const double prefactor = 1.5*cosmology.Omega_m*fk/a;
-
-    // At this fixed distance, interpolate each catalog's efficiency and
-    // form its physical windows. Store contributions separately because
-    // their ell-dependent factors are supplied by limber_spectra_cov.
-    for (int field=0; field<nfield; field++) {
-      // Interpolate g between its two bracketing uniform-a samples.
-      const double g = (1.0-fraction)*efficiency[field][left]
-                       +fraction*efficiency[field][left+1];
-
-      if (field < radial->nlens) {
-        // Galaxy density and magnification have different ell factors;
-        // keep their radial windows separate until the spectrum stage.
-        radial->window[0][field][node] = gb1(z, field)
-                                       *W_gal(a, field, hubble);
-        radial->window[1][field][node] = gbmag(z, field)
-                                       *prefactor*g;
-      } else {
-        // Store the source density for audits, the lensing efficiency
-        // for shear, and the negative NLA term in its own window role.
-        const int source = field-radial->nlens;
-        radial->window[0][field][node] = W_source(a, source, hubble);
-        radial->window[1][field][node] = prefactor*g;
-        if (include_ia) {
-          radial->window[2][field][node] = -W_source(a, source, hubble)
-                                         *IA_A1_Z1(a, growth, source);
-        }
-      }
-    }
+// -----------------------------------------------------------------------
+// Sample the same field windows uniformly in ln(chi) for FFTLog.
+//
+// The lower distance is positive because ln(0) is undefined. Its omitted
+// foreground must be tested by lowering chi_min; it is not the zero guard
+// of the FFT. The far distance corresponds to amin, which must enclose
+// both catalogs. Increasing nchi by intervals preserves old grid nodes.
+// The shared fill keeps the Limber and non-Limber window models identical.
+// -----------------------------------------------------------------------
+struct radial_cov* radial_logchi_cov(
+    const double amin,      // far boundary in scale factor
+    const double chi_min,   // positive near distance, in c/H0
+    const int nchi,         // physical samples, including both endpoints
+    const int nwindow,      // uniform-a efficiency grid
+    const int include_ia    // signed NLA source contribution
+  )
+{
+  const double chi_max = chi(amin);
+  if (nchi < 3
+      || chi_min <= 0.0
+      || chi_min >= chi_max
+      || nwindow < 2) {
+    log_fatal("radial_logchi_cov: invalid distance or window grid");
+    exit(1);
   }
+  (void) a_chi(chi_min);
+  struct radial_cov* radial = malloc(sizeof(*radial));
+  if (radial == NULL) {
+    log_fatal("radial_logchi_cov: workspace allocation failed");
+    exit(1);
+  }
+  radial->nnode = nchi;
+  radial->nlens = redshift.clustering_nbin;
+  radial->nsource = redshift.shear_nbin;
+  const int nfield = radial->nlens+radial->nsource;
+  radial->geometry = (double**) malloc2d(4, nchi);
+  radial->window = (double***) malloc3d(3, nfield, nchi);
+  zero3d(radial->window, 3, nfield, nchi);
+  const double step = log(chi_max/chi_min)/(nchi-1);
 
-  free(efficiency);
+  // FFTLog integrates in log distance itself, so these samples carry no
+  // Gaussian da measure. Store zero in that unused row explicitly.
+  for (int node=0; node<nchi; node++) {
+    const double distance = chi_min*exp(node*step);
+    radial->geometry[0][node] = node == nchi-1 ? amin : a_chi(distance);
+    radial->geometry[3][node] = 0.0;
+  }
+  fill_radial_cov(radial, amin, nwindow, include_ia);
   return radial;
 }
 
@@ -530,10 +603,11 @@ void limber_spectra_cov(
 {
   if (nell < 1
       || (linear != 0
-          && linear != 1)
+          && linear != 1
+          && linear != 2)
       || (include_rsd != 0
           && include_rsd != 1)) {
-    log_fatal("limber_spectra_cov needs nell > 0 and binary switches");
+    log_fatal("limber_spectra_cov needs nell > 0, power mode 0..2 and RSD 0/1");
     exit(1);
   }
   for (int index=0; index<nell; index++) {
@@ -607,7 +681,16 @@ void limber_spectra_cov(
       k[index] = (ell[index]+0.5)/fk;
     }
 
-    if (linear) {
+    if (linear == 2) {
+      // Subtract precisely the separable field used by FFTLog: its
+      // anchor spectrum at a=1 times the same supplied growth squared.
+      // Using p_lin(k,a) instead would leave a scale-dependent residual.
+      p_lin_at_a(1.0, k, nell, pk);
+      const double growth = growfac(a);
+      for (int index=0; index<nell; index++) {
+        pk[index] *= growth*growth;
+      }
+    } else if (linear) {
       p_lin_at_a(a, k, nell, pk);
     } else {
       Pdelta_at_a(a, k, nell, pk);
