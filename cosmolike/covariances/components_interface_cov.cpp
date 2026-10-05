@@ -502,8 +502,12 @@ static cov_array covariance_power(
           && cosmology.lnP == nullptr)) {
     throw std::invalid_argument("initialize power tables and use a_min<=a<1");
   }
-  for (py::ssize_t index=0; index<k.size(); index++) {
-    if (k.data()[index] <= 0.0) {
+  // size() multiplies the array dimensions; do it once before the scan.
+  const py::ssize_t count = k.size(); // number of wavenumbers to check
+  const double* data = k.data(); // borrowed contiguous wavenumber storage
+
+  for (py::ssize_t index=0; index<count; index++) {
+    if (data[index] <= 0.0) {
       throw std::invalid_argument("power wavenumbers must be positive");
     }
   }
