@@ -179,6 +179,16 @@ from the repository; do not present a developer's external harness as a
 public test interface. State implemented capabilities and remaining limits
 without turning the README into a development log.
 
+Published covariance timings use the **production CLI** and each project's
+shipped evaluate YAML. Measure complete G + SSC + cNG construction, including
+first-use tables, on a quiet machine with sequential runs. Distinguish that
+interval from startup/CAMB and file writing. Label a joint cluster Limber
+example separately from galaxy/shear non-Limber examples. Notebook wrapper
+timings are a different baseline; quantify conversion overhead with matched
+inputs and identical output checks. Current seven-project measurements and
+the matched interface comparison are in
+`references/covariance_cli_timing.md`.
+
 Write skill instructions as impersonal project guidance for all
 contributors. State the requirement and its rationale directly, without
 personal names, quotations or conversational attributions. Retain

@@ -1,5 +1,8 @@
 # Full LSST Y1 and Roman real covariance measurements
 
+Historical Limber notebook baseline. For current production CLI timings
+with Gaussian non-Limber, see [the seven-project measurement](covariance_cli_timing.md).
+
 Measured 2026-10-03 on Apple M2 Pro, macOS 13.7.5, eight OpenMP workers.
 Both loaded OpenBLAS libraries were pinned to one thread, including the
 OpenMP-built library. The runtime inventory confirmed an eight-thread

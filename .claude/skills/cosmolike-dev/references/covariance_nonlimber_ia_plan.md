@@ -5,6 +5,10 @@ The active scope is non-Limber gg/gs and NLA/TATT in Gaussian covariance.
 SSC/cNG calculations are explicitly excluded. The stopped LSST integration
 validation stays stopped. Implement and commit in small tested blocks.
 
+Current full G + SSC + cNG runtime measurements, including these Gaussian
+extensions, are recorded in [the production CLI timing study](covariance_cli_timing.md).
+The study covers all seven projects and a matched notebook-interface check.
+
 ### Completed transform component
 
 `fftlog_cov.c/.h` owns shared FFTW plans and per-worker buffers. Forward
