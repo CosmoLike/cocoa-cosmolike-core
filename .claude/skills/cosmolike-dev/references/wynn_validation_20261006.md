@@ -1,4 +1,94 @@
-# Wynn validation checkpoint — 2026-10-06
+# Wynn validation — 2026-10-06
+
+## Final regression acceptance
+
+The final sequential `stability_rerun.sh` completed successfully. All
+571 project tests passed, with no failures, errors or skips. Every
+`test_*.py` module in both sectors of all seven projects has a passing
+XML result. This validates the regression sweep for implementation
+`d95867f`, including FFTLog bias 0.8 and the growing-correction Wynn guard.
+
+| Project | Data-vector tests | Covariance tests |
+| --- | ---: | ---: |
+| LSST Y1 | 57 | 124 |
+| Roman real | 104 | 1 |
+| Roman Fourier | 45 | 1 |
+| Roman KL | 49 | 1 |
+| DES Y3 | 63 | 1 |
+| DES x Planck | 45 | 1 |
+| DES cluster | 29 | 50 |
+| Total | 392 | 179 |
+
+Roman's independent variance check now passes its unchanged tolerance.
+Only its halo snapshots and associated manifest entries were regenerated,
+after the corrected probes differed from the old snapshots by at most
+6.80e-10. The original files were preserved before using the documented
+`--halo` generator; likelihood references and survey data were unchanged.
+
+The two changed-cosmology I11 checks have maximum fractional differences
+9.59198e-8 and 4.86316e-7 against the deep finite control, through z=39
+and k=300 h/Mpc. Both pass the existing 1e-5 criterion. The extracted C
+recurrence agrees with the three high-precision sequences within 3.40e-12.
+
+The isolated debug library passed 12 halo tests. The covariance-disabled
+library reproduced NLA and TATT data-vector chi-squared values exactly:
+0.023705928404497645 and 0.011953501626625753. Neither isolated build
+overwrote the installed production interface.
+
+### Full LSST matrix
+
+The final production interface generated all 1560 by 1560 entries of
+G, SSC, cNG and total. The comparisons retained every entry and verified
+finiteness, symmetry, component sums, matching inputs and Cholesky
+positivity. All three total matrices are positive definite without repair.
+
+The table gives the largest absolute generalized variance change for
+each component difference, using the positive **total reference** as the
+metric. These values are fractional, not percentages. Components are
+not inverted separately, and their maxima need not add to the total's.
+
+| Reference | G | SSC | cNG | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Previous production, 1e4 cutoff | 0 | 3.71889e-7 | 1.14586e-6 | 1.26732e-6 |
+| Initial Wynn, before stability fixes | 0 | 1.34337e-5 | 2.47536e-6 | 1.32221e-5 |
+
+G is bitwise identical in both comparisons. Relative to previous
+production, total variance ratios span 0.999999508356 to 1.000001267319:
+a maximum change of 1.27 parts per million (0.0001267%). The candidate's
+smallest eigenvalue after reference-diagonal normalization is 2.26985e-4.
+Against initial Wynn, the ratios span 0.999986777860 to 1.000012275071.
+
+The candidate uses core `a35dbc9` (a documentation descendant of
+`d95867f`) and LSST `601f9cf`. Rechecked SHA256 values are:
+
+- Interface: 22e2e3499ac4de7bdcd52eaee62fb148a30d3773d1c49e684d827e8943d079cc.
+- Covariance: 23135f138c14b3dd50abf3ac5ec30fce4e31f161359e189780bb037c961dbc78.
+- Power tables: 26ed1a29b47f82e2aa3de13de93e5ccd3bf88bc7ceb802125157ca12211fff70.
+
+Saved comparison records in OneCov-benchmark- are
+`results/wynn_stability_vs_production4_20261006.json` and
+`results/wynn_stability_vs_initial_20261006.json`, with matching four-panel
+figures. The source run is `work/cutoff_full_wynn_stability/`.
+Test XML, logs, snapshot backups and `final_verification.json` are in
+`test/wynn_validation/20261006/stability_rerun/`.
+
+### Scope and remaining work
+
+This closes the recorded Roman variance/reference and changed-cosmology
+I11 failures. It is regression validation, not a proof of interpolation,
+integration or Fisher convergence, nor a calibration of very small halo
+masses. The earlier intermittent supplied-covariance inversion issue is
+separate; one passing sweep does not establish its root cause or resolution.
+
+Concurrent comparison runs were authorized during the regression sweep.
+Their elapsed times, and the single full-matrix diagnostic duration, are
+not refreshed performance benchmarks. Quiet sequential timings remain
+pending. No numerical or compiler job remains from this validation runner.
+
+## Archived pre-fix checkpoint
+
+The remainder preserves the earlier failures and their diagnosis. Its
+pending statements describe that earlier checkpoint, not current status.
 
 The sequential background checks finished at approximately 18:36 UTC.
 This is a validation record of the uncommitted Wynn implementation on
@@ -148,11 +238,8 @@ documented generator. The prior snapshot and manifest are preserved in
 the external validation folder. No likelihood chi-squared reference or
 survey data needs regeneration for these fixes.
 
-The sequential `stability_rerun.sh` rechecks all seven project suites,
-the full LSST component matrices, debug and covariance-disabled builds.
-It uses fresh output paths under `stability_rerun/`; monitor its status
-before claiming final acceptance. The implementation and project updates
-are committed after the targeted checks at the explicit request to make
-incremental commits. The broader rerun continues unchanged; its results
-will be recorded in a follow-up commit. Committing is not a claim that
-the full validation sweep has finished.
+The sequential `stability_rerun.sh` subsequently rechecked all seven
+project suites, full LSST components and both isolated build modes. Its
+final passing results are recorded at the top of this reference. The
+implementation was committed after targeted tests; final acceptance
+followed the broader sweep, not merely the creation of that commit.

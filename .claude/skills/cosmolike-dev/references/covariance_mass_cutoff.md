@@ -19,9 +19,9 @@ Keep the epsilon stability guard: stop when increasing the extrapolation
 order makes its correction grow. Always taking the highest finite order
 failed at a changed cosmology and z=10, even with 512-node quadrature and
 a 60-digit recurrence. The guard retains the three original fiducial
-estimates and passes the new three-cosmology regression. Full reruns after
-this guard and the FFTLog weighting correction are still required; see
-`wynn_validation_20261006.md`.
+estimates and passes the new three-cosmology regression. The final rerun
+after this guard and the FFTLog correction passed all 571 project tests;
+see `wynn_validation_20261006.md` for the verified acceptance record.
 
 Only the documented eleven-panel prefix activates extrapolation. Other
 mass-panel layouts retain finite integration and the original completion.
@@ -40,36 +40,42 @@ Initial production checks at nine redshifts through z=39, k=0 and
 0.001--300 h/Mpc retain I11(0)=1. Relative differences from a deep finite
 control are below 4.4e-7; 96/128/256-node and boost-1/2 scans are saved in
 test/wynn_validation/20261006. The 12 focused halo tests pass, including
-thread/batch repeatability. Full project, build-mode and matrix validation
-is in progress; replace this pending statement with the final results.
+thread/batch repeatability. Final validation passed all seven projects,
+12 isolated debug tests and exact covariance-disabled NLA/TATT checks.
+The complete 1560-entry LSST total is positive definite. Its largest
+variance-mode change from previous production is 1.26732e-6 fractionally;
+G is bitwise unchanged, and SSC/cNG are diagnosed separately in the
+validation reference. This regression result does not establish Fisher
+convergence or calibrate the extrapolated halo population.
 
 ### Six-point work queue
 
 Keep these numbers stable and repeat all six points in meaningful progress
-reports so the queue remains visible. Current work is point 2; routine
-monitoring remains silent unless there is a new finding, failure or finish.
+reports so the queue remains visible. Points 1, 2, 5 and 6 are complete;
+remaining comparison work is in points 3 and 4. Routine monitoring stays
+silent unless there is a new finding, failure or finish.
 
 1. Implement the 1e-40 covariance tail, stable Wynn extrapolation and
    accurate FFTLog weighting. Completed and committed in core d95867f,
    with corresponding updates in all seven projects. Targeted tests pass.
-2. Finish the seven-project regression sweep, full G/SSC/cNG/total matrix
-   comparisons and debug/covariance-disabled checks. This is in progress;
-   record the results and commit follow-up fixes or validation findings.
-   Implementation commits already exist. Never push.
+2. Seven-project regression sweep, full G/SSC/cNG/total comparisons and
+   debug/covariance-disabled checks completed and verified. Record the
+   acceptance evidence in local commits. Never push.
 3. Regenerate the OneCov comparison plots, timings and README with the
-   committed Wynn baseline. Historical cutoff studies belong in skill
-   references, not the human README.
+   committed Wynn baseline. Accuracy results, figures, README and scripts
+   are committed as 05e05f2/2ed749a; quiet timing reruns remain. Historical
+   cutoff studies belong in skill references, not the human README.
 4. Compare TJPCov with CoCoA using the same LSST Y1 component and complete
-   matrix tests as OneCov. The sibling tjcovbenchmark repository now holds
-   the README, environment recipe and Claude comparison skill/source audit.
-   Documentation preparation may run alongside validation; numerical jobs
-   stay sequential. Record native real-space SSC/cNG as unsupported by
-   the inspected TJPCov dispatcher, not as zero components.
-5. Review and refresh the CCL-benchmark README after the preceding work.
-   Check its claims, plots, timings, current code/configuration references
-   and environment/run instructions against the saved evidence. Identify
-   any results requiring reruns instead of presenting stale measurements
-   as current. Retain the Cocoa README style and environment conventions.
+   matrix tests as OneCov. Gaussian, 19 native SSC cases, four sampling
+   diagnostics and native halo comparisons are committed through ac0ef60.
+   Separated trispectra/cNG, complete small matrices, real-space checks
+   and quiet timings remain. Numerical jobs stay sequential. Record
+   native real-space SSC/cNG as unsupported by the inspected TJPCov
+   dispatcher, not as zero components.
+5. CCL-benchmark README audit and refresh completed, committed as c6d2ae0
+   and 9608443. The old growth-export pivot and current CoCoA choice are
+   distinguished. Future numerical reruns must reconcile those inputs;
+   the documentation update does not make old measurements new.
 6. Schmidt study completed and closed. Retain the current Wynn prescription;
    do not run the proposed experiments or implement a replacement population.
    The source study is preserved in `schmidt_unresolved_population.md`.
