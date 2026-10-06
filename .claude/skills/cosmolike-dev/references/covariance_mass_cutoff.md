@@ -59,21 +59,21 @@ monitoring remains silent unless there is a new finding, failure or finish.
 3. Regenerate the OneCov comparison plots, timings and README with the
    committed Wynn baseline. Historical cutoff studies belong in skill
    references, not the human README.
-4. Study Schmidt's unresolved population below; no production adoption is
-   authorized by this study.
-5. Compare TJPCov with CoCoA using the same LSST Y1 component and complete
+4. Compare TJPCov with CoCoA using the same LSST Y1 component and complete
    matrix tests as OneCov. The sibling tjcovbenchmark repository now holds
    the README, environment recipe and Claude comparison skill/source audit.
    Documentation preparation may run alongside validation; numerical jobs
    stay sequential. Record native real-space SSC/cNG as unsupported by
    the inspected TJPCov dispatcher, not as zero components.
-6. Review and refresh the CCL-benchmark README after the preceding work.
+5. Review and refresh the CCL-benchmark README after the preceding work.
    Check its claims, plots, timings, current code/configuration references
    and environment/run instructions against the saved evidence. Identify
    any results requiring reruns instead of presenting stale measurements
    as current. Retain the Cocoa README style and environment conventions.
+6. Study Schmidt's unresolved population below, after the benchmark work;
+   no production adoption is authorized by this study.
 
-### Next physical study, after the OneCov refresh
+### Final physical study, after the benchmark comparisons and README review
 
 Study Schmidt (2016), arXiv:1511.02231 Appendix A, without changing the
 production fits. At a resolved cutoff Ms define F_s=int_resolved f dnu
