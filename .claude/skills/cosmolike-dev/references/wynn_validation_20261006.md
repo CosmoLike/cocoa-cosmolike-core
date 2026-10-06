@@ -113,3 +113,42 @@ cosmologies or partial-integral sequences.
 Preserve all completed runs. Future fixes require the affected tests and
 appropriate full-matrix rechecks; this checkpoint alone does not authorize
 calling the Wynn implementation fully validated.
+
+## Follow-up diagnosis and targeted fixes
+
+The original failures above are preserved as the pre-fix record. The
+follow-up identified two numerical causes without changing the halo fits,
+mass domain, completion prescription or scientific test tolerances.
+
+- **Variance:** bias 0.5 leaves a periodic FFT error at large radii. Bias
+  0.65, 0.8, 1.0 and a doubled FFT interval at bias 0.5 were checked in an
+  isolated interface. Bias 0.8 reduces the maximum Roman variance error
+  from 1.82652e-4 to 6.98870e-6, below the existing 2e-5 criterion. It
+  agrees with the doubled-interval check within 4.98e-14 on the nine
+  resolved masses and 1.32e-8 on the sampled low-mass tail. Bias 1.0 has
+  worse tiny-radius roundoff, so retain 0.8.
+- **I11:** 96/128/256/512-node rules leave the failed discrepancy near
+  9.3e-5. Captured partial sums show that the highest epsilon order
+  amplifies tiny profile differences; 60-digit arithmetic reproduces it.
+  A small guard retains the previous estimate when the next extrapolation
+  correction grows. The three original saved fiducial sequences keep
+  their highest-order estimate. This guard is a numerical stability check,
+  not a calibration of the unobserved halo population.
+
+After rebuilding the production interfaces, 15 LSST halo tests passed,
+including a permanent three-cosmology regression through z=39 and
+k=300 h/Mpc with the unchanged 1e-5 threshold. All 25 non-frozen Roman
+halo tests passed, including variance, fit/integral identities, caches
+and thread repeatability. The old seven-reference discrepancy shrinks
+to at most 6.80e-10 after correcting the FFTLog weighting; fitted fnu,
+hb1nu and the profile probe are unchanged.
+
+These checks justify regenerating Roman's halo snapshots with its
+documented generator. The prior snapshot and manifest are preserved in
+the external validation folder. No likelihood chi-squared reference or
+survey data needs regeneration for these fixes.
+
+The sequential `stability_rerun.sh` rechecks all seven project suites,
+the full LSST component matrices, debug and covariance-disabled builds.
+It uses fresh output paths under `stability_rerun/`; monitor its status
+before claiming final acceptance or committing production changes.
