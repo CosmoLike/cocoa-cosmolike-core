@@ -31,6 +31,8 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
         No likelihood matrix, mask or reference snapshot is read or changed.
     """
     settings = survey.configuration(accuracy_boost=1)
+    assert settings["lnm_edges"][0] == np.log(1.e4)
+    assert settings["lnm_edges"][-1] == np.log(1.e17)
     nlens = len(settings["lens_density_arcmin2"])
     nsource = len(settings["source_density_arcmin2"])
     full_rows = cov.observable_rows(
@@ -45,7 +47,7 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
     # Scientific bins must stay fixed when only numerical accuracy changes.
     # Otherwise a comparison would mix quadrature error with a new observable.
     refined = survey.configuration(accuracy_boost=2)
-    for key in ("band_first", "band_last", "theta_edges_arcmin"):
+    for key in ("band_first", "band_last", "theta_edges_arcmin", "lnm_edges"):
         np.testing.assert_array_equal(settings[key], refined[key])
     # Table refinement must leave the GSL rule fixed. Only the independent
     # integration level advances radial, mass and angular quadrature.

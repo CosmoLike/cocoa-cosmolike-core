@@ -697,8 +697,8 @@ double conc(
 // Why the 2-halo term needs it: matter is unbiased with respect to
 // itself, int b f dnu = 1 over all nu, so P_2h = I11_m^2 P_lin (file
 // glossary) tends to P_lin as k -> 0. The mass integrals of this file
-// stop at M_min, and f grows toward light halos: the halos below
-// M_min = 1e6 M_sun/h hold about 0.2 of the integral at z = 0 for a
+// stop at M_min, and f grows toward light halos. Below the former
+// M_min = 1e6 M_sun/h, halos hold about 0.2 of the integral at z = 0 for a
 // Planck-like cosmology, so I11_m(k -> 0) would be ~0.8 and
 // P_2h -> 0.64 P_lin. The I11 sum of a halo-model matter spectrum
 // (future_port_unfinished/halo_pmm.c) adds the missing 1 - bias_norm(a) back as halos of mass M_min; this function

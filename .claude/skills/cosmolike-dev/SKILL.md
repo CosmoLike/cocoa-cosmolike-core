@@ -70,6 +70,13 @@ read `references/covariance_rewrite.md` and the external study at
 outside that directory for the port. Every new covariance C filename ends
 in `_cov.c`, including future cluster extensions (`*_cluster_cov.c`).
 Data-vector and covariance numerical choices remain separately owned.
+The matter-halo lower mass limit is 1e4 Msun/h. This explicitly authorized
+range extension changes the shared limit in structs.c and the covariance
+panels through halo_mass_edges(), retaining the original panels above 1e6.
+Keep fitted bias, multiplicity normalization and additive I11 completion
+unchanged. Evidence and project validation are recorded in
+`references/covariance_mass_cutoff.md`; a smaller completion weight alone
+is not proof of a more accurate physical covariance.
 Covariance generation is an offline calculation and never runs inside
 MCMC. Reuse explicit shared inputs across its blocks; do not add persistent
 cosmology caches just to imitate the data-vector lifetime. Shared core

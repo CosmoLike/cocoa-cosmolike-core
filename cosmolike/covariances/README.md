@@ -418,6 +418,21 @@ Only $`I_1^1`$ receives an unresolved-low-mass completion, chosen so that
 $`I_1^1(0)=1`$ on that quadrature. The higher moments require convergence
 with the mass range and integration resolution.
 
+The project examples integrate matter halos from **10⁴ to 10¹⁷ solar
+masses/h**. The shared Python helper `halo_mass_edges()` supplies ten
+log-mass panels: two below 10⁶ and eight above it. Extending the lower
+range retains the upper panels, so their quadrature nodes do not move.
+`integration_accuracy` chooses the GSL rule within each panel.
+
+The lower cutoff reduces the response represented by the completion.
+It does not change the fitted halo bias or multiplicity normalization.
+The missing zero-wavenumber response is added with the minimum-mass
+profile, following the matter specialization of
+[Mead et al. (2020), Appendix A, Eq. (52)](https://arxiv.org/html/2005.00009v2#A1).
+Using that profile gives the completion a scale dependence and restores
+the unit response at zero wavenumber. It does not calibrate the
+extrapolated low-mass halo fits.
+
 When only $`I_1^1`$ is needed, pass `pair_moments=False` to the notebook
 interface's `covariance_halo_moments`. It returns `(i11, None)` and skips
 the higher moments. For example, the SSC response needs $`I_1^1`$ at nearby

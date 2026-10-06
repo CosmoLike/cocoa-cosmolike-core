@@ -14,6 +14,25 @@ from .geometry import angular_rule
 from .accuracy import covariance_accuracy
 
 
+def halo_mass_edges():
+    """Return the default matter-halo integration panels in natural log mass.
+
+    The range is 10^4 to 10^17 Msun/h. Two one-decade panels below 10^6
+    include more small halos explicitly, reducing the response assigned
+    to the unresolved population in I11. Above 10^6, eight equal log-mass
+    panels keep those quadrature nodes fixed when the lower limit changes.
+    The additive completion and the halo fits are unaffected.
+
+    Returns:
+        Owned float array [11] of ln(M/[Msun/h]) edges for ten panels.
+        Integration accuracy selects the GSL rule inside each panel;
+        neither accuracy control changes these physical mass boundaries.
+    """
+    lower = np.log(10.0)*np.array([4.0, 5.0])
+    upper = np.linspace(start=np.log(1.e6), stop=np.log(1.e17), num=9)
+    return np.concatenate((lower, upper))
+
+
 def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu,
                      integration_accuracy=0):
     """Compute five halo trispectrum contributions for all unordered k pairs.

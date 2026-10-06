@@ -13,7 +13,7 @@ from .diagnostics import covariance_modes, compare_covariances
 
 from .gaussian import gaussian_block, observed_spectra, realspace_block, shear_gaussian
 from .sampling import DenseLogTable
-from .halo import halo_power_response, halo_trispectrum
+from .halo import halo_mass_edges, halo_power_response, halo_trispectrum
 from .accuracy import covariance_accuracy, load_covariance_accuracy
 
 from .survey import realspace_covariance, fourier_covariance, observable_rows
