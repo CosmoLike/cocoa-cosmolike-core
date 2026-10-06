@@ -43,12 +43,19 @@ test/wynn_validation/20261006. The 12 focused halo tests pass, including
 thread/batch repeatability. Full project, build-mode and matrix validation
 is in progress; replace this pending statement with the final results.
 
-### Remaining work order
+### Six-point work queue
 
-1. Complete Wynn validation across all seven projects and build modes.
-2. Commit the targeted-tested core and project changes locally, as
-   explicitly requested, while the broader rerun continues. Resolve new
-   failures before refreshing any further references. Never push.
+Keep these numbers stable and repeat all six points in meaningful progress
+reports so the queue remains visible. Current work is point 2; routine
+monitoring remains silent unless there is a new finding, failure or finish.
+
+1. Implement the 1e-40 covariance tail, stable Wynn extrapolation and
+   accurate FFTLog weighting. Completed and committed in core d95867f,
+   with corresponding updates in all seven projects. Targeted tests pass.
+2. Finish the seven-project regression sweep, full G/SSC/cNG/total matrix
+   comparisons and debug/covariance-disabled checks. This is in progress;
+   record the results and commit follow-up fixes or validation findings.
+   Implementation commits already exist. Never push.
 3. Regenerate the OneCov comparison plots, timings and README with the
    committed Wynn baseline. Historical cutoff studies belong in skill
    references, not the human README.
@@ -60,6 +67,11 @@ is in progress; replace this pending statement with the final results.
    Documentation preparation may run alongside validation; numerical jobs
    stay sequential. Record native real-space SSC/cNG as unsupported by
    the inspected TJPCov dispatcher, not as zero components.
+6. Review and refresh the CCL-benchmark README after the preceding work.
+   Check its claims, plots, timings, current code/configuration references
+   and environment/run instructions against the saved evidence. Identify
+   any results requiring reruns instead of presenting stale measurements
+   as current. Retain the Cocoa README style and environment conventions.
 
 ### Next physical study, after the OneCov refresh
 
