@@ -1,5 +1,86 @@
 # Lower halo mass limit: 2026-10-06
 
+## Wynn tail adoption
+
+The later authorized update extends covariance moment integrals to 1e-40
+Msun/h. Eleven four-decade panels below 1e4 supply I11 partial integrals
+with lower endpoints 1, 1e-4, ..., 1e-40. The C epsilon recurrence uses
+these eleven sums and a residual completion [1-E(0)]u(k,M_min), where E
+is the extrapolated I11. Keep the fitted fnu/hb1nu normalization unchanged.
+Higher moments are integrated across the entire range without Wynn.
+
+The sigma-only floor halo_sigma_min is separate from halo_m: data-vector
+HOD integrals retain 1e4--1e17. Extra mass-table nodes preserve the old
+lnM spacing. FFTLog uses bias 0.8 and high-k edge-power continuation through
+1e25 h/Mpc, following the controlled low-radius study. This is numerical
+continuation, not calibration of very small physical halos.
+
+Keep the epsilon stability guard: stop when increasing the extrapolation
+order makes its correction grow. Always taking the highest finite order
+failed at a changed cosmology and z=10, even with 512-node quadrature and
+a 60-digit recurrence. The guard retains the three original fiducial
+estimates and passes the new three-cosmology regression. Full reruns after
+this guard and the FFTLog weighting correction are still required; see
+`wynn_validation_20261006.md`.
+
+Only the documented eleven-panel prefix activates extrapolation. Other
+mass-panel layouts retain finite integration and the original completion.
+The default tail uses 32-point GSL panels, explicitly adopted from the
+study; its integration-level ladder is 32/64/128/256/512. Upper panels
+retain 96/128/256/512/1024, independently of global accuracy boost.
+
+The existing higher-moment study finds maximum fractional changes from
+1e4 to 1e-20 of 2.31261e-7 (I02), 1.21305e-7 (I12), 1.73195e-14
+(both I13 orders), and zero at saved precision (I04). Extending 1e-20
+to 1e-50 leaves all five bitwise unchanged. Do not add higher-moment Wynn
+work unless a new test demonstrates an unresolved tail. A higher-order
+quadrature difference is not evidence that the mass cutoff is inadequate.
+
+Initial production checks at nine redshifts through z=39, k=0 and
+0.001--300 h/Mpc retain I11(0)=1. Relative differences from a deep finite
+control are below 4.4e-7; 96/128/256-node and boost-1/2 scans are saved in
+test/wynn_validation/20261006. The 12 focused halo tests pass, including
+thread/batch repeatability. Full project, build-mode and matrix validation
+is in progress; replace this pending statement with the final results.
+
+### Remaining work order
+
+1. Complete Wynn validation across all seven projects and build modes.
+2. Commit the targeted-tested core and project changes locally, as
+   explicitly requested, while the broader rerun continues. Resolve new
+   failures before refreshing any further references. Never push.
+3. Regenerate the OneCov comparison plots, timings and README with the
+   committed Wynn baseline. Historical cutoff studies belong in skill
+   references, not the human README.
+4. Study Schmidt's unresolved population below; no production adoption is
+   authorized by this study.
+5. Compare TJPCov with CoCoA using the same LSST Y1 component and complete
+   matrix tests as OneCov. The sibling tjcovbenchmark repository now holds
+   the README, environment recipe and Claude comparison skill/source audit.
+   Documentation preparation may run alongside validation; numerical jobs
+   stay sequential. Record native real-space SSC/cNG as unsupported by
+   the inspected TJPCov dispatcher, not as zero components.
+
+### Next physical study, after the OneCov refresh
+
+Study Schmidt (2016), arXiv:1511.02231 Appendix A, without changing the
+production fits. At a resolved cutoff Ms define F_s=int_resolved f dnu
+and B_s=int_resolved bf dnu. The effective unresolved population has
+mass fraction 1-F_s and bias (1-B_s)/(1-F_s). Check positivity first:
+the current full F>1 cannot be repaired by a positive added population.
+This requires replacing a tail below a suitable cutoff, not adding a
+population on top of the full Wynn-extrapolated model.
+
+Compare abundance/bias weights, all halo moments and full G/SSC/cNG/total
+matrices and runtime. Current I11 completion already fixes the zero-k
+response; do not promise a new improvement there. Full Schmidt consistency
+also constrains stochastic halo correlations and higher-order bias, beyond
+enforcing these two scalar integrals. Li, Hu & Takada (2016),
+arXiv:1511.01454, provides the separate-universe abundance-response test
+that connects bias to physical calibration.
+
+## Earlier adoption of the 1e4 cutoff
+
 The explicitly authorized change lowers limits.halo_m[RANGE_MIN] from
 1e6 to 1e4 Msun/h. This shared table-domain setting lives in structs.c;
 its one-line change is part of this range-extension ticket, not permission

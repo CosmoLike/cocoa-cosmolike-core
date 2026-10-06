@@ -42,6 +42,7 @@ typedef struct
   // --------------------------------------------------- 
   double halo_m[2];       // halo.c mass range [RANGE_MIN, RANGE_MAX]
                           // (M_sun/h)
+  double halo_sigma_min;  // sigma-table floor, including covariance tail
   double halo_uks_c[2];   // u_KS concentration range [RANGE_MIN,
                           // RANGE_MAX]; queries outside are clamped to it
                           // (u_KS: future_port_unfinished/halo_tsz.c, not compiled)

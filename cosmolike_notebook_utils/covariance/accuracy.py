@@ -44,8 +44,10 @@ def covariance_accuracy(
     Internal table boosts are positive integers multiplying the public boost.
     integration_accuracy=0 must already resolve the integrals. Angular
     kernels split wide bins into panels to resolve their fastest oscillations.
-    Low-level tests may also use the precomputed 64-node rule; smaller or
-    generated rules are unsupported. Refinement never changes measured bins.
+    Low-level tests may also use the precomputed 64-node rule. The internal
+    Wynn mass tail alone uses 32/64/128/256/512 nodes at these levels;
+    arbitrary smaller or generated rules are unsupported. Refinement never
+    changes measured bins.
 
     Returns:
         Resolved settings, including the unboosted accuracy_parameters for

@@ -440,7 +440,7 @@ static py::tuple covariance_halo_moments(
     }
   }
   for (py::ssize_t edge=0; edge<lnm_edges.size(); edge++) {
-    if (lnm_edges.data()[edge] < std::log(limits.halo_m[RANGE_MIN])
+    if (lnm_edges.data()[edge] < std::log(limits.halo_sigma_min)
         || lnm_edges.data()[edge] > std::log(limits.halo_m[RANGE_MAX])
         || (edge > 0
             && lnm_edges.data()[edge] <= lnm_edges.data()[edge-1])) {

@@ -23,6 +23,72 @@
 typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
+// Estimate the limit of eleven integrals with progressively smaller M_min.
+//
+// The integrals omit a slowly decreasing low-mass remainder. Wynn's epsilon
+// algorithm removes successive geometric parts of that remainder without
+// changing the halo abundance or bias. Its recurrence is
+//
+//   epsilon[-1,n] = 0, epsilon[0,n] = partial[n],
+//   epsilon[p+1,n] = epsilon[p-1,n+1]
+//                    + 1/(epsilon[p,n+1]-epsilon[p,n]).
+//
+// Even columns estimate the integral; odd columns are auxiliary reciprocal
+// differences. Eleven partial sums permit five extrapolation steps. Here
+// the lower mass bounds are 1, 10^-4, ..., 10^-40 M_sun/h. They are equally
+// spaced in lnM, the integration coordinate used to construct the sequence.
+//
+// A zero difference gives no further information. Stop at the last finite
+// even column in that case, rather than dividing by zero. This guard is
+// needed for already-converged sequences, not a substitute for checking
+// convergence with more accurate halo tables and quadrature rules.
+// Increasing extrapolation order is useful only while its corrections
+// shrink. A growing correction can signal a pole in the extrapolation:
+// then a tiny change in a partial sum produces a large change in I11.
+// Keep the previous estimate when this occurs, instead of always taking
+// the highest finite order. This does not rescale any halo mass or bias.
+// ---------------------------------------------------------------------------
+static double halo_wynn_cov(
+    const double* partial // eleven integrals with decreasing lower mass
+  )
+{
+  double epsilon[12][11] = {{0.0}}; // row 0 represents column -1
+  double estimate = partial[10];   // finite integral before extrapolation
+  double last_change = INFINITY;   // accept the first finite correction
+
+  for (int node=0; node<11; node++) {
+    epsilon[1][node] = partial[node];
+  }
+
+  // Build one shorter column at a time. Array row column stores the
+  // mathematical epsilon column column-1, because row 0 holds epsilon_-1.
+  // Thus odd array rows contain integral estimates. Select their last
+  // entry to retain the newest, deepest partial integral at every order.
+  for (int column=2; column<12; column++) {
+    for (int node=0; node<12-column; node++) {
+      const double difference = epsilon[column-1][node+1]
+                                -epsilon[column-1][node];
+      if (difference == 0.0) {
+        return estimate;
+      }
+      epsilon[column][node] = epsilon[column-2][node+1]+1.0/difference;
+      if (!isfinite(epsilon[column][node])) {
+        return estimate;
+      }
+    }
+    if (column % 2 == 1) {
+      const double change = fabs(epsilon[column][11-column]-estimate);
+      if (change > last_change) {
+        return estimate;
+      }
+      estimate = epsilon[column][11-column];
+      last_change = change;
+    }
+  }
+  return estimate;
+}
+
+// ---------------------------------------------------------------------------
 // Build the mass moments shared by halo-model SSC and connected covariance.
 //
 // A halo of mass M contributes its normalized Fourier profile u(k|M).
@@ -51,12 +117,20 @@ typedef simde__m128d v2d;
 // do not silently interpret this as a full massive-neutrino matter model.
 // For the pinned massless test configuration cb and total matter coincide.
 //
-// Only I11 receives an unresolved-low-mass completion. Define
+// With ordinary finite mass panels only I11 receives a completion. Define
 // A = 1 - sum_mass dlnM (dn/dlnM) b M/rho_cb on this SAME quadrature.
 // Add A*u(k|M_min) to I11. Thus I11(0)=1 at every a, independent of the
 // finite lower mass cutoff. Higher moments are left uncorrected, as in
 // the core halo-model convention (Mead et al. 2020, arXiv:2005.00009,
 // Appendix A). No division by a bias-normalization table is applied.
+//
+// The default panels extend to 10^-40 with eleven four-decade intervals
+// below 10^4. For these panels, extrapolate the raw I11 partial integrals
+// with Wynn first. Extrapolate their zero-k bias weights by the same rule
+// and add only [1-Wynn(I11(0))]*u(k|M_min). This retains the exact large-
+// scale normalization while reducing the weight assigned to that profile.
+// Higher moments converge quickly because of their extra mass factors;
+// they use the finite integrals without extrapolation or completion.
 //
 // Computation proceeds in four visible stages:
 // 1. Build one mass rule shared by all a and k, with covariance-owned
@@ -133,7 +207,7 @@ void halo_moments_cov(
       }
     }
   }
-  const double lnm_min = log(limits.halo_m[RANGE_MIN]);
+  const double lnm_min = log(limits.halo_sigma_min);
   const double lnm_max = log(limits.halo_m[RANGE_MAX]);
 
   for (int edge=0; edge<=npanel; edge++) {
@@ -150,7 +224,23 @@ void halo_moments_cov(
 
   // --- 1. COMMON MASS QUADRATURE AND PAIR ORDER ---
 
-  const int nmass = npanel*nquad;
+  // Recognize the documented tail sequence. Other supplied panel layouts
+  // remain ordinary finite integrals, useful for independent comparisons.
+  int ntail = 0; // panels used by the eleven-term extrapolation
+  if (npanel >= 11) {
+    ntail = 11;
+    for (int edge=0; edge<=11; edge++) {
+      if (fabs(lnm_edges[edge]-(-40.0+4.0*edge)*log(10.0)) > 1.e-12) {
+        ntail = 0;
+      }
+    }
+  }
+  // Tiny-halo profiles vary very slowly within each four-decade panel.
+  // The tested tail rule starts at 32 nodes; ordinary mass panels retain
+  // at least 64. Refining integration accuracy raises both rules.
+  const int tail_nquad = nquad <= 96 ? 32 : nquad/2;
+  const int tail_nodes = ntail*tail_nquad;
+  const int nmass = tail_nodes+(npanel-ntail)*nquad;
   const int npair = moments == NULL ? 0 : nk*(nk+1)/2; // requested pairs
   const double rho_cb = cosmology.rho_crit*omega_halo_field();
 
@@ -172,19 +262,26 @@ void halo_moments_cov(
 
   // Map the same Gaussian integration rule onto each logarithmic interval.
   gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);
+  gsl_integration_glfixed_table* tail_rule =
+      malloc_gslint_glfixed(tail_nquad);
 
-  // Each mass panel contributes nquad samples to the common integration
-  // rule. Save their physical masses, cb volumes and number-density weights.
+  // Low-mass panels use the smaller rule. Above 10^4 the previous nodes
+  // are unchanged. Both parts store the same physical quantities, so the
+  // later halo and SIMD loops do not need separate integration formulas.
   for (int panel=0; panel<npanel; panel++) {
+    const int count = panel < ntail ? tail_nquad : nquad;
+    const int start = panel < ntail ? panel*tail_nquad
+                                    : tail_nodes+(panel-ntail)*nquad;
     // Map one Gaussian node into this panel and store its three mass-only
     // quantities at the global index used by every redshift and k row.
-    for (int node=0; node<nquad; node++) {
-      const int index = panel*nquad+node;
+    for (int node=0; node<count; node++) {
+      const int index = start+node;
       double lnm;      // logarithmic mass abscissa
       double measure;  // positive dlnM quadrature measure
 
       gsl_integration_glfixed_point(lnm_edges[panel], lnm_edges[panel+1],
-                                    node, &lnm, &measure, rule);
+                                    node, &lnm, &measure,
+                                    panel < ntail ? tail_rule : rule);
 
       // Store physical mass, cb volume, and the weighted number prefactor
       // separately: subsequent redshift rows share these same mass nodes.
@@ -195,6 +292,7 @@ void halo_moments_cov(
   }
 
   gsl_integration_glfixed_table_free(rule);
+  gsl_integration_glfixed_table_free(tail_rule);
 
   // Enumerate the upper triangle once. Each output pair can then locate
   // its two profile rows directly, without searching the wavenumber grid.
@@ -269,15 +367,31 @@ void halo_moments_cov(
 
   // At k=0 every normalized halo profile is one, so the biased mass
   // weights alone give the resolved part of I11(0). Their integral must
-  // equal one when all matter is included. Assign the missing fraction
-  // to the minimum-mass profile. One worker owns the entire sum at each
-  // scale factor and adds masses in order, preserving the original result.
+  // equal one when all matter is included. For the default tail, estimate
+  // that integral's limit before assigning the residual to the minimum-
+  // mass profile. One worker owns every partial sum at each scale factor.
   #pragma omp parallel for schedule(static)
   for (int row=0; row<na; row++) {
     double resolved = 0.0; // resolved biased mass fraction at this a
 
-    for (int node=0; node<nmass; node++) {
+    for (int node=tail_nodes; node<nmass; node++) {
       resolved += weights[0][row][node];
+    }
+
+    // Begin with the integral above 10^4. Append successively lower panels
+    // to obtain bounds 1, 10^-4, ..., 10^-40. Extrapolation estimates the
+    // unintegrated tail; any small remaining normalization error is kept
+    // explicit in completion, rather than rescaling the fitted bias.
+    if (ntail > 0) {
+      double partial[11]; // cumulative bias-weighted integrals
+      for (int panel=ntail-1; panel>=0; panel--) {
+        for (int node=panel*tail_nquad;
+             node<(panel+1)*tail_nquad; node++) {
+          resolved += weights[0][row][node];
+        }
+        partial[ntail-1-panel] = resolved;
+      }
+      resolved = halo_wynn_cov(partial);
     }
 
     // Assign the missing k=0 weight to a profile at the minimum mass.
@@ -339,7 +453,8 @@ void halo_moments_cov(
   // I11 describes how the halo population contributes to a large-scale
   // density fluctuation. A halo supplies its profile u(k|M), weighted by
   // its mass fraction and bias; integrating over mass gives I11(k).
-  // Add the unresolved fraction through the chosen minimum-mass profile.
+  // The default low-mass panels give a sequence of partial integrals.
+  // Extrapolate that sequence and add only its residual zero-k completion.
   // For one scale factor, each worker computes two such integrals. SIMD
   // shares their mass weights, but each lane keeps a different k and its
   // complete mass sum. Adding lanes would mix different physical scales.
@@ -357,19 +472,18 @@ void halo_moments_cov(
 
       // Scalar equivalent for either wavenumber j=index,next:
       //   sum = 0;
-      //   for (int node=0; node<nmass; node++) {
+      //   for (int node=tail_nodes; node<nmass; node++) {
       //     sum = fma(profile[row][j][node], weight[node], sum);
       //   }
-      //   i11[row][j] = sum+completion[row]*profile[row][j][nmass];
-      // The weighted halo profiles describe the resolved mass population;
-      // the last term supplies the missing low-mass response. SIMD keeps
-      // these complete mass integrals separate for the two wavenumbers.
+      // Tail panels are appended to these sums below, before extrapolation
+      // and completion. The weighted profiles describe the resolved mass
+      // population. SIMD keeps the two wavenumber integrals separate.
       // Start the two I11 mass sums at zero, without mixing wavenumbers.
       v2d vsum = simde_mm_setzero_pd();
 
       // For each mass, update both k-specific sums with u(k|M)*weight.
       // SIMD shares the scalar weight but keeps the two integrals separate.
-      for (int node=0; node<nmass; node++) {
+      for (int node=tail_nodes; node<nmass; node++) {
         // set_pd takes the high lane first. Pack [u(index,M),u(next,M)]
         // into lanes 0 and 1 at this common mass node.
         const v2d vu = simde_mm_set_pd(u1[node], u0[node]);
@@ -387,6 +501,35 @@ void halo_moments_cov(
       // Copy I11 sums for index/next into result[0/1]. storeu permits
       // this two-double stack array without special vector alignment.
       simde_mm_storeu_pd(result, vsum);
+
+      // Continue the same two SIMD sums through successively lower mass
+      // panels. Scalar equivalent in either lane: sum += u(k,M)*weight.
+      // Save each panel's cumulative result before extrapolation, so the
+      // two physical wavenumbers have separate eleven-term sequences.
+      if (ntail > 0) {
+        double partial[2][11]; // one eleven-term sequence per wavenumber
+        for (int panel=ntail-1; panel>=0; panel--) {
+          for (int node=panel*tail_nquad;
+               node<(panel+1)*tail_nquad; node++) {
+            // set_pd takes the high lane first: index remains in lane 0
+            // and next in lane 1, just as in the upper-mass integral.
+            const v2d vu = simde_mm_set_pd(u1[node], u0[node]);
+
+            // Both wavenumbers use this mass node's same halo weight.
+            const v2d vw = simde_mm_set1_pd(weight[node]);
+
+            // Update each lane's integral with one fused product and sum.
+            vsum = simde_mm_fmadd_pd(vu, vw, vsum);
+          }
+          // Store the two cumulative integrals in ordinary stack memory;
+          // storeu needs no special alignment and preserves lane order.
+          simde_mm_storeu_pd(result, vsum);
+          partial[0][ntail-1-panel] = result[0];
+          partial[1][ntail-1-panel] = result[1];
+        }
+        result[0] = halo_wynn_cov(partial[0]);
+        result[1] = halo_wynn_cov(partial[1]);
+      }
 
       // Add the unresolved-mass contribution at each physical k only once.
       i11[row][index] = result[0]+completion[row]*u0[nmass];

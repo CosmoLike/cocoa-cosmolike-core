@@ -151,4 +151,8 @@ survey data needs regeneration for these fixes.
 The sequential `stability_rerun.sh` rechecks all seven project suites,
 the full LSST component matrices, debug and covariance-disabled builds.
 It uses fresh output paths under `stability_rerun/`; monitor its status
-before claiming final acceptance or committing production changes.
+before claiming final acceptance. The implementation and project updates
+are committed after the targeted checks at the explicit request to make
+incremental commits. The broader rerun continues unchanged; its results
+will be recorded in a follow-up commit. Committing is not a claim that
+the full validation sweep has finished.

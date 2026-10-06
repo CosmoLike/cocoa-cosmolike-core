@@ -1495,9 +1495,15 @@ static void sigma2_fields_build(void)
 
   // --- 1a. CHOOSE THE INPUT k GRID AND OUTPUT MASS/a GRIDS ---
 
-  const double bias = 1.5;        // power divided out of Delta^2 before FFT
+  // FFTLog divides Delta^2 by k^bias before transforming, then restores
+  // that power analytically. The weighting must balance two errors:
+  // a large bias amplifies roundoff through R^-bias at tiny radii,
+  // whereas a small bias leaves more power in periodic FFT images.
+  // Bias 0.8 agrees with a doubled FFT interval at both ends of this
+  // mass range. This changes numerical weighting, not P(k) or the window.
+  const double bias = 0.8;        // power divided out before the FFT
   const double kmin = 1.e-7;      // h/Mpc: low-k continuation
-  const double kmax = 1.e5;       // h/Mpc: retain the small-mass tail
+  const double kmax = 1.e25;      // h/Mpc: log-log continuation for tiny M
   const int padding = 16;        // radial spline boundary margin
   const int nk = cosmology.lnPL_nk;
   const int nz = cosmology.lnPL_nz;
@@ -1533,13 +1539,19 @@ static void sigma2_fields_build(void)
   // one third of the mass interval in logarithmic coordinates.
   // Extra radius nodes on each side protect the cubic spline from its
   // artificial zero-curvature boundary condition.
-  const int nradial = (int) ceil(log(limits.halo_m[RANGE_MAX]
-                                     /limits.halo_m[RANGE_MIN])/(3.0*dlnk))
-                     + 2*padding+1;
-  const int nmass = Ntable.N_M[NODES_DENSE];
+  // Append low-mass nodes at the existing lnM spacing. Stretching the
+  // same number of nodes over the wider interval would coarsen all HOD
+  // lookups. Anchoring at the upper mass keeps the original nodes.
+  const double dlnm = log(limits.halo_m[RANGE_MAX]
+                         /limits.halo_m[RANGE_MIN])
+                      /(Ntable.N_M[NODES_DENSE]-1);
+  const int extra = (int) ceil(log(limits.halo_m[RANGE_MIN]
+                                  /limits.halo_sigma_min)/dlnm);
+  const int nmass = Ntable.N_M[NODES_DENSE]+extra;
   const int na = Ntable.N_a;
-  const double lnm0 = log(limits.halo_m[RANGE_MIN]);
+  const double lnm0 = log(limits.halo_m[RANGE_MIN])-extra*dlnm;
   const double lnm1 = log(limits.halo_m[RANGE_MAX]);
+  const int nradial = (int) ceil((lnm1-lnm0)/(3.0*dlnk))+2*padding+1;
   if (nradial > nfft || nmass < 2 || na < 2) {
     log_fatal("sigma2_field: incompatible FFT/mass/a grid; use finer "
               "logarithmic k sampling and at least two mass and a nodes");

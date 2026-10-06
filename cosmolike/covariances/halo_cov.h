@@ -13,6 +13,10 @@ extern "C" {
 // edges are increasing ln(M/[M_sun/h]) inside the core sigma-table range.
 // All arrays are supplied by the caller; writable arrays do not overlap.
 // moments may be NULL to request only I11, without pair integrations.
+// Eleven initial four-decade panels from 10^-40 to 10^4 activate Wynn
+// extrapolation of I11 with a residual zero-k completion. Other layouts
+// use ordinary finite quadrature. The tail uses 32/64/128/256/512 nodes
+// for main rules 96/128/256/512/1024; the test-only 64 rule uses 32 too.
 void halo_moments_cov(
     const int na,                  // number of scale factors
     const double* a,              // [na] scale factors

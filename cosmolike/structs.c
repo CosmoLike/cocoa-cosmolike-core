@@ -41,6 +41,7 @@ lim limits =
   .LMIN_tab = 20,               // LMIN_tab
   .LMAX_NOLIMBER = 150,         // LMAX_NOLIMBER
   .halo_m = {1.0e+4, 1.0e+17},  // halo.c mass range (M_sun/h)
+  .halo_sigma_min = 1.0e-40,     // sigma coverage, not the HOD mass cutoff
   .halo_uks_c = {0.05, 100.0}   // u_KS concentration range (not compiled; queries
                                 //   outside are clamped to it)
 };

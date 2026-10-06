@@ -17,18 +17,20 @@ from .accuracy import covariance_accuracy
 def halo_mass_edges():
     """Return the default matter-halo integration panels in natural log mass.
 
-    The range is 10^4 to 10^17 Msun/h. Two one-decade panels below 10^6
-    include more small halos explicitly, reducing the response assigned
-    to the unresolved population in I11. Above 10^6, eight equal log-mass
-    panels keep those quadrature nodes fixed when the lower limit changes.
-    The additive completion and the halo fits are unaffected.
+    The range is 10^-40 to 10^17 Msun/h. Below 10^4, eleven four-decade
+    panels supply partial integrals for Wynn extrapolation of I11. This
+    is a numerical continuation of the halo fits, not a calibrated model
+    of halos at such small masses. A residual completion preserves I11(0).
+    Above 10^4 the previous quadrature panels remain fixed.
 
     Returns:
-        Owned float array [11] of ln(M/[Msun/h]) edges for ten panels.
+        Owned float array [22] of ln(M/[Msun/h]) edges for 21 panels.
         Integration accuracy selects the GSL rule inside each panel;
         neither accuracy control changes these physical mass boundaries.
     """
-    lower = np.log(10.0)*np.array([4.0, 5.0])
+    tail = np.arange(start=-40.0, stop=4.0, step=4.0)
+    lower = np.log(10.0)*np.concatenate((tail, [4.0, 5.0]))
+    lower[0] = np.log(1.e-40)  # match the C reader's lower-domain boundary
     upper = np.linspace(start=np.log(1.e6), stop=np.log(1.e17), num=9)
     return np.concatenate((lower, upper))
 

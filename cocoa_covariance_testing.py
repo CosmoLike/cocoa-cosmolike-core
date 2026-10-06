@@ -31,7 +31,7 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
         No likelihood matrix, mask or reference snapshot is read or changed.
     """
     settings = survey.configuration(accuracy_boost=1)
-    assert settings["lnm_edges"][0] == np.log(1.e4)
+    assert settings["lnm_edges"][0] == np.log(1.e-40)
     assert settings["lnm_edges"][-1] == np.log(1.e17)
     nlens = len(settings["lens_density_arcmin2"])
     nsource = len(settings["source_density_arcmin2"])

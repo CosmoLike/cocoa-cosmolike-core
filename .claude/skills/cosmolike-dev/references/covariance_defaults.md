@@ -35,6 +35,11 @@ to NumPy. The tree-angle helper and selected-cluster profile response use
 that binding instead of generating SciPy rules. The latter uses two mass
 panels, each with the selected rule, instead of one generated double-size rule.
 
+The later 2026-10-06 Wynn-tail adoption is the single internal exception:
+the smooth low-mass tail uses 32/64/128/256/512 at levels 0/1/2/3/4.
+The public rule-size contract and every other panel remain unchanged.
+See `covariance_mass_cutoff.md` for the dedicated convergence tests.
+
 ## Angular convergence and didactic review
 
 One Gaussian rule across LSST's widest bin aliases the high-ell oscillations:
