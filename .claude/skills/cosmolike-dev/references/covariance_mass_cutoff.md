@@ -70,13 +70,18 @@ monitoring remains silent unless there is a new finding, failure or finish.
    and environment/run instructions against the saved evidence. Identify
    any results requiring reruns instead of presenting stale measurements
    as current. Retain the Cocoa README style and environment conventions.
-6. Study Schmidt's unresolved population below, after the benchmark work;
-   no production adoption is authorized by this study.
+6. Schmidt study completed and closed. Retain the current Wynn prescription;
+   do not run the proposed experiments or implement a replacement population.
+   The source study is preserved in `schmidt_unresolved_population.md`.
 
-### Final physical study, after the benchmark comparisons and README review
+### Archived Schmidt study; production prescription retained
 
-Study Schmidt (2016), arXiv:1511.02231 Appendix A, without changing the
-production fits. At a resolved cutoff Ms define F_s=int_resolved f dnu
+Decision (2026-10-06): keep the current model. The outline below and the
+separate study reference are background only, not queued implementation
+or numerical experiments. The Wynn validation and comparison work continue.
+
+Schmidt (2016), arXiv:1511.02231 Appendix A, motivates the following
+comparison with unchanged resolved fits. At a cutoff Ms define F_s=int_resolved f dnu
 and B_s=int_resolved bf dnu. The effective unresolved population has
 mass fraction 1-F_s and bias (1-B_s)/(1-F_s). Check positivity first:
 the current full F>1 cannot be repaired by a positive added population.

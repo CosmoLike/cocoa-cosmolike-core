@@ -1,4 +1,9 @@
-# Study plan: an effective unresolved halo population
+# Archived study: an effective unresolved halo population
+
+Decision (2026-10-06): retain the current Wynn prescription. This study
+is closed; its proposed experiments and implementation options are not
+active work. Reopening them requires a new request. No production physics
+was changed, and the ongoing Wynn validation and code comparisons continue.
 
 Status: source and literature study, 2026-10-06. No numerical runs or
 production changes accompany this document. The production baseline is
