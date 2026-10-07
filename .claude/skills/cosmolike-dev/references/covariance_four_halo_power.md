@@ -109,8 +109,8 @@ three-run timing table remains the controlled timing comparison.
 Twenty targeted tests passed: four preparation tests, fourteen notebook
 utility checks and two production/notebook workflow checks. The rebuilt
 LSST library has the original pre-prototype SHA256, confirming that no
-selective C change remains. All-project suites passed as recorded below;
-executed notebooks and quiet cross-code timings remain pending.
+selective C change remains. All-project suites and executed notebooks
+passed as recorded below; quiet cross-code timings remain pending.
 
 The main cross-code refreshes completed: 32 OneCov stages, including
 complete small Fourier and real-space G/SSC/cNG/total matrices, and 63
@@ -171,7 +171,16 @@ Jupyter did not forward the temporary kernel search path from its client
 configuration. Setting that path on the actual kernel-spec manager passed
 a startup/execute/shutdown smoke check. Only notebook execution resumed;
 all suite outputs and the unsuccessful launcher attempt are preserved.
-Notebook outputs and quiet timing tables are not yet accepted.
+
+All seven covariance notebooks then completed: 57 code cells and 21
+embedded figures. Every figure was visually inspected; executed file
+hashes, source-cell retention and absence of error outputs were checked.
+All seven computed totals passed their notebook positivity diagnostic
+after the likelihood selection. The original likelihood covariances are
+only comparison inputs; this is not a claim of reproducing their physics.
+The outputs are committed in their respective project repositories.
+Notebook execution times are not the controlled timing benchmark. Quiet
+cross-code timing tables remain pending.
 
 ## Reproduction record
 
