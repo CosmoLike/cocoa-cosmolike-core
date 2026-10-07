@@ -684,7 +684,7 @@ py::tuple covariance_halo_moments_cpp(
     }
   }
   for (arma::uword edge=0; edge<lnm_edges.n_elem; edge++) {
-    if (lnm_edges(edge) < std::log(limits.halo_m[RANGE_MIN])
+    if (lnm_edges(edge) < std::log(limits.halo_sigma_min)
         || lnm_edges(edge) > std::log(limits.halo_m[RANGE_MAX])
         || (edge > 0
             && lnm_edges(edge) <= lnm_edges(edge-1))) {

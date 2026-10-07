@@ -8,6 +8,18 @@ and measurements with the source. No GitHub push is authorized.
 
 ## Calculation and public interface
 
+The covariance-tail adoption on 2026-10-06 supersedes the original grid
+choices below: bias 0.8, high-k continuation through 1e25 h/Mpc, and mass
+coverage through 1e-40 Msun/h. Extra low-mass nodes retain the existing
+lnM spacing instead of stretching the old grid. The HOD integration range
+remains 1e4--1e17. See `covariance_mass_cutoff.md` for the adoption tests;
+the older measurements below describe their recorded configurations.
+The initial bias-0.5 trial failed Roman's independent variance check.
+Bias 0.8 reduces its maximum tested error from 1.8265e-4 to 6.9887e-6
+without doubling the FFT workspace. A separately doubled FFT interval
+at bias 0.5 agrees within 1.32e-8 relatively down to 1e-40 Msun/h.
+See `wynn_validation_20261006.md` for the outstanding validation gates.
+
 `cosmo3D.c` builds sigma_m^2(M,a), sigma_cb^2(M,a), and their logarithmic
 mass slopes from the evolving linear spectra. It uses FFTLog bias 1.5,
 the supplied uniform logarithmic k spacing, edge-power continuation to

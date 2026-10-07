@@ -70,6 +70,17 @@ read `references/covariance_rewrite.md` and the external study at
 outside that directory for the port. Every new covariance C filename ends
 in `_cov.c`, including future cluster extensions (`*_cluster_cov.c`).
 Data-vector and covariance numerical choices remain separately owned.
+The authorized covariance tail extends to 1e-40 Msun/h with Wynn epsilon
+extrapolation of I11. Keep the data-vector HOD integration floor at 1e4;
+the separate halo_sigma_min extends shared variance-table coverage while
+preserving its lnM spacing. halo_mass_edges() retains the upper panels.
+Keep the fitted bias and multiplicity normalization unchanged. Complete
+only the residual zero-k response after extrapolation. The studied tail
+is an explicit exception to the 64-node minimum: its rules are
+32/64/128/256/512 at integration levels 0/1/2/3/4; ordinary panels retain
+96/128/256/512/1024. See `references/covariance_mass_cutoff.md` for validation.
+A smaller completion weight is not proof of a more accurate physical
+covariance, nor a repair of the separate ordinary mass normalization.
 Covariance generation is an offline calculation and never runs inside
 MCMC. Reuse explicit shared inputs across its blocks; do not add persistent
 cosmology caches just to imitate the data-vector lifetime. Shared core
@@ -106,6 +117,15 @@ Keep the existing `p_lin_at_a` row reader in production. This finding is
 specific to that experiment, not a rejection of other SIMDe kernels.
 See `references/covariance_optimization_review.md` for measurements and
 the limits of the comparison.
+
+Covariance power preparation uses global natural-cubic upsampling followed
+by the existing C linear readers: `power_accuracyboost=8` resolves to
+11,993 k samples from 1,500 at global AB1. The global boost multiplies
+this factor, and callers must reinitialize when changing it. Linear,
+nonlinear and cb inputs share the dense grid. The selective 4h-only C
+prototype was slower and has been retired; do not reintroduce it.
+See `references/covariance_four_halo_power.md` for measurements and the
+current validation record. Data-vector power preparation is unchanged.
 
 Krause and Takada papers are primary physics sources; CosmoCov code and the
 study's inferred corrections are comparison targets, not a physics oracle.
@@ -348,8 +368,9 @@ non-Gaussian and window tables and shared core reader refinements.
 rules through an explicit level ladder, independently of `accuracy_boost`.
 Do not multiply radial, mass or angular rule orders by the global boost.
 Do not expose arbitrary rule sizes in project defaults. Covariance rules
-must use GSL's precomputed nodes, with 64 as the absolute minimum even if
-a 32-node test appears adequate. The notebook ladder is 96/128/256/512/1024
+must use GSL's precomputed nodes, normally with 64 as the minimum. The
+explicitly adopted Wynn low-mass tail above is the sole 32-node exception.
+The notebook ladder is 96/128/256/512/1024
 for levels 0/1/2/3/4; low-level testing also accepts 64. Python-prepared
 production integrals obtain the same GSL rules through the C++ binding;
 independent references may generate their own rules. Split oscillatory
@@ -912,7 +933,8 @@ Rules:
   integral quadratured on the sigma2 ln M nodes reads sigma2 exactly).
 - Code duplication across consumers is acceptable when it buys speed.
 - Gauss-Legendre sizes: always a size GSL has precomputed (tabulated).
-  The minimum accepted size is 64, even if a 32-node check seems adequate.
+  The minimum accepted size is 64, except for the explicitly adopted
+  covariance Wynn tail's 32-node rule described above.
   The hdi ladders use 64, 96, 128, 256, 512, 1024, written inline at
   each site, e.g. redshift_spline.c:
   `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.

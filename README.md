@@ -650,10 +650,16 @@ defines field ordering, shapes, mask normalization and noise conventions.
 
 The project YAML files and notebooks expose data-vector accuracy settings.
 Covariance has its own `accuracy_boost` for tables/cutoffs and
-`integration_accuracy` for precomputed quadrature rules. Changing them
-does not rerun the Boltzmann calculation or the likelihood prediction.
-Numerical convergence
-and the validity of a physical approximation are separate questions.
+`integration_accuracy` for precomputed quadrature rules. Its default
+`power_accuracyboost=8` prepares 11,993 wavenumber samples from 1,500 CAMB
+samples for all covariance components. A natural cubic spline fills those
+tables once; the C readers continue to use linear interpolation.
+
+The global boost multiplies this refinement and preserves existing nodes.
+Reinitialize the forecast after changing it, as the project notebooks do.
+The cosmology and CAMB settings stay fixed in these refinement comparisons.
+Numerical convergence and the validity of a physical approximation are
+separate questions.
 
 The code reuses expensive work across many outputs. FFTW plans are
 created serially and reused; independent transforms use separate worker

@@ -418,6 +418,105 @@ Only $`I_1^1`$ receives an unresolved-low-mass completion, chosen so that
 $`I_1^1(0)=1`$ on that quadrature. The higher moments require convergence
 with the mass range and integration resolution.
 
+The project examples integrate matter halos from **10⁻⁴⁰ to 10¹⁷ solar
+masses/h**, using `halo_mass_edges()`:
+
+- **Above 10⁴:** retain the existing mass panels and their quadrature nodes.
+- **Below 10⁴:** integrate eleven four-decade panels. The tail starts with
+  32-point rules; `integration_accuracy` refines these alongside the normal
+  96-point rules. The successive lower limits provide eleven partial sums.
+- **After integration:** Wynn's epsilon algorithm extrapolates the partial
+  sums of $`I_1^1(k)`$ to estimate the remaining low-mass contribution.
+  The five higher moments use their finite integrals without extrapolation.
+
+Higher extrapolation order does not always mean higher accuracy. If the
+next order makes a larger correction than the preceding one, the code
+keeps the previous estimate. This prevents an unstable extrapolation from
+amplifying tiny differences between the partial integrals.
+
+A small residual term restores $`I_1^1(0)=1`$ exactly. If $`E(k)`$ is the
+extrapolated integral, the result is $`E(k)+[1-E(0)]u(k|M_{\min})`$.
+The minimum-mass profile follows the completion prescription of
+[Mead et al. (2020), Appendix A](https://arxiv.org/html/2005.00009v2#A1).
+Other supplied mass-panel layouts use ordinary finite integration and its
+original completion, which also provides a useful convergence comparison.
+
+This very small lower limit is a **numerical continuation of the fitted
+model**, not a claim that such halos are physically calibrated. The shared
+variance table covers the tail while retaining its original mass spacing.
+The data-vector HOD integration range remains 10⁴–10¹⁷ solar masses/h.
+
+### Why only I11 uses Wynn extrapolation
+
+**All five higher moments are also integrated down to 10⁻⁴⁰.** They do
+not need the same extrapolation because small halos carry much less weight
+in those integrals. Substituting the halo abundance into the moment gives
+
+```math
+I_\mu^\beta = \int d\ln M\,
+f(\nu)\nu\frac{d\ln\nu}{d\ln M}\,b_\beta(M)
+\left(\frac{M}{\bar\rho_{cb}}\right)^{\mu-1}
+\prod_{i=1}^{\mu}u(k_i|M).
+```
+
+For tiny halos the normalized profiles approach one at the wavenumbers
+of interest. What distinguishes the tails is the explicit mass factor:
+
+- **I11:** no extra power of mass suppresses its slowly converging tail.
+- **I02 and I12:** one extra power of mass suppresses small halos.
+- **I13:** two extra powers of mass give still stronger suppression.
+- **I04:** three extra powers of mass make its tail negligible much sooner.
+
+A controlled scan using the same variance table and retained upper mass
+panels measured the following changes. These are **fractional changes in
+halo moments**, not changes in the complete covariance matrix.
+
+| Moment | Largest change from a 10⁴ to a 10⁻²⁰ lower cutoff |
+| --- | ---: |
+| `I02` | 0.0000231% |
+| `I12` | 0.0000121% |
+| `I13(K,Q,Q)` and `I13(K,K,Q)` | About 0.000000000002% |
+| `I04` | Zero at saved precision |
+
+The scan covers redshifts 0.1, 0.5 and 1, with all unordered pairs of
+41 wavenumbers between 0.001 and 100 h/Mpc. Extending the lower cutoff
+from 10⁻²⁰ to 10⁻⁵⁰ left all five higher moments bitwise unchanged in
+the saved results. This does not mean the exact mathematical remainder
+vanishes; it was too small to change these computed values.
+
+Wynn estimates a remainder from differences between successive partial
+sums. Once those differences vanish at floating-point precision, it has
+no useful tail information to extract. Applying it to every higher moment
+would add five extrapolations per wavenumber pair without a demonstrated
+accuracy benefit. Their direct integrals are retained; the runtime cost
+of such an additional extrapolation has not been benchmarked.
+
+### Mass conservation and bias consistency
+
+The multiplicity function $`f(\nu)d\nu`$ gives the fraction of matter
+assigned to a peak-height interval, with $`\nu=\delta_c/\sigma(M)`$.
+An ideal model with all matter in halos satisfies both
+$`\int f\,d\nu=1`$ and $`\int b_1f\,d\nu=1`$.
+
+- **CoCoA retains the Tinker fits:** its multiplicity amplitude enforces
+  the bias-weighted condition, following
+  [Tinker et al. (2010), Section 4](https://arxiv.org/pdf/1001.3162).
+  Wynn improves numerical convergence; it does not force the separate
+  ordinary mass integral to one.
+- **A consistent unresolved population can enforce both constraints:**
+  [Schmidt (2016), Appendix A](https://arxiv.org/pdf/1511.02231) assigns
+  its effective abundance and bias separately. This preserves the resolved
+  fits, with cutoff effects suppressed by $`(kR_{\min})^2`$.
+- **Choosing new physical fits requires calibration:**
+  [Li, Hu & Takada (2016)](https://arxiv.org/abs/1511.01454) test halo bias
+  as the response of abundance to a long-wavelength density perturbation.
+  Satisfying two integrals alone does not establish that response.
+
+In particular, a full ordinary mass integral greater than one cannot be
+repaired by adding a positive missing population. Changing the abundance,
+bias or their extrapolation to remove that excess is a separate modeling
+choice, not part of the numerical tail calculation here.
+
 When only $`I_1^1`$ is needed, pass `pair_moments=False` to the notebook
 interface's `covariance_halo_moments`. It returns `(i11, None)` and skips
 the higher moments. For example, the SSC response needs $`I_1^1`$ at nearby
@@ -445,6 +544,19 @@ $`(\boldsymbol k,-\boldsymbol k,\boldsymbol q,-\boldsymbol q)`$,
 some internal wavevectors approach zero. The implementation combines
 canceling terms before evaluation near this limit. Exactly zero internal
 momentum channels assigned to SSC are excluded from the cNG average.
+
+The four-halo terms can subtract large contributions, amplifying small
+interpolation errors in the input power. The shared covariance initializer
+therefore prepares **11,993 wavenumber samples for all components** from
+1,500 CAMB samples. A natural cubic spline of ln(P) at fixed redshift fills
+the inserted nodes; these remain ordinary linear-lookup tables in C.
+Linear, nonlinear and cb power use the same grid.
+
+`power_accuracyboost: 8` sets this baseline in each project
+`covariance/default.yaml`. The global accuracy boost multiplies its interval
+subdivisions, preserving existing nodes. Redshift samples and the physical
+k range stay fixed. This preparation reduces numerical interpolation error;
+it does not change the halo model or add information to the CAMB input.
 
 ### Combining halo contributions: `non_gaussian_cov.c`
 
@@ -837,8 +949,9 @@ radial, mass and angular integrals, including the Python-prepared tree
 and selected-cluster integrals. The C++ binding supplies GSL's precomputed
 nodes to Python.
 
-Low-level tests also accept the precomputed 64-node rule;
-smaller and generated rules are rejected.
+Low-level calls also accept the precomputed 64-node rule. The sole smaller
+internal rule is the smooth low-mass Wynn tail, whose level ladder is
+32/64/128/256/512. Arbitrary smaller or generated rules are rejected.
 
 The independent `accuracy_boost`
 refines interpolation tables and multipole cutoffs, leaving these rule

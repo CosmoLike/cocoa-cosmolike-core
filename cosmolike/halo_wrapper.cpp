@@ -290,7 +290,8 @@ double conc_cpp(
 //
 // Calls halo.c dlognudlogm, which reads the FFTLog slope table by
 // bilinear interpolation in ln M and a. The mass grid contains
-// Ntable.N_M[NODES_DENSE] nodes between limits.halo_m's endpoints.
+// Ntable.N_M[NODES_DENSE] nodes between limits.halo_m's endpoints, with
+// additional lower-mass nodes at the same spacing for the covariance tail.
 //
 // Parameters:
 //   M - halo mass in M_sun/h
