@@ -545,6 +545,19 @@ some internal wavevectors approach zero. The implementation combines
 canceling terms before evaluation near this limit. Exactly zero internal
 momentum channels assigned to SSC are excluded from the cNG average.
 
+The four-halo terms can subtract large contributions, amplifying small
+interpolation errors in the input power. The shared covariance initializer
+therefore prepares **11,993 wavenumber samples for all components** from
+1,500 CAMB samples. A natural cubic spline of ln(P) at fixed redshift fills
+the inserted nodes; these remain ordinary linear-lookup tables in C.
+Linear, nonlinear and cb power use the same grid.
+
+`power_accuracyboost: 8` sets this baseline in each project
+`covariance/default.yaml`. The global accuracy boost multiplies its interval
+subdivisions, preserving existing nodes. Redshift samples and the physical
+k range stay fixed. This preparation reduces numerical interpolation error;
+it does not change the halo model or add information to the CAMB input.
+
 ### Combining halo contributions: `non_gaussian_cov.c`
 
 Four density factors can belong to one, two, three or four halos.

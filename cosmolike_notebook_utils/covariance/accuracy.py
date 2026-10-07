@@ -16,7 +16,7 @@ def covariance_accuracy(
     accuracy_boost=1, *, ell_max=100000, mask_ell_max=32768,
     ng_ell_intervals=127, non_gaussian_accuracyboost=1,
     window_accuracyboost=1, response_step=0.00005,
-    core_accuracyboost=1, integration_accuracy=0,
+    core_accuracyboost=1, power_accuracyboost=8, integration_accuracy=0,
     nonlimber_lmax=1000, nonlimber_accuracyboost=1,
 ):
     """Resolve project-specific base controls and one overall refinement.
@@ -29,6 +29,10 @@ def covariance_accuracy(
         non_gaussian_accuracyboost = refines only that interpolation grid.
         window_accuracyboost = multiplies 16384 lensing-window intervals.
         core_accuracyboost = multiplies the shared core reader table boost.
+        power_accuracyboost = subdivisions of each CAMB log-k interval.
+            Natural cubic preparation fills linear, nonlinear and cb tables;
+            C readers then interpolate linearly. The default eight yields
+            11,993 nodes from 1,500. The global boost multiplies this factor.
         nonlimber_lmax = base gg/gs correction cutoff, multiplied by the global boost.
         nonlimber_accuracyboost = 1, 2, 4 or 8; multiplies 4096 log-distance
             intervals and the global boost. Padding scales with the interval
@@ -67,6 +71,7 @@ def covariance_accuracy(
         "non_gaussian_accuracyboost": non_gaussian_accuracyboost,
         "window_accuracyboost": window_accuracyboost,
         "core_accuracyboost": core_accuracyboost,
+        "power_accuracyboost": power_accuracyboost,
         "nonlimber_accuracyboost": nonlimber_accuracyboost,
     }
     for name, value in internal.items():
@@ -129,6 +134,7 @@ def covariance_accuracy(
         "tree_npanel": 20+int(integration_accuracy),
         "response_step": response_step/boost,
         "core_accuracyboost": int(core_accuracyboost*boost),
+        "power_refinement": int(power_accuracyboost*boost),
         "integration_accuracy": int(integration_accuracy),
     }
     # Resolve the integration ladder once, before calling any C kernel.

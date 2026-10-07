@@ -47,6 +47,8 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
     # Scientific bins must stay fixed when only numerical accuracy changes.
     # Otherwise a comparison would mix quadrature error with a new observable.
     refined = survey.configuration(accuracy_boost=2)
+    assert settings["power_refinement"] == 8
+    assert refined["power_refinement"] == 16
     for key in ("band_first", "band_last", "theta_edges_arcmin", "lnm_edges"):
         np.testing.assert_array_equal(settings[key], refined[key])
     # Table refinement must leave the GSL rule fixed. Only the independent

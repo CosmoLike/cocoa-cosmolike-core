@@ -17,6 +17,7 @@ import numpy as np
 
 from ..camb_cosmology import get_camb_cosmology
 from .geometry import noise_powers
+from .power import refine_power_tables
 from .survey import observable_rows, realspace_covariance, fourier_covariance
 
 
@@ -85,7 +86,9 @@ def initialize_forecast(interface, settings, project):
             factors required by the DESxPlanck and DES cluster setters.
         project = project directory, a Path or string.
     Returns:
-        Dict of CAMB arrays in the set_cosmology interchange format.
+        Installed power and background arrays in the set_cosmology format.
+        Power tables include the resolved power_refinement. Reinitialize
+        after changing that refinement, including a global accuracy boost.
     Side effects:
         Replaces the interface's cosmology and galaxy/source nuisance state.
         No likelihood data, mask or covariance is read or overwritten.
@@ -134,7 +137,10 @@ def initialize_forecast(interface, settings, project):
         "omegan2",
         "lnP_linear_cb",
     )
-    tables = dict(zip(names, arrays))
+    tables = refine_power_tables(
+        tables=dict(zip(names, arrays)),
+        refinement=settings["power_refinement"],
+    )
 
     interface.initial_setup()
     interface.init_accuracy_boost(
@@ -199,9 +205,9 @@ def compute_forecast(interface, settings, space="real", rows=None,
     """
     if space not in ("real", "fourier"):
         raise ValueError("space must be 'real' or 'fourier'")
-    # A notebook may refine settings while retaining its CAMB inputs.
-    # Apply the reader-table boost on every calculation; the independent
-    # quadrature level remains exactly the value selected in the YAML.
+    # Apply internal reader resolution on every calculation. The caller
+    # must reinitialize when changing power_refinement; those input tables
+    # are prepared before this assembly step. Quadrature stays independent.
     interface.init_accuracy_boost(
         accuracy_boost=settings["core_accuracyboost"],
         integration_accuracy=settings["integration_accuracy"],

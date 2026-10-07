@@ -45,6 +45,7 @@ fluctuations larger than the survey. See
 | File | Calculation and responsibility |
 | --- | --- |
 | `command_line.py` | Read a Cobaya-style evaluate YAML, select the production backend and save a complete covariance. |
+| `power.py` | Fill nested, dense linear/nonlinear/cb log-power tables with natural cubic interpolation before C linear lookups. |
 | `accuracy.py` | Refine interpolation grids and multipole cutoffs with `accuracy_boost`; choose quadrature rules independently with `integration_accuracy`. |
 | `gaussian.py` | Batched all-pairs Limber spectra, complete Wick pairings, conversion of source spectra to observed shear, rectangular Gaussian projection, and real-space pair noise. `shear_gaussian` is the shared small single-source example. |
 | `geometry.py` | Convert number densities to noise powers, construct a raw spherical-cap mask spectrum, and resolve nearly opposite wavevectors with a planar angular quadrature. |
@@ -280,7 +281,16 @@ CAMB inputs remain fixed.
 | `ng_ell_intervals`, `non_gaussian_accuracyboost` | Intervals in the shared matter-response/trispectrum table |
 | `window_accuracyboost` | 16,384 intervals in each lensing-efficiency table |
 | `core_accuracyboost` | Shared halo/profile reader table resolution |
+| `power_accuracyboost` | Subdivisions of each original CAMB log-k interval; default 8 |
 | `response_step` | Half-width of the centered derivative in ln(k); divided by the boost |
+
+The default power refinement turns 1,500 original CAMB wavenumbers into
+11,993 samples for every covariance component. At global boost 2 it gives
+23,985 samples, retaining every boost-1 node. `power.py` interpolates ln(P)
+with a natural cubic spline at each fixed redshift; the hot C readers keep
+their linear interpolation. This changes neither CAMB parameters nor its
+physical wavenumber range. Reinitialize the forecast after changing the
+power refinement; the example notebooks do this for each boost.
 
 The returned settings retain both `accuracy_parameters` (the base controls)
 and the effective node counts and grids. Internal controls can be varied one

@@ -15,6 +15,7 @@ from .gaussian import gaussian_block, observed_spectra, realspace_block, shear_g
 from .sampling import DenseLogTable
 from .halo import halo_mass_edges, halo_power_response, halo_trispectrum
 from .accuracy import covariance_accuracy, load_covariance_accuracy
+from .power import refine_power_tables
 
 from .survey import realspace_covariance, fourier_covariance, observable_rows
 from .counts_cluster import count_statistics, count_matter_cross

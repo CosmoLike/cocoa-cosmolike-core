@@ -118,6 +118,15 @@ specific to that experiment, not a rejection of other SIMDe kernels.
 See `references/covariance_optimization_review.md` for measurements and
 the limits of the comparison.
 
+Covariance power preparation uses global natural-cubic upsampling followed
+by the existing C linear readers: `power_accuracyboost=8` resolves to
+11,993 k samples from 1,500 at global AB1. The global boost multiplies
+this factor, and callers must reinitialize when changing it. Linear,
+nonlinear and cb inputs share the dense grid. The selective 4h-only C
+prototype was slower and has been retired; do not reintroduce it.
+See `references/covariance_four_halo_power.md` for measurements and the
+current validation record. Data-vector power preparation is unchanged.
+
 Krause and Takada papers are primary physics sources; CosmoCov code and the
 study's inferred corrections are comparison targets, not a physics oracle.
 Keep the implementation simple, with short guards for unsupported cases;
