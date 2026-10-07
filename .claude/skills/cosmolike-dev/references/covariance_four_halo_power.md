@@ -82,7 +82,7 @@ the shared angular worker evaluates native powers for lower halo orders
 and extra refined powers/terms for 4h. The selective experiment is retired. The user chose globally refined
 power as the covariance production default.
 
-## Validation status
+## Retired selective-prototype validation
 
 Targeted compiled tests passed: three new interpolation/API/thread tests,
 14 notebook utility tests, five existing angular tests and two production
@@ -93,8 +93,8 @@ the globally densified natural-cubic control at the tested unequal pairs.
 
 The selective all-project run was intentionally stopped when the user
 chose global refinement. Its completed outputs are retained; exit143 is
-not a numerical failure. Global-default validation and the OneCov/TJPCov
-refresh are pending. Do not call that production validated until verified.
+not a numerical failure. The adopted global checks are recorded below;
+do not treat the selective tests as their replacement.
 No frozen references or scientific tolerances have been changed.
 
 ## Adopted global-default checks
@@ -110,7 +110,7 @@ Twenty targeted tests passed: four preparation tests, fourteen notebook
 utility checks and two production/notebook workflow checks. The rebuilt
 LSST library has the original pre-prototype SHA256, confirming that no
 selective C change remains. All-project suites, executed notebooks and
-refreshed cross-code results remain pending before final acceptance.
+the final acceptance record remain pending. Cross-code results follow.
 
 The main cross-code refreshes completed: 32 OneCov stages, including
 complete small Fourier and real-space G/SSC/cNG/total matrices, and 63
@@ -121,8 +121,26 @@ only 0.00604% of its summed trispectrum. Identical power and moments
 still agree within 4.983e-6 fractionally. The natural-cubic control gives
 0.4875% at 11,993 nodes and 0.3883% at 23,985. Native TJPCov projected
 cNG/full totals have not yet been compared; do not infer those results
-from the separated matter terms. OneCov dependent refinement controls,
-quiet timings, project regressions and notebook outputs are still pending.
+from the separated matter terms.
+
+All 40 OneCov dependent controls also completed. The small complete
+Fourier and real-space totals are positive definite. Their generalized
+variance-ratio ranges, CoCoA relative to OneCov, are [0.954018, 1.006960]
+and [0.984788, 1.023480], respectively. These retain each native model's
+choices; the real-space comparison includes full-sky versus flat-sky
+transforms. They are not full-survey or Fisher convergence certificates.
+
+The input exporter preceded a source-text edit to the preparation helper.
+Both source hashes remain in the comparison provenance. Applying the
+committed helper to the archived native inputs reproduces every installed
+power/grid array byte exactly; no source-hash equality is assumed.
+
+Validated scripts and results are committed locally in OneCov-benchmark-
+as 89190ed/87ba6ba and in tjcovbenchmark as f98e2ce/b03301b. The production
+helper is core commit 1d4428d. Quiet timings, project regressions and
+executed notebook outputs remain pending. The sequential project runner
+has passed all 128 LSST covariance tests and is checking the data-vector
+sector next; this partial count is not all-project acceptance.
 
 ## Reproduction record
 
