@@ -109,8 +109,8 @@ three-run timing table remains the controlled timing comparison.
 Twenty targeted tests passed: four preparation tests, fourteen notebook
 utility checks and two production/notebook workflow checks. The rebuilt
 LSST library has the original pre-prototype SHA256, confirming that no
-selective C change remains. All-project suites, executed notebooks and
-the final acceptance record remain pending. Cross-code results follow.
+selective C change remains. All-project suites passed as recorded below;
+executed notebooks and quiet cross-code timings remain pending.
 
 The main cross-code refreshes completed: 32 OneCov stages, including
 complete small Fourier and real-space G/SSC/cNG/total matrices, and 63
@@ -137,10 +137,41 @@ power/grid array byte exactly; no source-hash equality is assumed.
 
 Validated scripts and results are committed locally in OneCov-benchmark-
 as 89190ed/87ba6ba and in tjcovbenchmark as f98e2ce/b03301b. The production
-helper is core commit 1d4428d. Quiet timings, project regressions and
-executed notebook outputs remain pending. The sequential project runner
-has passed all 128 LSST covariance tests and is checking the data-vector
-sector next; this partial count is not all-project acceptance.
+helper is core commit 1d4428d.
+
+### All-project regression, 2026-10-07
+
+Every data-vector and covariance test module passed, with no skips or
+changes to frozen references or scientific tolerances:
+
+| Project | Modules | Tests |
+| --- | ---: | ---: |
+| LSST Y1 | 36 | 185 |
+| Roman real | 22 | 105 |
+| Roman Fourier | 14 | 46 |
+| Roman KL | 15 | 50 |
+| DES Y3 | 17 | 64 |
+| DES x Planck | 14 | 46 |
+| DES cluster | 21 | 79 |
+| Total | 139 | 575 |
+
+The accepted XML records were checked against every expected module.
+The first Roman real fresh-process cache check stopped because the
+sandbox denied OpenMPI's local socket bind. Its unchanged retry passed
+with local socket permission. The failed attempt is preserved separately;
+the resumed runner reused 48 successful records with verified SHA256
+hashes and ran only unfinished modules. No failed XML enters the totals.
+
+The covariance-disabled LSST interface also reproduced its NLA and TATT
+reference likelihoods exactly. This check uses the previously built
+isolated library: global power refinement changes no C sources.
+
+The first notebook launch stopped before executing any cell because
+Jupyter did not forward the temporary kernel search path from its client
+configuration. Setting that path on the actual kernel-spec manager passed
+a startup/execute/shutdown smoke check. Only notebook execution resumed;
+all suite outputs and the unsuccessful launcher attempt are preserved.
+Notebook outputs and quiet timing tables are not yet accepted.
 
 ## Reproduction record
 
