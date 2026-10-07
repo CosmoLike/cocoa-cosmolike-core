@@ -110,7 +110,7 @@ Twenty targeted tests passed: four preparation tests, fourteen notebook
 utility checks and two production/notebook workflow checks. The rebuilt
 LSST library has the original pre-prototype SHA256, confirming that no
 selective C change remains. All-project suites and executed notebooks
-passed as recorded below; quiet cross-code timings remain pending.
+passed as recorded below; quiet cross-code timings are also complete.
 
 The main cross-code refreshes completed: 32 OneCov stages, including
 complete small Fourier and real-space G/SSC/cNG/total matrices, and 63
@@ -179,8 +179,35 @@ All seven computed totals passed their notebook positivity diagnostic
 after the likelihood selection. The original likelihood covariances are
 only comparison inputs; this is not a claim of reproducing their physics.
 The outputs are committed in their respective project repositories.
-Notebook execution times are not the controlled timing benchmark. Quiet
-cross-code timing tables remain pending.
+Notebook execution times are not the controlled timing benchmark.
+
+### Quiet cross-code timing completion, 2026-10-07
+
+OneCov-benchmark- completed 36 sequential timing commands after every
+regression and notebook job had finished. Eight OpenMP threads and one
+BLAS thread were used; the launch check found no other numerical workers.
+The published `results/global_power_20261006/timings.json` retains source
+and installed-power fingerprints, per-process samples and numerical checks.
+
+All four timed complete matrices exactly reproduce their accuracy archives:
+G, SSC, cNG, total, coordinates and signals, including OneCov's native
+real-space antisymmetry. Native settings were checked separately from
+output-directory and timing metadata. Component outputs are bitwise equal
+between the two fresh processes; common-input cross-code differences remain
+below 4.21e-15 of the variance scale.
+
+| Selected shear matrix | CoCoA construction | OneCov construction |
+| --- | ---: | ---: |
+| Fourier 100x100 | 20.9901 s | 71.5482 s |
+| Real-space 16x16 | 45.7640 s | 491.4991 s |
+
+These are single first-use measurements, excluding plotting and writing.
+Setup is separate in the published tables. Native halo choices differ,
+and CoCoA uses full-sky transforms while OneCov uses flat-sky transforms.
+The supplied-trispectrum 8x8 cNG projection favors OneCov by 2.09x/3.13x
+at 300/601 radial nodes; do not imply all individual kernels favor CoCoA.
+The measurements do not establish native cNG or Fisher convergence and
+do not time a full 1560-entry OneCov survey matrix.
 
 ## Reproduction record
 
