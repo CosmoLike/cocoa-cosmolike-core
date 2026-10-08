@@ -52,6 +52,17 @@ void power_rows_cov(
     exit(1);
   }
 
+  // The nonlinear reader shares the core's run-mode latch (cosmo3D.c,
+  // pdelta_dispatch), a static the first Pdelta-family call writes. On
+  // the production path this function can be that first call, so touch
+  // the dispatch serially here; the workers below then only read it.
+  // The linear reader is stateless, and one extra sample costs nothing.
+  if (linear) {
+    (void) p_lin(k[0][0], a);
+  } else {
+    (void) Pdelta(k[0][0], a);
+  }
+
   // Each worker reads a complete row at the common redshift. Its output
   // does not depend on any other row, so no synchronization is needed
   // between samples and no sum changes with the number of workers.
