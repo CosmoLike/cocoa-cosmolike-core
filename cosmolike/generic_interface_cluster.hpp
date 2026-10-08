@@ -36,7 +36,8 @@ using namespace std::literals; // enables "sv" literal
 //      pairs, mass-observable relation (MOR) and selection-bias parameters.
 //      Each setter checks sizes and NaNs and draws a new cache key from
 //      RandomNumber only when a value actually changed (fdiff), exactly as
-//      the galaxy setters of generic_interface.cpp do;
+//      the galaxy setters of generic_interface.cpp do (the pair setter
+//      init_cluster_pairs always draws, as init_ntomo_powerspectra does);
 //   2. the joint data vector ss, gs, gg, cg, N, cc, cs (lighthouse order):
 //      block sizes and starts, and the masked theory vector, including the
 //      data-vector-level parts of the model: the Y transform of cluster
@@ -107,11 +108,11 @@ constexpr int cluster_nselection = 4;      // see structs_cluster.h
 //   sqzd layout - only the mask == 1 entries, compacted in order.
 //
 // One difference in the covariance recipe. The core IP keeps the file's
-// diagonal at masked entries so that the FULL matrix stays invertible,
+// diagonal at masked entries so that the full matrix stays invertible,
 // then inverts the full matrix. In Y space the last theta bin of every cs
 // row is identically zero (the last row of T is zero), so its variance is
 // 0 and the full matrix is singular. IPCluster therefore checks and
-// inverts the SQUEEZED matrix, which contains only unmasked entries, and
+// inverts the squeezed matrix, which contains only unmasked entries, and
 // expands the inverse back to the full layout with zeros at masked
 // entries. Unmasked entries give the same chi2 either way.
 // ---------------------------------------------------------------------------
@@ -255,7 +256,9 @@ void init_cluster_model(
 void init_cluster_hmf_alpha_mode(const int hmf_alpha_mode);
 
 // Limber (1) or non-Limber (0) w_cc and w_cg (default: Limber, the paper's
-// choice for w_cg and the first milestone's for w_cc)
+// choice for w_cg; the paper runs w_cc non-Limber). The cosmo2D_cluster.c
+// engines implement Limber only: 0 aborts at the first w_cc / w_cg
+// evaluation.
 void init_cluster_adopt_limber(
     const int adopt_limber_cc,
     const int adopt_limber_cg

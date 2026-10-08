@@ -67,7 +67,7 @@ namespace py = pybind11;
 // pay the full batch cost per call (see each header).
 //
 // Cluster lensing comes in two forms. w_gammat_cluster_tomo_cpp is
-// the tangential shear gamma_t of the C engine: BEFORE the Y transform
+// the tangential shear gamma_t of the C engine: before the Y transform
 // (eq 15 of arXiv 2503.13631), the selection bias (eq 23) and the
 // shear calibration (1 + m), which generic_interface_cluster.cpp
 // applies on the data vector. w_sigma_cluster_tomo_cpp applies
@@ -158,10 +158,13 @@ static void warmup_pair_maps()
 
 // ---------------------------------------------------------------------------
 // Everything an evaluator needs before its first engine call: the bin
-// checks, the pair maps, and every lazily filled cluster table
-// (cluster_warmup: the n_nl, b_nl and P1h tables, the selection kernel,
-// the cluster n(z) and its lensing efficiency), all on the calling
-// thread. The cosmology and the cluster nuisance parameters must be set.
+// checks, the pair maps, and the lazily filled cluster tables
+// (cluster_warmup: the n_nl and b_nl tables, the selection kernel, the
+// cluster n(z) and its lensing efficiency, and the P1h table when
+// cluster.probe[CLUSTER_PROBE_CS] = 1), all on the calling thread.
+// Otherwise the C_cs engine builds the P1h table itself, serially,
+// before its threaded loops. The cosmology and the cluster nuisance
+// parameters must be set.
 //
 // Parameters:
 //   fname - name of the calling wrapper, for the message
@@ -367,7 +370,7 @@ arma::Mat<double> cc_richness_bins()
 // Cluster tangential shear gamma_t at every angular bin, richness bin
 // and (cluster, source) pair.
 //
-// This is gamma_t BEFORE the Y transform (eq 15 of arXiv 2503.13631),
+// This is gamma_t before the Y transform (eq 15 of arXiv 2503.13631),
 // the selection bias (eq 23) and the shear calibration (1 + m): the
 // interface applies the three on the data vector
 // (w_sigma_cluster_tomo_cpp returns that form).

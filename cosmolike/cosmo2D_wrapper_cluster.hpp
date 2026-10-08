@@ -35,11 +35,11 @@ namespace cosmolike_interface
 // (cosmo2D_cluster.c w_cc_tomo -> w_cc_tomo_cpp -> ci.w_cc_tomo).
 // w_sigma_cluster_tomo_cpp has no single engine: it is named after the
 // Sigma of the data vector it returns. The arrays are indexed by the
-// bins themselves,
+// bins themselves, in the argument order of the C functions:
 //
-//   (theta or ell, richness bin, cluster z bin, source or lens bin),
-//
-// the argument order of the C functions.
+//   cs, cg  (theta or ell, richness bin, cluster z bin, source or lens bin)
+//   cc      (theta or ell, richness bin, richness bin, cluster z bin)
+//   N       (richness bin, cluster z bin)
 //
 // Index names (cosmo2D_cluster.h): nt = theta bin, nl = richness bin,
 // ni = cluster redshift bin, ns = source bin, ng = lens bin.
@@ -67,7 +67,7 @@ arma::Mat<double> cc_richness_bins();
 // Real-space (theta-binned) statistics and number counts
 // ---------------------------------------------------------------------------
 
-// cluster gamma_t BEFORE the Y transform, the selection bias and the
+// cluster gamma_t before the Y transform, the selection bias and the
 // shear calibration: (Ntheta, richness_nbin, zdist_nbin, shear_nbin)
 pybind11::array_t<double,pybind11::array::f_style>
 w_gammat_cluster_tomo_cpp();
