@@ -158,3 +158,39 @@ Durable lessons (verified, do not relearn):
 - MNRAS papers number appendix equations per appendix (eq F1, B1-B2,
   C1-C9): main-text equation numbers in comments that exceed the paper
   count are a red flag worth checking against the LaTeX.
+
+## bfmt feedback-study port, 2026-10-08
+
+The owner's wavenumber-unit fix (roman_real 7c83681, lsst_y1 dfd145c)
+was extended fleet-wide: all eight likelihood prototypes request the
+bfmt suppression on 10^log10k_interp_2D in 1/Mpc and convert to h/Mpc
+only at ci.set_cosmology (audited - the likelihood path never had the
+bug); the six projects without the notebook study received it (des_y3
+4bae3fc, des_cluster 024fa96, desy1xplanck a45a641, roman_fourier
+8e130bb, roman_kl c90f2de - the project's first data-vector notebook -
+and des_y6 df63058, whose notebooks were rebuilt on cnu + inline
+wrappers and whose bespoke des_y6_notebook.py was deleted). All seven
+notebooks executed green and are committed with their chi2 tables.
+
+Fleet conventions (keep for any future feedback work):
+- The CAMB helper (cnu.get_camb_cosmology) returns log10k in h/Mpc;
+  get_baryon_suppression and the likelihoods' bfmt requirement read
+  1/Mpc. Convert ONCE, at the returned grid, with the standard comment
+  (see any port's compute_probes). Never hand the helper grid over raw.
+- Apply ln S to a PRIVATE copy of lnPNL with the stride loop
+  lnPNL[i :: len(z)] += ln S(z_i); linear tables never change (cluster
+  counts and the halo model ride on lnPL_cb - verified at run time:
+  des_cluster's per-block table shows the counts column at 0.000).
+- The chi2 table is three columns everywhere: method | chi2 |
+  Delta chi2 | chi2 of shift, no-feedback row first, shift contracted
+  with the full-layout zeroed inverse (the cluster path needs
+  get_inv_cov_masked_cluster). Against measured data the columns
+  separate the cross-term from the shift; against synthetic data they
+  coincide.
+- BARYON_METHODS is copied verbatim from lsst_y1 EXAMPLE_EVALUATE3
+  cell 10; BACCOemu stays commented with a project-true box statement
+  (Omega_b floor 0.04001, read from the emulator's parameter_ranges).
+- Run pytest per SUBDIRECTORY (tests/data_vector alone):
+  covariance/test_forecast.py lazily imports camb from site-packages
+  and poisons the cobaya-model tests when collected in the same
+  process (its docstring says "Run separately from tests/data_vector").
