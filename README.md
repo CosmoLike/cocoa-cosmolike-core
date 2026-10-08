@@ -32,8 +32,8 @@ supplies the calculations that those projects share.
 > overhead. Both routes call the same C kernels.
 >
 > In a matched **LSST Y1 covariance** test on an M2 Pro with eight threads,
-> the CLI averaged **68.34 s** (three runs); one wrapper run took **177.74 s**.
-> The CLI was **2.60× faster**, with bitwise-identical covariance components.
+> the CLI averaged **50.23 s** (three runs); one wrapper run took **173.38 s**.
+> The CLI was **3.45× faster**, with bitwise-identical covariance components.
 > Use project CLI entry points as the production performance baseline.
 
 The principal observables are galaxy clustering, galaxy–galaxy lensing
@@ -155,6 +155,7 @@ comments define their inputs, units and equations.
 | [cosmolike/covariances/](cosmolike/covariances/README.md) | Covariance components with their own numerical grids and integrations. |
 | [cfastpt/](cfastpt/) | C implementation of FAST-PT mode-coupling integrals. |
 | [cosmolike_notebook_utils/](cosmolike_notebook_utils/) | Shared cosmology preparation, plotting, Fisher and covariance tools. |
+| [cocoa_hybrid_sampling.py](cocoa_hybrid_sampling.py) | Shared CPU/MPI hybrid minimization, profiles and Nautilus entry points, reading each project's evaluate YAML. |
 | [cocoa_testing.py](cocoa_testing.py) | Shared machinery for project reference checks, independent processes and repeatability tests. |
 | [log.c/](log.c/README.md) | C logging library. |
 | [dev_scripts/](dev_scripts/) | Source-comment and function-header checks. |
@@ -381,6 +382,19 @@ explains those limits, the known Y null rows, and the saved row positions.
 > halo statistics alone do not supply a massive-neutrino covariance model.
 
 # Shared Python tools <a name="python"></a>
+
+The project `EXAMPLE_EMUL2_MINIMIZE`, `PROFILE` and `NAUTILUS` scripts share
+[`cocoa_hybrid_sampling.py`](cocoa_hybrid_sampling.py). Each loads the matching
+hybrid evaluate YAML; `--check` evaluates its fiducial without sampling.
+The annealed Emcee minimization and profiles include priors. Nautilus uses
+Cobaya's independent prior distributions and includes external prior factors
+once. MPI ranks own their models locally and exchange parameter arrays and
+scalar scores. See the [LSST Y1 hybrid examples](https://github.com/CosmoLike/cocoa_lsst_y1#cobaya_base_code_examples_emul2)
+for CPU setup, output formats, convergence limits and multi-node launch steps.
+The [validation record](dev_scripts/hybrid_sampling_validation_20261007.json)
+covers all 16 project configurations and short serial/two-rank sampler checks;
+it does not establish full-chain convergence or multi-node scaling.
+
 
 The notebooks keep their survey inputs and initialization in their
 project. Reusable calculations live here. The shared package does not

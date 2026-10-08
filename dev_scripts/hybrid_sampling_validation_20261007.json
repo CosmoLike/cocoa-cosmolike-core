@@ -1,0 +1,274 @@
+{
+  "date": "2026-10-07",
+  "helper_sha256": "c94a6868beffb67430d78a0a8abc2148bc6bd6830c20b10195f0835b1b6bd7eb",
+  "project_checks": [
+    {
+      "project": "des_cluster",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "2ae7fa48209a8ac23cd560706be649d5a14d776b1ee81cdabc081327fc7aff2b",
+      "log_prior": 22.94103162,
+      "log_likelihood": -3.666629801,
+      "passed": true
+    },
+    {
+      "project": "des_cluster",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "ec1c75655c08436a1fb7c13bbf8825cfc3d9c34bb09025bf4950565b94e5d97d",
+      "log_prior": 0.3552759175,
+      "log_likelihood": -4.733529004,
+      "passed": true
+    },
+    {
+      "project": "des_y3",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "9b4e523d38d385fade6b515683e559c666144ded308aa8f167f80bbd6b674dab",
+      "log_prior": -11.88352478,
+      "log_likelihood": -130.2833686,
+      "passed": true
+    },
+    {
+      "project": "des_y3",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "cb1d507e6e80d85e005999c3239877ea1167ab53807f64b2acc320299f52513b",
+      "log_prior": 5.056589223,
+      "log_likelihood": -425.4990121,
+      "passed": true
+    },
+    {
+      "project": "des_y6",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "66d6c21b3effb4f9656345ae33dbedbf56bbe7c3247c3689518623f4af61f440",
+      "log_prior": 52.84521067,
+      "log_likelihood": -644.9416871,
+      "passed": true
+    },
+    {
+      "project": "des_y6",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "c7cd55faaa1fa4af6ead0fd53f436e959dfbafe0f2df36e35c0c7a28778c7f5c",
+      "log_prior": 31.29968183,
+      "log_likelihood": -259.9961595,
+      "passed": true
+    },
+    {
+      "project": "desy1xplanck",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "883dc3467feb4eb22cd6d316d931b2f9adc683cf75c8af76b1b3fed634e96b13",
+      "log_prior": 16.11997285,
+      "log_likelihood": -372.7544083,
+      "passed": true
+    },
+    {
+      "project": "desy1xplanck",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "ee05ed98a686137b10649a22a3b344d341c1c1dc867d6824df704709336f8b47",
+      "log_prior": 19.81260631,
+      "log_likelihood": -1139.568269,
+      "passed": true
+    },
+    {
+      "project": "lsst_y1",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "89eb6ebdd9604b35815f7f0719d23134bf0f68de8c1e1962fc45411cb44a4513",
+      "log_prior": -1076.510063,
+      "log_likelihood": -0.1426399524,
+      "passed": true
+    },
+    {
+      "project": "lsst_y1",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "23bda7e4ec1da8dbc3479124f0013438737b257521ce586ee331fc36985f9b42",
+      "log_prior": -1064.948674,
+      "log_likelihood": -0.5150773774,
+      "passed": true
+    },
+    {
+      "project": "roman_fourier",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "1f32a61e1f20419872e6a8e728e2c17df4423abd2eadb20cdef8bf785d64d247",
+      "log_prior": 59.35314633,
+      "log_likelihood": -245.1934219,
+      "passed": true
+    },
+    {
+      "project": "roman_fourier",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "7786e734ddbe133924f4b7402e14e41bfbf7104748a4a532bb4b3b80b1257847",
+      "log_prior": 58.45039241,
+      "log_likelihood": -10.8378618,
+      "passed": true
+    },
+    {
+      "project": "roman_kl",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "3e599d1ceba599e33d244cb0e4dc17061ccec2044281ec42912e6c1775d8d0b2",
+      "log_prior": 132.8375726,
+      "log_likelihood": -4.433729626,
+      "passed": true
+    },
+    {
+      "project": "roman_kl",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "00e5a6ccd331e40562d09699dfb807b624769f1b9a33c0c816fd663893d783e4",
+      "log_prior": 120.0282341,
+      "log_likelihood": -9.287246707,
+      "passed": true
+    },
+    {
+      "project": "roman_real",
+      "example": 1,
+      "input": "EXAMPLE_EMUL2_EVALUATE1.yaml",
+      "input_sha256": "2190625952e35927a04d490e0819a444211f4409032d5ada1136fe94599cc744",
+      "log_prior": 70.05636866,
+      "log_likelihood": -0.4470289275,
+      "passed": true
+    },
+    {
+      "project": "roman_real",
+      "example": 2,
+      "input": "EXAMPLE_EMUL2_EVALUATE2.yaml",
+      "input_sha256": "87d5d97051d4d0a4a48e22bba305fb8fb0d659197e5d2a748da1c46c02fa8dc6",
+      "log_prior": 54.51058053,
+      "log_likelihood": -1.885460432,
+      "passed": true
+    }
+  ],
+  "sampler_smoke": {
+    "serial_minimize": {
+      "input_sha256": "76cbc1754ccc0c4ee3f7e9617f91cc80f5dd3489b9a5f0a21f8e3442a75120c2",
+      "parameters": [
+        "DES_M1",
+        "DES_M2",
+        "DES_M3"
+      ],
+      "mode": "minimize",
+      "seed": 42,
+      "omp_threads": "2",
+      "mpi_ranks": 1,
+      "point": [
+        -0.0033730312114862633,
+        0.006463891530856059,
+        0.01588231369684488
+      ],
+      "minus2_log_posterior": 1264.7902972015247,
+      "nstw": 2
+    },
+    "serial_profile_final": {
+      "input_sha256": "76cbc1754ccc0c4ee3f7e9617f91cc80f5dd3489b9a5f0a21f8e3442a75120c2",
+      "parameters": [
+        "DES_M1",
+        "DES_M2",
+        "DES_M3"
+      ],
+      "mode": "profile",
+      "seed": 42,
+      "omp_threads": "2",
+      "mpi_ranks": 1,
+      "profile": "DES_M1",
+      "grid": [
+        -0.004533031211486263,
+        -0.0033730312114862633,
+        -0.0022130312114862632
+      ],
+      "nstw": 2
+    },
+    "mpi_minimize": {
+      "input_sha256": "76cbc1754ccc0c4ee3f7e9617f91cc80f5dd3489b9a5f0a21f8e3442a75120c2",
+      "parameters": [
+        "DES_M1",
+        "DES_M2",
+        "DES_M3"
+      ],
+      "mode": "minimize",
+      "seed": 42,
+      "omp_threads": "2",
+      "mpi_ranks": 2,
+      "point": [
+        -0.0033730312114862633,
+        0.006463891530856059,
+        0.01588231369684488
+      ],
+      "minus2_log_posterior": 1264.7902972015247,
+      "nstw": 2
+    },
+    "mpi_profile": {
+      "input_sha256": "76cbc1754ccc0c4ee3f7e9617f91cc80f5dd3489b9a5f0a21f8e3442a75120c2",
+      "parameters": [
+        "DES_M1",
+        "DES_M2",
+        "DES_M3"
+      ],
+      "mode": "profile",
+      "seed": 42,
+      "omp_threads": "2",
+      "mpi_ranks": 2,
+      "profile": "DES_M1",
+      "grid": [
+        -0.004533031211486263,
+        -0.0033730312114862633,
+        -0.0022130312114862632
+      ],
+      "nstw": 2
+    },
+    "mpi_nautilus": {
+      "input_sha256": "76cbc1754ccc0c4ee3f7e9617f91cc80f5dd3489b9a5f0a21f8e3442a75120c2",
+      "parameters": [
+        "DES_M1",
+        "DES_M2",
+        "DES_M3"
+      ],
+      "mode": "nautilus",
+      "seed": 42,
+      "omp_threads": "2",
+      "mpi_ranks": 2,
+      "converged": true,
+      "log_evidence": -644.9637711465779,
+      "evaluations": 800,
+      "posterior_samples": 400,
+      "effective_samples": 180.5259864106509
+    },
+    "serial_budget_guard": {
+      "input_sha256": "76cbc1754ccc0c4ee3f7e9617f91cc80f5dd3489b9a5f0a21f8e3442a75120c2",
+      "parameters": [
+        "DES_M1",
+        "DES_M2",
+        "DES_M3"
+      ],
+      "mode": "nautilus",
+      "seed": 42,
+      "omp_threads": "2",
+      "mpi_ranks": 1,
+      "converged": false,
+      "log_evidence": null,
+      "evaluations": 400,
+      "posterior_samples": 0,
+      "effective_samples": 0.0
+    }
+  },
+  "scope": "Workflow checks only. Sampler smoke fixes the DES Y6 hybrid cosmology and other nuisance parameters at the YAML fiducial, sampling DES_M1, DES_M2 and DES_M3. No full posterior or emulator accuracy claim.",
+  "checks": [
+    "All 16 public hybrid evaluate configurations return finite priors and likelihoods.",
+    "Serial and two-rank MPI minimization/profile outputs agree bitwise with seed 42.",
+    "Nautilus has 400 finite weighted rows; weights sum to one.",
+    "Exhausted-budget case saves no posterior chain and reports converged=false.",
+    "48 entry-point scripts parse; README local links and anchors resolve."
+  ],
+  "limitations": [
+    "MPI tested locally on two ranks, not on multiple nodes.",
+    "Short reduced-model sampler runs do not establish convergence for the public high-dimensional examples."
+  ]
+}
