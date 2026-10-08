@@ -155,6 +155,15 @@ arma::Col<double> covariance_power_vector_cpp(
     const bool linear          // linear or configured nonlinear power
   );
 
+// Linear power for base-10 log wavenumbers plus one scalar shift
+// (linear_power_logk_rows_cov): arma::Mat with the shape of log10k, in
+// (c/H0)^3. k = 10^(log10k+shift); not bitwise the physical-k reader.
+arma::Mat<double> covariance_power_logk_cpp(
+    const double a,                   // scale factor
+    const arma::Mat<double>& log10k, // base-10 logs before the shift
+    const double shift               // common addend to every sample
+  );
+
 // Planar tree-level averages <P>, <B_tree>, <T_tree> (tree_averages_cov):
 // arma::Mat [3,npair] in (c/H0)^3, ^6, ^9.
 arma::Mat<double> covariance_tree_averages_cpp(

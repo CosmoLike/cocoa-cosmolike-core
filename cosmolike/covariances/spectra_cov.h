@@ -58,6 +58,24 @@ void power_rows_cov(
     double* const* power            // caller-owned output rows
   );
 
+// Read LINEAR power for rows of base-10 log wavenumbers plus one scalar
+// shift: the physical wavenumber of sample m is 10^(log10k[m]+shift) in
+// (c/H0)^-1. Built for the connected-covariance angle grid, whose log
+// wavenumbers are shared by every radial shell up to the per-shell shift
+// -log10(f_K); taking the logarithms once removes the per-sample log10
+// from the standard reader's critical path (it computes the table index,
+// so every load waits on it). The shifted sum is not bitwise log10(k):
+// last-bit differences against power_rows_cov with linear=1 are expected.
+// Shapes, units, ownership and the OpenMP contract match power_rows_cov.
+void linear_power_logk_rows_cov(
+    const double a,                  // shared scale factor
+    const int nrow,                  // independent log-wavenumber rows
+    const int ncol,                  // samples per row
+    const double* const* log10k,     // base-10 logs before the shift
+    const double shift,              // common addend to every sample
+    double* const* power            // caller-owned output rows
+  );
+
 // Evaluate every field pair on one common radial rule. This is a Limber
 // spectrum builder, not a non-Limber approximation at small multipoles.
 // Output rows use i-major triangular order: (0,0),(0,1),...,(1,1),...

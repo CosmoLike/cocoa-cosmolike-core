@@ -70,7 +70,10 @@ namespace cosmolike_interface
 //     OpenBLAS was loaded (num_cpu_avail in OpenBLAS's common_thread.h).
 //     After set_omp_threads(n) the next BLAS call therefore sizes its
 //     team to min(n, load-time value): BLAS stays serial only when
-//     OMP_NUM_THREADS was 1 at load (the Cocoa default).
+//     OMP_NUM_THREADS was 1 at load (the Cocoa default). The dense
+//     algebra call sites therefore also hold a ScopedSerialAlgebra
+//     guard (generic_interface.hpp), which caps omp_get_max_threads()
+//     at one for the factorization scope and restores the team after.
 // dlsym finds the function in the loaded libraries without requiring an
 // OpenBLAS-specific link symbol when another BLAS backend is used.
 //
@@ -4284,35 +4287,68 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
-  // Ask OpenBLAS for one thread before the matrix algebra (a pthreads
-  // build keeps it; an OpenMP build follows omp_get_max_threads() at its
-  // next call, see set_blas_single_threaded). Subsequent explicit OpenMP
-  // loops keep their own requested team size. Do not restore a larger
-  // BLAS team.
+  // Ask OpenBLAS for one thread (a pthreads build keeps it; an OpenMP
+  // build follows omp_get_max_threads() at its next call, see
+  // set_blas_single_threaded), then hold the dense algebra itself on one
+  // thread with the scope guard. The scope closes before the masking
+  // loops, which keep their own requested team size.
+  //
+  // Invert the CORRELATION matrix, never the raw covariance. A joint
+  // data vector mixes probes whose variances span many orders of
+  // magnitude (counts ~1e4 next to two-point entries ~1e-15 in the
+  // cluster 6x2pt+N vector), so the raw matrix's condition number
+  // leaves arma::inv's LU factorization almost no correct digits:
+  // the residual test below caught wrong inverses from the raw-matrix
+  // path at max |R R^-1 - I| = 1.7e-4 (threaded BLAS) and 3.5e-3 (one
+  // BLAS thread) on matrices whose equilibrated form inverts to 1e-13.
+  // R = C/(sigma_i sigma_j) is scale invariant with a unit diagonal,
+  // solve(R, I) gives R^-1 column by column, and
+  // (C^-1)_ij = (R^-1)_ij/(sigma_i sigma_j) restores the covariance
+  // inverse. The sibling IPCluster::set_inv_cov uses this same
+  // equilibrated solve, for the same measured reason.
   set_blas_single_threaded();
-  vector eigvals = arma::eig_sym(this->cov_masked_);
-  for(int i=0; i<this->ndata_; i++) {
-    if(eigvals(i) < 0) [[unlikely]] {
-      critical("{}: masked cov not positive definite", fname); exit(1);
+  {
+  [[maybe_unused]] const ScopedSerialAlgebra serial_algebra;
+  for (int i=0; i<this->ndata_; i++) {
+    if (!(this->cov_masked_(i,i) > 0.0)) [[unlikely]] {
+      critical("{}: non-positive variance {} at entry {}",
+        fname, this->cov_masked_(i,i), i);
+      exit(1);
     }
   }
 
-  this->inv_cov_masked_ = arma::inv(this->cov_masked_);
-
-  // Test the inverse before masking it. Divide out each data entry's
-  // standard deviation so xi, gamma_t and other probes are compared on
-  // the same scale: R_ij = C_ij/(sigma_i sigma_j) has unit diagonal,
-  // and (R^-1)_ij = (C^-1)_ij sigma_i sigma_j. Their product must be I.
+  // The positivity check also runs on the correlation matrix: raw
+  // eigenvalues carry round-off of order 1e-16 times the largest
+  // eigenvalue, which crosses zero exactly when the scales are mixed.
   const vector sigma = arma::sqrt(this->cov_masked_.diag());
   const matrix sigma_pair = sigma*sigma.t();
   const matrix corr = this->cov_masked_/sigma_pair;
-  const matrix inv_corr = this->inv_cov_masked_ % sigma_pair;
-  const double residual = arma::abs(corr*inv_corr
-    - arma::eye<matrix>(this->ndata_, this->ndata_)).max();
+  const vector eigvals = arma::eig_sym(corr);
+  for(int i=0; i<this->ndata_; i++) {
+    if (!(eigvals(i) > 0.0)) [[unlikely]] {
+      critical("{}: masked correlation matrix not positive definite "
+        "(eigenvalue {} = {})", fname, i, eigvals(i));
+      exit(1);
+    }
+  }
+
+  // Solve R X = I: each column of X is the solution for one unit
+  // vector on the right-hand side, so X is R^-1. A wrong inverse would
+  // change every chi2; stop here if the residual exceeds tolerance.
+  const matrix ident = arma::eye<matrix>(this->ndata_, this->ndata_);
+  matrix inv_corr;
+  if (!arma::solve(inv_corr, corr, ident)) [[unlikely]] {
+    critical("{}: inversion of the masked correlation matrix failed",
+      fname);
+    exit(1);
+  }
+  const double residual = arma::abs(corr*inv_corr - ident).max();
   if (!(residual < 1.0e-8)) [[unlikely]] {
     critical("{}: the inverse of the masked correlation matrix is wrong "
       "(max |R R^-1 - I| = {})", fname, residual);
     exit(1);
+  }
+  this->inv_cov_masked_ = inv_corr/sigma_pair;
   }
 
   // apply mask again to make sure numerical errors in matrix inversion don't 
@@ -4542,6 +4578,10 @@ void ima::RealData::set_PMmarg(std::string U_PMmarg_file)
   };
   // Calculate precision matrix correction
   // invC * U * (I+UT*invC*U)^-1 * UT * invC
+  // one thread for the dense products, the inversion and the eigenvalue
+  // checks (ScopedSerialAlgebra: the OpenMP OpenBLAS hazard of
+  // IP::set_inv_cov); the scope runs to the end of this function
+  [[maybe_unused]] const cosmolike_interface::ScopedSerialAlgebra serial_algebra;
   arma::Mat<double> iden = arma::eye<arma::Mat<double>>(tomo.clustering_Nbin, tomo.clustering_Nbin);
   arma::Mat<double> central_block = iden + U.t() * this->inv_cov_masked_ * U;
   // test positive-definite

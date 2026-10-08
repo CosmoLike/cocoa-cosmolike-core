@@ -171,6 +171,19 @@ void bind_covariance_components(py::module_& module)
       "Read a k vector or matrix at one a; preserve its physical axes.",
       py::arg("a"), py::arg("k"), py::arg("linear") = true);
 
+  // log10k [nrow,ncol] -> linear power [nrow,ncol]; the scalar shift
+  // carries the per-shell factor: k = 10^(log10k+shift). Same contract as
+  // the production binding of the same name.
+  module.def("covariance_power_logk",
+      [](const double a, const py::object& log10k,
+         const double shift) -> py::object {
+        const arma::Mat<double> grid =
+            notebook_input_cov<arma::Mat<double>>(log10k, 2);
+        return py::cast(covariance_power_logk_cpp(a, grid, shift));
+      },
+      "Linear power for a base-10 log-wavenumber matrix plus one shift.",
+      py::arg("a"), py::arg("log10k"), py::arg("shift"));
+
   // k and pk [2,npair], corner and weight [nangle], ps [npair,nangle]
   // -> averages [3,npair]: <P>, <B_tree>, <T_tree>.
   module.def("covariance_tree_averages", [](

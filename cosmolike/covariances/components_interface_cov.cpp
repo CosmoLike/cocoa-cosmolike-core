@@ -706,6 +706,41 @@ static cov_array covariance_power(
 
 
 // ---------------------------------------------------------------------------
+// Linear power for base-10 log wavenumbers plus one scalar shift.
+//
+// Same lnPL table read as covariance_power with linear=true, minus the
+// per-sample log10: the caller supplies the log wavenumbers once and
+// moves the shell dependence into the scalar shift (the
+// connected-covariance angle grid is shared by every radial shell up to
+// -log10(f_K)). The physical wavenumber of each sample is
+// 10^(log10k+shift) in (c/H0)^-1. Not bitwise the physical-k reader: the
+// shifted sum rounds differently in the last bits (spectra_cov.h). log10k
+// is a 2D array; rows are distributed over OpenMP workers by C.
+// ---------------------------------------------------------------------------
+static cov_array covariance_power_logk(
+    const double a,          // scale factor inside the initialized range
+    const cov_array& log10k, // [nrow,ncol] base-10 logs before the shift
+    const double shift       // common addend to every sample
+  )
+{
+  matrix_cov(log10k, "log10k");
+  if (!std::isfinite(a)
+      || a < limits.a_min
+      || a >= 1.0
+      || !std::isfinite(shift)
+      || cosmology.lnPL == nullptr) {
+    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+  }
+  cov_array output(log10k.request().shape);
+  auto logk_rows = input_rows_cov(log10k);
+  auto rows = output_rows_cov(output);
+  linear_power_logk_rows_cov(a, log10k.shape(0), log10k.shape(1),
+      logk_rows.data(), shift, rows.data());
+  return output;
+}
+
+
+// ---------------------------------------------------------------------------
 // Planar angular averages of tree-level P, B and T for the covariance.
 //
 // The angular rule and its power samples are supplied together. The
@@ -916,6 +951,12 @@ void bind_production_components_cov(py::module_& module)
       "Read power for a k vector or matrix at one a; retain its shape. "
       "Matrix rows use OpenMP. Input/output use the core c/H0 units.",
       py::arg("a"), py::arg("k").noconvert(), py::arg("linear") = true);
+
+  module.def("covariance_power_logk", &covariance_power_logk,
+      "Linear power for [nrow,ncol] base-10 log wavenumbers plus one "
+      "scalar shift: k = 10^(log10k+shift) in (c/H0)^-1. Rows use OpenMP. "
+      "Not bitwise covariance_power at the same k (last bits).",
+      py::arg("a"), py::arg("log10k").noconvert(), py::arg("shift"));
 
   module.def("covariance_tree_averages", &covariance_tree_averages,
       "Planar P/B/T averages [3,npair] from supplied linear-power inputs.",

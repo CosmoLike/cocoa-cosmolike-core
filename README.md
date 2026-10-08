@@ -13,7 +13,8 @@
    3. [FAQ: What does the cluster code calculate?](#clusters)
    4. [FAQ: Which units do the interfaces use?](#units)
    5. [FAQ: How are accuracy and parallelism controlled?](#numerics)
-   6. [FAQ: What establishes a usable covariance?](#positivity)
+   6. [FAQ: Why does the cNG read the power spectrum in log k?](#logk)
+   7. [FAQ: What establishes a usable covariance?](#positivity)
 
 # Overview <a name="overview"></a>
 
@@ -299,7 +300,7 @@ the equations, conventions and approximations for each component.
 | --- | --- |
 | [fftlog_cov.c](cosmolike/covariances/fftlog_cov.c), [nonlimber_cov.c](cosmolike/covariances/nonlimber_cov.c) | Shared-plan FFTLog and all-pairs Gaussian gg/gs non-Limber corrections. |
 | [ia_cov.c](cosmolike/covariances/ia_cov.c) | Higher-order Gaussian TATT E and B spectra from core IA amplitudes and FAST-PT kernels. |
-| [spectra_cov.c](cosmolike/covariances/spectra_cov.c) | Common radial windows and all lens/source Limber cross spectra. |
+| [spectra_cov.c](cosmolike/covariances/spectra_cov.c) | Common radial windows, all lens/source Limber cross spectra, and the shifted-log linear-power reader of the cNG angle grid ([why log k](#logk)). |
 | [operators_cov.c](cosmolike/covariances/operators_cov.c) | Full-sky, bin-averaged real-space transformations and multipole-band weights. |
 | [gaussian_cov.c](cosmolike/covariances/gaussian_cov.c) | Gaussian spectrum pairings, rectangular matrix projection and analytic pair noise. |
 | [assembly_cov.c](cosmolike/covariances/assembly_cov.c) | Complete Gaussian matrices and connected projections shared by production and notebook calls. |
@@ -709,6 +710,58 @@ initialization before parallel evaluation; do not change that state from
 concurrent Python threads. Use separate processes for independent
 cosmologies and size the OpenMP team for the cores assigned to each process.
 Timing comparisons require a quiet machine and one calculation at a time.
+
+## FAQ: Why does the cNG read the power spectrum in log k? <a name="logk"></a>
+
+The cNG angle integrals evaluate the linear power at the internal
+momentum $`\lvert\mathbf{k}+\mathbf{q}\rvert`$ for every wavenumber
+pair and every angular node: at the baseline grids that is 15,852,480
+table reads per radial shell, the largest single cost of a covariance
+run.
+
+The standard reader (`p_lin_at_a`, [cosmo3D.c](cosmolike/cosmo3D.c))
+takes one `log10(k)` per sample to locate the table cell. That
+logarithm is the first link of each sample's dependency chain: its
+result is the table index, so the four table loads and the bilinear
+interpolation all wait for it, and out-of-order execution cannot hide
+the first link of a chain. The `exp` that returns from the stored
+$`\ln P`$ to $`P`$ sits at the chain's end, where its latency hides
+under the next sample's loads; removing it changes the cost by about
+one percent, so it stays.
+
+Under the Limber projection the internal-momentum grid is the same at
+every radial shell up to one factor: $`k = \mathrm{magnitude}/f_K`$,
+with the magnitude fixed in multipole units. The logarithm is
+therefore shift-invariant,
+
+```math
+\log_{10}(k) = \log_{10}(\mathrm{magnitude}) - \log_{10}(f_K),
+```
+
+so [survey.py](cosmolike_notebook_utils/covariance/survey.py) takes
+the table of logarithms once per run and each shell supplies one
+scalar shift to the reader `linear_power_logk_rows_cov`
+([spectra_cov.c](cosmolike/covariances/spectra_cov.c)). This also
+removes the per-shell division of the whole grid by $`f_K`$, which
+existed only to feed the reader.
+
+Measured on 2026-10-08 (Apple M2 Pro, 8 OpenMP threads): the
+per-sample `log10` was 46% of the read; the per-shell internal read
+went from 52–73 ms to 21–25 ms; the LSST Y1 real-space construction
+went from 53.4 s to 32.3 s, and the DES cluster joint construction
+from 100.9 s to 70.1 s.
+
+The shifted sum is not bitwise the logarithm of the quotient:
+$`\log_{10}(m) - \log_{10}(f_K)`$ and $`\log_{10}(m/f_K)`$ differ in
+the last bits, so cNG entries move by at most 5.0e-18 in absolute
+value. The Gaussian and SSC blocks do not pass through this reader
+and are bitwise unchanged.
+
+> [!Warning]
+> Do not route the internal-momentum read back through
+> `covariance_power` with `k = magnitude/distance`: that restores the
+> per-sample `log10` and the per-shell division of the full grid,
+> 30% to 40% of the construction time.
 
 ## FAQ: What establishes a usable covariance? <a name="positivity"></a>
 

@@ -7,8 +7,10 @@
 // prepares the radial ingredients of those spectra and the Limber spectra
 // themselves. Reading order:
 //
-//   1. power_rows_cov     - matter power P(k,a) for independent rows of
-//                           wavenumbers at one scale factor
+//   1. power_rows_cov, linear_power_logk_rows_cov
+//                         - matter power P(k,a) for independent rows of
+//                           wavenumbers at one scale factor (physical
+//                           values, or base-10 logs plus a shared shift)
 //   2. lensing_efficiency_cov, fill_radial_cov
 //                         - lensing efficiency g(chi) and the density,
 //                           lensing/magnification and signed NLA windows
@@ -136,6 +138,151 @@ void power_rows_cov(
       p_lin_at_a(a, k[row], ncol, power[row]);
     } else {
       Pdelta_at_a(a, k[row], ncol, power[row]);
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Locate the z bracket on the core's piecewise-uniform redshift grid.
+//
+// Verbatim copy of the core's piecewise_index (cosmo3D.c): that helper is
+// file-local (static) there, so it cannot be linked from this module.
+// Keep the two copies identical.
+//
+// Returns:
+//   bracket index j with grid[j] <= q < grid[j+1], clamped to
+//   [0, n_total-2]
+// ---------------------------------------------------------------------------
+static inline int piecewise_index(double q,
+                                  int nseg,
+                                  const int *start,
+                                  const int *len,
+                                  const double *xmin,
+                                  const double *inv_dx,
+                                  int n_total)
+{
+  // Pick the segment: q is in segment s if q is in [xmin[s], xmin[s+1]).
+  // Linear scan is fine for nseg <= ~10 (branch-predicted, all in L1).
+  int s = 0;
+  while (s < nseg - 1 && q >= xmin[s+1]) s++;
+
+  // Direct index within segment s.
+  int j = start[s] + (int)((q - xmin[s]) * inv_dx[s]);
+
+  // Clamp to valid bilinear bracket range.
+  if (j < 0)             j = 0;
+  if (j > n_total - 2)   j = n_total - 2;
+  return j;
+}
+
+
+// ---------------------------------------------------------------------------
+// Read linear matter power for rows of base-10 LOG wavenumbers plus a shift.
+//
+// The connected-covariance angle integrals read P_lin at the internal
+// momentum |K+Q| for every (pair, angle) sample. Under Limber that grid is
+// the same at every radial shell up to one overall factor: the wavenumber
+// of sample m at a shell with transverse distance f_K is
+// k[m] = magnitude[m]/f_K, with magnitude fixed in multipole units. The
+// standard reader (p_lin_at_a, cosmo3D.c) computes log10(k/coverH0) for
+// every sample, and that logarithm heads each sample's dependency chain:
+// its result is the table index, so the four table loads and everything
+// after them wait on it. On the shared grid the logarithm is
+// shift-invariant,
+//
+//   log10(magnitude/f_K/coverH0) = log10(magnitude)
+//                                  - log10(f_K) - log10(coverH0),
+//
+// so the caller takes log10(magnitude) once for the whole run and this
+// reader adds one scalar per call. Removing the per-sample log10 roughly
+// halves the read on the production |K+Q| grid. The exp that restores P
+// from the stored lnP stays: its latency hides under the next sample's
+// table loads, so removing it buys about one percent.
+//
+// The sum log10k + shift is NOT bitwise the standard reader's
+// log10(k/coverH0): a sum of separately rounded logarithms differs in the
+// last bits, so the interpolation weight dx (and, for a sample within one
+// ulp of a cell edge, the index i) can differ there too. A caller that
+// requires bitwise agreement with p_lin_at_a keeps the standard reader.
+//
+// From the shifted logarithm on, the body is p_lin_at_a's wavenumber half
+// with the same clamp, the same bilinear read of the lnPL table, the same
+// exp and the same unit factor; the z bracket runs once per call, as
+// there. The linear table is stateless (no lazy first-call build), so the
+// parallel rows only read initialized memory.
+//
+// Parameters:
+//   a      - scale factor shared by every sample
+//   nrow   - number of independent rows, at least 1
+//   ncol   - samples per row, at least 1
+//   log10k - [nrow][ncol] base-10 log wavenumbers before the shift
+//   shift  - common addend: the physical wavenumber of sample m is
+//            10^(log10k[m]+shift) in (c/H0)^-1, so a caller holding
+//            log10(magnitude) passes -log10(f_K)
+//   power  - [nrow][ncol] caller-owned output in (c/H0)^3, not
+//            overlapping log10k
+//
+// Call outside an OpenMP region, after initializing the linear power
+// table. Rows are divided among OpenMP workers; samples within a row are
+// read in order by one worker.
+// ---------------------------------------------------------------------------
+void linear_power_logk_rows_cov(
+    const double a,                  // shared scale factor
+    const int nrow,                  // independent log-wavenumber rows
+    const int ncol,                  // samples per row
+    const double* const* log10k,     // base-10 logs before the shift
+    const double shift,              // common addend to every sample
+    double* const* power            // caller-owned output rows
+  )
+{
+  if (nrow < 1
+      || ncol < 1) {
+    log_fatal("linear_power_logk_rows_cov needs positive row and column "
+              "counts");
+    exit(1);
+  }
+
+  // One scalar completes the shift: the standard reader's logarithm is
+  // log10(k/coverH0) = log10k + shift - log10(coverH0).
+  const double total_shift = shift - log10(cosmology.coverH0);
+
+  // The z half of the bilinear read depends only on a: one bracket and
+  // one weight serve every sample, exactly as in p_lin_at_a.
+  const double z = 1.0 / a - 1.0;
+  const int j = piecewise_index(z, cosmology.lnPL_z_nseg,
+                                cosmology.lnPL_z_seg_start,
+                                cosmology.lnPL_z_seg_len,
+                                cosmology.lnPL_z_seg_xmin,
+                                cosmology.lnPL_z_seg_inv_dx,
+                                cosmology.lnPL_nz);
+  const double zj  = cosmology.lnPL[cosmology.lnPL_nk][j  ];
+  const double zj1 = cosmology.lnPL[cosmology.lnPL_nk][j+1];
+  const double dy = (z - zj) / (zj1 - zj);
+
+  // One iteration fills one complete output row. A row depends on no
+  // other row and the table is read-only here, so no value depends on the
+  // number of workers; the static schedule gives each worker a contiguous
+  // block of rows.
+  #pragma omp parallel for schedule(static)
+  for (int row=0; row<nrow; row++) {
+    for (int m=0; m<ncol; m++) {
+      const double lg = log10k[row][m] + total_shift;
+      int i = (int)((lg - cosmology.lnPL_log10k_min)
+                    * cosmology.lnPL_log10k_inv_dx);
+      if (i < 0)                       i = 0;
+      if (i > cosmology.lnPL_nk - 2)   i = cosmology.lnPL_nk - 2;
+      const double xi  = cosmology.lnPL[i  ][cosmology.lnPL_nz];
+      const double xi1 = cosmology.lnPL[i+1][cosmology.lnPL_nz];
+      const double dx = (lg - xi) / (xi1 - xi);
+      const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnPL[i  ][j  ]
+                             + (1-dx)*   dy  * cosmology.lnPL[i  ][j+1]
+                             +    dx *(1-dy) * cosmology.lnPL[i+1][j  ]
+                             +    dx *   dy  * cosmology.lnPL[i+1][j+1];
+      power[row][m] = exp(out_lnP)
+                      / (cosmology.coverH0
+                         * cosmology.coverH0
+                         * cosmology.coverH0);
     }
   }
 }

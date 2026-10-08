@@ -1041,6 +1041,54 @@ arma::Col<double> covariance_power_vector_cpp(
   return power.row(0).t();
 }
 
+
+// ---------------------------------------------------------------------------
+// Linear power for a matrix of base-10 log wavenumbers plus one shift.
+//
+// The connected-covariance angle grid keeps the same log wavenumbers at
+// every radial shell; only the scalar shift -log10(f_K) changes with the
+// shell. This wrapper reaches linear_power_logk_rows_cov, which skips the
+// per-sample log10 of the standard reader (spectra_cov.h documents the
+// mechanism). The result is NOT bitwise the standard reader at
+// k = 10^(log10k+shift): the shifted sum rounds differently in the last
+// bits. log10k is an arma::Mat of finite values of either sign; the
+// result has its shape, in (c/H0)^3.
+// ---------------------------------------------------------------------------
+arma::Mat<double> covariance_power_logk_cpp(
+    const double a,                   // scale factor
+    const arma::Mat<double>& log10k, // base-10 logs before the shift
+    const double shift               // common addend to every sample
+  )
+{
+  matrix_cov(log10k, "log10k");
+  if (!std::isfinite(a)
+      || a < limits.a_min
+      || a >= 1.0
+      || !std::isfinite(shift)
+      || cosmology.lnPL == nullptr) {
+    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+  }
+
+  // Workspace role 0 holds the log wavenumbers and role 1 receives the
+  // power; each row is contiguous, as the C reader requires.
+  arma::Mat<double> output(log10k.n_rows, log10k.n_cols);
+  double*** work = (double***) malloc3d(2, log10k.n_rows, log10k.n_cols);
+  for (arma::uword row=0; row<log10k.n_rows; row++) {
+    for (arma::uword col=0; col<log10k.n_cols; col++) {
+      work[0][row][col] = log10k(row, col);
+    }
+  }
+  linear_power_logk_rows_cov(a, log10k.n_rows, log10k.n_cols, work[0],
+      shift, work[1]);
+  for (arma::uword row=0; row<log10k.n_rows; row++) {
+    for (arma::uword col=0; col<log10k.n_cols; col++) {
+      output(row, col) = work[1][row][col];
+    }
+  }
+  free(work);
+  return output;
+}
+
 // ---------------------------------------------------------------------------
 // Planar tree-level averages used by the halo trispectrum.
 //

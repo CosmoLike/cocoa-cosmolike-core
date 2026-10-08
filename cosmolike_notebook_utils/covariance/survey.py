@@ -213,6 +213,14 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
     modes = coarse_ell+0.5
     magnitude = np.sqrt((modes[first, None]-modes[second, None])**2
                         +2*modes[first, None]*modes[second, None]*corner)
+    # Every shell reads P_lin at k = magnitude/f_K, so log10(k) is this
+    # shared table plus the per-shell scalar -log10(f_K). Taking the
+    # logarithms once here lets the shell loop call the shifted-log
+    # reader, which skips one log10 per (pair, angle) sample - the head
+    # of each sample's table lookup. The sum log10(magnitude)-log10(f_K)
+    # differs from log10(magnitude/f_K) in the last bits; the reader's
+    # documentation (spectra_cov.h) records this rounding change.
+    log_magnitude = np.log10(magnitude)
     unit_weight = np.ones(len(coarse_ell))
     # Keep the factors exp(-step) and exp(+step) of the centered slope
     # below; [[0, 2]] selects the first and last of the three samples.
@@ -262,8 +270,8 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
             # changing only its physical length scale at this distance.
             linear = interface.covariance_power(a=a, k=k, linear=True)
             pk = np.array([linear[first], linear[second]])
-            internal = interface.covariance_power(
-                a=a, k=magnitude/distance, linear=True
+            internal = interface.covariance_power_logk(
+                a=a, log10k=log_magnitude, shift=-np.log10(distance)
             )
             angular = interface.covariance_tree_averages(
                 k=np.array([k[first], k[second]]), pk=pk, corner=corner,
