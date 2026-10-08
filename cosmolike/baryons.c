@@ -30,6 +30,12 @@ barypara bary =
   .interp2d = NULL,
 };
 
+// ---------------------------------------------------------------------------
+// Unload the scenario: free the tables and the GSL interpolator, zero the
+// grid sizes and set is_Pk_bary = 0, so that PkRatio_baryons returns 1 (no
+// baryonic contamination) until init_baryons or init_baryons_from_hdf5_file
+// loads another scenario.
+// ---------------------------------------------------------------------------
 void reset_bary_struct(void)
 {
   bary.is_Pk_bary = 0;
@@ -59,6 +65,64 @@ void reset_bary_struct(void)
   }
 }
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// COMPILED-IN BARYONIC SCENARIOS
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Each scenario tabulates the baryonic-feedback ratio
+//
+//   S(k, z) = P_hydro(k, z) / P_DMO(k, z),
+//
+// the matter power spectrum of a hydrodynamical simulation divided by that
+// of its dark-matter-only (DMO) twin, run from the same initial conditions
+// so that cosmic variance largely cancels in the ratio. The ratio is taken
+// to be independent of cosmology: p_nonlin (cosmo3D.c) multiplies the
+// nonlinear P(k) of the sampled cosmology by S read at the same k in h/Mpc,
+// although each simulation has its own h (Huang et al. 2021, 2007.15026,
+// sec. 2.1).
+//
+// Arrays of scenario X:
+//   zBins_X[Na]       snapshot redshifts, strictly decreasing to z = 0
+//                     (set_baryon_arrays_generic stores a = 1/(1+z),
+//                     strictly increasing, as GSL requires)
+//   logkBins_X[Nk]    log10(k / (h/Mpc)), strictly increasing, from
+//                     k = 5e-4 to 1500 h/Mpc
+//   logPkR_X[Nk][Na]  log10 S; row j is the wavenumber logkBins_X[j],
+//                     column i the redshift zBins_X[i]
+//
+// The wavenumber rows come in three ranges:
+//   - below the smallest k measured in the simulation box (0.016 to
+//     0.22 h/Mpc, depending on the scenario): padding that takes S to 1
+//     at k = 5e-4 h/Mpc;
+//   - from there to k = 31 h/Mpc (32 h/Mpc for HzAGN): the measured
+//     simulation ratio;
+//   - above it, up to 1500 h/Mpc: not simulation data. log10 S continues a
+//     quadratic spline in log10 k fitted to the ratio at 10 < k < 30 h/Mpc
+//     (Huang et al. 2019, 1809.01146, App. B), and S rises there: at
+//     z = 0, S(1500 h/Mpc) runs from 1.5 (mb2) to 220 (BAHAMAS_T76).
+//
+//   label         simulation                               suffix X
+//   TNG100-1      IllustrisTNG (TNG100)                    TNG100
+//   HzAGN-1       Horizon-AGN                              HzAGN
+//   mb2-1         MassiveBlack-II                          mb2
+//   illustris-1   Illustris                                illustris
+//   eagle-1       EAGLE                                    eagle
+//   owls_AGN-1    cosmo-OWLS AGN, Delta T_heat = 10^8.0 K  cowls_AGN_T80
+//   owls_AGN-2    cosmo-OWLS AGN, Delta T_heat = 10^8.5 K  cowls_AGN_T85
+//   owls_AGN-3    cosmo-OWLS AGN, Delta T_heat = 10^8.7 K  cowls_AGN_T87
+//   BAHAMAS-1     BAHAMAS, Delta T_heat = 10^7.8 K         BAHAMAS_T78
+//   BAHAMAS-2     BAHAMAS, Delta T_heat = 10^7.6 K         BAHAMAS_T76
+//   BAHAMAS-3     BAHAMAS, Delta T_heat = 10^8.0 K         BAHAMAS_T80
+//
+// The label is the argument of init_baryons. Delta T_heat, the temperature
+// increase given to the gas that AGN feedback heats, sets the feedback
+// strength (10^7.8 K is the BAHAMAS fiducial). The three variants of a
+// suite share one redshift array (zBins_cowls_AGN, zBins_BAHAMAS, which
+// hold the same redshifts), and their logkBins arrays are identical.
+// init_baryons_from_hdf5_file reads the same tables, and others, from an
+// HDF5 library (layout above that function).
+// ---------------------------------------------------------------------------
 static double zBins_TNG100[13] = {3.71,3.49,3.28,2.90,2.44,2.1,1.74,1.41,1.04,0.7,0.35,0.18,0.0};
 static double zBins_HzAGN[11] = {4.9285,4.249,3.7384,3.33445,3.00295,1.96615,1.02715,0.519195,0.22878,0.017865,0.0};
 static double zBins_mb2[21] = {3.5,3.25,2.8,2.45,2.1,2.0,1.8,1.7,1.6,1.4,1.2,1.1,1.0,0.8,0.7,0.6,0.4,0.35,0.2,0.0625,0.0};
@@ -9586,9 +9650,42 @@ static double logPkR_BAHAMAS_T80[380][15] = {{-6.576971e-24,-6.576971e-24,0.0000
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
-// Why do we include nkbins as an argument?
-// answer: https://www.geeksforgeeks.org/pass-2d-array-parameter-c/
-
+// ---------------------------------------------------------------------------
+// Copy one compiled-in scenario into the bary struct and build its GSL
+// bilinear interpolator on the (log10 k, a) grid.
+//
+// The caller (init_baryons) has emptied the struct (reset_bary_struct) and
+// set bary.Nk_bins and bary.Na_bins to the table dimensions. Stored, with
+// i the redshift node and j the wavenumber node:
+//
+//   bary.a_bins[i]              = 1/(1 + zbins[i])
+//   bary.logk_bins[j]           = logkBins[j]
+//   bary.log_PkR[i*Nk_bins + j] = logPkR[j][i]
+//
+// zbins decreases, so a_bins increases, as gsl_interp2d_init requires;
+// gsl_interp2d_set(interp2d, log_PkR, j, i, ...) writes the GSL layout,
+// with the x = log10 k index running fastest. PkRatio_baryons (cosmo3D.c)
+// takes k in (c/H0)^-1 units, converts it to h/Mpc (k/coverH0), evaluates
+// the interpolator at (log10 k, a) with gsl_interp2d_eval_extrap_e and
+// returns S = 10^result; outside the grid (z above the first snapshot, k
+// outside 5e-4 to 1500 h/Mpc) GSL extends the bilinear form of the edge
+// cell.
+//
+// logPkR is a C99 variable-length-array parameter: its row length nzbins
+// must come before it in the parameter list, so that the compiler can
+// place logPkR[j][i] at offset j*nzbins + i from logPkR[0][0].
+//
+// Parameters:
+//   zbins    - snapshot redshifts, strictly decreasing (length Na_bins)
+//   logkBins - log10(k / (h/Mpc)), strictly increasing (length Nk_bins)
+//   nzbins   - row length of logPkR, the number of redshift nodes
+//              (= bary.Na_bins)
+//   logPkR   - log10 S, [Nk_bins][nzbins]
+//
+// Returns:
+//   nothing; fills bary.a_bins, logk_bins, log_PkR, T and interp2d, and
+//   stops the program if an allocation or a GSL call fails.
+// ---------------------------------------------------------------------------
 void set_baryon_arrays_generic(
     double zbins[],
     double logkBins[],
@@ -9682,6 +9779,23 @@ void set_baryon_arrays_generic(
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Load a compiled-in scenario into the bary struct and switch the baryonic
+// contamination on (bary.is_Pk_bary = 1).
+//
+// Unloads any previous scenario (reset_bary_struct), sets Nk_bins and
+// Na_bins to the dimensions of the chosen tables and copies them with
+// set_baryon_arrays_generic. The labels and their simulations are listed
+// above the tables, at the top of this file. init_baryons_contamination
+// (generic_interface.cpp) builds the label from the user spelling, e.g.
+// "owls_agn_t85" -> "owls_AGN-2".
+//
+// Parameters:
+//   sim - scenario label "name-tag", case-sensitive (e.g. "TNG100-1")
+//
+// Returns:
+//   nothing; stops the program for an unknown label.
+// ---------------------------------------------------------------------------
 void init_baryons(const char* sim)
 {
   reset_bary_struct();
@@ -9810,6 +9924,34 @@ void init_baryons(const char* sim)
 // -----------------------------------------------------------------------------
 // -----------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Load scenario tag of simulation group sim from an HDF5 library file into
+// the bary struct and switch the baryonic contamination on
+// (bary.is_Pk_bary = 1). The conventions are those of the compiled-in
+// tables (top of this file); the datasets are read as float and converted
+// to double:
+//
+//   /<sim>/zBins             snapshot redshifts, strictly decreasing;
+//                            attribute Na_bins = their number
+//   /<sim>/logkBins          log10(k / (h/Mpc)), strictly increasing;
+//                            attribute Nk_bins = their number
+//   /<sim>/logPkR/sim<tag>   log10 S, [Nk_bins][Na_bins], row-major
+//
+// The baryons_logPkR.h5 library in projects/<project>/data holds the 11
+// compiled-in scenarios (groups TNG100, HzAGN, mb2, illustris and eagle
+// with sim1; owls_AGN and BAHAMAS with sim1 to sim3, numbered as the
+// labels) and the 400 ANTILLES runs of Salcido et al. 2023 (2305.09710;
+// group antilles, sim1 to sim400).
+//
+// Parameters:
+//   sim     - simulation group, e.g. "BAHAMAS"
+//   tag     - scenario number in the group (dataset sim<tag>)
+//   allsims - path of the HDF5 library file
+//
+// Returns:
+//   nothing; stops the program if the file, a dataset or an attribute
+//   cannot be read, or an allocation fails.
+// ---------------------------------------------------------------------------
 void init_baryons_from_hdf5_file(const char* sim, int tag, const char* allsims)
 {
   char ch[1000]; 
