@@ -2,16 +2,17 @@
 
 1. [Covariances of galaxy clustering and weak lensing](#overview)
 2. [File guide](#files)
-3. [From three-dimensional matter to angular spectra](#spectra)
-4. [Galaxy counts, shape noise and the footprint](#noise)
-5. [Nonlinear structure: the connected four-point function](#connected)
-6. [Super-sample covariance](#ssc)
-7. [Cluster counts and their common background](#counts)
-8. [Cluster cross spectra](#cluster_spectra)
-9. [Selected halo mass integrals](#cluster_moments)
-10. [From spectra to measured bins](#operators)
-11. [Units, numerical structure and remaining scope](#numerics)
-12. [Running the calculation](#notebooks)
+3. [Reading paths through the module](#reading_paths)
+4. [From three-dimensional matter to angular spectra](#spectra)
+5. [Galaxy counts, shape noise and the footprint](#noise)
+6. [Nonlinear structure: the connected four-point function](#connected)
+7. [Super-sample covariance](#ssc)
+8. [Cluster counts and their common background](#counts)
+9. [Cluster cross spectra](#cluster_spectra)
+10. [Selected halo mass integrals](#cluster_moments)
+11. [From spectra to measured bins](#operators)
+12. [Units, numerical structure and remaining scope](#numerics)
+13. [Running the calculation](#notebooks)
 
 # Covariances of galaxy clustering and weak lensing <a name="overview"></a>
 
@@ -132,6 +133,45 @@ Project `covariance/compute_covariance.py` scripts select the production
 interface. `EXAMPLE_EVALUATE_COVARIANCE.ipynb` uses the notebook wrappers
 for inspecting and plotting the calculation. Both share the same Python
 survey assembly and the same C kernels.
+
+## Reading paths through the module <a name="reading_paths"></a>
+
+The covariance separates into layers. Each layer owns a few files:
+
+| Layer | Files | What the layer supplies |
+| --- | --- | --- |
+| Radial geometry and Limber spectra | [spectra_cov.c](spectra_cov.c) | Distances, windows, lensing efficiencies and every Limber field cross spectrum. |
+| Non-Limber correction | [fftlog_cov.c](fftlog_cov.c), [nonlimber_cov.c](nonlimber_cov.c) | Spherical-Bessel transforms and the exact-minus-Limber linear correction for gg/gs. |
+| Intrinsic alignment in G | [ia_cov.c](ia_cov.c) | NLA windows live in spectra_cov.c; the one-loop TATT E and B spectra live here. |
+| Gaussian part | [gaussian_cov.c](gaussian_cov.c), [mask_cov.c](mask_cov.c) | Wick pairings with noise, pair-count pure noise and the footprint pair area. |
+| Halo model | [halo_cov.c](halo_cov.c) | The mass integrals I11, I02, I12, I13, I04 over abundance, bias and profiles. |
+| Mode coupling | [perturbation_cov.c](perturbation_cov.c) | Tree-level planar angle averages of power, bispectrum and trispectrum terms. |
+| Connected non-Gaussian part | [non_gaussian_cov.c](non_gaussian_cov.c) | The five halo-trispectrum terms and the power response dP/d(delta_b). |
+| Super-sample part | [ssc_cov.c](ssc_cov.c) | The mask-averaged background strength and the shell response Phi_AB. |
+| Projection to measured bins | [operators_cov.c](operators_cov.c), [assembly_cov.c](assembly_cov.c) | Angular-bin and band operators, and the shared Gaussian/connected matrix assembly. |
+| Cluster blocks | [counts_cluster_cov.c](counts_cluster_cov.c), [spectra_cluster_cov.c](spectra_cluster_cov.c), [moments_cluster_cov.c](moments_cluster_cov.c), [halo_cluster_cov.c](halo_cluster_cov.c) | Count shells, cluster cross spectra and selected halo moments. |
+| Interfaces | the `*_interface_cov.cpp` and `*_wrapper_cov.cpp` files | Production NumPy bindings and Armadillo notebook wrappers over the same C. |
+
+To understand one topic, read in the listed order. Each path starts
+from the physics section of this guide, then goes to the files; function
+headers inside each file carry the equations and units.
+
+| To understand | Read, in order |
+| --- | --- |
+| How a Limber cross spectrum is built | [The spectra section](#spectra); `spectra_cov.c` (radial grid, efficiencies, windows, then `limber_spectra_cov`). |
+| The non-Limber gg/gs calculation | [The spectra section](#spectra); `fftlog_cov.c` (what one transform does); `nonlimber_cov.c` (component transforms, pair assembly, the matched Limber subtraction). |
+| Why covariance needs unmeasured cross spectra | [The Gaussian section](#files) under `gaussian_cov.c` in this guide; then `gaussian_cov.c` (`gaussian_wick_cov`). |
+| Shape/shot noise and the footprint | [The noise section](#noise); `gaussian_cov.c` (analytic pair noise); `mask_cov.c` (pair areas from the mask spectrum). |
+| The halo trispectrum (cNG) | [The connected section](#connected); `halo_cov.c` (the moments); `perturbation_cov.c` (the angle averages); `non_gaussian_cov.c` (the five-term assembly); then the projection path below. |
+| The SSC term | [The SSC section](#ssc); `non_gaussian_cov.c` (`halo_response_cov`); `ssc_cov.c` (mask variance, shell response); `assembly_cov.c` (the weighted outer-product projection). |
+| Intrinsic alignment in the Gaussian part | [The IA subsection](#spectra); `spectra_cov.c` (the signed NLA window); `ia_cov.c` (TATT E/B); `assembly_cov.c` (B-mode signs in xi+/xi-). |
+| Projection: from C_ell to measured bins | [The operators section](#operators); `operators_cov.c` (bin and band operators); `assembly_cov.c` (both-side contraction and block scheduling). |
+| The cluster blocks | [The counts](#counts), [cluster spectra](#cluster_spectra) and [moments](#cluster_moments) sections; `halo_cluster_cov.c`; `moments_cluster_cov.c`; `counts_cluster_cov.c`; `spectra_cluster_cov.c`. |
+| How Python drives the calculation | [Running the calculation](#notebooks); the [shared Python guide](../../cosmolike_notebook_utils/covariance/README.md); then `python_components_cov.cpp` (production bindings) or `components_wrapper_cov.cpp` (notebook wrappers). |
+
+A first complete pass for a student: the overview above, then the
+Gaussian path, then projection, then the halo trispectrum, then SSC.
+The cluster blocks and the non-Limber correction extend that base.
 
 ## From three-dimensional matter to angular spectra <a name="spectra"></a>
 
