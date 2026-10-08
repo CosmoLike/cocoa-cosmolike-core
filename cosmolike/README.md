@@ -507,7 +507,7 @@ their own numerical settings.
 
 ## Gaussian spectra and the data-vector boundary <a name="gaussian_boundary"></a>
 
-The covariance source directory now owns its all-pairs non-Limber gg/gs
+The covariance source directory owns its all-pairs non-Limber gg/gs
 calculation in [nonlimber_cov.c](covariances/nonlimber_cov.c), using
 [fftlog_cov.c](covariances/fftlog_cov.c). Its FFTW plans are constructed
 serially and reused with workers' separate arrays, following the
@@ -521,6 +521,7 @@ No additional cross-bin function is added to the data-vector C files.
 
 Both production interfaces and Armadillo notebook wrappers call these C
 routines. Project YAMLs select Gaussian non-Limber and IA independently
-of numerical boosts. SSC/cNG keep their existing Limber, lensing-only
-model and normalization signal. See the
+of numerical boosts. SSC and cNG keep their existing Limber model, in which
+shapes carry lensing only (zero intrinsic alignment); the spectra entering
+their survey-mean normalization response also stay Limber. See the
 [covariance physics guide](covariances/README.md) for equations and scope.
