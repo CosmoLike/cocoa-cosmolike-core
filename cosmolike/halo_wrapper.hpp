@@ -18,12 +18,12 @@ namespace cosmolike_interface
 // Halo-model bindings (halo.c), implemented in halo_wrapper.cpp.
 //
 // halo.c computes the halo model: the halo mass function and halo bias
-// (Tinker et al. 2010 fits), the halo concentration and density profile
-// (NFW), the HOD galaxy counts, and the power spectra assembled from
-// them. Its functions are
-// plain C. This layer makes them callable from Python, so the unit
-// tests (projects/roman_real/tests/test_halo.py) and notebooks can
-// evaluate them one number at a time.
+// (Tinker et al. 2010 fits by default; like.halo_model selects the
+// alternatives), the halo concentration and density profile (NFW), the
+// HOD galaxy counts, and the power spectra assembled from them. Its
+// functions are plain C. This layer makes them callable from Python, so
+// the unit tests (projects/roman_real/tests/data_vector/test_halo.py)
+// and notebooks can evaluate them one number at a time.
 //
 // One Python call travels
 //
@@ -53,8 +53,8 @@ namespace cosmolike_interface
 //   m, M   = halo mass in M_sun/h
 //   rv     = halo radius in c/H0
 //   ngal   = comoving galaxy number density in (c/H0)^-3
-//   a      = scale factor; wherever the Tinker fits or the HOD enter,
-//            halo.c requires 0 < a < 1 (a = 1 aborts)
+//   a      = scale factor; wherever the mass function (fnu) or the HOD
+//            enter, halo.c requires 0 < a < 1 (a = 1 aborts)
 //   ni, nj = lens (clustering) tomographic bins, counted from 0
 //
 // Dimensionless: u_nfw_c, conc, hb1nu, fnu, dlognudlogm,
@@ -80,16 +80,17 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-// halo bias b(nu) at peak height nu = delta_c/(sigma(M) D(a))
+// halo bias b(nu) at peak height nu = delta_c/sigma_cb(M, a)
 double hb1nu_cpp(const double nu, const double a);
 
 // multiplicity function f(nu) of the halo mass function
 double fnu_cpp(const double nu, const double a);
 
-// halo concentration c(m) (Bhattacharya et al. 2013, Delta = 200 mean)
+// halo concentration c(m), Delta = 200 mean (Bhattacharya et al. 2013 by
+// default; like.halo_model[2] selects Duffy et al. 2008)
 double conc_cpp(const double m, const double a);
 
-// d ln nu / d ln M at a = 1 (cached table)
+// d ln nu / d ln M at (M, a), read from the cached sigma2 slope table
 double dlognudlogm_cpp(const double M, const double a);
 
 // -----------------------------------------------------------------------------
@@ -102,7 +103,7 @@ double bias_norm_cpp(const double a);
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// HALO AND GAS PROFILES
+// HALO PROFILES
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -176,7 +177,7 @@ double Pdelta_cpp(const double k, const double a);
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// HOD AND GAS PARAMETER SETTERS
+// HOD PARAMETER SETTERS
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

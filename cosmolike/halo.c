@@ -80,7 +80,9 @@ typedef simde__m128d v2d;
 // a halo-model quantity:
 //
 // Halo demographics (bias and mass function: Tinker et al. 2010,
-// 1001.3162; concentration: Bhattacharya et al. 2013, 1112.5479):
+// 1001.3162; concentration: Bhattacharya et al. 2013, 1112.5479; these
+// are the defaults, and like.halo_model selects the alternatives listed
+// in the hb1nu, fnu and conc headers):
 //
 //   hb1nu        = b_1(nu), the linear (first-order) halo bias as a
 //                  function of the peak height nu: "h" halo, "b1" bias of
@@ -189,7 +191,8 @@ typedef simde__m128d v2d;
 // bias_norm measures how much of the consistency relation int b f dnu = 1
 // the finite mass range of the halo-model integrals covers; a halo-model
 // matter spectrum adds the rest, 1 - bias_norm, back as halos of mass M_min
-// (future_port_unfinished/halo_pmm.c). conc gives the NFW concentration as a function of nu.
+// (future_port_unfinished/halo_pmm.c). conc gives the NFW concentration,
+// a function of nu for the default fit (of M and z for Duffy et al. 2008).
 
 
 // ---------------------------------------------------------------------------
@@ -223,10 +226,11 @@ typedef simde__m128d v2d;
 // (hb1nu_params holds A, a, delta_c^a, B, C; b and c are literals in
 // hb1nu_core.) b -> 1 as nu -> 0, slowly because a is small (b ~ 0.6
 // at nu = 0.2); b ~ 1 near nu = 1; the C nu^2.4 term takes over for
-// rare, massive halos (b ~ 5 at nu = 3). There is no redshift
-// dependence: the fit combines all outputs 0 <= z <= 2.5 and finds
-// none at fixed nu (1001.3162 sec. 3.1). The scale factor stays in the
-// signature so that a z-dependent fit could use it.
+// rare, massive halos (b ~ 5 at nu = 3). The fit has no redshift
+// dependence: it combines all outputs 0 <= z <= 2.5, over which the
+// evolution at fixed nu is at most very weak (1001.3162 sec. 3.1). The
+// scale factor stays in the signature so that a z-dependent fit could
+// use it.
 //
 // Parameters:
 //   nu - peak height delta_c/sigma(M, a)
@@ -358,7 +362,9 @@ double hb1nu(
 //   dn/dM = f(nu) (rho_cb/M) dnu/dM
 //     ->  dn/dlnM = (rho_cb/M) nu f(nu) dln nu/dln M,
 //
-// so nu f(nu) is the g(sigma) of Tinker et al. 2008 (1001.3162 sec. 4).
+// so nu f(nu) is the g(sigma) of Tinker et al. 2008 (1001.3162 sec. 4):
+// the normalized form of their App. C, not the Eq. 3 f(sigma) that the
+// HMF_TINKER_2008 option below evaluates.
 //
 // Shape parameters (fnu_params.beta, .gamma, .phi, .eta). 1001.3162
 // Table 4 gives the z = 0 values at Delta = 200 (mean density),
@@ -493,9 +499,12 @@ static inline double fnu_core(
 //
 //   alpha(aa) = 1/I(aa),   I(aa) = int_0^inf b(nu) ftilde(nu; aa) dnu,
 //
-// with b the Tinker bias (hb1nu_core) and ftilde the Eq. 8 shape at
-// alpha = 1 (fnu_shape). alpha depends on aa alone, so it is tabulated
-// once and read by linear interpolation.
+// with b the linear bias of hb1nu_core (the Tinker bias by default,
+// the like.halo_model[1] fit otherwise) and ftilde the Eq. 8 shape at
+// alpha = 1 (fnu_shape). The bias option therefore also sets the
+// amplitude of this mass function: with HALO_BIAS_SHETH_MO_TORMEN_2001,
+// alpha = 0.321 at z = 0 instead of 0.368. alpha depends on aa alone,
+// so it is tabulated once and read by linear interpolation.
 //
 // The integral, in s = ln nu (dnu = nu ds), as a trapezoid sum:
 //
@@ -527,9 +536,10 @@ static inline double fnu_core(
 //
 // Cache invalidation:
 //   rebuilt when like.halo_model[0] or [1] (the mass-function and the
-//   bias fit) differ from the pair the table holds. Nothing else
-//   enters: not the cosmology (nu is the integration variable) and not
-//   Ntable.
+//   bias fit) differ from the pair the table holds, or when
+//   Ntable.random changes (the node counts Ntable.halo_hmf_n and
+//   Ntable.halo_spline_pad). The cosmology does not enter (nu is the
+//   integration variable).
 //
 // Thread safety: the first call builds the table and must run outside
 // any parallel region.
@@ -578,9 +588,10 @@ static double tinker_alpha(
 
     // --- 2. TRAPEZOID RULE IN s = ln nu ---
     // Nodes s_q = SMIN + q DS (NS = 936). bias_weight[q] folds the
-    // trapezoid weight w_q, the Jacobian of dnu = nu ds and the Tinker
-    // bias b(nu_q): only ftilde still depends on aa. The bias fit does
-    // not evolve, so hb1nu_params_at takes any a; 1.0 is a placeholder.
+    // trapezoid weight w_q, the Jacobian of dnu = nu ds and the bias
+    // b(nu_q) of hb1nu_core: only ftilde still depends on aa. The bias
+    // fit does not evolve, so hb1nu_params_at takes any a; 1.0 is a
+    // placeholder.
     const double SMIN = -90.0;  // trapezoid range in s = ln nu
     const double SMAX = 3.5;
     const double DS   = 0.1;    // trapezoid step
@@ -801,8 +812,8 @@ double conc(
 
 
 // ---------------------------------------------------------------------------
-// Cached bias_norm(a): the Tinker bias integral over the tabulated mass
-// range,
+// Cached bias_norm(a): the bias-weighted multiplicity integral over the
+// tabulated mass range,
 //
 //   bias_norm(a) = int_{nu_min(a)}^{nu_max(a)} b(nu) f(nu, a) dnu,
 //   nu(M, a)     = delta_c / sigma_cb(M,a),
@@ -814,12 +825,12 @@ double conc(
 // Why the 2-halo term needs it: matter is unbiased with respect to
 // itself, int b f dnu = 1 over all nu, so P_2h = I11_m^2 P_lin (file
 // glossary) tends to P_lin as k -> 0. The mass integrals of this file
-// stop at M_min, and f grows toward light halos. Below the former
-// M_min = 1e6 M_sun/h, halos hold about 0.2 of the integral at z = 0 for a
-// Planck-like cosmology, so I11_m(k -> 0) would be ~0.8 and
-// P_2h -> 0.64 P_lin. The I11 sum of a halo-model matter spectrum
-// (future_port_unfinished/halo_pmm.c) adds the missing 1 - bias_norm(a) back as halos of mass M_min; this function
-// measures the shortfall.
+// stop at M_min, and f grows toward light halos. Below M_min = 1e4
+// M_sun/h, halos hold about 0.17 of the integral at z = 0 (0.28 at
+// z = 1) for a Planck-like cosmology, so I11_m(k -> 0) would be ~0.83
+// and P_2h -> 0.68 P_lin. The I11 sum of a halo-model matter spectrum
+// (future_port_unfinished/halo_pmm.c) adds the missing 1 - bias_norm(a)
+// back as halos of mass M_min; this function measures the shortfall.
 //
 // At each a, the lower and upper peak heights are read from the cb
 // variance at M_min and M_max. Growth is mass dependent, so these two
@@ -1141,7 +1152,8 @@ static inline double nfw_um(
 // per lane of a v4d) and each lane of its result bitwise the scalar
 // nfw_um of that node. The helpers below build it, in reading order:
 //
-//   nfw_fmadd4, nfw_fnmadd4 - a*b + c and c - a*b with one rounding
+//   nfw_fmadd4, nfw_fnmadd4 - a*b + c and c - a*b, rounded once where
+//                             the scalar path fuses them
 //   nfw_pos4                - position (node index, fraction) of ln t
 //                             on the table grid
 //   nfw_read4               - the linear table read at that position
@@ -1172,13 +1184,16 @@ static inline double nfw_um(
 // fuse the same products at the same places to stay bitwise equal to
 // it; nfw_fmadd4 is the one place where it does.
 //
-// With native x86 FMA, simde_mm256_fmadd_pd is one AVX2 instruction.
+// With native x86 FMA, simde_mm256_fmadd_pd is one 256-bit FMA3
+// instruction (vfmadd...pd, one rounding).
 // Without it (arm64), that same call is a multiply and then an add, two
-// roundings. The two-lane simde_mm_fmadd_pd is a real fused NEON
-// instruction, so the v4d is split into its two v2d halves (lanes 0,1 =
-// the low half, lanes 2,3 = the high half), each half is fused, and the
-// halves are joined again into a v4d. Lane l of the result is
-// a[l]*b[l] + c[l] either way.
+// roundings: SIMDe has no NEON branch at 256 bits. The two-lane
+// simde_mm_fmadd_pd is a real fused NEON instruction (vfmaq_f64), so the
+// v4d is split into its two v2d halves (lanes 0,1 = the low half, lanes
+// 2,3 = the high half), each half is fused, and the halves are joined
+// again into a v4d. Lane l of the result is a[l]*b[l] + c[l] either
+// way. An x86 build without FMA also takes this split branch; there the
+// halves round twice, as the scalar path does, so the two still match.
 //
 // Parameters:
 //   va - the four multiplicands a
@@ -1186,7 +1201,7 @@ static inline double nfw_um(
 //   vc - the four addends c
 //
 // Returns:
-//   a*b + c on each lane, one rounding
+//   a*b + c on each lane, one rounding (two on x86 built without FMA)
 // ---------------------------------------------------------------------------
 static inline __attribute__((always_inline)) v4d nfw_fmadd4(
     const v4d va,   // a on four lanes
@@ -1234,9 +1249,11 @@ static inline __attribute__((always_inline)) v4d nfw_fmadd4(
 // and nfw_G_asym4 fuse them through this function to stay bitwise
 // equal.
 //
-// One AVX2 instruction with native x86 FMA; otherwise the two fused
-// 128-bit halves of nfw_fmadd4 (lanes 0,1 low, lanes 2,3 high) joined
-// again. Lane l of the result is c[l] - a[l]*b[l] either way.
+// One 256-bit FMA3 instruction with native x86 FMA; otherwise the
+// 128-bit split of nfw_fmadd4 (lanes 0,1 low, lanes 2,3 high), each half
+// fused on arm64 by vfmsq_f64, joined again (on x86 without FMA the
+// halves round twice, as the scalar path does). Lane l of the result is
+// c[l] - a[l]*b[l] either way.
 //
 // Parameters:
 //   va - the four multiplicands a
@@ -1244,7 +1261,7 @@ static inline __attribute__((always_inline)) v4d nfw_fmadd4(
 //   vc - the four minuends c
 //
 // Returns:
-//   c - a*b on each lane, one rounding
+//   c - a*b on each lane, one rounding (two on x86 built without FMA)
 // ---------------------------------------------------------------------------
 static inline __attribute__((always_inline)) v4d nfw_fnmadd4(
     const v4d va,   // a on four lanes
@@ -1501,7 +1518,7 @@ static inline __attribute__((always_inline)) v4d nfw_sin4(
 //   vpoly - the bracket built so far on four lanes
 //
 // Returns:
-//   1 - k v poly on each lane, one rounding
+//   1 - k v poly on each lane, rounded as nfw_fnmadd4 rounds it
 // ---------------------------------------------------------------------------
 static inline __attribute__((always_inline)) v4d nfw_series_step4(
     const double k,   // coefficient ratio of this bracket
@@ -2106,9 +2123,9 @@ static struct {
 //   dn/dlnM = (rho_cb/M) nu f(nu) dln nu/dln M    halo mass function
 //   nu      = delta_c/sigma_cb(M,a)            peak height
 //   <N|M>   = f_c N_c(M) + N_s(M)                HOD occupation
-//   b(nu)                                        Tinker halo bias
+//   b(nu)                                        linear halo bias
 //
-// f is the Tinker multiplicity function (fnu), b the Tinker bias (hb1nu),
+// f is the Tinker multiplicity function (fnu), b the halo bias (hb1nu),
 // <N|M> the occupation of the GALAXY PROFILES banner (HOD_fc, HOD_nc,
 // HOD_ns); the POWER SPECTRA banner explains dn/dlnM.
 //
@@ -2129,10 +2146,11 @@ static struct {
 //   node_data[1][b][q]    P_q = half_width w_q (rho_cb/M_q)
 //                           <N|M_q>
 //   a_nodes[j], mult_pars[j], bias_pars[j]
-//                         a_j, Tinker parameters of f and b at a_j
+//                         a_j, fit parameters of f and b at a_j
 //   tab[0][b][j]          ngal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu),
 //                         with nu = delta_c/sigma_cb(M_q,a_j)
-//   tab[1][b][j]          bgal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu) b(nu) / ngal(a_j)
+//   tab[1][b][j]          bgal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu) b(nu)
+//                                     / ngal(a_j)
 //
 // Thus P_q (dlnnu/dlnM) nu f(nu) equals the quadrature weight times
 // (dn/dlnM) <N|M> at mass node q.
@@ -2301,7 +2319,7 @@ static void hod_tables(void)
       }
     }
 
-    // The scale factors and Tinker parameters of f and b at each node.
+    // The scale factors and the fit parameters of f and b at each node.
     // Serial: fnu_params_at builds its normalization table here.
     for (int j=0; j<n_a; j++) {
       const double a = hod_.lim[0] + j*hod_.lim[2];
@@ -2312,7 +2330,7 @@ static void hod_tables(void)
 
     // --- 3. TABLE FILL: THE (BIN, a) OPENMP LOOP ---
     /* PHYSICAL DERIVATION & LOGIC FLOW
-       1. nu = delta_c/sigma_cb(M_q,a_j)                    peak height at mass node q
+       1. nu = delta_c/sigma_cb(M_q,a_j)    peak height at mass node q
        2. P_q dlnnu/dlnM nu f(nu) = half_width w_q (dn/dlnM) <N|M_q>
        3. ngal(a_j) = sum_q P_q dlnnu/dlnM nu f(nu)
                     = int dlnM (dn/dlnM) <N|M>
@@ -2394,7 +2412,7 @@ double ngal(const int ni, const double a)
 
 // ---------------------------------------------------------------------------
 // Mean halo bias of the galaxies of lens bin ni at scale factor a: the
-// Tinker bias b(nu) of the host halos, weighted by how many galaxies
+// halo bias b(nu) (hb1nu) of the host halos, weighted by how many galaxies
 // each halo mass contributes,
 //
 //   bgal(a) = int dlnM (dn/dlnM) [f_c N_c(M) + N_s(M)] b(nu) / ngal(a),
@@ -2444,7 +2462,7 @@ double bgal(const int ni, const double a)
 //
 //   dn/dlnM = (rho_cb/M) nu f(nu) dlnnu/dlnM,  nu = delta_c/sigma_cb(M,a)
 //
-// the mass function (fnu, dlognudlogm; sigma2 in cosmo3D.c), b the Tinker
+// the mass function (fnu, dlognudlogm; sigma2 in cosmo3D.c), b the halo
 // bias (hb1nu) and the windows W_X the Fourier transforms of the profiles,
 // in the units of the field times a volume.
 //
@@ -2469,12 +2487,12 @@ double bgal(const int ni, const double a)
 // future_port_unfinished/halo_tsz.c).
 //
 // A(a) = 1 - bias_norm(a) is the HMx correction (2005.00009 App. A) for
-// the halos below M_min, which hold about 20% of the bias-weighted matter
-// at z = 0 (bias_norm header, item 1): their share is put back as halos
-// of mass exactly M_min, n(M) -> n(M) + A delta_D(M - M_min)/[b(M_min)
+// the halos below M_min, which hold about 17% of the bias-weighted matter
+// at z = 0 (bias_norm header): their share is put back as halos of mass
+// exactly M_min, n(M) -> n(M) + A delta_D(M - M_min)/[b(M_min)
 // M_min/rho_m] (Eq. A7), so that I11_m -> 1 and P_2h -> P_lin at k -> 0
 // at every a, while at high k the added halos stay point-like as the
-// real light halos are (r_Delta = 2.4 kpc/h at 1e6 M_sun/h).
+// real light halos are (r_Delta = 0.5 kpc/h at M_min = 1e4 M_sun/h).
 //
 // The galaxy spectra take Pdelta b_gal as their 2-halo term instead of
 // I11 (p_gm, p_gg headers).
@@ -2507,10 +2525,11 @@ double bgal(const int ni, const double a)
 //   per refill, per node q       M_q, w_q;
 //     (mass_node)                w_q (rho_cb/M_q); M_q/rho_m;
 //                                r_Delta(M_q)
-//   per a row i, threaded        Tinker f, b parameters; A(a); c(M_min)
-//   per (i, q) (a_node[i])       nu = delta_c/sigma_cb(M,a); c = conc(M, a); ln(1+c);
-//                                m(c) = ln(1+c) - c/(1+c); r_s = r_Delta/c,
-//                                ln r_s; w1h_q = dn (M/rho_m)^2/m(c)^2;
+//   per a row i, threaded        f, b fit parameters; A(a); c(M_min)
+//   per (i, q) (a_node[i])       nu = delta_c/sigma_cb(M,a); c = conc(M, a);
+//                                ln(1+c); m(c) = ln(1+c) - c/(1+c);
+//                                r_s = r_Delta/c, ln r_s;
+//                                w1h_q = dn (M/rho_m)^2/m(c)^2;
 //                                w2h_q = dn b(nu) (M/rho_m)/m(c), with
 //                                dn = w (rho_cb/M) dlnnu/dlnM f(nu) nu
 //   per (i, k), sum over q       x = k r_s, ln x = ln k + ln r_s,
@@ -2536,14 +2555,16 @@ double bgal(const int ni, const double a)
 //
 //   sigma2, dlognudlogm   the ln M tables (cosmo3D.c; above); keys
 //                         cosmology.random, Ntable.random
-//   fnu_params_at         the tinker_alpha table; key like.halo_model
+//   fnu_params_at         the tinker_alpha table (HMF_TINKER_2010); keys
+//                         like.halo_model[0..1], Ntable.random
 //   nfw_table             the NFW f, G table nfw_, read by the rows
 //                         through nfw_um; key Ntable.random
 //   bias_norm             the HMx term of the I11 2-halo spectra
 //                         (matter); keys cosmology, Ntable
 //   ngal                  the hod_ tables of ngal and bgal (galaxies);
 //                         keys cosmology, Ntable, the HOD tag, the
-//                         clustering n(z) tag
+//                         clustering n(z), lens photo-z and source n(z)
+//                         tags
 //   Pdelta                its run-mode latch, a static set on the
 //                         first call (galaxies: the 2-halo term)
 //
@@ -2562,7 +2583,9 @@ double bgal(const int ni, const double a)
 //         are in future_port_unfinished/halo_tsz.c; 1 aborts
 //   hod - 1: the galaxy spectra (p_gm, p_gg) read ngal, bgal and
 //         Pdelta; 0: the I11 spectra (future_port_unfinished/) read
-//         bias_norm; every compiled caller passes 1
+//         bias_norm. p_gm and p_gg pass 1; ia_tables passes 0 (it reads
+//         neither table, and 1 would build the lens HOD tables, which
+//         abort when a lens bin's HOD is not set)
 //
 // Returns:
 //   nothing
@@ -2709,7 +2732,7 @@ static void ln_k_spline_upsample(
 // 2-halo: the nonlinear matter spectrum (Pdelta) times the mean galaxy
 // bias (bgal). 1-halo: the satellite-matter and central-matter pairs of
 // one halo per galaxy (ngal): satellites follow u_g, the NFW profile at
-// c_g = gc c, gc = nuisance.gc[ni] (u_g header); the central sits at the
+// c_g = gc c, gc = nuisance.gc[ni] (file glossary); the central sits at the
 // center (window 1). dn/dlnM, (M/rho_m) u_m as in the section banner;
 // N_c, N_s, f_c the occupation of the GALAXY PROFILES banner.
 //
@@ -2746,9 +2769,10 @@ static void ln_k_spline_upsample(
 // parallel region per bin.
 //
 // Cache invalidation:
-//   rebuild block (table, lim, gl, bin_tab, a_tab; every allocation
-//     lives here, one block each from malloc2d/malloc3d): Ntable.random
-//     or redshift.random_clustering (bin count: clustering n(z))
+//   rebuild block (table, lim, gl, bin_tab, a_tab, k_tab, k_mult; every
+//     allocation lives here, one block each from malloc1d/malloc2d/
+//     malloc3d): Ntable.random or redshift.random_clustering (bin count:
+//     clustering n(z))
 //   refill: cosmology.random, Ntable.random, nuisance.random_galaxy_bias
 //     (HOD, gc, and the magnification bias that widens amax_lens),
 //     redshift.random_clustering, nuisance.random_photoz_clustering or
@@ -2801,8 +2825,8 @@ double p_gm(
   // --- 1. REBUILD: SIZES, ALLOCATIONS, GL RULE, TABLE AXES ---
 
   // first call, or the Ntable or clustering-n(z) tag differs from the
-  // allocation's; every allocation is one block from malloc2d/malloc3d,
-  // so one free each (header, item 1)
+  // allocation's; every allocation is one block from malloc1d/malloc2d/
+  // malloc3d, so one free each (header, Cache invalidation)
   if (NULL == table ||
       fdiff2(cache[1], Ntable.random) ||
       fdiff2(cache[3], redshift.random_clustering))
@@ -2916,7 +2940,8 @@ double p_gm(
     /* PHYSICAL DERIVATION & LOGIC FLOW (P_gm and GM02: header above)
        1. bin_tab, per (bin, mass node): M, weighted dn/dlnM factors,
           r_Delta, occupation N_s and f_c N_c
-       2. per a row, threaded: sigma_cb(M,a), its mass slope, Tinker f(nu) half, n_gal, b_gal
+       2. per a row, threaded: sigma_cb(M,a), its mass slope, the
+          nu-independent f(nu) half, n_gal, b_gal
        3. thread scratch a_tab, per node of one a row: c, c_g = gc c,
           scale radii, logs, leg weights W1 (satellite), W0 (central)
        4. per k: GM02 = sum_q um (W1 ug + W0); table = ln P_gm */
@@ -3243,14 +3268,15 @@ double p_gm(
 // 2-halo: the nonlinear matter spectrum (Pdelta) times the mean galaxy
 // bias (bgal) squared. 1-halo: the satellite-satellite and
 // central-satellite pairs of one halo per galaxy pair (ngal^2);
-// satellites follow u_g, the NFW profile at c_g = gc c (u_g header), the
+// satellites follow u_g, the NFW profile at c_g = gc c (file glossary), the
 // central sits at the center (window 1). dn/dlnM as in the section
 // banner; N_c(M), N_s(M), f_c the occupation of the GALAXY PROFILES
 // banner.
 //
 // 1. Quadrature: the Gauss-Legendre rule of the section banner
-// (item 1) over [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]], the same for
-// every bin: nodes and weights are mapped once, in the rebuild block.
+// (item 1) over [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]],
+// the same for every bin: nodes and weights are mapped once, in the
+// rebuild block.
 //
 // 2. Loop levels as in the section banner (item 2): the innermost loop is
 // the NFW kernel nfw_um alone. The occupation does not depend on a
@@ -3278,7 +3304,8 @@ double p_gm(
 //
 // Cache invalidation:
 //   as p_gm (its header); the rebuild block here holds table, lim,
-//     mass_tab (with the mapped GL nodes), occ_tab and a_tab
+//     mass_tab (with the mapped GL nodes), occ_tab, a_tab, k_tab and
+//     k_mult
 //
 // Parameters:
 //   k      - wavenumber in (c/H0)^-1
@@ -3327,8 +3354,8 @@ double p_gg(
   // --- 1. REBUILD: SIZES, ALLOCATIONS, MAPPED GL RULE, TABLE AXES ---
 
   // first call, or the Ntable or clustering-n(z) tag differs from the
-  // allocation's; every allocation is one block from malloc2d/malloc3d,
-  // so one free each (header, item 1)
+  // allocation's; every allocation is one block from malloc1d/malloc2d/
+  // malloc3d, so one free each (header, Cache invalidation)
   if (NULL == table ||
       fdiff2(cache[1], Ntable.random) ||
       fdiff2(cache[3], redshift.random_clustering))
@@ -3450,7 +3477,8 @@ double p_gg(
        1. mass_tab, per mass node: M, weight, r_Delta,
           weighted dn/dlnM factor
        2. occ_tab, per (bin, mass node): occupation N_s and f_c N_c
-       3. per a row, threaded: sigma_cb(M,a), its mass slope, Tinker f(nu) half, n_gal, b_gal
+       3. per a row, threaded: sigma_cb(M,a), its mass slope, the
+          nu-independent f(nu) half, n_gal, b_gal
        4. thread scratch a_tab, per node of one a row: c_g, r_s,g,
           logs, weights W2, W1
        5. per k: G02 = sum_q ug (W2 ug + W1); table = ln P_gg */
@@ -3718,7 +3746,7 @@ double p_gg(
 // spectrum, its square the II spectrum, and |a_1h(a)| moves r_e.
 //
 // The Fourier transform of the density-weighted alignment field, per
-// unit a_1h (F21 sec. 4.1 and App. C, Eqs. 32-40; Schneider & Bridle
+// unit a_1h (F21 sec. 4.1 and App. C, Eqs. C1-C9; Schneider & Bridle
 // 2010, 0903.3870, App. B), at theta_k = pi/2 (F21's choice):
 //
 //   gamma_hat(k|M) = sum_{l = 2, 4, 6} P_l K_l(k r_s) / m(c)
@@ -3746,14 +3774,13 @@ double p_gg(
 // |gamma_hat| is F21's convention (Eq. 17); the signed halo-model
 // product gamma_hat u differs from it only where gamma_hat rings,
 // k r_s >~ 3. u(k|M) is the NFW transform (nfw_um); the F21 windows
-// (Eqs. 30-31)
-// that split the scales between the two terms:
+// (App. B, Eqs. B1-B2) that split the scales between the two terms:
 //
 //   f_1h(k) = 1 - exp[-(k/k_1h)^2],   f_2h(k) = exp[-(k/k_2h)^2]
 //   k_1h = 4 h/Mpc,   k_2h = 6 h/Mpc
 //
 // Sign convention: the readers return P_dI^1h with the sign of a_1h;
-// the C_l cores of cosmo2D.c SUBTRACT it, as they subtract the NLA term
+// the C_l cores of cosmo2D.c subtract it, as they subtract the NLA term
 // (P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h], C_1(a) the NLA
 // amplitude IA_A1_Z1 of cosmo2D.c, > 0 for A_IA > 0). Radial alignment,
 // a_1h > 0, is a negative dI correlation, the same sense as A_IA > 0.
@@ -3781,7 +3808,7 @@ double p_gg(
 static const double IA_R_FLOOR_MPCH = 0.06; // Mpc/h, comoving
 static const double IA_GAMMA_MAX    = 0.3;
 
-// k_1h, k_2h of the F21 windows (F21 Eqs. 30-31), h/Mpc
+// k_1h, k_2h of the F21 windows (F21 App. B, Eqs. B1-B2), h/Mpc
 static const double IA_K1H_HMPC = 4.0;
 static const double IA_K2H_HMPC = 6.0;
 
@@ -4165,7 +4192,7 @@ static inline double ia_a1h(
 
 
 // ---------------------------------------------------------------------------
-// The F21 windows (F21 Eqs. 30-31), k in (c/H0)^-1: the 1-halo term
+// The F21 windows (F21 App. B, Eqs. B1-B2), k in (c/H0)^-1: the 1-halo term
 // switched on above k_1h and the 2-halo term switched off above k_2h,
 //
 //   f_1h(k) = 1 - exp[-(k/k_1h)^2],   f_2h(k) = exp[-(k/k_2h)^2],
@@ -4206,8 +4233,8 @@ double ia_window_2h(
 // linear read.
 //
 // What cubic Hermite interpolation is: between two neighbouring nodes
-// it uses the cubic that matches the tabulated VALUE and the tabulated
-// SLOPE at both nodes. With s in [0, 1] the fraction of the interval,
+// it uses the cubic that matches the tabulated value and the tabulated
+// slope at both nodes. With s in [0, 1] the fraction of the interval,
 //
 //   y(s) = h00(s) y_i + h10(s) h y'_i + h01(s) y_(i+1) + h11(s) h y'_(i+1)
 //   h00 = 2s^3 - 3s^2 + 1,   h10 = s^3 - 2s^2 + s,
@@ -4237,8 +4264,8 @@ double ia_window_2h(
 //
 // Above NFW_TASY: the asymptotic series (A&S 5.2.34-35), nested,
 //
-//   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - ... + 14!/t^14)/t
-//   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - ... + 15!/t^14)/t^2
+//   f(t) ~ (1 - 2!/t^2 + 4!/t^4 - ... - 14!/t^14)/t
+//   g(t) ~ (1 - 3!/t^2 + 5!/t^4 - ... - 15!/t^14)/t^2
 //
 // three terms longer than nfw_um's, which this accuracy needs (2, 12,
 // ..., 182 and 6, 20, ..., 210 are the ratios of consecutive
@@ -4705,11 +4732,12 @@ static inline double ia_gamma_hat_m(
 // f_red = (1/2) [1 + tanh((log10 M - log10 M_red)/width)]), u(k|M) the
 // NFW transform and gamma_hat the satellite kernel (ia_gamma_hat_m).
 //
-// 1. Quadrature: the Gauss-Legendre rule of the section banner (item 1:
-// the Ntable.halo_nm ladder on Ntable.high_def_integration) over
-// [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]]. Only the nodes with
-// red satellites (N_rs > 0: above the satellite cutoff M_0) enter the
-// S sums ("active" nodes); every node enters n_g and f_rc.
+// 1. Quadrature: the Gauss-Legendre rule of the POWER SPECTRA banner
+// (item 1: the Ntable.halo_nm ladder on Ntable.high_def_integration)
+// over [ln limits.halo_m[RANGE_MIN], ln limits.halo_m[RANGE_MAX]]. Only
+// the nodes with red satellites (N_rs > 0: above the satellite cutoff
+// M_0) enter the S sums ("active" nodes); every node enters n_g and
+// f_rc.
 //
 // 2. Grids: Ntable.halo_ia_na nodes uniform in a over the source range
 // [min_i amin_source(i), max_i amax_source(i)], set at every refill
@@ -5192,7 +5220,7 @@ double ia_f_red_central(
 // ---------------------------------------------------------------------------
 // P_dI^1h(k, a) = a_1h(a) f_1h(k) S_dI(k, a), the satellite (1-halo)
 // part of the matter-intrinsic spectrum (F21 Eq. 17; section banner),
-// with the SIGN of a_1h(a): the C_l cores of cosmo2D.c subtract it,
+// with the sign of a_1h(a): the C_l cores of cosmo2D.c subtract it,
 // P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h]. ln S_dI is read
 // bilinearly in (a, ln k) from ia_tables and exponentiated.
 //
@@ -5237,7 +5265,9 @@ double ia_p1h_dI(
 // P_II^1h(k, a) = a_1h(a)^2 f_1h(k) S_II(k, a), the satellite (1-halo)
 // part of the intrinsic-intrinsic E-mode spectrum (F21 Eq. 18; section
 // banner). ln S_II is read bilinearly in (a, ln k) from ia_tables and
-// exponentiated. The B mode of radial alignment vanishes (F21 sec. 4.1).
+// exponentiated. The B mode of radial alignment vanishes by symmetry (a
+// radial pattern has no 45-degree component); F21 sec. 4.1 likewise
+// keeps only the II and dI satellite terms.
 //
 // Cache invalidation:
 //   ia_tables (its header)

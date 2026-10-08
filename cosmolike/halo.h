@@ -16,7 +16,7 @@ extern "C" {
 #define CONCENTRATION_BHATTACHARYA_2013 0
 #define CONCENTRATION_DUFFY_2008 1
 
-// HALO PROFILE OPTIONS OPTIONS -----------------------
+// HALO PROFILE OPTIONS ------------------------
 #define HALO_PROFILE_NFW 0
 
 // FIELDS EXPOSED BY sigma2_field(M,a,field) -------------------------

@@ -176,24 +176,25 @@ static void check_scale_factor(const char* fname, const double a)
 //
 //   nu = delta_c / sigma(M, a),   sigma(M, a) = sqrt(sigma2(M,a))
 //
-// (delta_c = 1.686 the collapse threshold, sigma the rms linear density
-// fluctuation in a sphere holding mass M, D the growth factor). Rare,
-// massive halos have nu >> 1. In this variable the Tinker et al. 2010
-// fits are nearly universal:
+// (delta_c = 1.686 the collapse threshold, sigma the rms linear cb
+// density fluctuation at a in a sphere holding mass M). Rare, massive
+// halos have nu >> 1. In this variable the Tinker et al. 2010 fits (the
+// defaults) are nearly universal:
 //
 //   f(nu) dnu = fraction of all matter in halos with peak height in
 //               [nu, nu + dnu]            (Eqs. 8-12, Table 4)
 //   b(nu)     = linear bias of those halos (Eq. 6, Table 2)
 //
-// and the mass function follows as dn/dlnM = (rho_m/M) f(nu) nu
+// and the mass function follows as dn/dlnM = (rho_cb/M) f(nu) nu
 // dln nu/dln M - which is where dlognudlogm enters.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Halo bias b(nu) of the peak-background split, Tinker et al. 2010 Eq. 6
-// with the Table 2 coefficients at Delta = 200.
+// Halo bias b(nu) of the peak-background split: Tinker et al. 2010 Eq. 6
+// with the Table 2 coefficients at Delta = 200 (the default), or Sheth,
+// Mo & Tormen 2001 Eq. 8.
 //
 // Calls halo.c hb1nu (fit selected by like.halo_model[1]). A closed form,
 // no table.
@@ -220,16 +221,18 @@ double hb1nu_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Multiplicity function f(nu) of the Tinker et al. 2010 mass function,
-// Eqs. 8-12 with the Table 4 parameters at Delta = 200; the redshift
-// evolution of the parameters is frozen beyond z = 3 (the fit's range).
-// The amplitude alpha of f(nu) is set at every a by Eq. 7 of the paper,
+// Multiplicity function f(nu) of the Tinker et al. 2010 mass function
+// (the default), Eqs. 8-12 with the Table 4 parameters at Delta = 200;
+// the redshift evolution of the parameters is frozen beyond z = 3, as
+// the paper recommends (its simulations span 0 <= z <= 2.5). The
+// amplitude alpha of f(nu) is set at every a by Eq. 7 of the paper,
 // int b f dnu = 1 over all nu (matter is unbiased with respect to
-// itself).
+// itself). HMF_TINKER_2008 evaluates Tinker et al. 2008 instead, with
+// that paper's own amplitude and no table.
 //
 // Calls halo.c fnu (fit selected by like.halo_model[0]): a closed form
 // in nu whose alpha is read from a table in a (halo.c tinker_alpha,
-// built once per process).
+// rebuilt when like.halo_model[0..1] or Ntable.random change).
 //
 // Parameters:
 //   nu - peak height delta_c/sigma(M, a)
@@ -252,13 +255,16 @@ double fnu_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Halo concentration c = r_Delta/r_s, Bhattacharya et al. 2013 Table 2
-// (Delta = 200 times the mean matter density):
+// Halo concentration c = r_Delta/r_s at Delta = 200 times the mean
+// matter density. The default is Bhattacharya et al. 2013 Table 2,
 //
-//   c = 9.0 nu^-0.29 D^1.15,   nu = delta_c/sigma_cb(m,a)
+//   c = 9.0 nu^-0.29 D^1.15,   nu = delta_c/sigma_cb(m,a),
 //
-// Calls halo.c conc (fit selected by like.halo_model[2]), which reads the
-// cached sigma2(m,a) table of cosmo3D.c; D = sigma_cb(m,a)/sigma_cb(m,1).
+// with D = sigma_cb(m,a)/sigma_cb(m,1) read from the cached sigma2(m,a)
+// table of cosmo3D.c; CONCENTRATION_DUFFY_2008 gives Duffy et al. 2008,
+// c = 10.14 (m/2e12)^-0.081 a^1.01, with no sigma2 read.
+//
+// Calls halo.c conc (fit selected by like.halo_model[2]).
 //
 // Parameters:
 //   m         - halo mass in M_sun/h
@@ -319,18 +325,18 @@ double dlognudlogm_cpp(
 //
 //   bias_norm(a) = int_{nu(M_min)}^{nu(M_max)} b(nu) f(nu) dnu
 //
-// with M_min, M_max = limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX]. Over all
-// nu the integral is 1 by construction: the amplitude alpha of f(nu) is
-// set at every a by Tinker et al. 2010 Eq. 7, int b f dnu = 1 (matter
-// is unbiased with respect to itself; halo.c tinker_alpha). Over the
-// tabulated mass range it is below 1, 0.80 at z = 0 and 0.79 at z = 1
-// with the defaults, because the light halos under M_min hold a sizable
-// share of the matter. The 2-halo sum of a halo-model matter spectrum
+// with M_min, M_max = limits.halo_m[RANGE_MIN], limits.halo_m[RANGE_MAX].
+// Over all nu the integral is 1 by construction for the default mass
+// function: the amplitude alpha of f(nu) is set at every a by Tinker et
+// al. 2010 Eq. 7, int b f dnu = 1 (matter is unbiased with respect to
+// itself; halo.c tinker_alpha). Over the tabulated mass range it is
+// below 1, 0.83 at z = 0 and 0.72 at z = 1 with the defaults, because
+// the light halos under M_min hold a sizable share of the matter. The
+// 2-halo sum of a halo-model matter spectrum
 // (future_port_unfinished/halo_pmm.c) runs over the tabulated range and
-// adds the missing 1 - bias_norm(a)
-// back as halos of mass exactly M_min, the additive correction of Mead
-// et al. 2020 (2005.00009 App. A), so that P_2h -> P_lin as k -> 0
-// with the mass function left as fitted.
+// adds the missing 1 - bias_norm(a) back as halos of mass exactly M_min,
+// the additive correction of Mead et al. 2020 (2005.00009 App. A), so
+// that P_2h -> P_lin as k -> 0 with the mass function left as fitted.
 //
 // Calls halo.c bias_norm: a cached table on Ntable.N_a nodes in a over
 // [limits.a_min, 0.9999999], filled by one threaded Gauss-Legendre pass
@@ -353,7 +359,7 @@ double bias_norm_cpp(
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// HALO AND GAS PROFILES
+// HALO PROFILES
 //
 // A profile enters the halo model through its Fourier transform
 // normalized by the enclosed mass, u(k|m): u -> 1 as k -> 0 (on scales
@@ -490,11 +496,12 @@ double bgal_cpp(
 //         term that stands in for the halos below limits.halo_m[RANGE_MIN]
 //         (halo.c POWER SPECTRA banner)
 //
-// halo.c tabulates ln P on a uniform (a, ln k) grid - Ntable.N_a x
+// halo.c tabulates ln P on a uniform (a, ln k) grid - per lens bin,
+// Ntable.halo_na_lens nodes over that bin's a-range times
 // Ntable.N_k_nlin nodes over [limits.k_cH0[RANGE_MIN],
-// limits.k_cH0[RANGE_MAX]] in k, per lens bin over that bin's a-range for
-// p_gm, p_gg - and interpolates bilinearly. The first call pays the whole table build (a mass
-// integral per node); later calls are lookups.
+// limits.k_cH0[RANGE_MAX]] in k - and interpolates bilinearly. The
+// first call pays the whole table build (a mass integral per node);
+// later calls are lookups.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -848,7 +855,7 @@ void set_nuisance_hod_cpp(
 // fraction f_rc(a) weights the NLA 2-halo term, and f_2h switches that
 // term off above k_2h.
 //
-// Sign convention: the C_l cores of cosmo2D.c SUBTRACT the dI spectrum,
+// Sign convention: the C_l cores of cosmo2D.c subtract the dI spectrum,
 //
 //   P_dI^phys = -[f_rc C_1 P_delta f_2h + P_dI^1h]
 //
@@ -898,7 +905,7 @@ double ia_f_red_central_cpp(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Window of the NLA 2-halo term (F21 Eq. 31),
+// Window of the NLA 2-halo term (F21 App. B, Eq. B1),
 //
 //   f_2h(k) = exp[-(k/k_2h)^2],   k_2h = 6 h/Mpc x coverH0
 //
@@ -954,7 +961,7 @@ arma::Col<double> ia_window_2h_cpp(
 //
 //   P_dI^1h = a_1h(a) f_1h(k) S_dI(k, a)
 //
-// SIGNED with a_1h: the C_l cores of cosmo2D.c subtract it (section
+// Signed with a_1h: the C_l cores of cosmo2D.c subtract it (section
 // banner), so a_1h > 0 returns a positive value.
 //
 // Calls halo.c ia_p1h_dI: ln S_dI read bilinearly in (a, ln k) from the
@@ -1018,7 +1025,9 @@ arma::Col<double> ia_p1h_dI_cpp(
 //
 //   P_II^1h = a_1h(a)^2 f_1h(k) S_II(k, a)
 //
-// The B mode of radial alignment vanishes (F21 sec. 4.1).
+// The B mode of radial alignment vanishes by symmetry (a radial pattern
+// has no 45-degree component); F21 sec. 4.1 likewise keeps only the II
+// and dI satellite terms.
 //
 // Calls halo.c ia_p1h_II: ln S_II read bilinearly in (a, ln k) from the
 // cached table and exponentiated (ln S_II continued with unit slope
