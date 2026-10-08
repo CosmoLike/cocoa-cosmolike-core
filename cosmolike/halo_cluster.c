@@ -21,7 +21,7 @@
 // Halo-model quantities of galaxy clusters selected in observed richness:
 // the cluster analog of halo.c for the DES cluster analyses (model of
 // arXiv 2503.13631, equation numbers below; Y1 switches from arXiv
-// 2008.10757). It replaces the legacy cluster_util.c.
+// 2008.10757). Its counterpart in the lighthouse code is cluster_util.c.
 //
 // Physics. A cluster is a dark-matter halo of mass M (M200m) whose
 // observed richness lambda scatters around a mean set by M and z, the
@@ -62,7 +62,7 @@
 // The M_200m definition and the lensing window still use total rho_m.
 //
 // and, when cluster.selection_model == CLUSTER_SELECTION_Y1, the Y1
-// mass-dependent selection bias (Y1 eqs 1 and 31) inside the bias
+// mass-dependent selection bias (Y1 eqs 1 and F1) inside the bias
 // integral:
 //
 //   b_h -> b_h S,   S = b_s0 (M/M_piv)^b_s1 ((1 + z)/(1 + z_piv))^b_s2
@@ -94,7 +94,7 @@
 //                    multipole), four points per SIMDe vector
 //   cluster_tinker_* = a private copy of halo.c's Tinker 2010 f(nu) shape,
 //                    at the fixed amplitude 0.368 (CLUSTER_HMF_ALPHA_FIXED)
-//   cluster_mass_tables = THE fill: one deep-unrolled loop nest over
+//   cluster_mass_tables = the fill: one deep-unrolled loop nest over
 //                    (richness bin, a node) with the Gauss-Legendre mass
 //                    nodes innermost; it fills n_nl, b_nl and the 1-halo
 //                    mass weights
@@ -1197,13 +1197,15 @@ static void cluster_nfw_check(void)
 //
 // One fill (cluster_mass_tables) computes, at every node of the a grid and
 // for every richness bin, the Gauss-Legendre sums in ln M on
-// [ln cluster.m[RANGE_MIN], ln cluster.m[RANGE_MAX]] (nodes ln M_q, weights w_q):
+// [ln cluster.m[RANGE_MIN], ln cluster.m[RANGE_MAX]] (nodes ln M_q,
+// weights w_q):
 //
 //   n_nl(a)    = sum_q dn_q(a) P_q
 //   b_nl(a)    = sum_q dn_q(a) P_q b_q(a) / n_nl(a)
 //   W_nl(a, q) = dn_q(a) P_q (M_q/rho_m) / (m(c_q) n_nl(a))
 //
-//   dn_q(a) = w_q (rho_hmf/M_q) nu f(nu) dln nu/dln M,  nu = delta_c/sigma_cb(M_q,a):
+//   dn_q(a) = w_q (rho_hmf/M_q) (dln nu/dln M) f(nu) nu,
+//             nu = delta_c/sigma_cb(M_q, a):
 //             the quadrature weight times dn/dlnM (halo.c's product order);
 //             f(nu) = cluster_tinker_fnu (alpha = 0.368) or halo.c's fnu
 //             (alpha(a) of Eq. 7), per cluster.hmf_alpha_mode
@@ -1341,12 +1343,13 @@ static void cluster_keys_stamp(
 
 // Gauss-Legendre node count of the mass integrals: the ladder of halo.c's
 // spectra (p_gm), Ntable.halo_nm at high_def_integration 0, doubling per
-// step, the largest GSL rule from 3 on; snapped up to the nearest size GSL
-// has precomputed (a non-tabulated size is computed on the fly with
-// weights good to only ~5e-7).
+// step, the largest GSL rule from 3 on; snapped up to the nearest size of
+// GL_TABULATED, all of which GSL has precomputed (a non-tabulated size is
+// computed on the fly with weights good to only ~5e-7).
 static int cluster_mass_node_count(void)
 {
-  // the Gauss-Legendre sizes GSL stores as precomputed tables
+  // sizes GSL serves from precomputed tables, from 64 up (GSL also stores
+  // 2-20, 32 and 100, which this ladder does not use)
   static const int GL_TABULATED[] = {64, 96, 128, 256, 512, 1024};
   const int n_tabulated = (int) (sizeof(GL_TABULATED)/sizeof(GL_TABULATED[0]));
 
@@ -1407,8 +1410,9 @@ static inline double spline_horner(
 //   refill: the keys of cluster_keys_differ. The inputs each key stands
 //     for (the setters' contract, structs_cluster.h): random_model the
 //     richness edges, mass range, MOR and selection models and pivots,
-//     the mass-function amplitude mode (hmf_alpha_mode); random_zdist the supports zdist_zmin/zmax (the a grid);
-//     random_mor mor[]; random_selection selection[] (Y1 only)
+//     the mass-function amplitude mode (hmf_alpha_mode); random_zdist
+//     the supports zdist_zmin/zmax (the a grid); random_mor mor[];
+//     random_selection selection[] (Y1 only)
 // ---------------------------------------------------------------------------
 static void cluster_mass_tables(void)
 {
@@ -1563,8 +1567,9 @@ static void cluster_mass_tables(void)
           mass parts of <ln lambda> and S, r_Delta
        2. per a row: a, z, the redshift parts of <ln lambda> and S,
           the Tinker 2010 parameters at alpha = 0.368 (fixed mode)
-       3. per (a row, q): nu = delta_c/sigma_cb(M_q,a), dn_q = w (rho_hmf/M) dlnnu/dlnM
-          f(nu) nu, b_q = b_h(nu) S, <ln lambda>, sigma, c(M, a), r_s
+       3. per (a row, q): nu = delta_c/sigma_cb(M_q,a),
+          dn_q = w (rho_hmf/M) dlnnu/dlnM f(nu) nu, b_q = b_h(nu) S,
+          <ln lambda>, sigma, c(M, a), r_s
        4. per (nl, a row): P_q = [erf(x_max) - erf(x_min)]/2,
           n = sum dn_q P_q, b = sum dn_q P_q b_q / n,
           W_q = dn_q P_q (M_q/rho_m)/(m(c) n)
@@ -1651,7 +1656,7 @@ static void cluster_mass_tables(void)
                                         : fnu(nu, a);
 
         // quadrature weight x dn/dlnM, in halo.c's order: the a-free
-        // factor, then f(nu), then nu
+        // factor, then dln nu/dln M, then f(nu), then nu
         const double dn = cl_.mass_node[MN_WEIGHT][q]*dlognudlogm(m, a)*f_nu*nu;
 
         // halo bias, times the Y1 selection factor S (1 otherwise)
@@ -1850,8 +1855,8 @@ double bcl_richness(
 //   a nodes     the n_a nodes of the fill (no pads)
 //   ln k nodes  uniform, spacing = the p_gm coarse step on the p_gm dense
 //               grid (Ntable.N_k_nlin nodes on [ln limits.k_cH0[RANGE_MIN],
-//               ln limits.k_cH0[RANGE_MAX]]; step Ntable.halo_nk_step, halved at
-//               high_def_integration 1, 1 from 2 on) divided by
+//               ln limits.k_cH0[RANGE_MAX]]; step Ntable.halo_nk_step,
+//               halved at high_def_integration 1, 1 from 2 on) divided by
 //               CLUSTER_K_REFINE (CONSTANTS: why), plus
 //               Ntable.halo_spline_pad pads beyond each end
 //
@@ -2648,16 +2653,16 @@ void pcm_1h_richness_fill(
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Builds every lazily filled cluster table on the calling thread, so that
+// Builds the lazily filled cluster tables on the calling thread, so that
 // threaded loops only read them (the halo_warmup rule of halo.c): the fill
-// and the P1h table of this file (with the halo.c and cosmo3D.c tables
-// they read: sigma2, dlognudlogm, tinker_alpha, u_nfw_c's table), then the
-// selection-kernel, n(z) and lensing-efficiency tables of
-// redshift_spline_cluster.c through one read per (cluster bin, richness
-// bin) at the middle of the bin's support. nz_cluster comes after the
-// fill: the abundance-weighted kernel reads n_nl. The pair maps are
-// warmed by the interface. Does nothing while no cluster sample (redshift
-// or richness bins) is set.
+// and, when cluster lensing is in the data vector, the P1h table of this
+// file (with the halo.c and cosmo3D.c tables they read: sigma2,
+// dlognudlogm, tinker_alpha, u_nfw_c's table), then the selection-kernel,
+// n(z) and lensing-efficiency tables of redshift_spline_cluster.c through
+// one read per (cluster bin, richness bin) at the middle of the bin's
+// support. nz_cluster comes after the fill: the abundance-weighted kernel
+// reads n_nl. The pair maps are warmed by the interface. Does nothing
+// while no cluster sample (redshift or richness bins) is set.
 //
 // Must be called outside any parallel region, after every cluster setter
 // and cosmology update of the step.

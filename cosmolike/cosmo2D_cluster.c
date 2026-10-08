@@ -1337,8 +1337,8 @@ static void C_cs_tomo_limber_work(
   // reader of halo_cluster.c: pcm_1h_richness_fill takes the row's nodes
   // four per SIMDe vector and every richness bin at once (a node's place
   // on the P1h table does not depend on the richness bin). Each value is
-  // bitwise the pcm_1h_richness call of the reference loop in the other
-  // branch, and no value depends on how the threads share the rows.
+  // bitwise the scalar pcm_1h_richness call at that node, and no value
+  // depends on how the threads share the rows.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int ni = 0; ni < nbin_cluster; ni++) {
     for (int i = 0; i < nell; i++) {
@@ -1494,8 +1494,8 @@ void C_cs_tomo_limber_nointerp_ells(
 
 
 // ---------------------------------------------------------------------------
-// The cached cluster-lensing table (exact at N_ell_internal nodes, spline
-// onto the dense grid).
+// The cached cluster-lensing table (exact at Ntable.N_ell[NODES_COARSE]
+// nodes, spline onto the dense grid).
 // ---------------------------------------------------------------------------
 static const limber_table_cluster* C_cs_tomo_limber_table(void)
 {
