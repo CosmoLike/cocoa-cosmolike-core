@@ -4,15 +4,18 @@ A Fisher matrix forecasts parameter uncertainties from the
 derivatives of the theory data vector: F = D^T C^-1 D, with D the
 matrix whose column p is the derivative of the data vector with
 respect to parameter p, and C the data covariance. Everything in
-this module is pure numpy/getdist mathematics EXCEPT the data vector
+this module is pure numpy/getdist mathematics except the data vector
 itself, which needs a project's compiled cosmolike interface. That
-dependency is injected: the functions here take the notebook's
-data-vector function as their first argument (`dv`, called as
-dv(param=<1D parameter array>, AccuracyBoost=<float>) and returning
-the theory vector) or a derivative function built from it (`ddv`).
+dependency arrives as an explicit argument, never by replacing a
+function at run time (a monkey patch): get_ddv, get_ddv_dkit and
+get_Fisher2 take the notebook's data-vector function as their first
+argument (`dv`, called as dv(param=<1D parameter array>,
+AccuracyBoost=<float>) and returning the theory vector), and
+get_Fisher takes a derivative function built from it (`ddv`).
 This module therefore never imports a cosmolike interface, and every
-project shares it; each notebook keeps thin wrappers that bind its
-own dv, fiducial values, priors, and covariance.
+project shares it; each project binds its own dv, fiducial values,
+priors, and covariance in thin wrappers
+(interface/cosmolike_<project>_notebook_wrappers.py).
 
 Contents:
   get_ddv             five-point finite-difference derivative of dv
@@ -34,20 +37,24 @@ from getdist.mcsamples import MCSamples, loadMCSamples
 
 
 def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
-    """Derivative of the data vector along one parameter (5-point rule).
+    """Differentiate the data vector along one parameter (5-point rule).
 
     Four evaluations at +-h and +-2h around the fiducial, combined
     with the standard five-point-stencil weights (the center point
-    has weight zero, so it is never evaluated). The step is RELATIVE
+    has weight zero, so it is never evaluated). The step is relative
     (p0 * (1 + s)) so one h suits parameters of any magnitude; a
-    parameter whose fiducial is zero falls back to an absolute step.
+    parameter whose fiducial is zero (|p0| <= 1e-12) falls back to
+    an absolute step.
 
     Arguments:
       dv    = the data-vector function, called as
               dv(param=<1D array>, AccuracyBoost=AccuracyBoost).
       index = position of the differentiated parameter inside CV.
-      h     = relative step size (0.02 = two percent).
-      CV    = 1D array of fiducial parameter values.
+      h     = relative step size (0.02 = two percent); the absolute
+              step when the fiducial is zero. Must be > 0 (assert).
+      CV    = 1D array of fiducial parameter values (required; the
+              None default is a placeholder). Never modified: each
+              evaluation works on a copy.
       AccuracyBoost = forwarded to every dv evaluation.
 
     Returns:
@@ -71,14 +78,16 @@ def get_ddv(dv, index=0, h=0.02, CV=None, AccuracyBoost=1.0):
         vec = dv(param=p, AccuracyBoost=AccuracyBoost)
         # accumulate c * vec; the first turn initializes result
         result = c*vec if result is None else result + c*vec
-    # divide by the actual step used: h for the absolute branch,
-    # h * p0 for the relative one
+    # divide by the step scale: h for absolute steps, h * p0 for
+    # relative ones. This test is exact (p0 == 0.0) while the loop
+    # takes absolute steps for |p0| <= 1e-12, so the two agree for
+    # every fiducial except 0 < |p0| <= 1e-12.
     return result / (h if p0 == 0.0 else h * p0)
 
 
 def get_ddv_dkit(dv, index=0, CV=None, AccuracyBoost=1.0,
                  min_samples=7, fallback_mode="poly_at_floor"):
-    """Derivative of the data vector via the derivkit package.
+    """Differentiate the data vector along one parameter with derivkit.
 
     derivkit fits polynomials through adaptively chosen sample
     points and differentiates the fit: numerical noise in the data
@@ -89,7 +98,8 @@ def get_ddv_dkit(dv, index=0, CV=None, AccuracyBoost=1.0,
     Arguments:
       dv    = the data-vector function (see get_ddv).
       index = position of the differentiated parameter inside CV.
-      CV    = 1D array of fiducial parameter values.
+      CV    = 1D array of fiducial parameter values (required; the
+              None default is a placeholder). Never modified.
       AccuracyBoost = forwarded to every dv evaluation.
       min_samples   = minimum number of sample points for the fit.
       fallback_mode = derivkit's strategy when the fit rejects the
@@ -148,23 +158,26 @@ def get_Fisher(ddv, CV=None, h=0.02, AccuracyBoost=3.1, priors=None,
     Arguments:
       ddv   = derivative function, called as
               ddv(index=p, h=h, CV=CV, AccuracyBoost=AccuracyBoost)
-              for every parameter p (the notebooks pass their get_ddv
-              wrapper, which already carries dv).
-      CV    = 1D array of fiducial parameter values; its length sets
-              the number of columns of D.
+              for every parameter p (the project wrappers pass their
+              own get_ddv, which calls this module's get_ddv with the
+              project's dv).
+      CV    = 1D array of fiducial parameter values (required); its
+              length sets the number of columns of D.
       h     = relative step forwarded to ddv.
       AccuracyBoost = forwarded to ddv (derivatives want accurate
               vectors: differences amplify numerical noise).
       priors  = None, or {index: (mean, sigma)} Gaussian priors
               added on the diagonal.
-      invcov  = inverse covariance of the data vector (2D array).
+      invcov  = inverse covariance of the data vector, a 2D
+              (n_data, n_data) array matching the length of the
+              vectors ddv returns (required).
 
     Returns:
       the Fisher matrix (n_params x n_params array).
     """
-    # the comprehension evaluates ddv once per parameter (each call
-    # is len(steps) data-vector evaluations); np.column_stack glues
-    # the returned 1D arrays side by side as the columns of D
+    # the comprehension evaluates ddv once per parameter (four
+    # data-vector evaluations per call with get_ddv); np.column_stack
+    # glues the returned 1D arrays side by side as the columns of D
     D = np.column_stack([ddv(index=p, h=h, CV=CV, AccuracyBoost=AccuracyBoost) for p in list(range(len(CV)))]).astype(np.float64)
     # @ is numpy matrix multiplication: D^T (C^-1 D)
     F = D.T @ (invcov @ D)
@@ -181,15 +194,18 @@ def get_Fisher2(dv, CV=None, AccuracyBoost=3.0, priors=None,
     Arguments:
       dv    = the data-vector function (see get_ddv); the derivkit
               derivative is built from it per parameter.
-      CV    = 1D array of fiducial parameter values.
+      CV    = 1D array of fiducial parameter values (required).
       AccuracyBoost = forwarded to every dv evaluation.
       priors  = None, or {index: (mean, sigma)} Gaussian priors.
-      invcov  = inverse covariance of the data vector.
+      invcov  = inverse covariance of the data vector, a 2D
+              (n_data, n_data) array (required).
       min_samples, fallback_mode = forwarded to get_ddv_dkit.
 
     Returns:
       the Fisher matrix (n_params x n_params array).
     """
+    # one derivkit derivative per parameter, glued as the columns of
+    # D as in get_Fisher
     D = np.column_stack([get_ddv_dkit(dv, index=p, CV=CV, AccuracyBoost=AccuracyBoost, min_samples=min_samples, fallback_mode=fallback_mode) for p in list(range(len(CV)))]).astype(np.float64)
     F = D.T @ (invcov @ D)
     if priors is not None:
@@ -198,7 +214,7 @@ def get_Fisher2(dv, CV=None, AccuracyBoost=3.0, priors=None,
 
 
 def get_FoM(i, j, F):
-    """Figure of merit of the parameter pair (i, j).
+    """Compute the figure of merit of the parameter pair (i, j).
 
     FoM = 1/sqrt(det C_ij), with C_ij the 2x2 block of the parameter
     covariance (the inverse Fisher matrix) for parameters i and j: a
@@ -209,18 +225,22 @@ def get_FoM(i, j, F):
       F    = Fisher matrix.
 
     Returns:
-      the figure of merit as a float.
+      the figure of merit as a float; inf (or a very large value)
+      when det C_ij <= 0, instead of an error. A block with two
+      negative eigenvalues has det C_ij > 0 and passes unnoticed.
     """
     # 0.5 * (F + F^T) symmetrizes away numerical asymmetry before
     # inverting; np.ix_([i, j], [i, j]) selects the 2x2 block with
-    # rows AND columns (i, j)
+    # rows and columns (i, j)
     C = np.linalg.inv(0.5 * (F + F.T))
     C = C[np.ix_([i, j], [i, j])]
     detC = np.linalg.det(C)
     if detC <= 0:
         # a numerically indefinite block: clip negative eigenvalues
         # to zero (eigvalsh = eigenvalues of a symmetric matrix) and
-        # use the product of the clipped ones as the determinant
+        # use the product of the clipped ones as the determinant. The
+        # product is then zero (or tiny), so the FoM returned below is
+        # inf (or very large): this branch reports no error
         w = np.clip(np.linalg.eigvalsh(C), 0, None)
         detC = w.prod()
     return float(1.0/np.sqrt(detC))
@@ -229,7 +249,7 @@ def get_FoM(i, j, F):
 def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
                 names=None, filled=True, flat_priors=None,
                 chain_names=None, rng=None):
-    """getdist triangle plot of Fisher contours, optionally vs MCMC.
+    """Draw a getdist triangle plot of Fisher contours, optionally vs MCMC.
 
     Each Fisher matrix is turned into a cloud of samples from the
     Gaussian it defines (mean mu, covariance F^-1), truncated to the
@@ -238,25 +258,33 @@ def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
     joins the same figure, so forecast and chain overlay directly.
 
     Arguments:
-      F      = one Fisher matrix or a list of them (one contour set
-               each).
+      F      = one full-size Fisher matrix or a list of them (one
+               contour set each); each is inverted before select cuts
+               its covariance down.
       mu     = 1D array of fiducial parameter values (the Gaussian
                mean), full length; select cuts it down.
-      F2     = a second matrix or list drawn after F (extra styles).
+      F2     = a second matrix or list, sampled as F and drawn after
+               it with the next styles of the cycle.
       root   = getdist chain root to load and overlay, or None.
       select = list of parameter indices to show, or None for all.
       labels = full-length list of LaTeX parameter labels.
       names  = full-length list of parameter names (getdist ids).
       filled = True fills the 2D contours.
-      flat_priors = {parameter index: (min, max)} truncation boxes,
-               or None for no truncation.
+      flat_priors = {position in select: (min, max)} truncation
+               boxes, or None for no truncation. The keys count the
+               selected parameters (the columns of the sample array),
+               not the full parameter list: they agree with full
+               indices only when select[j] == j for every key j, as
+               with select None.
       chain_names = legend labels, one per drawn set, or None.
       rng    = numpy random Generator for the sample clouds; None
                creates a fresh seeded one (reproducible, but then
                repeated calls reuse identical sample noise).
 
     Returns:
-      the getdist subplot plotter holding the figure.
+      the getdist subplot plotter holding the figure. The figure is
+      drawn on getdist's matplotlib figure; nothing calls plt.show()
+      and nothing is saved.
     """
     if rng is None:
         rng = np.random.default_rng(0)
@@ -281,17 +309,18 @@ def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
         Fi = 0.5 * (Fi + Fi.T)
         C = np.linalg.inv(Fi)
         # np.ix_ selects the (idx x idx) block: marginalizing a
-        # Gaussian over the dropped parameters IS taking the
+        # Gaussian over the dropped parameters is taking the
         # covariance sub-block
         C = C[np.ix_(idx, idx)]
         # 40000 draws from the Gaussian the Fisher matrix defines
         y = rng.multivariate_normal(mu, C, size=40000)
-        # one boolean column per flat prior: True where the draw sits
-        # inside that parameter's box
+        # one boolean mask per flat prior, one entry per draw: True
+        # where column j of y (position j in select) sits inside the
+        # box
         conds = [(y[:,j] >= lo) & (y[:,j] <= hi) for j, (lo, hi) in flat_priors.items()]
-        # np.all(conds, axis=0) ands the columns together: a draw
-        # survives only when EVERY box contains it; with no boxes,
-        # np.ones(..., dtype=bool) keeps every draw
+        # np.all(conds, axis=0) stacks the masks as rows and ands them
+        # draw by draw: a draw survives only when every box contains
+        # it; with no boxes, np.ones(..., dtype=bool) keeps every draw
         valid = np.all(conds, axis=0) if conds else np.ones(y.shape[0], dtype=bool)
         # {name: [lo, hi]} tells getdist where hard prior edges sit,
         # so its density estimate does not smooth across them
@@ -299,6 +328,13 @@ def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
         x = MCSamples(samples=y[valid], names=names, ranges=ranges, labels=labels)
         samples.append(x)
 
+    # getdist analysis settings: smooth_scale_1D/2D = 0.1 smooth with
+    # a Gaussian kernel 0.1 standard deviations wide (getdist's default
+    # -1 picks the width automatically); ignore_rows 0 keeps every draw
+    # (independent samples, no burn-in); range_confidence 0.005 is the
+    # 1D tail probability that sets each parameter's plotted range;
+    # fine_bins_2D is the 2D density grid. getdist 1.7 has no settings
+    # named bins_2D, fine_bins_1D or bins_1D and ignores those entries.
     analysissettings={'smooth_scale_1D':0.1,
                       'smooth_scale_2D':0.1,
                       'ignore_rows': u'0.0',
@@ -321,6 +357,8 @@ def plot_Fisher(F, mu, F2=None, root=None, select=None, labels=None,
             x = MCSamples(samples=y[valid], names=names, ranges=ranges, labels=labels)
             samples.append(x)
 
+    # ignore_rows 0.0 removes no burn-in: the chain at root is used as
+    # stored
     if root:
         samples.append(loadMCSamples(root,settings={'ignore_rows': u'0.0'}))
 

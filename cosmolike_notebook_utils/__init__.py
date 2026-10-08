@@ -2,11 +2,10 @@
 
 Each Cosmolike project ships Jupyter notebooks that drive the compiled
 interface directly (their own CAMB run, set_cosmology, the nuisance
-setters, compute_data_vector_masked). The notebooks used to carry
-private copies of the same support functions; those copies drifted
-apart and every interface upgrade had to be repeated in each one. The
-functions that do NOT depend on a project live here instead, and each
-notebook imports them once:
+setters, compute_data_vector_masked). The functions that do not
+depend on a project live here, once: private copies in each notebook
+would drift apart, and every interface upgrade would have to be
+repeated in each one. Each notebook imports them once:
 
     sys.path.insert(0, os.environ['ROOTDIR']
                     + '/external_modules/code/cosmolike_core')
@@ -26,19 +25,29 @@ and `ddv` parameters of the Fisher helpers). Shared groups:
                      galaxy-galaxy lensing (plot_C_gs_tomo_limber,
                      plot_gammat_tomo_limber), galaxy clustering
                      (plot_C_gg_tomo, plot_wtheta_tomo), and the
-                     bfmt parameter sweeps (plot_baryon_suppression).
+                     baryonic-feedback (bfmt) parameter sweeps
+                     (plot_baryon_suppression).
   plot_response      plot_response_function: curves of a data
                      vector's response to the matter power spectrum,
                      both d ln DV / d ln k and cumulative R(k_max).
-  fisher             finite-difference and derivkit derivatives of an
-                     injected data-vector function, Fisher-matrix
-                     assembly, figures of merit, and Fisher contour
-                     plots via getdist.
+  fisher             finite-difference and derivkit derivatives of a
+                     data-vector function passed as an argument,
+                     Fisher-matrix assembly, figures of merit, and
+                     Fisher contour plots via getdist.
 
-  covariance         component preparation, Gaussian blocks, dense-linear
-                     lookup tables and covariance eigenvalue diagnostics.
+The two covariance modules are not imported by this file, so
+`import cosmolike_notebook_utils as cnu` does not bind them; the
+covariance notebooks import them as submodules:
+
+    from cosmolike_notebook_utils import covariance as cov
+    from cosmolike_notebook_utils import plot_covariances as pcov
+
+  covariance         component preparation, Gaussian blocks, real-space
+                     and Fourier survey matrices, dense-linear lookup
+                     tables and covariance eigenvalue diagnostics.
   plot_covariances   correlation triangles, component maps/histograms,
-                     and angular standard deviations, from supplied arrays.
+                     standard deviations per angular or multipole bin,
+                     and halo trispectrum terms, from supplied arrays.
 
 The notebooks keep everything project-specific: fiducial parameter
 values, tomographic-bin layouts, the interface init sequence, and
