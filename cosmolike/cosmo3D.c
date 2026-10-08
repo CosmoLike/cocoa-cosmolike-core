@@ -202,7 +202,10 @@ struct chis chi_all(const double a)
   // Pre-load the grid points and chi values used by both the chi(z)
   // interpolation and the dchi/dz finite-difference derivative.
   // The j+2 access requires j <= chi_nz - 3; piecewise_index already
-  // clamps to chi_nz - 2, so we additionally clamp here for the j+2 read.
+  // clamps to chi_nz - 2, so jc clamps once more for the j+2 read. In the
+  // last interval, [z_{nz-2}, z_{nz-1}], jc is the previous bracket nz-3:
+  // there dy >= 1, so chi and dchi/dz are linear extrapolations from that
+  // bracket rather than interpolations.
   const int jc = (j > cosmology.chi_nz - 3) ? cosmology.chi_nz - 3 : j;
 
   const double zjm1 = (jc > 0) ? cosmology.chi[0][jc-1] : 0.0;  // unused if jc==0
@@ -291,9 +294,9 @@ double hoverh0v2(const double a, const double dchida)
 //
 // Why it exists: a_chi runs millions of times per likelihood evaluation
 // (the two-radius RSD kernel of the Limber C_gg calls it twice per lens
-// bin, multipole and node), and its binary search, with branches the
-// CPU cannot predict, made it ~8% of all cycles of a des_cluster 6x2pt+N
-// evaluation (perf, amypond, v5.00). The chi column is not uniform, so
+// bin, multipole and node), and a binary search, with branches the CPU
+// cannot predict, made it ~8% of all cycles of a des_cluster 6x2pt+N
+// evaluation in a perf profile. The chi column is not uniform, so
 // the direct-index trick of the z axes does not apply; instead the chi
 // range is cut into equal buckets, and each bucket stores the bracket of
 // its lower edge:
@@ -358,11 +361,11 @@ void set_chi_bucket_index(void)
 // Mpc/h (io_chi * coverH0).
 //
 // The bracket comes from the bucket index (set_chi_bucket_index) and is
-// exactly the one of the binary search a_chi used before: inside
-// [chi_0, chi_{nz-1}) the unique j with chi_j <= chi < chi_{j+1}; 0 below
-// chi_0; nz-2 at or above chi_{nz-1}, and for NaN (the binary search never
-// moved ihi there). The interpolation is unchanged, so a_chi is bitwise
-// the binary-search version.
+// exactly the one of the bisection "ihi = mid if chi_mid > chi, else
+// ilo = mid": inside [chi_0, chi_{nz-1}) the unique j with
+// chi_j <= chi < chi_{j+1}; 0 below chi_0; nz-2 at or above chi_{nz-1},
+// and for NaN (every comparison with NaN is false, so ihi never moves).
+// With the same interpolation, a_chi is bitwise equal to that bisection.
 //
 // Cache invalidation:
 // no static state; the table and its bucket index are maintained by
@@ -580,8 +583,8 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
 
   // ---------------------------------------------------------------
   // Second lookup: G at the query redshift. Direct-index lookup on
-  // the piecewise-uniform z grid; metadata populated by set_distances
-  // (or whichever function fills cosmology.G).
+  // the piecewise-uniform z grid; metadata populated by set_growth,
+  // the setter that fills cosmology.G.
   // ---------------------------------------------------------------
   const double z = 1.0/a - 1.0;
 
@@ -665,7 +668,8 @@ struct growths growfac_all(const double a)
 // ---------------------------------------------------------------------------
 double p_lin(const double k, const double a)
 {
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
+  // k is in (c/H0)^-1 units; dividing by coverH0 = c/H0 in Mpc/h gives
+  // h/Mpc, whose log10 is the table's k axis
   const double log10k = log10(k / cosmology.coverH0);
   const double z      = 1.0 / a - 1.0;
 
@@ -674,12 +678,13 @@ double p_lin(const double k, const double a)
 
   // -----------------------------------------------------------------
   // Direct-index lookup on log10k axis (single uniform segment) and
-  // z axis (piecewise-uniform). 
-  // Replaces two binary searches that were ~60% of this function's cost.
+  // z axis (piecewise-uniform): one multiply and one cast per axis (on z
+  // after a short scan over the few segments) in place of a binary search
+  // and its unpredictable branches.
   //
   // Index is clamped so [i, i+1] and [j, j+1] are always valid;
-  // out-of-range queries snap to the nearest interior bracket, which
-  // matches the behavior of the previous binary-search version.
+  // out-of-range queries keep the nearest edge bracket, from which ln P
+  // is extrapolated linearly (dx or dy outside [0, 1]).
   // -----------------------------------------------------------------
   int i = (int)((log10k - cosmology.lnPL_log10k_min) * cosmology.lnPL_log10k_inv_dx);
   if (i < 0)                       i = 0;
@@ -704,7 +709,8 @@ double p_lin(const double k, const double a)
                          +    dx *(1-dy) * cosmology.lnPL[i+1][j  ]
                          +    dx *   dy  * cosmology.lnPL[i+1][j+1];
 
-  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
+  // (Mpc/h)^3 -> (c/H0)^3 units: divide by coverH0^3, with coverH0 =
+  // c/H0 = 2997.92458 Mpc/h
   return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
 }
 
@@ -717,13 +723,15 @@ double p_lin(const double k, const double a)
 //
 // Table: cosmology.lnPL_cb[i][j] = ln P_cb at (log10k_i, z_j), installed
 // by set_linear_power_spectrum_cb on the grid of cosmology.lnPL; the axes
-// and the direct-index metadata are read from lnPL. The two variants
-// below are p_lin's two variants with lnPL_cb in place of lnPL in the
-// four value reads: the same brackets, fractions and arithmetic, so a
-// P_cb table equal to P_lin returns p_lin's values bit for bit.
+// and the direct-index metadata are read from lnPL. The function below is
+// p_lin with lnPL_cb in place of lnPL in the four value reads: the same
+// brackets, fractions and arithmetic, so a P_cb table equal to P_lin
+// returns p_lin's values bit for bit.
 //
-// Precondition: cosmology.lnPL_cb installed (the caller checks; sigma2
-// aborts otherwise).
+// Precondition: cosmology.lnPL_cb installed. This reader does not check
+// it (a NULL table is dereferenced), so the caller must. The halo
+// variance does not call it: sigma2_fields_build reads lnPL_cb directly,
+// and the cb variance reader aborts when the table is missing.
 //
 // Cache invalidation:
 // no static state. set_linear_power_spectrum_cb bumps cosmology.random
@@ -738,7 +746,8 @@ double p_lin(const double k, const double a)
 // ---------------------------------------------------------------------------
 double p_lin_cb(const double k, const double a)
 {
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
+  // k is in (c/H0)^-1 units; dividing by coverH0 = c/H0 in Mpc/h gives
+  // h/Mpc, whose log10 is the table's k axis
   const double log10k = log10(k / cosmology.coverH0);
   const double z      = 1.0 / a - 1.0;
 
@@ -767,16 +776,23 @@ double p_lin_cb(const double k, const double a)
                          +    dx *(1-dy) * cosmology.lnPL_cb[i+1][j  ]
                          +    dx *   dy  * cosmology.lnPL_cb[i+1][j+1];
 
-  // convert from (Mpc/h)^3 to (Mpc/h)^3/(c/H0=100)^3 (dimensioneless)
+  // (Mpc/h)^3 -> (c/H0)^3 units: divide by coverH0^3, with coverH0 =
+  // c/H0 = 2997.92458 Mpc/h
   return exp(out_lnP) / (cosmology.coverH0 * cosmology.coverH0 * cosmology.coverH0);
 }
 
 
 
 // ---------------------------------------------------------------------------
-// The cold matter density sets the halo mass-radius relation and the
-// rho/M factor in the mass function. Free-streaming neutrinos contribute
-// to the background and to lensing, but not to the mass in these halos.
+// Omega_cb = Omega_m - Omega_nu, the density parameter of cold dark
+// matter plus baryons, the matter that makes up halos. rho_crit Omega_cb
+// is the rho/M factor of the mass function dn/dlnM (the callers in
+// halo.c, halo_cluster.c and covariances/halo_cov.c), and the same
+// density sets the Lagrangian radius of the cb variance (formed directly
+// in sigma2_fields_build). Free-streaming neutrinos contribute to the
+// background and to lensing, but not to the mass in these halos. The
+// overdensity radius r_200m and the lensing weight M/rho_m keep total
+// matter.
 // ---------------------------------------------------------------------------
 double omega_halo_field(void)
 {
@@ -813,7 +829,8 @@ double omega_halo_field(void)
 double p_nonlin(const double k, const double a)
 {
   const double coverH0 = cosmology.coverH0;
-  // convert from (x/Mpc/h - dimensioneless) to h/Mpc with x = c/H0 (Mpc)
+  // k is in (c/H0)^-1 units; dividing by coverH0 = c/H0 in Mpc/h gives
+  // h/Mpc, whose log10 is the table's k axis
   const double log10k = log10(k / coverH0);
   const double z      = 1.0 / a - 1.0;
 
@@ -952,9 +969,23 @@ void p_nonlin_at_a(const double a, const double* k, const int n, double* out)
 
 // ---------------------------------------------------------------------------
 // The dispatch of Pdelta, shared with Pdelta_at_a so the two can never
-// disagree: 3 (p_lin) is latched the first time pdeltaparams.runmode reads
-// "linear"; -1 means p_nonlin and is checked again on every call (the
-// latch only ever moves to 3).
+// disagree. pdelta_type is the run-mode latch: -1 selects p_nonlin, 3
+// selects p_lin.
+//
+// The only write of the static is pdelta_type = 3 below. It happens in
+// the first call of Pdelta or Pdelta_at_a that finds pdeltaparams.runmode
+// equal to "linear". While the run mode is anything else, no call writes
+// it: each call compares the string again and returns -1. The latch never
+// returns to -1, so a later change of the run mode away from "linear"
+// (init_cosmo_runmode(false) or initial_setup, generic_interface.cpp) is
+// not seen in this process.
+//
+// That first "linear" call could run inside an OpenMP loop, where
+// several threads writing the static would race. Every threaded consumer
+// therefore calls Pdelta once serially before its parallel region (the
+// warm-up calls in cosmo2D.c, cosmo2D_cluster.c and
+// covariances/spectra_cov.c, and halo_warmup in halo.c); the workers
+// then only read the latch.
 // ---------------------------------------------------------------------------
 static int pdelta_type = -1;
 
@@ -1093,11 +1124,12 @@ double f_K(double chi)
 // ---------------------------------------------------------------------------
 // Baryonic feedback ratio P(k)_bary/P(k)_DMO from hydro sims.
 //
-// Returns 1 when bary.is_Pk_bary == 0. Otherwise evaluates the GSL 2D
-// spline bary.interp2d of log10(P_bary/P_DMO) on the (log10 k, a) grid
-// (bary.logk_bins, bary.a_bins; k in h/Mpc, so the input is converted
-// with k_NL/coverH0), with extrapolation outside the grid, and returns
-// 10^result. Aborts on GSL error.
+// Returns 1 when bary.is_Pk_bary == 0. Otherwise evaluates the GSL
+// bilinear interpolator bary.interp2d of log10(P_bary/P_DMO) on the
+// (log10 k, a) grid (bary.logk_bins, bary.a_bins; k in h/Mpc, so the
+// input is converted with k_NL/coverH0), extending the edge cell's
+// bilinear form outside the grid, and returns 10^result. Aborts on GSL
+// error.
 //
 // Cache invalidation:
 // no static state; the bary tables are maintained by
@@ -1484,6 +1516,19 @@ static void sigma2_spline_coeffs(
 // ---------------------------------------------------------------------------
 static void sigma2_fields_build(void)
 {
+  // Fast path: return when the tables hold this cosmology, these
+  // numerical settings and this thread count. The k grid changes only
+  // together with cosmology.random, and limits are fixed at start-up
+  // (structs.c), so neither needs a test here; block 1b compares them
+  // before it reuses the workspace.
+  //
+  // The thread test assumes a single-valued OMP_NUM_THREADS, such as "8".
+  // omp_get_max_threads() then returns the same count inside a consumer's
+  // parallel region as in the serial warm-up, so every worker returns
+  // here and writes nothing. A list value such as "8,1" gives each nested
+  // level its own count: inside a parallel region omp_get_max_threads()
+  // returns 1, the test fails, and every worker would rebuild the shared
+  // tables, work arrays and FFTW plans at the same time.
   if (sigma_fields_.table != NULL
       && !fdiff2(sigma_fields_.cosmology_tag, cosmology.random)
       && !fdiff2(sigma_fields_.ntable_tag, Ntable.random)

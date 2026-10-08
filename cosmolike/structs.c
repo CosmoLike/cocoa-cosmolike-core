@@ -258,8 +258,14 @@ void reset_Ntable_struct(void)
   Ntable.N_k_nlin = 512;   // N_k_nlin
   Ntable.N_ell[NODES_DENSE]    = 512;   // N_ell
   Ntable.N_ell[NODES_COARSE] = 192; // ss/gs table coarse grid; 0 = exact N_ell      
+  // Ntheta: number of real-space angular bins (init_binning_real_space
+  // sets it); cosmo2D.c's real-space projections and set_bin_average in
+  // basics.c read it, contrary to the trailing note on the next line
   Ntable.Ntheta   = 256;   // N_theta (not used by cosmo2d) 
   Ntable.N_M[NODES_DENSE]      = 1024;  // N_M, M = mass (Halo Model)
+  // N_M[NODES_COARSE]: no table reads this slot (structs.h); the FFTLog
+  // variance of cosmo3D.c fills every N_M[NODES_DENSE] node itself, so
+  // the trailing note on the next line does not apply
   Ntable.N_M[NODES_COARSE] = 192; // coarse sigma^2(M) nodes (upsampled to N_M)
   Ntable.halo_uks_n[UKS_N_LNC] = 40;       // u_KS coarse ln c nodes (u_KS not compiled)
   Ntable.halo_uks_n[UKS_N_LNZ] = 64;       // u_KS coarse ln z nodes (u_KS not compiled)
@@ -291,9 +297,9 @@ void reset_Ntable_struct(void)
   Ntable.nz_fine_sampling_factor = 5; // nz fine-sampling (to ensure uniform points)
   Ntable.photoz_interpolation_type = 0; // 0: cspline, 1: linear, 2+: steffen
   Ntable.photoz_zmid_convention = 0;    // 0: z column = Z_LOW (left edges); 1: Z_MID (points)
-  // C-FAST-PT convolution grid / output grid. 0.5 is converged: the
-  // 2026-09-25 lsst_y1 scan measured delta^T C^-1 delta <= 1e-9 vs the
-  // single-grid path down to 0.27, and 1.0 recovers that path exactly
+  // C-FAST-PT convolution grid / output grid. 0.5 is converged: an
+  // lsst_y1 scan measured delta^T C^-1 delta <= 1e-9 vs the single-grid
+  // path for values down to 0.27, and 1.0 recovers that path exactly
   Ntable.FPT_internal_accuracy_boost = 0.5;
 }
 

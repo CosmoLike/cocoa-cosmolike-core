@@ -146,11 +146,17 @@ int detect_uniform_segments(const double *x, int n, double rtol, int max_seg,
 //
 //   box_a = [ 1.0 | 2.0 | 3.0 | 4.0 ]
 //   box_b = [ 5.0 | 6.0 | 7.0 | 8.0 ]
-//   result = [ 6.0 | 8.0 | 10.0 | 12.0 ]   (one instruction!)
+//   result = [ 6.0 | 8.0 | 10.0 | 12.0 ]   (one AVX2 instruction on
+//   x86-64; two NEON instructions, one per two-lane half, on arm64)
 // -----------------------------------------------------------------------------
 double simd_horizontal_sum(simde__m256d four_lanes)
 { // Takes a 4-lane register and sums all 4 values into a single double
   double tmp[4]; // Store the 4 lanes into a regular C array
+  // scalar: for (int l = 0; l < 4; l++) { tmp[l] = four_lanes[l]; }
+  //
+  // storeu writes lane l of four_lanes to tmp[l], l = 0..3 (the u means
+  // tmp needs no 32-byte alignment); the return then adds the four values
+  // left to right, ((tmp[0] + tmp[1]) + tmp[2]) + tmp[3]
   simde_mm256_storeu_pd(tmp, four_lanes);
   return tmp[0] + tmp[1] + tmp[2] + tmp[3];
 }
@@ -166,21 +172,43 @@ double simd_horizontal_sum(simde__m256d four_lanes)
 // effective latency of the reduction chain compared to a single accumulator.
 //
 // The main loop processes 8 elements per iteration (2 × 4-wide loads).
-// A scalar tail handles the remaining n % 8 elements. The final reduction
-// adds the two vector accumulators, then horizontally sums the 4 lanes
-// via 128-bit extract + add + shuffle + add.
+// Then simd_horizontal_sum adds each accumulator's four lanes in lane
+// order, the two partial sums are added (accum_A's first), and a scalar
+// tail adds the remaining n % 8 elements one at a time. This order
+// differs from a left-to-right loop over a, so the two results can
+// differ in the last bits.
+//
+// scalar: double sum_A[4] = {0.0}, sum_B[4] = {0.0};
+//         int q = 0;
+//         for (; q <= n - 8; q += 8) {
+//           for (int l = 0; l < 4; l++) {
+//             sum_A[l] += a[q + l];      // lane l of accum_A
+//             sum_B[l] += a[q + 4 + l];  // lane l of accum_B
+//           }
+//         }
+//         double result = (((sum_A[0] + sum_A[1]) + sum_A[2]) + sum_A[3])
+//                       + (((sum_B[0] + sum_B[1]) + sum_B[2]) + sum_B[3]);
+//         for (; q < n; q++) { result += a[q]; }
 // ---------------------------------------------------------------------------
 double simd_array_sum(
     const double* restrict a,  // input array, length n (need not be aligned)
     const int n                // number of elements to sum
   )
 {
+  // setzero: all four lanes of accum_A start at 0.0; lane l collects
+  // a[q + l] over the main-loop steps (scalar: sum_A[l] = 0.0)
   simde__m256d accum_A = simde_mm256_setzero_pd();
+  // setzero: accum_B likewise; lane l collects a[q + 4 + l]
+  // (scalar: sum_B[l] = 0.0)
   simde__m256d accum_B = simde_mm256_setzero_pd();
  
   int q = 0;
   for (; q <= n - 8; q += 8) { // Main loop: process 8 doubles per iteration
+    // loadu reads a[q..q+3] into lanes 0..3 (no 32-byte alignment
+    // needed; q <= n - 8 keeps this step's eight reads inside a), and
+    // add_pd adds lane by lane: sum_A[l] += a[q + l], l = 0..3
     accum_A = simde_mm256_add_pd(accum_A, simde_mm256_loadu_pd(a + q));
+    // loadu reads a[q+4..q+7]; add_pd: sum_B[l] += a[q + 4 + l]
     accum_B = simde_mm256_add_pd(accum_B, simde_mm256_loadu_pd(a + q + 4));
   }
   double result = simd_horizontal_sum(accum_A) + simd_horizontal_sum(accum_B);
@@ -276,6 +304,33 @@ gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
   }
   return w;
 }
+
+// ---------------------------------------------------------------------------
+// The malloc*d allocators: layout and ownership rules for all of them
+//
+// One block. Each allocator below makes a single posix_memalign call and
+// returns the start of that block: the pointer tables (2D and higher)
+// followed by the data.
+//
+// Padded rows. The data are stored as rows of the last index. Each row
+// starts on a 64-byte boundary and is padded up to a multiple of 64 bytes:
+// a row of ny doubles occupies nyp = 8*ceil(ny/8) doubles, so row i+1
+// starts nyp (not ny) doubles after row i. The ny values of a row are
+// contiguous; the block is not one flat array of nx*ny values. Pointer
+// tables are padded as a whole, so each table and the data start on a
+// 64-byte boundary. Exceptions: malloc2d_fftwp and malloc2d_ptr pad only
+// the row-pointer table, and calloc1d does not round its size up.
+//
+// Padding stays uninitialized. posix_memalign does not zero memory, and
+// zero2d/zero3d/zero4d zero only the logical values of each row, so no
+// allocator or zeroing function writes the padding; code must not read
+// it. A flat memset or memcpy over a 2D+ block is therefore wrong (see
+// zero2d).
+//
+// One free. free(p) on the returned pointer releases the block, row
+// pointers included. Rows are addresses inside the block, not separate
+// allocations: never free a row, and free each block exactly once.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Allocate a 4D array as a single 64-byte-aligned contiguous block with
@@ -476,8 +531,8 @@ void** malloc2d(
   double** tab = (double**) raw_block;
   #pragma omp parallel for
   for (int i = 0; i < nx; ++i) {
-    // with padding, we need to use the byte-level cast 
-    // (char*) raw_block + nxp*sizeof(int*) to get the exact padded offset
+    // with padding, the byte-level cast (char*) raw_block plus
+    // nxp*sizeof(double*) bytes gives the exact padded start of the data
     tab[i] = (double*) ((char*) raw_block + nxp*sizeof(double*)) + i * nyp;
   }
   return (void**) tab;
@@ -533,9 +588,9 @@ void* malloc1d(
 // Allocate a 1D array of double as a single 64-byte-aligned contiguous
 // block, zero-initialized.
 //
-// The total allocation is padded to a 64-byte boundary, suitable for
-// SIMD and cache-friendly access patterns. All bytes are set to zero
-// before returning.
+// The block starts on a 64-byte boundary, but unlike malloc1d its size
+// is not rounded up: exactly nx doubles, all set to zero before
+// returning.
 //
 // The caller is responsible for freeing the returned pointer.
 // ---------------------------------------------------------------------------
@@ -649,7 +704,9 @@ void** malloc2d_fftwp(
 // independently allocated data buffer.
 //
 // The caller is responsible for freeing the returned pointer (a single
-// free() releases both the pointer array and the data block).
+// free() releases both the pointer array and the data block of double*
+// entries). Buffers that the caller attaches to the entries are separate
+// allocations, freed separately by their owner.
 // ---------------------------------------------------------------------------
 void*** malloc2d_ptr(
     const long nx,  // number of rows
@@ -892,17 +949,18 @@ double interpol1d(
 // DERIVATION:
 //   A cubic spline S_i(x) = y_i + b_i·δ + c_i·δ^2 + d_i·δ^3 on each
 //   interval [x_i, x_{i+1}] (where δ = x − x_i) must satisfy:
-//     (1) interpolation:  S_i(x_i) = y_i
-//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_i+1)
+//     (1) interpolation:  S_i(x_i) = y_i,  S_i(x_{i+1}) = y_{i+1}
+//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_{i+1})
 //     (3) C2 continuity:  S_i''(x_{i+1}) = S_{i+1}''(x_{i+1})
 //
-//   Condition (3) yields a tridiagonal system for the c_i coefficients
+//   Conditions (1) and (3) give b_i and d_i in terms of the c's; then
+//   condition (2) yields a tridiagonal system for the c_i coefficients
 //   (second derivatives / 2). For general spacing h_i = x_{i+1} − x_i:
 //
 //     h_{i-1} c_{i-1} + 2(h_{i-1} + h_i) c_i + h_i c_{i+1}
 //       = 3 [(y_{i+1} − y_i)/h_i − (y_i − y_{i-1})/h_{i-1}]
 //
-//   For a UNIFORM grid (h_i = dx for all i), this simplifies to:
+//   For a uniform grid (h_i = dx for all i), this simplifies to:
 //
 //     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (3/dx)(y_{i-1} − 2y_i + y_{i+1})
 //
@@ -1111,15 +1169,34 @@ void spline2d_upsample_uniform(
     int j = 0;
     // SIMDe body, 4 columns per operation (AVX2 on x86, two NEON
     // registers on Apple Silicon); the scalar loop after it finishes
-    // the last nyf % 4 columns. Every row loop below has the same shape.
+    // the last nyf % 4 columns. Every row loop below has the same shape:
+    // lane l holds column j + l, so the four lanes are four independent
+    // column splines that share m and never mix.
+    //
+    // scalar: for (j = 0; j < nyf; j++) {
+    //           const double rhs = inv_dx2*(t0[j] - 2.0*t1[j] + t2[j]);
+    //           c1[j] = (rhs - c0[j])*m;
+    //         }
+    //
+    // set1 copies one scalar into all four lanes: inv_dx2 = 3/dxc^2, the
+    // constant 2.0 and this row's multiplier m = m_q
     const simde__m256d vinv = simde_mm256_set1_pd(inv_dx2);
     const simde__m256d vtwo = simde_mm256_set1_pd(2.0);
     const simde__m256d vm = simde_mm256_set1_pd(m);
     for (; j <= nyf - 4; j += 4) {
+      // s = (t0[j] - 2.0*t1[j]) + t2[j] for columns j..j+3 (lanes 0..3),
+      // the second difference at coarse x node q. loadu reads
+      // tmp[q-1][j..j+3] (t0), tmp[q][j..j+3] (t1) and tmp[q+1][j..j+3]
+      // (t2) without needing 32-byte alignment; mul forms 2.0*t1 (exact),
+      // sub gives t0 - 2.0*t1, and add includes t2
       const simde__m256d s = simde_mm256_add_pd(
         simde_mm256_sub_pd(simde_mm256_loadu_pd(t0 + j),
           simde_mm256_mul_pd(vtwo, simde_mm256_loadu_pd(t1 + j))),
         simde_mm256_loadu_pd(t2 + j));
+      // c1[j..j+3] = (inv_dx2*s - c0[j..j+3])*m: mul forms the tail's rhs,
+      // loadu reads cx[q-1][j..j+3] (c0), and sub and the second mul
+      // finish the step, the same three operations as the tail's two
+      // statements; storeu writes the four lanes to cx[q][j..j+3]
       simde_mm256_storeu_pd(c1 + j, simde_mm256_mul_pd(simde_mm256_sub_pd(
         simde_mm256_mul_pd(vinv, s), simde_mm256_loadu_pd(c0 + j)), vm));
     }
@@ -1128,18 +1205,32 @@ void spline2d_upsample_uniform(
       c1[j] = (rhs - c0[j]) * m;
     }
   }
-  // back substitution, last interior row first: c_q -= m_q c_{q+1}.
-  // The fused negative multiply-add (and the Horner rows' fused
-  // multiply-add) is what a compiler emits for the scalar expression;
-  // on NEON, SIMDe computes it as multiply + add, so there the SIMD
-  // body can differ from the scalar tail by 1 ulp.
+  // back substitution, last interior row first: c_q -= m_q c_{q+1} in
+  // every column (lane l holds column j + l; lanes never mix).
+  //
+  // scalar: for (j = 0; j < nyf; j++) { c1[j] -= m*c2[j]; }
+  //
+  // Rounding: on x86 with FMA, simde_mm256_fnmadd_pd is the native fused
+  // instruction, and the compiler fuses the scalar tail's c1[j] - m*c2[j]
+  // too (contraction is on by default). On arm64 there is no NEON branch
+  // at 256 bits, but unlike the four-lane fmadd (a mul, then an add: two
+  // roundings) SIMDe writes fnmadd as the per-lane expression
+  // -(a*b) + c, the tail's own expression, so lanes and tail round alike
+  // whether or not the compiler contracts them (the arm64 clang build
+  // fuses both). Vector and tail columns agree bitwise here; the Horner
+  // rows below do not on arm64.
   for (int q=nxc-2; q>0; q--) {
     const double m = mq[q];
     const double* restrict c2 = cx[q+1];
     double* restrict c1 = cx[q];
     int j = 0;
+    // set1: this row's multiplier m = m_q in all four lanes
     const simde__m256d vm = simde_mm256_set1_pd(m);
     for (; j <= nyf - 4; j += 4) {
+      // c1[j..j+3] = -(m*c2[j..j+3]) + c1[j..j+3], rounded as the tail
+      // (see above): loadu reads cx[q+1][j..j+3] (c2) and cx[q][j..j+3]
+      // (c1), fnmadd forms -(a*b) + c lane by lane, and storeu writes the
+      // result back to cx[q][j..j+3] (the loads complete before the store)
       simde_mm256_storeu_pd(c1 + j, simde_mm256_fnmadd_pd(vm,
         simde_mm256_loadu_pd(c2 + j), simde_mm256_loadu_pd(c1 + j)));
     }
@@ -1157,19 +1248,38 @@ void spline2d_upsample_uniform(
     double* restrict bq = bx[q];
     double* restrict dq = dx3[q];
     int j = 0;
+    // scalar: for (j = 0; j < nyf; j++) {
+    //           bq[j] = (t1[j] - t0[j])/dxc - dxc*(c1[j] + 2.0*c0[j])/3.0;
+    //           dq[j] = (c1[j] - c0[j])/(3.0*dxc);
+    //         }
+    // Lane l holds column j + l; lanes never mix.
+    //
+    // set1 copies one scalar into all four lanes: dxc, 2.0, 3.0 and the
+    // tail's product 3.0*dxc (computed once, the same double)
     const simde__m256d vdx = simde_mm256_set1_pd(dxc);
     const simde__m256d vtwo = simde_mm256_set1_pd(2.0);
     const simde__m256d vthree = simde_mm256_set1_pd(3.0);
     const simde__m256d v3dx = simde_mm256_set1_pd(3.0*dxc);
     for (; j <= nyf - 4; j += 4) {
+      // loadu reads four consecutive columns into lanes 0..3, no 32-byte
+      // alignment needed: a0 = tmp[q][j..j+3], a1 = tmp[q+1][j..j+3],
+      // k0 = cx[q][j..j+3], k1 = cx[q+1][j..j+3]
       const simde__m256d a0 = simde_mm256_loadu_pd(t0 + j);
       const simde__m256d a1 = simde_mm256_loadu_pd(t1 + j);
       const simde__m256d k0 = simde_mm256_loadu_pd(c0 + j);
       const simde__m256d k1 = simde_mm256_loadu_pd(c1 + j);
+      // bq[j..j+3] = (a1 - a0)/dxc - (dxc*(k1 + 2.0*k0))/3.0, the tail's
+      // order (C reads dxc*(..)/3.0 as (dxc*(..))/3.0): sub and div form
+      // (a1 - a0)/dxc; mul gives 2.0*k0 (exact, so k1 + 2.0*k0 is the
+      // same double fused or not), add k1, mul by dxc and div by 3.0 form
+      // the curvature term; the outer sub combines the two, and storeu
+      // writes bx[q][j..j+3]
       simde_mm256_storeu_pd(bq + j, simde_mm256_sub_pd(
         simde_mm256_div_pd(simde_mm256_sub_pd(a1, a0), vdx),
         simde_mm256_div_pd(simde_mm256_mul_pd(vdx, simde_mm256_add_pd(k1,
           simde_mm256_mul_pd(vtwo, k0))), vthree)));
+      // dq[j..j+3] = (k1 - k0)/(3.0*dxc): sub, then div by v3dx; storeu
+      // writes dx3[q][j..j+3]
       simde_mm256_storeu_pd(dq + j, simde_mm256_div_pd(
         simde_mm256_sub_pd(k1, k0), v3dx));
     }
@@ -1193,12 +1303,32 @@ void spline2d_upsample_uniform(
     const double* restrict dq = dx3[q];
     double* restrict out = zf[i];
     int j = 0;
+    // scalar: for (j = 0; j < nyf; j++) {
+    //           out[j] = t0[j] + del*(bq[j] + del*(c0[j] + del*dq[j]));
+    //         }
+    // Lane l holds column j + l; lanes never mix.
+    //
+    // Rounding: the compiler contracts the scalar Horner form into three
+    // fused multiply-adds. simde_mm256_fmadd_pd matches that on x86 with
+    // FMA (one instruction, one rounding), but on arm64 SIMDe writes the
+    // four-lane fmadd as simde_mm256_add_pd(simde_mm256_mul_pd(a, b), c),
+    // two roundings (the two-lane simde_mm_fmadd_pd would be fused; see
+    // limber_fmadd4 in cosmo2D_cluster.c). On arm64 the first 4*(nyf/4)
+    // columns of zf can therefore differ from the last nyf % 4 in the
+    // last bit.
+    //
+    // set1: the offset del in all four lanes
     const simde__m256d vdel = simde_mm256_set1_pd(del);
     for (; j <= nyf - 4; j += 4) {
+      // h = del*dq[j..j+3] + c0[j..j+3]: loadu reads dx3[q][j..j+3] and
+      // cx[q][j..j+3], and fmadd computes a*b + c lane by lane
       const simde__m256d h = simde_mm256_fmadd_pd(vdel,
         simde_mm256_loadu_pd(dq + j), simde_mm256_loadu_pd(c0 + j));
+      // g = del*h + bq[j..j+3]: loadu reads bx[q][j..j+3], then fmadd
       const simde__m256d g = simde_mm256_fmadd_pd(vdel, h,
         simde_mm256_loadu_pd(bq + j));
+      // out[j..j+3] = del*g + t0[j..j+3]: loadu reads tmp[q][j..j+3],
+      // fmadd completes the Horner form, and storeu writes zf[i][j..j+3]
       simde_mm256_storeu_pd(out + j, simde_mm256_fmadd_pd(vdel, g,
         simde_mm256_loadu_pd(t0 + j)));
     }
@@ -1214,11 +1344,12 @@ void spline2d_upsample_uniform(
 
 
 // ---------------------------------------------------------------------------
-// Count the number of non-empty lines in a text file.
+// Count the lines of a text file.
 //
-// Opens the file, scans for newline characters, and accounts for a
-// possible missing trailing newline on the last line. Terminates the
-// program if the file cannot be opened.
+// Counts the newline characters, empty lines included, and adds one for
+// a last line without a trailing newline, provided the file contains at
+// least one newline (a single line without a newline counts as 0).
+// Terminates the program if the file cannot be opened.
 // ---------------------------------------------------------------------------
 int line_count(
     char* filename  // path to the text file
@@ -1263,12 +1394,15 @@ int line_count(
 //
 // Out-of-range behavior differs by axis:
 //   - x out of [ax, bx]: returns 0
-//   - y below ay: linearly extrapolates from the y=ay edge
-//   - y above by: linearly extrapolates from the y=by edge
+//   - y below ay: the edge value f(x, ay), interpolated in x, plus
+//     (y - ay): a straight line of unit slope in y, not the table's own
+//     slope at the edge
+//   - y above by: likewise f(x, by) + (y - by)
 //
-// Boundary cases where the query falls on the last grid index in either
-// dimension are handled by dropping the out-of-bounds terms from the
-// bilinear formula.
+// Inside [ay, by], boundary cases where the query falls on the last grid
+// index in either dimension are handled by dropping the out-of-bounds
+// terms from the bilinear formula. The two y extrapolations always read
+// row i+1, so they need x < bx.
 // ---------------------------------------------------------------------------
 double interpol2d(
     double** f,   // 2D data array of shape [nx][ny]
@@ -1344,20 +1478,23 @@ double interpol2d(
 //   But the actual stride is nzp, not nz. The flat memset zeros
 //   nx*ny*nz doubles starting from arr[0][0], which undershoots the
 //   true allocation (nx*ny*nzp doubles). The result:
-//     - early rows: logical data zeroed, padding left dirty (harmless)
-//     - late rows: logical data left UNINITIALIZED (dangerous)
+//     - early rows: logical data and padding zeroed (the flat memset runs
+//       straight through the padding between rows)
+//     - late rows: logical data left uninitialized (dangerous)
 //
-//   Example: malloc3d(11, 100, 100), nzp = 104
+//   Example: malloc3d(11, 100, 100), nzp = 104, rows 0-1099
 //     memset zeros:  11*100*100 = 110,000 doubles
 //     actual data:   11*100*104 = 114,400 doubles
-//     last ~4,400 doubles uninitialized — affects rows 1058-1099
+//     last 4,400 doubles uninitialized: rows 1058-1099 entirely, and row
+//     1057 from its value 72 on
 //
 //
 // SOLUTION:
 //   Zero through the pointer indirection, one innermost row at a time.
 //   Each memset follows the actual row pointer (which accounts for
-//   padding) and zeros exactly the logical element count. Safe for
-//   any dimension size, regardless of 64-byte alignment.
+//   padding) and zeros exactly the logical element count, skipping the
+//   padding (left uninitialized, so it must not be read). Safe for any
+//   dimension size, regardless of 64-byte alignment.
 // ---------------------------------------------------------------------------
 void zero2d(double** a, const int nx, const int ny)
 {
@@ -1390,17 +1527,20 @@ void zero4d(double**** a, const int nx, const int ny, const int nz,
 // ---------------------------------------------------------------------------
 // Compute the Hankel-transform kernel in Fourier space.
 //
-// Evaluates the ratio of complex gamma functions that appears in the
-// analytic Fourier transform of the Hankel kernel r^(q-1) J_mu(kr),
-// multiplied by a phase factor from the FFTLog decomposition. The
-// result is stored in the caller-provided fftw_complex.
+// Evaluates the FFTLog kernel of Hamilton (2000, Appendix B) at the
+// complex argument q + ix and stores it in the caller-provided
+// fftw_complex:
 //
-// The computation follows the FFTLog formalism (Hamilton 2000), where
-// the kernel is expressed as
-//   u(x) = 2^q * Gamma((1+mu+q)/2 + ix/2) / Gamma((1+mu-q)/2 - ix/2)
+//   U_mu(q + ix) = int_0^inf t^(q + ix) J_mu(t) dt
+//                = 2^(q + ix) Gamma((1+mu+q)/2 + ix/2)
+//                             / Gamma((1+mu-q)/2 - ix/2),
 //
-// The Bessel order mu is rounded to the nearest integer (via the +0.1
-// offset before truncation).
+// i.e. the Gamma ratio times 2^q and the phase 2^(ix) = exp(i x ln 2).
+// The factor (k0 r0)^(-ix) of Hamilton's u_m is not included.
+//
+// The Bessel order is converted with (int)(mu + 0.1): an integer order
+// stored slightly below its value maps to that integer, while a
+// fractional order is truncated (1.5 -> 1).
 // ---------------------------------------------------------------------------
 void hankel_kernel_FT(
     double x,           // Fourier-space frequency variable
@@ -1519,8 +1659,8 @@ void cdgamma(
 // Compute the 3D Hankel-transform kernel in Fourier space.
 //
 // Identical to hankel_kernel_FT() except that the Bessel order mu is
-// treated as a continuous real value rather than being rounded to the
-// nearest integer. This is appropriate for 3D spherical Bessel
+// treated as a continuous real value rather than being converted to an
+// integer. This is appropriate for 3D spherical Bessel
 // transforms where half-integer orders arise naturally.
 //
 // @see hankel_kernel_FT

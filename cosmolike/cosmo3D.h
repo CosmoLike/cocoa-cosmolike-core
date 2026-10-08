@@ -18,7 +18,9 @@ struct growths {
 
 struct growths growfac_all(const double a);
 
-// return chi and dchi_da in a single spline call (faster)
+// return chi and dchi_da from one table lookup (linear interpolation of
+// chi and of its finite-difference slopes; see chi_all in cosmo3D.c),
+// cheaper than calling chi and dchi_da separately
 struct chis chi_all(const double a);
 
 double norm_growfac(const double a, const bool normalize_z0);
@@ -51,6 +53,9 @@ void set_chi_bucket_index(void);
 // ----------------------------------------------------------------------
 // ----------------------------------------------------------------------
 
+// PkRatio_baryons takes k in (c/H0)^-1 units, like Pdelta, and divides
+// by coverH0 itself; the h/Mpc of the next line's note is its table's k
+// (kintern in cosmo3D.c), not the argument. Declared again below.
 double PkRatio_baryons(double kintern, double a); // k in h/Mpc
 
 void set_run_mode(int ps_mode);
