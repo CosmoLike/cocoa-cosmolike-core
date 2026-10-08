@@ -233,15 +233,38 @@ typedef simde__m128d v2d;
 //   a  - scale factor (unused by the Tinker fit)
 //
 // Returns:
-//   b(nu), dimensionless. like.halo_model[1] selects the fit;
-//   HALO_BIAS_TINKER_2010 is the only option, other values abort.
+//   b(nu), dimensionless. like.halo_model[1] selects the fit:
+//   HALO_BIAS_TINKER_2010 (the default) or
+//   HALO_BIAS_SHETH_MO_TORMEN_2001; other values abort.
+//
+// HALO_BIAS_SHETH_MO_TORMEN_2001: Sheth, Mo & Tormen 2001
+// (astro-ph/9907024, Eq. 8) with their a = 0.707, b = 0.5, c = 0.6.
+// Writing x = a nu^2,
+//
+//   b(nu) = 1 + [ sqrt(a) x + sqrt(a) b x^(1-c)
+//                 - x^c / (x^c + b (1-c)(1-c/2)) ] / (sqrt(a) delta_c).
+//
+// Like the Tinker fit it has no redshift dependence at fixed nu. It was
+// calibrated on virial spherical-overdensity halos, so at this file's
+// Delta = 200 rho_mean definition it is an approximation, provided for
+// cross-code comparison (CCL applies it at this definition only when its
+// strict mass-definition check is relaxed, as TJPCov does); it does not
+// replace the Delta-matched Tinker default.
 // ---------------------------------------------------------------------------
 typedef struct {
+  int model;    // like.halo_model[1]: selects which fields below apply
+  // HALO_BIAS_TINKER_2010 (Eq. 6 of 1001.3162):
   double ALPHA; // A of Eq. 6 (1001.3162)
   double pa;    // exponent a = 0.44 y - 0.88, y = log10(Delta)
   double dca;   // delta_c^a
   double BETA;  // B = 0.183
   double GAMMA; // C
+  // HALO_BIAS_SHETH_MO_TORMEN_2001 (Eq. 8 of astro-ph/9907024):
+  double SMT_A;   // a = 0.707, multiplying nu^2 in x = a nu^2
+  double SMT_SA;  // sqrt(a)
+  double SMT_SAB; // sqrt(a) b, the x^(1-c) coefficient
+  double SMT_BC;  // b (1-c)(1-c/2), the denominator offset
+  double SMT_INV; // 1/(sqrt(a) delta_c), the overall bracket factor
 } hb1nu_params;
 
 #if Delta != 200
@@ -259,11 +282,25 @@ static inline hb1nu_params hb1nu_params_at(
     {
       // A, a, delta_c^a, B, C of the header (Table 2 of 1001.3162 at
       // y = log10(200)), as literals so nothing is recomputed per call.
+      p.model = HALO_BIAS_TINKER_2010;
       p.ALPHA = 1.00005974393421592059;
       p.pa    = 0.132453198092151725894;
       p.dca   = 1.07163776686581864305;
       p.BETA  = 0.183;
       p.GAMMA = 0.265230764366423426079;
+      break;
+    }
+    case HALO_BIAS_SHETH_MO_TORMEN_2001:
+    {
+      // a, sqrt(a), sqrt(a) b, b(1-c)(1-c/2) and 1/(sqrt(a) delta_c)
+      // of the header, as literals (mpmath, 21 digits) so nothing is
+      // recomputed per call; delta_c = 1.686 as everywhere in this file.
+      p.model   = HALO_BIAS_SHETH_MO_TORMEN_2001;
+      p.SMT_A   = 0.707;
+      p.SMT_SA  = 0.840832920383116303209;
+      p.SMT_SAB = 0.420416460191558151604;
+      p.SMT_BC  = 0.14;
+      p.SMT_INV = 0.705395561738249015697;
       break;
     }
     default:
@@ -281,6 +318,15 @@ static inline double hb1nu_core(
     const hb1nu_params* p   // coefficients from hb1nu_params_at
   )
 {
+  if (p->model == HALO_BIAS_SHETH_MO_TORMEN_2001)
+  {
+    // Eq. 8 of the header with x = a nu^2; 0.6 and 0.4 = 1 - c are the
+    // fit's own exponents, independent of the halo-mass definition.
+    const double x  = p->SMT_A*nu*nu;
+    const double xc = pow(x, 0.6);
+    return 1.0 + p->SMT_INV*(p->SMT_SA*x + p->SMT_SAB*pow(x, 0.4)
+                             - xc/(xc + p->SMT_BC));
+  }
   // Eq. 6 with nu_alpha = nu^a, nu_beta = nu^b (b = 1.5) and
   // nu_gamma = nu^c (c = 2.4).
   const double nu_alpha = pow(nu, p->pa);
@@ -359,14 +405,46 @@ double hb1nu(
 //
 // Returns:
 //   f(nu), dimensionless, per unit nu. like.halo_model[0] selects the
-//   fit; HMF_TINKER_2010 is the only option, other values abort.
+//   fit: HMF_TINKER_2010 (the default) or HMF_TINKER_2008; other
+//   values abort.
+//
+// HMF_TINKER_2008: Tinker et al. 2008 (0803.2706, Eqs. 3 and 5-8,
+// Table 2 at Delta = 200 rho_mean, this file's halo definition),
+//
+//   f_T08(sigma) = A [ (sigma/b)^-q + 1 ] exp(-c/sigma^2),
+//   A(z) = 0.186 (1+z)^-0.14,   q(z) = 1.47 (1+z)^-0.06,
+//   b(z) = 2.57 (1+z)^-alpha,   log10 alpha = -(0.75/log10(200/75))^1.2,
+//   c = 1.19,
+//
+// written with q for the paper's exponent a, to keep a for the scale
+// factor; (1+z)^-x = a^x. The paper's own redshift scaling is used at
+// every a, as CCL and TJPCov do; the fit was calibrated at z <= 2.5.
+//
+// Convention bridge: this file's f(nu) is per unit nu, with
+// dn/dlnM = (rho/M) nu f(nu) dln(nu)/dlnM, while Tinker 2008 defines
+// dn/dlnM = (rho/M) f_T08(sigma) dln(1/sigma)/dlnM. Since
+// dln(1/sigma) = dln(nu) at fixed delta_c, the two agree exactly when
+//
+//   f(nu) = f_T08(delta_c/nu) / nu,
+//
+// which is what fnu_core returns for this model. The amplitude A is
+// the paper's own: no tinker_alpha table and no bias-weighted Eq.-7
+// normalization enter this option.
 // ---------------------------------------------------------------------------
 typedef struct {
+  int model;    // like.halo_model[0]: selects which fields below apply
+  // HMF_TINKER_2010 (Eq. 8 of 1001.3162):
   double alpha; // amplitude: 1 from fnu_shape, Eq. 7 from tinker_alpha
   double beta;  // the four shape parameters, Eqs. 9-12 + Table 4 of
   double gamma; //   1001.3162 at Delta = 200
   double phi;
   double eta;
+  // HMF_TINKER_2008 (Eqs. 3, 5-8 of 0803.2706 at Delta = 200), at the
+  // requested scale factor:
+  double t08_amp; // A(z)
+  double t08_q;   // the sigma exponent q(z) (the paper's a)
+  double t08_b;   // b(z)
+  double t08_c;   // c = 1.19
 } fnu_params;
 
 // The four shape parameters of Eq. 8 at aa (Eqs. 9-12) with alpha = 1:
@@ -377,6 +455,7 @@ static inline fnu_params fnu_shape(
   )
 {
   fnu_params p;
+  p.model = HMF_TINKER_2010; // fnu_shape is the Tinker 2010 shape
   p.alpha = 1.0;
   p.beta  = 0.589 * pow(aa, -0.2);    // Eq. 9:  beta_0  (1+z)^0.20
   p.gamma = 0.864 * pow(aa, 0.01);    // Eq. 12: gamma_0 (1+z)^-0.01
@@ -394,6 +473,14 @@ static inline double fnu_core(
     const fnu_params* p   // parameters from fnu_params_at or fnu_shape
   )
 {
+  if (p->model == HMF_TINKER_2008)
+  {
+    // The header's convention bridge: evaluate the sigma-form fit at
+    // sigma = delta_c/nu and divide by nu, so nu f(nu) = f_T08(sigma).
+    const double sigma = delta_c/nu;
+    return p->t08_amp*(pow(sigma/p->t08_b, -p->t08_q) + 1.0)*
+           exp(-p->t08_c/(sigma*sigma))/nu;
+  }
   return p->alpha*(1. + pow(p->beta*nu,-2*p->phi))*pow(nu,2*p->eta)*
          exp(-p->gamma*nu*nu/2.);
 }
@@ -609,6 +696,19 @@ static inline fnu_params fnu_params_at(
       p.alpha = tinker_alpha(aa); // alpha from Eq. 7 (a table read)
       break;
     }
+    case HMF_TINKER_2008:
+    {
+      // A(z), q(z), b(z) and c of the header, with (1+z)^-x = a^x and
+      // the Delta = 200 exponent alpha = 0.0106756286522959060767
+      // (its log10 is -1.97160654139105438701; mpmath, 21 digits).
+      // The paper's own amplitude: nothing reads tinker_alpha here.
+      p.model   = HMF_TINKER_2008;
+      p.t08_amp = 0.186*pow(a, 0.14);
+      p.t08_q   = 1.47*pow(a, 0.06);
+      p.t08_b   = 2.57*pow(a, 0.0106756286522959060767);
+      p.t08_c   = 1.19;
+      break;
+    }
     default:
     {
       log_fatal("like.halo_model[0] = %d not supported", like.halo_model[0]);
@@ -651,9 +751,19 @@ double fnu(
 //   a - scale factor, limits.a_min <= a <= 1
 //
 // Returns:
-//   c, dimensionless. like.halo_model[2] selects the fit;
-//   CONCENTRATION_BHATTACHARYA_2013 is the only option, other values
-//   abort.
+//   c, dimensionless. like.halo_model[2] selects the fit:
+//   CONCENTRATION_BHATTACHARYA_2013 (the default) or
+//   CONCENTRATION_DUFFY_2008; other values abort.
+//
+// CONCENTRATION_DUFFY_2008: Duffy et al. 2008 (0804.2486 Table 1, FULL
+// halo sample, mean-200 row: the same Delta = 200 rho_mean definition),
+//
+//   c(M,a) = 10.14 (M/M_piv)^-0.081 a^1.01,   M_piv = 2e12 Msun/h,
+//
+// with a^1.01 = (1+z)^-1.01. A pure (M, z) fit from massless N-body
+// runs at z = 0-2: no growth factor enters, so with massive neutrinos
+// it has no cb extension (unlike the Bhattacharya default's D_cb^1.15).
+// OneCov and TJPCov (through CCL) use exactly this relation.
 // ---------------------------------------------------------------------------
 double conc(
     const double m,         // halo mass in M_sun/h
@@ -671,6 +781,13 @@ double conc(
       const double growth_cb = sqrt(variance/sigma2(m, 1.0));
       const double nu = delta_c/sqrt(variance);
       c = 9.0*pow(nu, -0.29)*pow(growth_cb, 1.15);
+      break;
+    }
+    case CONCENTRATION_DUFFY_2008:
+    {
+      // Duffy et al. 2008, Delta = 200 rho_mean (Table 1, full sample):
+      // c = 10.14 (M/2e12)^-0.081 (1+z)^-1.01, and (1+z)^-1.01 = a^1.01.
+      c = 10.14*pow(m/2.0e12, -0.081)*pow(a, 1.01);
       break;
     }
     default:

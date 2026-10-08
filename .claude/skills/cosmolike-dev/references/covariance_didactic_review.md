@@ -82,3 +82,42 @@ This pass changes no physics, grids, accuracy controls, threading layout
 or allocation policy. It does not establish a full Roman covariance,
 numerical convergence or performance improvement. Those remain separate
 measured reviews.
+
+# C/C++ comment pass over covariances/, 2026-10-08
+
+Nine comment-only commits, f44a1b6 through c9143c9 on `bugfix`, cover
+all 47 C/C++ files of `cosmolike/covariances/`. Every batch was drafted
+by a subagent and verified by Fable before committing: token-stream
+equality against the previous commit (c_strip --collapse, rerun
+independently for all 47 files), no new over-80 lines, style scans, and
+a full diff read with the physics re-derived where it could be checked
+(mask pair-area normalization, TATT E/B coefficients, F3 planar
+branches, the 47/21 separate-universe sum, Wick and partition counts,
+the Mellin kernel recurrences, DLMF Jacobi coefficients, STS Eq. 33/35
+and the fixed-alpha 0.368/alpha(a) identity).
+
+What the pass added, uniformly: SIMDe vocabulary per file and lane
+narration at all ~260 call sites, `scalar:` blocks with exact
+statements, per-platform fused-rounding facts (fmadd/fnmadd fuse on
+arm64 NEON and FMA x86; fmsub fuses only on FMA x86 - verified against
+the SIMDe source and the generated arm64 assembly), halo.c-style
+function headers with formulas, axes, units and threading, and written
+derivations in place of references to study reports.
+
+Comment corrections worth remembering (code unchanged): the SSC
+`signal` contract is the zero-IA mean model (matches covariance_ssc.md);
+source window[0] is the TATT radial weight, not audit-only;
+`get_FPT_IA` runs in ia_cov.c regardless of nuisance.IA_code; I11 adds
+tail panels downward after the upper masses; CosmoCov's tri_2h_13_cov
+holds half of the published T_13; the core real-space kernels apply the
+spin factor a second time relative to CCL full-sky (flagged, not
+changed - see the findings ledger); the guard widths and FFTW 1/N in
+fftlog; "production bindings" in the README now names
+components_interface_cov.cpp.
+
+Report-only code issues moved to
+`test/cosmocov_port_study/14_code_findings_ledger.md` (section
+"covariances/ C-comment pass"). Post-pass validation: full rebuild and
+the lsst_y1 covariance suite (128 passed) ran on the committed tree
+together with the halo-menu additions recorded in
+`halo_model_options.md`.
