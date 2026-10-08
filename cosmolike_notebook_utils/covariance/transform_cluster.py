@@ -1,11 +1,12 @@
 """Propagate the cluster-lensing localization through a joint covariance.
 
-Tangential shear depends on mass inside the measured radius. The Park,
-Rozo & Krause (2021) Y statistic combines angular bins to remove that
-interior contribution. If y=T*x, its covariance is T*C*T^t. A joint
-analysis must also transform the cross covariances with counts, galaxy
-clustering and other lensing bins. Transforming only the shear diagonal
-blocks would describe inconsistent observables.
+Tangential shear depends on mass inside the measured radius. The Y
+statistic of Park, Rozo & Krause (2021), arXiv:2004.07504, is
+Y(R)=Sigma(R)-Sigma(R_max): a linear combination of angular bins that
+removes that interior contribution. If y=T*x, its covariance is
+T*C*T^t. A joint analysis must also transform the cross covariances
+with counts, galaxy clustering and other lensing bins. Transforming
+only the shear diagonal blocks would describe inconsistent observables.
 
 The caller supplies the angular matrix from the project's existing mean
 prediction and the cluster-lensing positions in the full vector. This
@@ -19,7 +20,8 @@ def localize_covariance(interface, covariance, indices, operator):
     """Apply one angular localization to every supplied cluster-lensing row.
 
     Write the joint transformation as A: it equals the identity on counts
-    and other probes, and equals operator on each selected angular row.
+    and other probes, and equals operator (T below) on each selected
+    angular row.
     This routine computes A*C*A^t without allocating the large, mostly
     zero A matrix. Each multiplication uses the existing SIMDe/OpenMP
     projection, batching all selected rows into the same call.
@@ -33,7 +35,8 @@ def localize_covariance(interface, covariance, indices, operator):
             increasing angular-bin order. All positions must be distinct.
             Count entries may lie between the two-point blocks.
         operator = finite float [ntheta,ntheta] angular matrix, e.g. the
-            project's get_cluster_ytransform_matrix() for the SAME bins.
+            project's get_cluster_ytransform_matrix() for the same angular
+            bins.
     Returns:
         Owned [ndata,ndata] transformed covariance. Other-other entries
         are unchanged; selected-other and selected-selected blocks receive
@@ -45,8 +48,9 @@ def localize_covariance(interface, covariance, indices, operator):
 
     The final Y row is exactly zero in the project's convention, because
     it measures Sigma(R_max)-Sigma(R_max). Its zero covariance mode is
-    retained. Apply the likelihood's scale selection AFTER transforming
-    the full unmasked matrix; do not clip modes or drop input angles here.
+    retained. Apply the likelihood's scale selection only after
+    transforming the full unmasked matrix; do not clip modes or drop input
+    angles here.
     """
     matrix = np.asarray(a=covariance, dtype=float)
     positions = np.asarray(a=indices)
@@ -70,9 +74,10 @@ def localize_covariance(interface, covariance, indices, operator):
     if not np.all(np.isfinite(matrix)) or not np.all(np.isfinite(transform)):
         raise ValueError("covariance and operator must be finite")
 
-    # Only ntheta terms contribute to one transformed value. Put that
-    # summation axis last, so a single C batch can integrate it for all
-    # (cluster row, other observable) pairs. Every C worker owns complete
+    # Only ntheta terms contribute to one transformed value.
+    # covariance_project sums along the last axis of both inputs, so put
+    # the angular axis last: one C batch then sums it for every
+    # (cluster row, other observable) pair. Every C worker owns complete
     # output sums; the result does not depend on the number of workers.
     left = np.ascontiguousarray(transform)
     weight = np.ones(shape=ntheta, dtype=float)
@@ -81,15 +86,19 @@ def localize_covariance(interface, covariance, indices, operator):
     projected = interface.covariance_project(left=left, right=right,
                                              weight=weight)
     result = matrix.copy()
+    # projected[i, row*ndata+other] = sum_j T[i,j] C[positions[row,j], other];
+    # reorder it to [row, i, other] to overwrite the selected rows.
     result[positions] = projected.reshape(ntheta, nrow, ndata).transpose(1, 0, 2)
 
     # The first multiplication changed all selected rows, including their
     # count cross blocks. The second must read that intermediate result:
-    # selected-selected blocks need T on BOTH sides. The columns for
+    # selected-selected blocks need T on both sides. The columns for
     # unselected observables keep their one-sided transformation.
     right = np.ascontiguousarray(result[:, positions])
     right = right.reshape(ndata*nrow, ntheta)
     projected = interface.covariance_project(left=left, right=right,
                                              weight=weight)
+    # projected[i, other*nrow+row] = sum_j T[i,j] (A*C)[other, positions[row,j]];
+    # its transpose, reshaped to [other, row, i], fills the selected columns.
     result[:, positions] = projected.T.reshape(ndata, nrow, ntheta)
     return result

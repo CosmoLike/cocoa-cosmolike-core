@@ -26,24 +26,27 @@ def observable_layout(nlens, nsource, ncluster_z, nrichness, cg_lens_bin,
     """Describe all measured rows and the insertion positions of counts.
 
     Internal fields put galaxies first, then clusters, then sources. The
-    cluster category index is redshift*nrichness+richness. Different
-    richness categories at the same redshift have measured cross
-    clustering; cross-redshift cluster spectra remain internal Gaussian
-    inputs even when absent from the measured vector.
+    cluster category index is redshift*nrichness+richness; its field ID
+    adds nlens. Different richness categories at the same redshift have
+    measured cross clustering; cross-redshift cluster spectra remain
+    internal Gaussian inputs even when absent from the measured vector.
 
     Arguments:
         nlens, nsource, ncluster_z, nrichness = positive integer bin counts.
-        cg_lens_bin = integer [ncluster_z], matched galaxy bin for each
-            measured cluster-galaxy row, between zero and nlens-1.
+        cg_lens_bin = integer [ncluster_z], the galaxy bin paired with each
+            cluster redshift bin in its nrichness cluster-galaxy rows,
+            between zero and nlens-1.
         nbin = positive integer number of angular bins per two-point row.
         excluded_gammat = measured galaxy-source exclusions, as in
             survey.observable_rows; these do not cut internal spectra.
     Returns:
         Dict with rows int32 [nrow,3] (probe,field_A,field_B),
         two_point_positions int [nrow*nbin], count_positions int [ncount],
-        and cluster_lensing_positions int [ncluster_z*nsource*nrichness,nbin].
-        Positions refer to the full vector, including ncount counts.
-        Probe codes are 0 xi+, 1 xi-, 2 tangential shear and 3 clustering.
+        and cluster_lensing_positions int [ncluster_z*nsource*nrichness,nbin],
+        whose rows run over cluster redshift, then source, then richness.
+        Positions refer to the full vector, including the
+        ncount=ncluster_z*nrichness counts. Probe codes are 0 xi+, 1 xi-,
+        2 tangential shear and 3 clustering.
     Raises:
         ValueError for invalid dimensions or galaxy-bin assignments.
     """
@@ -71,6 +74,8 @@ def observable_layout(nlens, nsource, ncluster_z, nrichness, cg_lens_bin,
         for richness in range(nrichness):
             cluster = nlens+redshift*nrichness+richness
             rows.append([3, cluster, int(galaxy)])
+    # Counts follow the cluster-galaxy rows, as in the joint DES order
+    # ss, gs, gg, cg, N (counts), cc, cs.
     insertion = len(rows)*nbin
 
     for redshift in range(ncluster_z):
@@ -103,10 +108,12 @@ def selected_windows(interface, geometry):
 
     At each distance chi, n_i=phi_i(z)*n_richness(a) is the number per
     comoving volume assigned to observed category i. Its integral over
-    chi^2 dchi is nbar_i per steradian. The density-contrast window is
-    q_i=chi^2 n_i/nbar_i, so integral q_i dchi=1. The fixed-selection
-    abundance response is B_i=n_i*b_i. Counts retain B_i itself; the
-    observed-mean response of a density contrast uses chi^2 B_i/nbar_i.
+    f_K^2 dchi is nbar_i per steradian; f_K is the transverse comoving
+    distance, equal to chi only without spatial curvature. The
+    density-contrast window is q_i=f_K^2 n_i/nbar_i, so integral
+    q_i dchi=1. The fixed-selection abundance response is B_i=n_i*b_i.
+    Counts retain B_i itself; the observed-mean response of a density
+    contrast uses f_K^2 B_i/nbar_i.
 
     Arguments:
         interface = initialized cluster project exposing phi_cluster,
@@ -115,10 +122,12 @@ def selected_windows(interface, geometry):
     Returns:
         Dict with density, derivative [ncount,nstate] in (c/H0)^-3;
         window [ncount,nstate] in (c/H0)^-1; dimensionless bias of the same
-        shape; number_per_sr [ncount]; and ncluster_z, nrichness integers.
-        Category order is redshift then richness. No C state is changed.
+        shape; number_per_sr [ncount] in sr^-1; and ncluster_z, nrichness
+        integers. Category order is redshift then richness. No model
+        setting changes; the C readers may build their cached tables.
     Raises:
-        ValueError for nonfinite/invalid geometry or an empty selected bin.
+        ValueError for nonfinite/invalid geometry, a nonfinite or negative
+        selected abundance, a nonfinite response or an empty selected bin.
     """
     geometry = np.asarray(geometry, dtype=float)
     if (geometry.ndim != 2 or geometry.shape[0] != 4
@@ -166,21 +175,24 @@ def selected_windows(interface, geometry):
 def all_pairs_spectra(interface, ell, snapshot, catalogs):
     """Add every cluster cross spectrum to a galaxy/shear Limber snapshot.
 
-    The hybrid model uses b_c b_g P_nonlinear and b_c b_d P_nonlinear
+    The hybrid model uses b_c b_g P_nonlinear and b_c b_c' P_nonlinear
     for cluster-galaxy and cluster-cluster spectra. Cluster-shear also
     includes the cluster's own selected NFW profile, P_cm^1h. The C
     projection attaches one harmonic shear factor per source leg.
     No white noise or real-space convention conversion is added here.
 
     Arguments:
-        interface = initialized cluster project with covariance components.
-        ell = positive float [nell] multipoles used to construct snapshot.
+        interface = initialized cluster project exposing covariance_power,
+            pcm_1h_richness and covariance_cluster_spectra.
+        ell = float [nell] multipoles >= 2, the values used to construct
+            snapshot.
         snapshot = covariance_limber_spectra output on these exact multipoles.
         catalogs = selected_windows output on the snapshot's radial geometry.
     Returns:
-        Owned float [nell,nfield,nfield] dimensionless angular spectra.
-        Field order is galaxy, cluster (redshift then richness), source.
-        All cross-redshift and cross-richness spectra are retained.
+        Owned float [nell,nfield,nfield] dimensionless angular spectra,
+        with nfield=nlens+ncount+nsource. Field order is galaxy, cluster
+        (redshift then richness), source. All cross-redshift and
+        cross-richness spectra are retained.
     """
     geometry = snapshot['geometry']
     a, unused, distance, dchi = geometry
@@ -207,8 +219,10 @@ def all_pairs_spectra(interface, ell, snapshot, catalogs):
         power = np.empty((len(modes), len(a)))
         profile = np.empty((nrichness, len(modes), len(a)))
         for node, scale in enumerate(a):
+            # Limber: each multipole samples k=(ell+1/2)/f_K on this shell.
             wave = np.ascontiguousarray((modes+0.5)/distance[node])
             power[:, node] = interface.covariance_power(a=scale, k=wave, linear=False)
+            # pcm_1h_richness returns [k,1,nrichness]; store [nrichness,k].
             own = interface.pcm_1h_richness(k=wave, a=np.array([scale]))
             profile[:, :, node] = np.asarray(own)[:, 0, :].T
         projected = interface.covariance_cluster_spectra(

@@ -1,12 +1,13 @@
 """Assemble a real-space cluster 6x2pt+N forecast under a limited halo model.
 
 All measured families and every Gaussian/SSC cross block are retained.
-The connected two-point term treats galaxies and clusters as linearly
-biased tracers of the matter trispectrum. Count cross covariance contains
-SSC only. Thus the output is a complete matrix under this approximation,
-not a complete discrete-halo covariance: selected-cluster one-halo cNG and
-non-SSC count-spectrum terms are omitted. These limits are returned with
-the result and must accompany any exported forecast.
+The connected non-Gaussian (cNG) term treats galaxies and clusters as
+linearly biased tracers of the matter trispectrum. The count-two-point
+cross covariance contains SSC only. Thus the output is a complete matrix
+under this approximation, not a complete discrete-halo covariance:
+selected-cluster one-halo cNG and non-SSC count-spectrum terms are
+omitted. These limits are returned with the result and must accompany
+any exported forecast.
 
 SSC additionally includes the abundance response of the selected halo's
 own lensing profile, at fixed selection and profile. Catalog normalization
@@ -46,7 +47,9 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
 
     Arguments:
         interface = initialized fixed-selection, massless cluster model.
-        settings = cluster_lnm_bounds in ln(M/[Msun/h]), halo_mass_nquad.
+        settings = resolved mapping; reads cluster_lnm_bounds [2] in
+            ln(M/[Msun/h]) and halo_mass_nquad, the Gauss-Legendre node
+            count per mass panel.
         geometry = [4,nstate] a,chi,f_K,dchi in the core length unit c/H0.
         catalogs = selected_windows result on these same states.
         coarse_ell = [nk] angular modes; transform = [nbin,nk] compressed
@@ -54,11 +57,16 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     Returns:
         [nrichness,nbin,nstate] angularly transformed J11/n in (c/H0)^3.
         It contains no cluster radial window or observed-mean subtraction.
+        Shells without selected clusters keep zero response.
+    Raises:
+        ValueError if the mass rule gives a nonpositive selected abundance
+        for a richness bin on a shell where some catalog density is positive.
     """
     lower, upper = settings['cluster_lnm_bounds']
-    # Two mass panels resolve the selected interval without requesting a
-    # generated GSL rule. Both use the precomputed rule selected by the
-    # independent integration level, including its 64-node minimum.
+    # Two equal mass panels resolve the selected interval with twice the
+    # nodes of one panel. Each reuses the precomputed GSL rule of the
+    # integration level (64 nodes at least): covariance_integration_rule
+    # accepts only precomputed sizes, and 2*nquad need not be one of them.
     node, measure = interface.covariance_integration_rule(
         nquad=settings['halo_mass_nquad'],
     )
@@ -72,7 +80,8 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     response = np.zeros((nrichness, nstate, len(coarse_ell)))
     active = np.flatnonzero(np.any(catalogs['density'] > 0.0, axis=0))
 
-    # The selected population exists in only part of the source interval.
+    # Selected clusters occupy only part of the radial range; elsewhere
+    # their windows vanish, so only active shells need the mass integral.
     # Process 16 active shells together: C gets many independent mass sums,
     # while high boosts do not allocate profiles for every shell at once.
     # Batch size affects storage, not quadrature or floating-point sum order.
@@ -110,26 +119,43 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             magnification, lognormal richness selection, selection_model=0
             and abundance-weighted cluster windows (kernel_mode=1).
         settings = resolved galaxy forecast configuration plus cg_lens_bin
-            [ncluster_z], cluster_lnm_bounds [2], and cluster_ytransform
-            bool. The latter applies the mean model's exact Y operator to
-            every cluster-lensing row and both covariance axes. Numerical
-            controls come from the common covariance accuracy boost.
+            [ncluster_z], cluster_lnm_bounds [2] in ln(M/[Msun/h]), and
+            cluster_ytransform bool. The latter applies the mean model's
+            exact Y operator to every cluster-lensing row and both
+            covariance axes. Numerical controls come from the common
+            covariance accuracy boost.
+        progress = optional callable receiving stage and elapsed seconds.
         backend = None uses notebook wrappers; interface.covariance selects
             the direct production bindings to the same C calculations.
-        progress = optional callable receiving stage and elapsed seconds.
     Returns:
-        Dict with owned gaussian, ssc, cng, total [ndata,ndata]; signal
-        [nrow,nbin]; mean_counts [ncount]; joint_signal [ndata]; layout
-        positions; geometry; coarse_ell; pair_area_sr2; coordinates;
-        resolved settings and elapsed stages. ndata=nrow*nbin+ncount.
-        G includes count Poisson noise. cNG has zero count rows under the
-        stated approximation. valid_indices excludes only the known zero
-        last Y bin, not the project's physical scale cuts. No eigenvalue
-        correction or file write is performed. Initialization is separate.
+        Dict with owned, dimensionless gaussian, ssc, cng and total
+        [ndata,ndata]; signal [nrow,nbin] two-point means; mean_counts
+        [ncount]; joint_signal [ndata], the means in data-vector order;
+        the observable_layout entries (rows and positions); valid_indices;
+        geometry [4,nstate]; coarse_ell; pair_area_sr2 [nbin]; coordinate
+        [nbin], geometric-mean bin centers in arcmin, and coordinate_label;
+        settings, the resolved configuration; and stages_s in seconds.
+        ndata=nrow*nbin+ncount. With cluster_ytransform, the matrices,
+        signal and joint_signal are localized. G includes count Poisson
+        noise. cNG has zero count rows under the stated approximation.
+        valid_indices excludes only the known zero last Y bin of each
+        cluster-lensing row, not the project's physical scale cuts.
+    Raises:
+        ValueError for nonzero mnu, invalid cluster_lnm_bounds, a
+        non-boolean cluster_ytransform, a Y operator that does not match
+        the angular bins, or nonzero galaxy magnification windows. The
+        helpers raise for an invalid layout, geometry or empty selected bin.
+
+    The call resets the interface's core table resolution and quadrature
+    level through init_accuracy_boost(core_accuracyboost,
+    integration_accuracy), which also invalidates cached core tables. It
+    writes no file and corrects no eigenvalue. Cosmology and catalog
+    initialization stay with the caller.
     """
     resolved = dict(settings)
     resolved['mnu'] = settings['cosmology']['mnu']
     resolved['area_sr'] = settings['area_deg2']*(np.pi/180.0)**2
+    # pi radians = 180 degrees = 10800 arcminutes.
     resolved['edges_rad'] = np.asarray(settings['theta_edges_arcmin'])*np.pi/10800.0
     resolved['space'] = 'real'
     resolved['cluster_cng_model'] = 'linear tracer biases times matter trispectrum'
@@ -171,7 +197,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     stages = {}
 
     def checkpoint(name, since):
-        """Record stages without treating an ordinary run as a benchmark."""
+        """Record a completed stage and report time since the forecast began.
+
+        Stage times describe this ordinary run; they are not benchmarks.
+        """
         stages[name] = time.perf_counter()-since
         if progress is not None:
             progress(name, time.perf_counter()-started)
@@ -209,13 +238,17 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         source_density=settings['source_density_arcmin2'],
         sigma_component=settings['sigma_e_component'],
     )
+    # Exclusive cluster catalogs add Poisson shot noise 1/nbar_i (nbar_i
+    # per steradian), placed between galaxy and source noise in field order.
     noise = np.concatenate((ordinary_noise[:nlens], 1.0/catalogs['number_per_sr'],
                              ordinary_noise[nlens:]))
     checkpoint('all_pairs_limber_spectra', started)
 
     # --- 2. Bin-averaged full-sky angular transforms and Gaussian covariance ---
     # Pure white noise is integrated analytically through mask pair areas.
-    # Signal terms retain every integer multipole below the chosen cutoff.
+    # Signal terms retain every integer multipole from 2 through ell_max;
+    # the operators start at ell=0, so their ell=0 and ell=1 entries are
+    # dropped to match the spectra.
     tick = time.perf_counter()
     kernels = interface.covariance_realspace_operator(
         edges_rad=resolved['edges_rad'], ell_max=settings['ell_max'],
@@ -228,6 +261,7 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         edges_rad=resolved['edges_rad'], ell_max=settings['mask_ell_max'],
         nquad=settings['angle_nquad'],
     )
+    # Pair areas use the spin-0 bin kernel, probe 3 (w(theta)).
     pair_area = interface.covariance_mask_pair_area(
         mask_cl=mask, area_sr=resolved['area_sr'], edges_rad=resolved['edges_rad'],
         scalar_kernel=np.ascontiguousarray(mask_operator[3]),
@@ -236,6 +270,8 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         spectra=signal, noise=noise, rows=rows, operators=kernels,
         ell_min=2, area_sr=resolved['area_sr'], pair_area_sr2=pair_area,
     )
+    # Each row's mean is its observed spectrum projected with the bin
+    # kernel of its probe (0 xi+, 1 xi-, 2 gamma_t, 3 w).
     means = np.empty((len(rows), nbin))
     for probe in range(4):
         selected = np.flatnonzero(rows[:, 0] == probe)
@@ -244,6 +280,8 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         means[selected] = interface.covariance_project(
             left=data, right=kernels[probe], weight=np.ones(len(ell)),
         )
+    # Release the large all-pairs spectra and the mask operator before the
+    # halo-table stage; no later stage reads them.
     del spectra, signal, snapshot, mask_operator
     checkpoint('gaussian_and_mean', tick)
 
@@ -272,8 +310,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     # --- 4. Normalize measured catalogs and correlate all responses together ---
     # A long fluctuation changes both the local spectrum and the observed
     # number used to normalize a density contrast. Subtract the latter as
-    # (U_A+U_B)*C_AB, where C_AB is the full angular mean, once per density
-    # leg. Counts are absolute numbers and receive no such subtraction.
+    # (U_A+U_B)*C_AB, where C_AB is the full angular mean and U is the
+    # biased window of a density leg (f_K^2 B/nbar for clusters), zero for
+    # a shear leg. Counts are absolute numbers and receive no such
+    # subtraction.
     tick = time.perf_counter()
     distance = geometry[2]
     dchi = geometry[3]
@@ -285,6 +325,12 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     pair = windows[rows[:, 1]]*windows[rows[:, 2]]
     projected_response = matter['response'].reshape(4, nbin, nstate)
     shell = pair[:, None, :]*projected_response[rows[:, 0]]/distance**2
+
+    # Cluster-lensing rows also respond through the selected halo's own
+    # profile, J11/n, weighted by the unbiased window q_c: the one-halo
+    # term carries no large-scale bias. Base windows omit cluster fields,
+    # so source field second sits in base column second-ncount, and
+    # category % nrichness is the richness bin of the profile.
     for row, (probe, first, second) in enumerate(rows):
         if probe == 2 and nlens <= first < nlens+ncount:
             category = first-nlens
@@ -315,8 +361,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T
 
     # In the biased-tracer cNG approximation the matter trispectrum has
-    # one linear bias per density leg. Keep every crossed radial window;
-    # count rows are zero ONLY for this separately stated cNG approximation.
+    # one linear bias per density leg. Keep every crossed radial window.
+    # Count rows stay zero here: their non-SSC cross terms with two-point
+    # functions are omitted by this stated approximation (settings
+    # count_cross_model and omitted_terms), not shown to vanish.
     connected = project_connected(
         interface=interface, rows=rows, pair_window=pair,
         projected=matter['projected'], measure=dchi/(resolved['area_sr']*distance**6),
@@ -354,6 +402,8 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             # triangle, as in the ordinary SSC/cNG assembly. This neither
             # changes a diagonal variance nor repairs a negative mode.
             components[name] = np.triu(transformed)+np.triu(transformed, k=1).T
+        # Localize the means as y=T*x: with these operands covariance_project
+        # returns sum_j x[row,j]*T[i,j] at [row,i].
         localized_mean = interface.covariance_project(
             left=np.ascontiguousarray(joint_signal[positions]), right=operator,
             weight=np.ones(nbin),
@@ -393,6 +443,9 @@ def save_forecast(result, filename):
         including count positions and Y null-mode selection, load without
         pickle. settings_json and stages_json are JSON text scalars.
         Archive the initialization's CAMB tables separately for exact reuse.
+    Raises:
+        ValueError if a result array holds Python objects, which would need
+        pickle to load.
     """
     arrays = {}
     for name, value in result.items():
