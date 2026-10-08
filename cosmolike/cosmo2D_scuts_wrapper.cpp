@@ -254,7 +254,8 @@ py::tuple dlnxi_dlnk_pm_tomo_limber_cpp(
 // Shared engine of the two dlnw_ks_dlnk_tomo_cpp overloads: one
 // dlnw_ks_dlnk_tomo_nointerp call at wavenumber k (which computes every
 // source bin and angular bin at once), scattered into the (theta, ni)
-// matrix (one source bin per column: the CMB is a single lens plane).
+// matrix (one source bin per column: CMB lensing has a single source
+// plane, the last-scattering surface, so kappa carries no bin index).
 //
 // Parameters:
 //   k  - wavenumber in (Mpc/h)^-1
@@ -525,8 +526,9 @@ py::tuple dlnC_ss_dlnk_tomo_limber_cpp(
 // Shared batch engine of the two dlnC_ks_dlnk_tomo_limber_cpp overloads:
 // dlnC = dC/C computed exactly on the (ln k, ell) grid by the normalized
 // mode of dC_ks_dlnk_tomo_limber_work, indexed [NSIZE][nk][nl] with row
-// nz the source bin (one component per bin: the CMB is a single lens
-// plane). The caller owns (and frees) the returned array.
+// nz the source bin (one component per bin: CMB lensing has a single
+// source plane, so kappa carries no bin index). The caller owns (and
+// frees) the returned array.
 //
 // Parameters:
 //   lnkx  - ln k grid values (length nk), k in (Mpc/h)^-1
@@ -674,10 +676,11 @@ py::array_t<double,py::array::f_style> dlnC_ks_dlnk_tomo_limber_cpp(
 // is the fraction of the point's total log-k response accumulated
 // below kmax; 1 - RF(kmax) is the share riding on scales above kmax,
 // where the power-spectrum modeling (nonlinearity, baryons) is not
-// trusted. The scuts machinery turns this into per-point cuts by
-// solving RF(kk) = alpha (the cosmo2D_scuts.c banner's contract): kk
-// is the wavenumber below which the point has accumulated fraction
-// alpha of its response.
+// trusted. Per-point cuts come from solving RF(kk) = alpha downstream
+// of these exports (neither this file nor cosmo2D_scuts.c root-finds;
+// see the cosmo2D_scuts.c preamble): kk is the wavenumber below which
+// the point has accumulated fraction alpha of its response, and
+// 2011.06469 keeps the point when kk <= kmax.
 //
 // This family: X = xi_pm(theta) and w_ks(theta).
 // ---------------------------------------------------------------------------
