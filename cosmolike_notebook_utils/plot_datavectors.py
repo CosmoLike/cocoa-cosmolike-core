@@ -12,7 +12,7 @@ suppression curves for bfmt parameter sweeps
 
 Conventions every panel plotter shares:
 
-- Without a reference, each panel shows the spectrum itself with its
+- Without a reference, each panel shows the quantity itself with its
   own y-range; with a *_ref argument it shows the fractional
   difference (value/reference - 1) on one shared linear band, and
   the panels are glued edge to edge (zero subplot spacing).
@@ -27,8 +27,11 @@ Conventions every panel plotter shares:
   hidden (y boundaries on grids and triangles, x boundaries on the
   one-row plots).
 - A (lens, source) pair dropped via cosmolike's init_ggl_exclude
-  arrives as an identically zero spectrum; its panel is drawn empty
+  arrives as an identically zero array; its panel is drawn empty
   with an "excluded" placeholder instead of log scaling zeros.
+- Bin labels inside the panels count from 1, while array indices
+  count from 0: the panel labeled (1,2) draws the slice [:, 0, 1],
+  and the panel labeled (1) of a one-row plot draws [:, 0, 0].
 
 Pure matplotlib and numpy: nothing here touches CAMB or the compiled
 cosmolike interface, so every project shares these functions
@@ -85,8 +88,8 @@ def _glued_supylabel(fig, leftcol, ylabel, yaxislabelsize):
 
     A draw realizes the tick labels of the leftmost panels so their
     extent can be measured; supylabel anchors the rotated text's
-    LEFT edge (ha='left'), so the label is measured too and shifted
-    until its right edge clears the ticks by a small pad.
+    left edge (ha='left'), so the label's own width is measured too
+    and its right edge is placed a small pad left of the tick labels.
 
     Arguments:
       fig     = the figure the label is drawn on.
@@ -102,6 +105,8 @@ def _glued_supylabel(fig, leftcol, ylabel, yaxislabelsize):
     xmin = fig.transFigure.inverted().transform((xmin, 0))[0]
     lab = fig.supylabel(ylabel, fontsize=yaxislabelsize)
     labw = lab.get_window_extent(renderer).width/fig.bbox.width
+    # x positions are figure fractions: the pad is 0.004 of the figure
+    # width, and 0.001 keeps the label inside the figure's left edge
     lab.set_x(max(xmin - 0.004 - labw, 0.001))
 
 
@@ -111,11 +116,15 @@ def _align_log_ticklabels(axs):
     matplotlib right-aligns y tick labels, so "10^-1" (whose box is
     wider by the minus sign) pushes its "10" base left of its
     neighbors' and stacked labels zig-zag. Every label is anchored
-    instead by its LEFT edge on one common column: the tick pad
+    instead by its left edge on one common column: the tick pad
     grows to the widest label's width (plus a small gap), and the
     labels' text then runs from that column toward the axis. The
     bases align exactly, and the leftover width shows up as ragged
     space next to the axis, where it reads naturally.
+
+    Arguments:
+      axs = the panels whose y tick labels are aligned (the leftmost
+            column of a glued grid, the only one showing y numbers).
     """
     for ax in axs:
         fig = ax.figure
@@ -128,7 +137,9 @@ def _align_log_ticklabels(axs):
             continue
         widest = max(t.get_window_extent(renderer).width for t in labels)
         # the tick pad is in points; window extents are in pixels,
-        # and 72 points make an inch, so pixels * 72 / dpi converts
+        # and 72 points make an inch, so pixels * 72 / dpi converts;
+        # the extra 3.5 points are the gap between the widest label
+        # and its tick mark
         pad_points = widest*72.0/fig.dpi + 3.5
         ax.yaxis.set_tick_params(pad=pad_points)
         for t in ax.get_yticklabels():
@@ -452,14 +463,15 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
     Arguments:
       pm     = +1 for xi_plus, -1 for xi_minus.
       xi     = list of (theta, xi_plus, xi_minus) tuples, one per
-               curve, as the notebook xi wrapper returns them; the
-               xi arrays are 3D (n_theta, n_bins, n_bins).
+               curve, as the notebook xi wrapper returns them: theta
+               in arcmin, the xi arrays 3D (n_theta, n_bins, n_bins).
       xi_ref = None, or one such tuple used as the ratio reference.
       param  = list of parameter values (one per curve) coloring the
                curves and the colorbar, or None.
       colorbarlabel = colorbar label (LaTeX string), or None.
       marker = list of matplotlib markers cycled across curves
                (points instead of lines), or None for lines.
+      markersize = marker size in points, used with marker.
       linestyle, linewidth = lists cycled across curves, or None.
       ylim   = without xi_ref, multipliers on each panel's min/max;
                with it, the band around 1 (drawn as ylim - 1), or one
@@ -476,8 +488,11 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
       yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
       xaxisticklabelsize = axis-label and tick-number font sizes in
                  points, as in plot_C_ss_tomo_limber.
-      cmap, colorbarshrink, bintextpos, bintextsize, figsize,
-      wspace, hspace = matplotlib layout knobs.
+      bintextpos = two axes-fraction (x, y) positions of the bin
+                 label, one for xi_plus and one for xi_minus:
+                 [[x_plus, y_plus], [x_minus, y_minus]].
+      cmap, colorbarshrink, bintextsize, figsize, wspace,
+      hspace = matplotlib layout knobs.
       show   = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -521,7 +536,7 @@ def plot_xi(pm, xi, xi_ref = None, param = None, colorbarlabel = None, marker = 
     # rescale=1: alpha[i,j] holds the log10 of the per-panel factor;
     # multiplied in, every panel's maximum lands in [1, 10), so one
     # common y-range (yglued) serves the whole glued grid. The
-    # plotted quantity is theta xi 10^4 on a LINEAR scale, so
+    # plotted quantity is theta xi 10^4 on a linear scale, so
     # ydecades does not apply here (kept for a uniform signature).
     rescale = None if not (xi_ref is None) else rescale
     alpha = np.zeros((ntomo, ntomo))
@@ -794,10 +809,11 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
                           ydecades = 4, ylabel = r"$\alpha\,|C_{\ell}^{gs}|$", legendfontsize = None, xaxislabelsize = 16):
     """Panel grid of galaxy-galaxy lensing angular power spectra.
 
-    One panel per (lens, source) bin pair: rows are lens bins,
-    columns are source bins. Without C_gs_ref each curve is
-    ell(ell+1) C_ell / 2 pi on a log scale; with C_gs_ref each curve
-    is the fractional difference C / C_ref - 1.
+    One panel per (lens, source) bin pair: rows are source bins,
+    columns are lens bins, and the panel label reads (lens, source).
+    Without C_gs_ref each curve is C_ell itself (no ell(ell+1)/2 pi
+    factor) on a log scale; with C_gs_ref each curve is the
+    fractional difference C / C_ref - 1.
 
     Arguments:
       ell      = 1D array of multipoles, shared by every C_gs entry.
@@ -810,10 +826,10 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
       (yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
       xaxisticklabelsize), bintextpos, bintextsize, figsize =
       layout knobs as in plot_C_ss_tomo_limber.
-      legendloc = None (the default) lays one legend row right
-                 above the panels, centered on them; an (x, y) pair
-                 in figure fractions places its lower-left corner
-                 anywhere.
+      legendloc = None (the default) lays the legend right above
+                 the panels, centered on them, with up to four
+                 entries per row; an (x, y) pair in figure fractions
+                 places its lower-left corner anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1067,9 +1083,9 @@ def plot_C_gs_tomo_limber(ell, C_gs, C_gs_ref = None, param = None, colorbarlabe
         if len(legend) != len(C_gs):
             print("Bad Input")
             return 0
-        # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span:
-        # np.ravel flattens the axes array into one flat list,
+        # legendloc None (the default) lays the entries, up to four
+        # per row, right above the panels, centered on their measured
+        # span: np.ravel flattens the axes array into one flat list,
         # get_position returns each panel's box in figure fractions,
         # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
@@ -1111,7 +1127,8 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
     """One panel per lens bin of galaxy-clustering angular spectra.
 
     The panels show the auto-correlation C_gg of each lens bin.
-    Without C_gg_ref each curve is ell(ell+1) C_ell / 2 pi; with
+    Without C_gg_ref each curve is C_ell itself (no ell(ell+1)/2 pi
+    factor) on a log scale, linear with forcelinearyscale; with
     C_gg_ref each curve is the fractional difference C / C_ref - 1.
 
     Arguments:
@@ -1122,17 +1139,16 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
       forcelinearyscale, forcelinearxscale = True switches that axis
                  to linear even without a reference.
       overwriteylabel = y-axis label replacing the default.
-      marker, markersize = point markers instead of lines.
       param, colorbarlabel, lmin, lmax, cmap, colorbarshrink, ylim,
       linestyle, linewidth, marker, markersize, legend,
       legendfontsize, the *size arguments
       (yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
       xaxisticklabelsize), bintextpos, bintextsize, figsize =
       layout knobs as in plot_C_ss_tomo_limber.
-      legendloc = None (the default) lays one legend row right
-                 above the panels, centered on them; an (x, y) pair
-                 in figure fractions places its lower-left corner
-                 anywhere.
+      legendloc = None (the default) lays the legend right above
+                 the panels, centered on them, with up to four
+                 entries per row; an (x, y) pair in figure fractions
+                 places its lower-left corner anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1378,9 +1394,9 @@ def plot_C_gg_tomo(ell, C_gg, C_gg_ref = None, param = None, colorbarlabel = Non
         if len(legend) != len(C_gg):
             print("Bad Input")
             return 0
-        # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span:
-        # np.ravel flattens the axes array into one flat list,
+        # legendloc None (the default) lays the entries, up to four
+        # per row, right above the panels, centered on their measured
+        # span: np.ravel flattens the axes array into one flat list,
         # get_position returns each panel's box in figure fractions,
         # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
@@ -1422,10 +1438,11 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
                      ydecades = 4, ylabel = r"$\alpha\,|\gamma_{t}(\theta)|$", legendfontsize = None, xaxislabelsize = 16):
     """Panel grid of the real-space tangential shear gamma_t(theta).
 
-    One panel per (lens, source) bin pair: rows are lens bins,
-    columns are source bins. Without gammat_ref each curve is
-    theta * gamma_t * 10^4; with gammat_ref each curve is the
-    fractional difference gamma_t / ref - 1.
+    One panel per (lens, source) bin pair: rows are source bins,
+    columns are lens bins, and the panel label reads (lens, source).
+    Without gammat_ref each curve is |gamma_t| on a log scale; with
+    gammat_ref each curve is the fractional difference
+    gamma_t / ref - 1.
 
     Arguments:
       theta_gammat = list of (theta, gammat) pairs, one per curve:
@@ -1445,10 +1462,10 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
       plot_C_ss_tomo_limber. With gammat_ref, ylim may also be one
       [lo, hi] band per row (a list of n_source pairs, ylim[j] for
       source row j): each row then keeps its own y-range.
-      legendloc = None (the default) lays one legend row right
-                 above the panels, centered on them; an (x, y) pair
-                 in figure fractions places its lower-left corner
-                 anywhere.
+      legendloc = None (the default) lays the legend right above
+                 the panels, centered on them, with up to four
+                 entries per row; an (x, y) pair in figure fractions
+                 places its lower-left corner anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1722,9 +1739,9 @@ def plot_gammat_tomo_limber(theta_gammat, gammat_ref = None, param = None, color
         if len(legend) != len(theta_gammat):
             print("Bad Input")
             return 0
-        # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span:
-        # np.ravel flattens the axes array into one flat list,
+        # legendloc None (the default) lays the entries, up to four
+        # per row, right above the panels, centered on their measured
+        # span: np.ravel flattens the axes array into one flat list,
         # get_position returns each panel's box in figure fractions,
         # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
@@ -1766,7 +1783,7 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
                      ydecades = 4, ylabel = r"$\alpha\,|w_{t}(\theta)|$", legendfontsize = None, xaxislabelsize = 16):
     """One panel per lens bin of the clustering correlation w(theta).
 
-    Without theta_wtheta_ref each curve is theta * w(theta) * 10^4;
+    Without theta_wtheta_ref each curve is |w(theta)| on a log scale;
     with it each curve is the fractional difference w / ref - 1.
 
     Arguments:
@@ -1786,10 +1803,10 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
       xaxislabelsize, yaxisticklabelsize, xaxisticklabelsize),
       bintextpos, bintextsize, figsize = layout knobs as in
       plot_C_ss_tomo_limber.
-      legendloc = None (the default) lays one legend row right
-                 above the panels, centered on them; an (x, y) pair
-                 in figure fractions places its lower-left corner
-                 anywhere.
+      legendloc = None (the default) lays the legend right above
+                 the panels, centered on them, with up to four
+                 entries per row; an (x, y) pair in figure fractions
+                 places its lower-left corner anywhere.
       show     = 1 draws the figure; None returns (fig, axes).
       colorbar = None suppresses the colorbar even with param set.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -2032,9 +2049,9 @@ def plot_wtheta_tomo(theta_wtheta, theta_wtheta_ref = None, param = None, colorb
         if len(legend) != len(theta_wtheta):
             print("Bad Input")
             return 0
-        # legendloc None (the default) lays the entries in one row
-        # right above the panels, centered on their measured span:
-        # np.ravel flattens the axes array into one flat list,
+        # legendloc None (the default) lays the entries, up to four
+        # per row, right above the panels, centered on their measured
+        # span: np.ravel flattens the axes array into one flat list,
         # get_position returns each panel's box in figure fractions,
         # and bbox_to_anchor pins the legend's lower-center point
         if legendloc is None:
@@ -2192,9 +2209,8 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
         ax.set_ylim(list(ylim))
     ax.set_xlabel(r"$k$ [1/Mpc]", fontsize = xaxislabelsize)
     ax.set_ylabel(r"$S(k) = P_{\rm feedback}/P_{\rm DM}$", fontsize = yaxislabelsize)
-    # the tick numbers are Text objects; matplotlib has no single
-    # "tick font size" setter on the axes, so each label is resized
-    # on its own
+    # the tick numbers are matplotlib Text objects, one per tick;
+    # each is resized on its own
     for item in ax.get_yticklabels():
         item.set_fontsize(yaxisticklabelsize)
     for item in ax.get_xticklabels():
@@ -2205,7 +2221,7 @@ def plot_baryon_suppression(log10k, sup, param = None, colorbarlabel = None,
     if not (zlabels is None):
         # the legend must key the linestyles, not the plotted lines:
         # every curve of one redshift shares a style but has its own
-        # color. Line2D([], []) is a line with no data points - it
+        # color. Line2D([], []) is a line with no data points: it
         # never draws inside the panel and exists only as a black
         # legend key for one style (a "proxy handle" in matplotlib
         # terms). The comprehension builds one such key per redshift

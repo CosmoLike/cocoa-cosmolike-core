@@ -6,11 +6,45 @@
 namespace py = pybind11;
 namespace cosmolike_interface {
 
+// ---------------------------------------------------------------------------
+// Notebook bindings of the covariance components and matrix assemblers.
+//
 // Python conversion is kept here, apart from the Armadillo calculations.
 // Each binding checks rank and copies its arguments before calling C++.
+//
+// These functions are registered on the module that bind_covariance
+// receives (generic_interface_cov.cpp). Its covariance submodule holds the
+// production functions of the same names (components_interface_cov.cpp,
+// matrix_interface_cov.cpp), which borrow C-contiguous float64 or int32
+// NumPy arrays without copying and reject any other array. Both layers
+// call the same C routines.
+//
+// Every lambda below follows the same three steps:
+//   1. notebook_input_cov checks the rank of each array argument and
+//      copies it into a private, owning arma::Col (rank 1), arma::Mat
+//      (rank 2) or arma::Cube (rank 3), as float64 for physical values and
+//      int32 for IDs. C-order, Fortran-order, sliced and read-only NumPy
+//      arrays are all accepted, and the caller's array is never modified.
+//   2. The *_cpp wrapper (components_wrapper_cov.cpp or
+//      covariance_wrapper_cov.cpp) checks shapes and domains and calls C.
+//   3. CARMA exports the returned Armadillo object as a NumPy array whose
+//      memory belongs to a capsule, a small Python object that frees the
+//      Armadillo storage when the last array using it disappears. The
+//      result therefore stays valid after later calls. Its shape is the
+//      Armadillo shape, for example [n_rows,n_cols], and it keeps
+//      Armadillo's column-major (Fortran) memory order. Indexing is
+//      unaffected, but the C-order production functions need
+//      np.ascontiguousarray of a 2D or 3D result.
+// CARMA exports an arma::Col as a 2D [n,1] array; reshape(-1) returns the
+// 1D [n] view of it that Python callers expect. pybind11 converts scalar
+// arguments itself, and py::arg("name") = value sets a keyword default.
+// The comment above each binding lists its shapes; the docstrings, which
+// Python's help() shows, add units and scope.
+// ---------------------------------------------------------------------------
 void bind_covariance_components(py::module_& module)
 {
 
+  // nquad -> [2,nquad]: Gauss-Legendre nodes (row 0) and weights (row 1).
   module.def("covariance_integration_rule", [](
           const int nquad) {
 
@@ -21,6 +55,8 @@ void bind_covariance_components(py::module_& module)
       "Allowed sizes: 64,96,128,256,512,1024; smaller rules are rejected.",
       py::arg("nquad"));
 
+  // edges_rad [nbin+1] in radians, mask_cl [nmask] (raw C_L^W from L=0),
+  // scalar_kernel [nbin,nmask] (w operator rows) -> [nbin] in sr^2.
   module.def("covariance_mask_pair_area", [](
           const py::object& edges_rad,
           const py::object& mask_cl,
@@ -41,6 +77,7 @@ void bind_covariance_components(py::module_& module)
       py::arg("edges_rad"), py::arg("mask_cl"),
       py::arg("area_sr"), py::arg("scalar_kernel"));
 
+  // mask_cl [nmask], distance [nnode], power [nnode,nmask] -> [nnode].
   module.def("covariance_ssc_mask_variance", [](
           const py::object& mask_cl,
           const double area_sr,
@@ -61,6 +98,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("mask_cl"), py::arg("area_sr"),
       py::arg("distance"), py::arg("power"));
 
+  // distance [nnode], signal [nrow], and pair_window, mean_window and
+  // power_response [nrow,nnode] -> response [nrow,nnode].
   module.def("covariance_ssc_shell_response", [](
           const py::object& distance,
           const py::object& signal,
@@ -87,6 +126,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("pair_window"), py::arg("mean_window"),
       py::arg("power_response"));
 
+  // a [na], k [na,nk], lnm_edges [npanel+1] -> tuple (I11 [na,nk],
+  // moments [5,na,nk*(nk+1)/2] or None).
   module.def("covariance_halo_moments", [](
           const py::object& a,
           const py::object& k,
@@ -110,6 +151,9 @@ void bind_covariance_components(py::module_& module)
       py::arg("lnm_edges"), py::arg("nquad"),
       py::arg("pair_moments") = true);
 
+  // k [nk] -> power [nk]; k [nrow,ncol] -> power [nrow,ncol]. The
+  // trailing return type -> py::object lets one lambda return either rank;
+  // py::cast converts the matrix result with CARMA.
   module.def("covariance_power",
       [](const double a, const py::object& k,
          const bool linear) -> py::object {
@@ -127,6 +171,8 @@ void bind_covariance_components(py::module_& module)
       "Read a k vector or matrix at one a; preserve its physical axes.",
       py::arg("a"), py::arg("k"), py::arg("linear") = true);
 
+  // k and pk [2,npair], corner and weight [nangle], ps [npair,nangle]
+  // -> averages [3,npair]: <P>, <B_tree>, <T_tree>.
   module.def("covariance_tree_averages", [](
           const py::object& k,
           const py::object& pk,
@@ -152,6 +198,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("corner"), py::arg("weight"),
       py::arg("ps"));
 
+  // pk and i11 [2,npoint], moments [5,npoint], tree [3,npoint]
+  // -> terms [5,npoint].
   module.def("covariance_halo_trispectrum", [](
           const py::object& pk,
           const py::object& i11,
@@ -173,6 +221,7 @@ void bind_covariance_components(py::module_& module)
       py::arg("pk"), py::arg("i11"),
       py::arg("moments"), py::arg("tree"));
 
+  // inputs [6,npoint] -> [2,npoint]: P_halo and dP/d(delta_b).
   module.def("covariance_halo_response", [](
           const py::object& inputs,
           const double growth_coefficient,
@@ -188,6 +237,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("inputs"), py::arg("growth_coefficient"),
       py::arg("dilation_coefficient"), py::arg("fractional") = true);
 
+  // left [nleft,nnode], right [nright,nnode], weight [nnode]
+  // -> [nleft,nright].
   module.def("covariance_project", [](
           const py::object& left,
           const py::object& right,
@@ -206,6 +257,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("left"), py::arg("right"),
       py::arg("weight"));
 
+  // cross_spectra [4,nell], cross_noise [4] in steradians -> [nell], one
+  // value per multipole ell_min, ell_min+1, ... .
   module.def("covariance_gaussian_wick", [](
           const py::object& cross_spectra,
           const py::object& cross_noise,
@@ -226,6 +279,7 @@ void bind_covariance_components(py::module_& module)
       py::arg("ell_min"), py::arg("fsky"),
       py::arg("include_noise_noise") = false);
 
+  // edges_rad [nbin+1] in radians -> operators [4,nbin,ell_max+1].
   module.def("covariance_realspace_operator", [](
           const py::object& edges_rad,
           const int ell_max,
@@ -239,6 +293,7 @@ void bind_covariance_components(py::module_& module)
       "Return [4,nbin,ell_max+1] full-sky xi+,xi-,gamma_t,w operators.",
       py::arg("edges_rad"), py::arg("ell_max"), py::arg("nquad"));
 
+  // first and last [nband], int32 -> weights [nband,nell].
   module.def("covariance_bandpower_operator", [](
           const py::object& first,
           const py::object& last,
@@ -256,6 +311,8 @@ void bind_covariance_components(py::module_& module)
       py::arg("first"), py::arg("last"),
       py::arg("ell_min"), py::arg("nell"));
 
+  // fields [4] int32, noise_ab [2] in steradians, pair_area_sr2 in sr^2
+  // -> one dimensionless covariance entry (a Python float).
   module.def("covariance_noise_pair", [](
           const int probe_left,
           const int probe_right,
@@ -276,8 +333,13 @@ void bind_covariance_components(py::module_& module)
       py::arg("pair_area_sr2"));
 }
 
+// Matrix assemblers: the connected projection and the real-space and
+// Fourier Gaussian matrices, declared in covariance_wrapper_cov.hpp. They
+// follow the same copy, check and export steps as the components above.
 void bind_covariance_wrappers(py::module_& module)
 {
+  // probes [nobs] int32, pair_window [nobs,nnode], projected
+  // [4*nbin,4*nbin,nnode], measure [nnode] -> [nobs*nbin,nobs*nbin].
   module.def("covariance_project_connected", [](
           const py::object& probes,
           const py::object& pair_window,
@@ -314,6 +376,10 @@ sum order. No input or cosmology/likelihood state is changed.
       py::arg("probes"), py::arg("pair_window"),
       py::arg("projected"), py::arg("measure"));
 
+  // spectra [nell,nfield,nfield], noise [nfield], rows [nobs,3] int32,
+  // operators [4,nbin,nell], pair_area_sr2 [nbin], optional b_spectra
+  // like spectra -> [nobs*nbin,nobs*nbin]. noise holds white-noise powers
+  // in steradians: 1/n and sigma_e^2/n, with n per steradian.
   module.def("covariance_gaussian_real",
       [](
           const py::object& spectra,
@@ -334,6 +400,7 @@ sum order. No input or cosmology/likelihood state is changed.
             notebook_input_cov<arma::Cube<double>>(operators, 3);
         const arma::Col<double> pair_area_sr2_input =
             notebook_input_cov<arma::Col<double>>(pair_area_sr2, 1);
+        // None leaves b_input empty, which the wrapper reads as E only.
         arma::Cube<double> b_input;
         if (!b_spectra.is_none()) {
           b_input = notebook_input_cov<arma::Cube<double>>(b_spectra, 3);
@@ -368,6 +435,8 @@ calculation, not exact cut-sky mode coupling or non-Gaussian covariance.
       py::arg("ell_min"), py::arg("area_sr"),
       py::arg("pair_area_sr2"), py::arg("b_spectra") = py::none());
 
+  // spectra [nell,nfield,nfield], noise [nfield] in steradians, pairs
+  // [nobs,2] int32, operators [nband,nell] -> [nobs*nband,nobs*nband].
   module.def("covariance_gaussian_fourier",
       [](
           const py::object& spectra,

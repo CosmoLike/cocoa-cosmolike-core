@@ -18,11 +18,33 @@ namespace cosmolike_interface {
 // spectra(ell,A,B) includes all internal field crosses, even those absent
 // from the observable list. Each observable specifies the fields measured
 // together. A bin operator converts its harmonic spectrum into the chosen
-// angular statistic or Fourier bandpower.
+// angular statistic or Fourier bandpower. For observables r=AB and s=CD
+// in bins i and j, the shared C assembler gaussian_matrix_cov computes
+//
+//   Cov[(r,i),(s,j)] = sum_ell K_i(ell) G_AB,CD(ell) K_j(ell),
+//   G_AB,CD(ell)     = [(C_AC+N_AC)(C_BD+N_BD) + (C_AD+N_AD)(C_BC+N_BC)]
+//                      / [(2 ell+1) fsky],   fsky = area_sr/(4 pi).
+//
+// N_AC equals noise(A) only when A and C are the same catalog: different
+// catalogs have independent white noise. K_i is the bin-i row of the
+// observable's probe operator; Fourier bands have a single probe row.
+// Real-space spectra must use the convention of the spin operators: each
+// source leg of a core C_ell carries sqrt((ell-1)(ell+2)/(ell(ell+1))),
+// as observed_spectra applies in Python. Fourier bands average the core
+// C_ell directly, and white noise never takes this factor.
 //
 // Real-space noise has an infinite multipole tail: integrate the signal
 // and mixed terms, then add the exact pure-noise pair-count expression.
 // Fourier bands instead keep all noise terms in their finite harmonic sum.
+// With b_spectra, xi+/xi- blocks also add the BB Wick term (signal and
+// mixed noise), with sign +1 for equal and -1 for different xi estimators:
+// xi+ measures EE+BB and xi- measures EE-BB.
+//
+// The result is an arma::Mat [nobs*nbin,nobs*nbin], bin varying fastest
+// inside each observable; C writes both triangles from one number. The
+// estimators are dimensionless, and so is their covariance. All inputs
+// are const Armadillo copies made by the binding, so the caller's NumPy
+// arrays, in any memory order or slice, are never modified.
 //
 // Public arrays use Armadillo axes. The short C workspace copies below
 // follow cosmo2D_wrapper.cpp: C requires contiguous multipole rows, whereas
@@ -32,18 +54,22 @@ namespace cosmolike_interface {
 // ---------------------------------------------------------------------------
 static arma::Mat<double> gaussian_matrix_cpp(
     const arma::Cube<double>& spectra,   // (ell, field, field), signal only
-    const arma::Col<double>& noise,      // (field), white-noise powers
+    const arma::Col<double>& noise,      // (field), white-noise powers, sr
     const arma::Mat<int>& rows,          // real (probe,A,B); Fourier (A,B)
     const arma::Cube<double>& operators, // (probe, bin, ell)
     const int ell_min,                   // first consecutive multipole
     const double area_sr,                // survey solid angle, sr
-    const arma::Col<double>& pair_area,  // real-space ordered-pair area, sr^2
-    const bool realspace,                // pure-noise convention
+    const arma::Col<double>& pair_area,  // (bin), real-space pair area, sr^2
+    const bool realspace,                // true adds pair-count pure noise
     const arma::Cube<double>& b_spectra   // optional BB, empty omits it
   )
 {
   // --- 1. CHECK THE PHYSICAL AXES BEFORE ENTERING C ---
 
+  // The C assembler trusts its sizes and row pointers: a wrong field ID
+  // would read outside the spectra, and a nonpositive size stops the whole
+  // process. These checks throw std::invalid_argument instead, which
+  // pybind11 raises in Python as a ValueError.
   if (spectra.is_empty()
       || spectra.n_cols != spectra.n_slices
       || noise.n_elem != spectra.n_cols
@@ -79,6 +105,8 @@ static arma::Mat<double> gaussian_matrix_cpp(
   const int offset = realspace ? 1 : 0; // first field column in rows
   const int ndata = nobs*nbin;       // dimension of the covariance
 
+  // Each observable names its probe (real space only) and two fields. An
+  // ID outside the field axis would select a spectrum row that is absent.
   for (int observable=0; observable<nobs; observable++) {
     if (realspace
         && (rows(observable, 0) < XI_PLUS_COV
@@ -107,6 +135,8 @@ static arma::Mat<double> gaussian_matrix_cpp(
   // Armadillo stores columns contiguously; C sums contiguous ell rows.
   // These copies preserve physical axes and keep pointer bookkeeping out
   // of the notebook API. The C assembler owns every mathematical loop.
+  // malloc2d returns one padded block holding its row pointers and rows,
+  // so one free releases each workspace.
   arma::Mat<double> output(ndata, ndata);
   const int nfield = noise.n_elem; // catalogs in each spectrum axis
   const int nprobe = realspace ? 4 : 1; // operator roles
@@ -117,8 +147,14 @@ static arma::Mat<double> gaussian_matrix_cpp(
   }
   double** kernels = (double**) malloc2d(nprobe*nbin, nell);
   double** result = (double**) malloc2d(ndata, ndata);
+
+  // C reads the observables as one flat int array [nobs][3]. Armadillo
+  // stores a 3 x nobs matrix column by column, so each observable's
+  // (probe,A,B) triple is contiguous and layout.memptr() is that array.
   arma::Mat<int> layout(3, nobs); // column-major triples, flat (probe,A,B)
 
+  // Row A*nfield+B of power holds C_AB at every multipole; the optional
+  // BB rows use the same field-pair index.
   for (int first=0; first<nfield; first++) {
     for (int second=0; second<nfield; second++) {
       for (int ell=0; ell<nell; ell++) {
@@ -129,6 +165,8 @@ static arma::Mat<double> gaussian_matrix_cpp(
       }
     }
   }
+
+  // Row probe*nbin+bin of kernels holds that operator row at every ell.
   for (int probe=0; probe<nprobe; probe++) {
     for (int bin=0; bin<nbin; bin++) {
       for (int ell=0; ell<nell; ell++) {
@@ -136,21 +174,28 @@ static arma::Mat<double> gaussian_matrix_cpp(
       }
     }
   }
+
+  // Fourier rows carry no probe column; their single operator role is 0.
   for (int row=0; row<nobs; row++) {
     layout(0, row) = realspace ? rows(row, 0) : 0;
     layout(1, row) = rows(row, offset);
     layout(2, row) = rows(row, offset+1);
   }
 
+  // One call projects every observable block, adds real-space pure noise
+  // and overwrites both triangles of result. Fourier needs no pair areas.
   gaussian_matrix_cov(nell, nfield, nobs, nbin, layout.memptr(), power,
       b_power, noise.memptr(), kernels, ell_min, area_sr,
       realspace ? pair_area.memptr() : nullptr, realspace, result);
 
+  // Copy back by (row, column).
   for (int row=0; row<ndata; row++) {
     for (int col=0; col<ndata; col++) {
       output(row, col) = result[row][col];
     }
   }
+
+  // free(nullptr) does nothing, so the optional BB workspace needs no test.
   free(power);
   free(b_power);
   free(kernels);
@@ -162,14 +207,14 @@ static arma::Mat<double> gaussian_matrix_cpp(
 // Fourier band matrix distinct. The Fourier helper adds a single common
 // operator role solely for the shared Gaussian calculation above.
 arma::Mat<double> covariance_gaussian_real_cpp(
-    const arma::Cube<double>& spectra,
-    const arma::Col<double>& noise,
-    const arma::Mat<int>& rows,
-    const arma::Cube<double>& operators,
-    const int ell_min,
-    const double area_sr,
-    const arma::Col<double>& pair_area_sr2,
-    const arma::Cube<double>& b_spectra
+    const arma::Cube<double>& spectra,   // [nell,nfield,nfield], signal
+    const arma::Col<double>& noise,      // [nfield], white noise, sr
+    const arma::Mat<int>& rows,          // [nobs,3], (probe,A,B)
+    const arma::Cube<double>& operators, // [4,nbin,nell], probe kernels
+    const int ell_min,                   // first multipole, >= 2
+    const double area_sr,                // survey solid angle, sr
+    const arma::Col<double>& pair_area_sr2, // [nbin], ordered pairs, sr^2
+    const arma::Cube<double>& b_spectra  // like spectra, BB; empty: E only
   )
 {
   return gaussian_matrix_cpp(spectra, noise, rows, operators, ell_min,
@@ -177,20 +222,24 @@ arma::Mat<double> covariance_gaussian_real_cpp(
 }
 
 arma::Mat<double> covariance_gaussian_fourier_cpp(
-    const arma::Cube<double>& spectra,
-    const arma::Col<double>& noise,
-    const arma::Mat<int>& pairs,
-    const arma::Mat<double>& operators,
-    const int ell_min,
-    const double area_sr
+    const arma::Cube<double>& spectra,   // [nell,nfield,nfield], signal
+    const arma::Col<double>& noise,      // [nfield], white noise, sr
+    const arma::Mat<int>& pairs,         // [nobs,2], (A,B)
+    const arma::Mat<double>& operators,  // [nband,nell], band weights
+    const int ell_min,                   // first multipole, >= 0
+    const double area_sr                 // survey solid angle, sr
   )
 {
+  // Add a probe axis of length one, kernels(0,band,ell) =
+  // operators(band,ell): every Fourier observable uses the same bands.
   arma::Cube<double> kernels(1, operators.n_rows, operators.n_cols);
   for (arma::uword bin=0; bin<operators.n_rows; bin++) {
     for (arma::uword ell=0; ell<operators.n_cols; ell++) {
       kernels(0, bin, ell) = operators(bin, ell);
     }
   }
+
+  // Fourier noise stays in the harmonic sum, so no pair areas are needed.
   const arma::Col<double> unused;
   return gaussian_matrix_cpp(spectra, noise, pairs, kernels, ell_min,
                              area_sr, unused, false, arma::Cube<double>());
@@ -210,6 +259,13 @@ arma::Mat<double> covariance_gaussian_fourier_cpp(
 // angular bins and all its catalog pairs. The C projection retains its
 // ordered radial sum and SIMD arithmetic; Armadillo gives the notebook
 // explicit observable, angular-bin and radial-node axes.
+//
+// Units: W_A W_B in (c/H0)^-2, the transformed trispectrum in (c/H0)^9
+// and measure = dchi/(area f_K^6) in (c/H0)^-5 per sr, so the result, an
+// arma::Mat [nobs*nbin,nobs*nbin] with bin inside observable, is
+// dimensionless. C reads only the upper triangle i <= j of the combined
+// (probe,bin) index of projected and writes both triangles of the result.
+// Inputs are const Armadillo copies; the caller's arrays are untouched.
 // ---------------------------------------------------------------------------
 arma::Mat<double> covariance_project_connected_cpp(
     const arma::Col<int>& probes,        // (observable), xi+,xi-,gamma_t,w
@@ -260,9 +316,12 @@ arma::Mat<double> covariance_project_connected_cpp(
     }
   }
 
+  // One call groups the observables by probe, integrates every angular
+  // block over the radial nodes and overwrites both triangles of result.
   connected_matrix_cov(nobs, nbin, nnode, probes.memptr(), windows,
       matter, measure.memptr(), result);
 
+  // Copy back by (row, column) and release the C workspaces.
   for (int row=0; row<nobs*nbin; row++) {
     for (int col=0; col<nobs*nbin; col++) {
       output(row, col) = result[row][col];

@@ -5,8 +5,12 @@
 #include "log.c/src/log.h"
 #include "simde/x86/sse2.h"
 
-// SIMD applies the same arithmetic to two doubles, called lanes. Each
-// lane below describes one radial shell; it never mixes distinct shells.
+// SIMD (single instruction, multiple data) applies one arithmetic
+// instruction to several numbers at once. A v2d, SIMDe's simde__m128d,
+// holds two doubles; each position is called a lane, lane 0 the low and
+// lane 1 the high double. Below, lane 0 holds radial shell node and lane
+// 1 shell node+1. No instruction combines the two lanes, so each shell
+// is converted exactly as in the scalar code.
 typedef simde__m128d v2d;
 
 // ---------------------------------------------------------------------------
@@ -14,8 +18,10 @@ typedef simde__m128d v2d;
 //
 // Let n_i(chi) be the comoving abundance selected into observed bin i.
 // It includes richness scatter, completeness and the redshift selection.
-// A shell of thickness dchi subtends volume Omega_s f_K(chi)^2 dchi,
-// so its expected count is
+// At comoving distance chi, one radian on the sky spans the transverse
+// comoving length f_K(chi), which equals chi only in a flat universe.
+// A shell of thickness dchi over the solid angle Omega_s therefore has
+// comoving volume dV = Omega_s f_K(chi)^2 dchi, and its expected count is
 //
 //   dN_i = Omega_s f_K^2 n_i dchi.
 //
@@ -33,29 +39,75 @@ typedef simde__m128d v2d;
 //   Phi_i(chi) = Omega_s f_K^2 B_i.
 //
 // Mean counts follow from integral dchi S_i. Their SSC is
-// integral dchi sigma_b^2 Phi_i Phi_j in the long-mode Limber model.
-// sigma_b^2 has units LENGTH because its radial covariance contains a
-// Dirac delta. Both S and Phi have units 1/LENGTH, so this covariance
-// has the units of a squared count, as required.
+// integral dchi sigma_b^2 Phi_i Phi_j in the long-mode Limber model,
+// which replaces the background correlation between two shells by
 //
-// Use the SAME Phi with the two-point shell response for count-spectrum
-// SSC. Its local term contains W_A W_B/f_K^2 times dP/d(delta_b).
-// The f_K^2 here cancels that denominator in the local contribution.
+//   <delta_b(chi) delta_b(chi')> = delta_D(chi-chi') sigma_b^2(chi).
+//
+// The Dirac delta has units 1/length, so sigma_b^2 has units of length;
+// it is not the dimensionless variance of a finite shell. Both S and Phi
+// have units 1/length, so this covariance has the units of a squared
+// count, as required.
+//
+// Counts are absolute numbers, not density contrasts divided by an
+// observed catalog mean. Phi_i therefore contains no observed-mean
+// subtraction.
+//
+// Distinct observed bins are exclusive: each halo receives at most one
+// observed label, drawn independently of other halos given its mass and
+// redshift. Splitting a Poisson population by independent labels gives
+// independent Poisson populations, so the shot-noise covariance is
+// diagonal, delta_ij N_i, even when two bins overlap in true mass or true
+// redshift. Their SSC term is still nonzero: both bins respond to the
+// same delta_b at every shell where both have halos.
+//
+// Use this same Phi with the two-point shell response for count-spectrum
+// SSC. Its local term contains W_A W_B/f_K^2 times D = dP/d(delta_b).
+// The f_K^2 here cancels that denominator in the local contribution:
+//
+//   Phi_i W_A W_B D/f_K^2 = Omega_s B_i W_A W_B D.
+//
 // Omitting the denominator would leave two unwanted powers of distance
-// and make the result depend on the chosen length unit. Keep any separate
-// observed-mean correction too. Angular transforms add no radial factors.
+// and make the result depend on the chosen length unit. The two-point
+// response keeps its own observed-mean term, -(U_A+U_B) C_AB; only the
+// count response lacks one. Angular transforms add no radial factors.
 //
-// See Takada & Spergel (2014), arXiv:1307.4399, Sec. 4.1; and Schaan,
-// Takada & Spergel (2014), arXiv:1406.3330, Eqs. 33 and 35. This function
-// supplies responses only. The Poisson count term and the non-SSC
-// count-spectrum correlation must be assembled separately. Counts are
-// absolute numbers, so no observed-catalog-mean subtraction applies here.
+// References. Takada & Spergel (2014), arXiv:1307.4399, Sec. 4.1, derive
+// the light-cone count covariance and its cross-covariance with lensing.
+// Schaan, Takada & Spergel (2014), arXiv:1406.3330, Eq. 33 is the count
+// covariance, a diagonal Poisson term plus
+//
+//   Omega_s^2 integral dchi n_i n_j b_i b_j chi^4 dsigma^2(chi),
+//
+// that is integral dchi sigma_b^2 Phi_i Phi_j with B = b n. The last term
+// of their Eq. 35, Omega_s integral dchi q^2 (sum_i n_i b_i) D dsigma^2,
+// is the count-lensing SSC: q^2 appears with no power of distance, the
+// cancellation above. Their dsigma^2 is the sigma_b^2 used here. Both
+// papers take a flat universe, chi = f_K.
+//
+// This function supplies responses only. The Poisson count term and the
+// non-SSC count-spectrum correlation (the first line of Eq. 35) must be
+// assembled separately.
+//
+// Parameters:
+//   ncount           - number of observed count bins i, >= 1
+//   nnode            - number of common radial nodes chi_j, >= 1
+//   area_sr          - survey solid angle Omega_s in steradians,
+//                      0 < area_sr <= 4 pi
+//   distance         - [nnode] f_K(chi_j), positive, in length unit L
+//   density          - [ncount][nnode] n_i(chi_j) in L^-3, nonnegative
+//   density_response - [ncount][nnode] B_i(chi_j) in L^-3, either sign
+//
+// Outputs (every entry is written):
+//   shell            - [ncount][nnode] S_i(chi_j) = dN_i/dchi, in L^-1
+//   response         - [ncount][nnode] Phi_i(chi_j), in L^-1 per unit
+//                      delta_b
 //
 // Input and ownership contract:
-// All arrays are finite. density is nonnegative; its response may have
-// either sign. One consistent length unit is used throughout. The caller
-// owns both outputs and ensures that their rows do not overlap each other
-// or any input. No allocation, global state, cache or cosmology mutation.
+// All arrays are finite. One consistent length unit is used throughout.
+// The caller owns both outputs and ensures that their rows do not overlap
+// each other or any input. No allocation, global state, cache or
+// cosmology mutation.
 // ---------------------------------------------------------------------------
 void counts_shell_cluster_cov(
     const int ncount,                       // observed count bins
@@ -78,8 +130,10 @@ void counts_shell_cluster_cov(
     exit(1);
   }
 
-  // Volume conversion is undefined at a nonpositive distance. The
-  // radial integration must sample shells away from the observer.
+  // Every radial node must be a shell beyond the observer, where f_K > 0.
+  // A zero or negative value means a node at the observer or a corrupted
+  // distance array, so the function stops instead of converting it. The
+  // two-point response paired with Phi divides by f_K^2 at the same nodes.
   for (int node=0; node<nnode; node++) {
     if (!isfinite(distance[node])
         || distance[node] <= 0.0) {
@@ -89,12 +143,18 @@ void counts_shell_cluster_cov(
     }
   }
 
-  // The same observed count bin may receive halos from several true
-  // redshifts. Convert every abundance and response with its own shell
-  // volume; no bin-midpoint or non-overlap cut replaces this calculation.
-  // Collapse both indices so even one count bin can occupy eight workers.
-  // Each worker writes a distinct pair of nodes. SIMD performs the same
-  // conversion at the two distances, with no sum across lanes or threads.
+  // One iteration converts the selected abundance n_i and its response
+  // B_i of one observed bin at two adjacent radial nodes into dN_i/dchi
+  // and Phi_i. An observed bin receives halos from every true redshift
+  // its selection allows, so each node uses its own shell volume
+  // Omega_s f_K^2; no bin-midpoint or non-overlap cut replaces this.
+  //
+  // node advances by two: SIMD lane 0 holds shell node and lane 1 shell
+  // node+1. The lanes are never added; each fills its own output entry.
+  // When nnode is odd, the final iteration has one node left and takes
+  // the scalar branch. Collapse both indices so even one count bin can
+  // occupy eight workers. Each (bin, node pair) writes distinct entries
+  // and nothing is summed, so the result does not depend on the threads.
   #pragma omp parallel for collapse(2) schedule(static)
   for (int bin=0; bin<ncount; bin++) {
     for (int node=0; node<nnode; node+=2) {
@@ -106,51 +166,68 @@ void counts_shell_cluster_cov(
       double* restrict count_shell = shell[bin];
       double* restrict count_response = response[bin];
 
-      // Scalar equivalent for the two shells j=node and j=node+1:
+      // scalar: for each of the two shells j = node and j = node+1,
       //   volume = area_sr*(distance[j]*distance[j]);
       //   count_shell[j] = volume*number[j];
       //   count_response[j] = volume*change[j];
       // The shell volume converts number per comoving volume into dN/dchi;
       // the same factor converts its density response into dN/dchi/delta_b.
-      // The SIMD block evaluates these three lines at both shells together.
+      // The SIMD block evaluates these three lines at both shells together,
+      // with the same multiplications in the same order. Each product is
+      // rounded once, so every lane equals its scalar result bitwise.
       if (node+1 < nnode) {
-        // loadu puts f_K[node] in lane 0 and f_K[node+1] in lane 1.
-        // It accepts an ordinary double array without special alignment.
+        // scalar: volume = area_sr*(distance[j]*distance[j])
+
+        // loadu puts f_K[node] = distance[node] in lane 0 and f_K[node+1]
+        // = distance[node+1] in lane 1. It accepts an ordinary double
+        // array without special alignment.
         const v2d vdistance = simde_mm_loadu_pd(distance+node);
 
-        // Square the two distances separately. Each shell's comoving
-        // volume per steradian per dchi is its own f_K^2.
+        // mul_pd multiplies lane by lane: f_K[node]^2 in lane 0 and
+        // f_K[node+1]^2 in lane 1. Each shell's comoving volume per
+        // steradian per dchi is its own f_K^2.
         const v2d vdistance2 = simde_mm_mul_pd(vdistance, vdistance);
 
-        // Copy the footprint area into both lanes; it is common to shells.
+        // set1 copies the footprint area Omega_s = area_sr into both
+        // lanes; it is common to the two shells.
         const v2d varea = simde_mm_set1_pd(area_sr);
 
-        // Multiply each f_K^2 by the area, giving dV/dchi in both lanes.
+        // mul_pd: Omega_s f_K^2 in each lane, the comoving volume per unit
+        // distance dV/dchi of shell node (lane 0) and node+1 (lane 1).
         const v2d vvolume = simde_mm_mul_pd(varea, vdistance2);
 
-        // Load n_i at the same two shells. loadu requires two valid
-        // adjacent doubles but no vector-aligned address.
+        // scalar: count_shell[j] = volume*number[j];
+        //         count_response[j] = volume*change[j]
+
+        // loadu puts number[node] = n_i(chi_node) in lane 0 and
+        // number[node+1] in lane 1. It requires two valid adjacent
+        // doubles but no vector-aligned address.
         const v2d vnumber = simde_mm_loadu_pd(number+node);
 
-        // Load B_i in matching lane order, with the same alignment rule.
+        // loadu puts change[node] = B_i(chi_node) = dn_i/d(delta_b) in
+        // lane 0 and change[node+1] in lane 1, with the same rule.
         const v2d vchange = simde_mm_loadu_pd(change+node);
 
-        // Volume times abundance gives each shell's expected dN/dchi.
+        // mul_pd: dV/dchi times n_i in each lane, the shell's expected
+        // count per unit distance S_i = dN_i/dchi.
         const v2d vcount = simde_mm_mul_pd(vvolume, vnumber);
 
-        // Volume times B_i gives each shell's response to delta_b.
+        // mul_pd: dV/dchi times B_i in each lane, the shell's count
+        // response Phi_i to delta_b, with no observed-mean subtraction.
         const v2d vresponse = simde_mm_mul_pd(vvolume, vchange);
 
-        // Write the two count densities back to adjacent ordinary doubles.
-        // storeu preserves lane order and needs no special alignment.
+        // storeu writes lane 0 to count_shell[node] and lane 1 to
+        // count_shell[node+1]. It needs no special alignment, but both
+        // elements must exist, which node+1 < nnode guarantees.
         simde_mm_storeu_pd(count_shell+node, vcount);
 
-        // Write the two responses to their separate output row, likewise
-        // allowing an ordinary address and preserving node/node+1 order.
+        // storeu writes the two responses to count_response[node] (lane
+        // 0) and count_response[node+1] (lane 1), under the same rule.
         simde_mm_storeu_pd(count_response+node, vresponse);
       } else {
-        // An odd final node has no partner. Use the identical sequence
-        // of multiplications without reading beyond any array boundary.
+        // An odd final node (node = nnode-1) has no partner. Use the
+        // identical sequence of multiplications without reading beyond
+        // any array boundary.
         const double volume = area_sr*(distance[node]*distance[node]);
         count_shell[node] = volume*number[node];
         count_response[node] = volume*change[node];

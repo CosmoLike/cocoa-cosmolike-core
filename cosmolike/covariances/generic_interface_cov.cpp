@@ -7,6 +7,32 @@
 namespace py = pybind11;
 namespace cosmolike_interface {
 
+// ---------------------------------------------------------------------------
+// Register the two covariance layers on a project's Python module.
+//
+// 1. bind_covariance_production creates module.covariance, the production
+//    layer used by command-line runs: it borrows C-contiguous NumPy inputs
+//    and returns owned NumPy outputs (production_interface_cov.cpp and the
+//    files it registers).
+// 2. bind_covariance_components and bind_covariance_wrappers
+//    (python_components_cov.cpp) register the notebook layer directly on
+//    module, with the same function names. Each notebook binding checks
+//    the rank of its array inputs and copies them, with notebook_input_cov,
+//    from NumPy arrays of any numeric dtype or memory layout into owning
+//    Armadillo containers. It then calls a *_cpp wrapper; CARMA exports
+//    the Armadillo results as NumPy arrays.
+// 3. The notebook spectrum builder is registered below: ell and a_edges
+//    become arma::Col<double> copies, and covariance_limber_spectra_cpp
+//    (components_wrapper_cov.cpp) returns the same dict as the production
+//    function, with spectra[nell,nfield,nfield], b_spectra or None,
+//    geometry[4,nnode], windows[3,nfield,nnode], nlens and nsource.
+//
+// Both layers call the same C routines, so their numerical results and
+// threading agree: C routines that read lazy core tables warm them on the
+// calling thread, then run their own OpenMP loops. The copies make
+// notebook inputs independent of the caller's arrays, and no output
+// aliases an input.
+// ---------------------------------------------------------------------------
 void bind_covariance(py::module_& module)
 {
   bind_covariance_production(module);
@@ -14,6 +40,10 @@ void bind_covariance(py::module_& module)
   bind_covariance_components(module);
   bind_covariance_wrappers(module);
 
+  // Notebook covariance_limber_spectra: the lambda converts the Python
+  // objects and forwards every scalar unchanged. The docstring and the
+  // defaults repeat those of the production function, and the second
+  // name covariance_spectra refers to the same function object.
   module.def("covariance_limber_spectra", [](
           const py::object& ell,
           const py::object& a_edges,

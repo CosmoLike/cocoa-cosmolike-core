@@ -6,9 +6,14 @@ follow Barreira, Krause & Schmidt (2018), Fig. 1, arXiv:1807.04266.
 The functions plot the supplied calculation, not those papers' data.
 
 Only NumPy and Matplotlib are used. Labels, ordering and survey choices
-belong to the caller. No covariance is rescaled, repaired or saved here;
-fonts and global Matplotlib settings stay in the notebook. show=1 draws
-the figure; show=None returns (figure, axes) for further annotation/saving.
+belong to the caller. No covariance is rescaled, repaired, clipped or
+saved here, and nothing is altered to make a figure look positive: the
+only masking (undefined element ratios) is display-only. Fonts and
+global Matplotlib settings stay in the notebook. show=1 draws the figure
+(any value other than None does); show=None returns (figure, axes) for
+further annotation/saving. Invalid input raises ValueError before a
+figure is created, where the plot_datavectors functions print
+"Bad Input" and return 0.
 """
 
 import numpy as np
@@ -16,12 +21,23 @@ from matplotlib import pyplot as plt
 
 
 def _matrix(values, name):
-    """Check the matrix before creating a figure; preserve signed entries."""
+    """Check the matrix before creating a figure; preserve signed entries.
+
+    Arguments:
+        values = square array-like matrix; signed entries are kept.
+        name = label used in the error messages.
+    Returns:
+        the matrix as a float ndarray, never modified (the input object
+        itself when it already is one). Raises ValueError when it is
+        empty, not square, not finite, or not symmetric.
+    """
     matrix = np.asarray(a=values, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or len(matrix) == 0:
         raise ValueError(f"{name} must be a nonempty square matrix")
     if not np.all(np.isfinite(matrix)):
         raise ValueError(f"{name} must contain finite values")
+    # Symmetric to 1e-12 of the largest absolute entry: far above float64
+    # rounding (2.2e-16) and far below the asymmetry of a misordered matrix.
     scale = np.max(np.abs(matrix))
     if np.max(np.abs(matrix-matrix.T)) > 1.e-12*scale:
         raise ValueError(f"{name} must be symmetric; check the matrix ordering")
@@ -29,25 +45,45 @@ def _matrix(values, name):
 
 
 def _blocks(size, block_sizes, block_labels):
-    """Resolve contiguous matrix groups; labels sit at group centers."""
+    """Resolve contiguous matrix groups; labels sit at group centers.
+
+    Arguments:
+        size = matrix dimension ndata.
+        block_sizes = None, or positive integer counts in matrix order
+            that sum to size.
+        block_labels = one label per count; None when block_sizes is None.
+    Returns:
+        (edges, centers, labels) in image coordinates, or (None, None,
+        None) without groups. Raises ValueError on inconsistent groups.
+    """
     if block_sizes is None:
         if block_labels is not None:
             raise ValueError("block_labels requires block_sizes")
         return None, None, None
     counts = np.asarray(a=block_sizes)
+    # dtype.kind "i" or "u" means signed or unsigned integers: float counts
+    # are refused rather than rounded.
     if counts.ndim != 1 or counts.dtype.kind not in "iu" or np.any(counts <= 0):
         raise ValueError("block_sizes must contain positive integer counts")
     if np.sum(counts) != size:
         raise ValueError("block_sizes must sum to the covariance dimension")
     if block_labels is None or len(block_labels) != len(counts):
         raise ValueError("provide one block label for each block size")
+    # imshow centers pixel i on coordinate i, so a group boundary sits half
+    # a pixel after the group's last index.
     edges = np.concatenate((np.array([0]), np.cumsum(counts)))-0.5
     centers = (edges[1:]+edges[:-1])/2.0
     return edges, centers, block_labels
 
 
 def _decorate(axis, blocks):
-    """Mark estimator/tomographic boundaries without altering matrix order."""
+    """Mark estimator/tomographic boundaries without altering matrix order.
+
+    Arguments:
+        axis = Matplotlib axes holding the matrix image.
+        blocks = (edges, centers, labels) from _blocks; with edges None
+            both axes are labeled by data-vector index instead.
+    """
     edges, centers, labels = blocks
     if edges is None:
         axis.set_xlabel(xlabel="Data-vector index")
@@ -61,7 +97,13 @@ def _decorate(axis, blocks):
 
 
 def _finish(figure, axes, show):
-    """Keep the same display/return convention as the data-vector plotters."""
+    """Keep the same display/return convention as the data-vector plotters.
+
+    Arguments:
+        figure, axes = the figure and the axes object(s) handed back.
+        show = None returns (figure, axes); any other value, 0 and False
+            included, calls plt.show() and returns None.
+    """
     if show is not None:
         plt.show()
         return None
@@ -84,13 +126,15 @@ def plot_trispectrum_terms(k_hmpc, components, redshift, linthresh=1.0,
         figsize = figure size in inches.
         show = 1 to display; None to return the figure and axis.
     Returns:
-        None or (figure, axis). Invalid inputs raise ValueError before
-        creating a figure. Inputs are neither modified nor saved.
+        None after drawing, or (figure, axis) when show is None. Invalid
+        inputs raise ValueError before creating a figure. Inputs are
+        neither modified nor saved.
 
     The supplied terms are averaged over the relative wavevector angle,
-    before survey projection. They exclude SSC. A signed logarithmic
-    scale keeps negative terms and zero crossings visible; no absolute
-    value, clipping or covariance normalization changes the data.
+    before survey projection. They exclude super-sample covariance
+    (SSC). A signed logarithmic scale keeps negative terms and zero
+    crossings visible; no absolute value, clipping or normalization is
+    applied to make the terms look positive.
     """
     wave = np.asarray(a=k_hmpc, dtype=float)
     if wave.ndim != 1 or len(wave) == 0 or not np.all(np.isfinite(wave)):
@@ -105,7 +149,8 @@ def plot_trispectrum_terms(k_hmpc, components, redshift, linthresh=1.0,
         raise ValueError("components must contain at least one named halo term")
 
     # Check every term before drawing. Adding the disjoint contributions
-    # reconstructs cNG's matter trispectrum, not the full G+SSC+cNG covariance.
+    # reconstructs the matter trispectrum of the connected non-Gaussian
+    # (cNG) term, not the full Gaussian+SSC+cNG covariance.
     curves = {}
     total = np.zeros_like(a=wave)
     for name, values in components.items():
@@ -144,20 +189,27 @@ def plot_correlation(covariance, covariance_ref=None, block_sizes=None,
 
     Arguments:
         covariance, covariance_ref = symmetric [ndata,ndata] matrices.
-            Every diagonal must be positive. The optional reference fills
-            the upper triangle; the calculation fills the lower triangle.
+            Every diagonal must be positive. The calculation fills the
+            lower matrix triangle (row > column) and the diagonal; the
+            optional reference fills the upper one (row < column).
         block_sizes, block_labels = contiguous group counts and labels,
             or both None for index axes. Their order is never sorted.
         labels = two display names, calculation then reference.
         cmap, figsize, show = Matplotlib colormap, inches, display control.
     Returns:
-        None for show=1, or (figure, axis) for show=None.
+        None after drawing, or (figure, axis) when show is None. Invalid
+        input raises ValueError before a figure is created.
 
     Each matrix uses its own diagonal: R_ij=C_ij/sqrt(C_ii C_jj).
+    The image puts index 0 at the bottom left (origin="lower"), so the
+    calculation's triangle appears above the drawn diagonal and the
+    reference's below it; the title's Lower/Upper name matrix triangles.
     Negative correlations are physical and remain visible. Values outside
     [-1,1] expand the scale instead of being clipped; such values violate
-    the covariance Cauchy--Schwarz bound. A well-behaved picture alone does
-    not establish positive definiteness: inspect the eigenvalues too.
+    the covariance Cauchy--Schwarz bound. Neither matrix is altered to
+    make the figure look positive definite, and a well-behaved picture
+    alone does not establish positive definiteness: inspect the
+    eigenvalues too.
     """
     values = _matrix(values=covariance, name="covariance")
     blocks = _blocks(size=len(values), block_sizes=block_sizes,
@@ -200,23 +252,30 @@ def plot_covariance_components(total, components, block_sizes=None,
 
     Arguments:
         total = finite symmetric [ndata,ndata] matrix with positive diagonal.
-        components = ordered mapping of display name to component matrix.
+        components = ordered mapping of display name to component matrix,
+            finite and symmetric with the shape of total; entries may be
+            negative.
         block_sizes, block_labels = groups as in plot_correlation.
         normalization = 'diagonal' gives component_ij/sqrt(total_ii total_jj);
-            'element' gives component_ij/total_ij, as in the paper's Fig. 1.
+            'element' gives component_ij/total_ij, as in Fig. 1 of
+            Barreira, Krause & Schmidt (2018).
         denominator_floor = for element ratios, mask abs(total_ij) <= this
             fraction of sqrt(total_ii total_jj). Must be nonnegative.
         bins = histogram bin count; percent = multiply ratios by 100.
         figsize = inches or None to size by component count.
         show = 1 to display, None to return figure and map/histogram axes.
     Returns:
-        None or (figure, axes dict), with keys maps and histogram.
+        None after drawing, or (figure, axes dict) when show is None, with
+        keys maps (list of map axes) and histogram. Invalid input raises
+        ValueError before a figure is created.
 
     A component may be signed. Maps share a diverging scale and the
     histogram retains those signs. Undefined element ratios are grey and
     excluded from the histogram, with their counts stated in each title.
-    Element ratios can be large when total entries nearly cancel; they
-    do not measure the effect on cosmological parameter constraints.
+    That masking is display-only: no matrix is altered to make a ratio
+    or the figure look positive. Element ratios can be large when total
+    entries nearly cancel; they do not measure the effect on
+    cosmological parameter constraints.
     """
     values = _matrix(values=total, name="total")
     if np.any(np.diag(values) <= 0):
@@ -247,11 +306,16 @@ def plot_covariance_components(total, components, block_sizes=None,
         if matrix.shape != values.shape:
             raise ValueError(f"{name} does not match the total covariance shape")
         ratio = np.full(shape=values.shape, fill_value=np.nan)
+        # Divide only where the ratio is defined; the other entries keep
+        # their NaN fill, which masked_invalid hides in the maps and
+        # compressed() drops from the histogram. The matrices are unchanged.
         np.divide(matrix, denominator, out=ratio, where=valid)
         if percent:
             ratio *= 100.0
         ratios[name] = np.ma.masked_invalid(a=ratio)
         limit = max(limit, float(np.max(np.abs(ratio[valid]))))
+    # When every defined ratio is zero, a unit range keeps the color scale
+    # usable.
     if limit == 0:
         limit = 1.0
     if figsize is None:
@@ -262,6 +326,8 @@ def plot_covariance_components(total, components, block_sizes=None,
                                height_ratios=[1.0, 0.55])
     histogram = figure.add_subplot(grid[1, :])
     panels = []
+    # set_bad acts on a private copy, never on the registered RdBu_r that
+    # other figures use; masked (undefined) ratios draw light grey.
     colormap = plt.get_cmap(name="RdBu_r").copy()
     colormap.set_bad(color="0.8")
     edges = np.linspace(start=-limit, stop=limit, num=bins+1)
@@ -295,19 +361,25 @@ def plot_covariance_diagonal(theta_arcmin, covariances, panel_labels,
     """Plot standard deviations or their fractional changes by estimator.
 
     Arguments:
-        theta_arcmin = positive increasing [ntheta] bin centers. For Fourier
-            plots, supply multipole centers and a multipole coordinate_label.
-            The historical argument name remains valid for angular callers.
+        theta_arcmin = positive increasing [ntheta] bin centers: angular
+            separations in arcmin, or multipole centers for Fourier plots
+            (with a multipole coordinate_label). The values only place
+            the curves on the horizontal axis; no unit conversion occurs.
         coordinate_label = horizontal axis label, including the supplied units.
         covariances = ordered mapping of name to [ndata,ndata] covariance.
-        panel_labels = estimator/tomographic labels; ndata=ntheta*len(labels).
+        panel_labels = estimator/tomographic labels; ndata=ntheta*len(labels),
+            ordered panel by panel: entries p*ntheta to (p+1)*ntheta-1
+            belong to panel p.
         covariance_ref = optional matching reference matrix. If supplied,
             plot 100*(sqrt(diag(C)/diag(C_ref))-1), in percent, rather than
             standard deviation.
         figsize, show = inches (None for automatic size), display control.
     Returns:
-        None or (figure, axes [npanel]). No component with negative diagonal
-        can be square rooted; use the signed component map for that case.
+        None after drawing, or (figure, axes [npanel]) when show is None.
+        Invalid input raises ValueError before a figure is created. A
+        matrix with a non-positive diagonal entry is refused, never
+        clipped or made positive: its standard deviation is undefined, so
+        use plot_covariance_components, which keeps signs, for it.
     """
     theta = np.asarray(a=theta_arcmin, dtype=float)
     if theta.ndim != 1 or len(theta) == 0 or not np.all(np.isfinite(theta)):
@@ -345,7 +417,8 @@ def plot_covariance_diagonal(theta_arcmin, covariances, panel_labels,
         styles = ["solid", "dashed", "dashdot", "dotted"]
         for curve, (name, diagonal) in enumerate(diagonals.items()):
             # Plot coordinates use Matplotlib's positional x,y convention.
-            # Distinct dashes keep nearly coincident boost curves visible.
+            # Distinct dashes keep nearly coincident curves visible, such
+            # as one covariance at two accuracy boosts.
             axis.plot(theta, diagonal[index], label=name,
                       linestyle=styles[curve % len(styles)], linewidth=1.6)
         axis.set_xscale(value="log")

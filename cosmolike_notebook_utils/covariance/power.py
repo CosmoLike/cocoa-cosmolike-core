@@ -8,15 +8,22 @@ def refine_power_tables(tables, refinement=8):
     """Insert log-k samples into all three power tables without moving z nodes.
 
     Arguments:
-        tables = CAMB arrays in the set_cosmology interchange format.
-            log10k_2D is uniform; each flattened lnP array has redshift
-            varying fastest, followed by wavenumber.
+        tables = CAMB arrays in the set_cosmology interchange format, with
+            at least log10k_2D, z_2D, lnP_linear, lnP_nonlinear and
+            lnP_linear_cb. log10k_2D is uniform; each flattened lnP array
+            has redshift varying fastest, followed by wavenumber.
         refinement = positive integer number of intervals replacing each
             original interval. Eight turns 1,500 k nodes into 11,993.
     Returns:
-        A new dictionary with dense linear, nonlinear and cb power arrays.
-        Other inputs are shared unchanged. A factor of one returns a shallow
-        copy. The supplied dictionary and arrays are never modified.
+        A new dictionary with the dense log10k_2D grid and dense linear,
+        nonlinear and cb lnP arrays, flattened in the same order. Other
+        inputs are shared unchanged. A factor of one returns a shallow copy
+        without inspecting the tables. The supplied dictionary and arrays
+        are never modified.
+    Raises:
+        ValueError for a refinement that is not a positive integer, a
+        log10k_2D that is not finite, increasing and uniform, or an lnP
+        array without nz*nk finite values.
 
     Small interpolation errors in P can be amplified when the four-halo
     trispectrum subtracts large terms. At each fixed redshift, a natural

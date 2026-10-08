@@ -17,6 +17,25 @@ namespace py = pybind11;
 
 namespace cosmolike_interface {
 
+// ---------------------------------------------------------------------------
+// Armadillo notebook wrappers of the cluster covariance components.
+//
+// generic_interface_cluster_cov.cpp copies each NumPy argument into an
+// owning arma::Col, arma::Mat or arma::Cube with notebook_input_cov, so
+// C-order, Fortran-order, sliced and read-only arrays are all accepted and
+// never modified. Each wrapper below checks shapes and physical domains,
+// copies its inputs into padded malloc2d/malloc3d C workspaces with
+// contiguous rows, and calls one shared *_cluster_cov.c routine. Every
+// integral, SIMD loop and OpenMP team stays in C, in the same routines
+// that the production interface (cluster_interface_cov.cpp) calls. The
+// results return to Armadillo by physical indices and leave as a Python
+// dict of NumPy arrays that own their memory through CARMA.
+//
+// Checks throw std::invalid_argument, which Python sees as a ValueError;
+// the C routines would instead stop the process or trust malformed sizes.
+// L denotes one consistent length unit, c/H0 in the survey workflow.
+// ---------------------------------------------------------------------------
+
 
 // ---------------------------------------------------------------------------
 // Expose count-shell quantities without assigning a mass-selection model.
@@ -27,12 +46,25 @@ namespace cosmolike_interface {
 // input raises a Python exception instead of stopping the Python process.
 // Returned arrays own their data and remain valid after subsequent calls.
 // No likelihood, nuisance parameter or cosmology state is read or changed.
+//
+// With n_i the selected comoving abundance of count bin i and
+// B_i = dn_i/d(delta_b), a shell of thickness dchi holds the volume
+// area_sr f_K^2 dchi, so counts_shell_cluster_cov returns
+//
+//   S_i(chi)   = dN_i/dchi = area_sr f_K^2 n_i,
+//   Phi_i(chi) = area_sr f_K^2 B_i,
+//
+// both in L^-1. integral dchi S_i gives the mean counts, and
+// integral dchi sigma_b^2 Phi_i Phi_j their SSC. Inputs: distance
+// arma::Col [nnode] (f_K in L); density and derivative arma::Mat
+// [ncount,nnode] in L^-3. Returns a dict of arma::Mat [ncount,nnode]:
+// shell_density (S_i) and shell_response (Phi_i).
 // ---------------------------------------------------------------------------
 py::dict covariance_counts_shell_cpp(
-    const arma::Col<double>& distance, // [nnode], transverse distances
-    const arma::Mat<double>& density,  // [ncount,nnode], selected n_i
-    const arma::Mat<double>& derivative, // matching dn_i/d(delta_b)
-    const double area_sr               // survey solid angle
+    const arma::Col<double>& distance, // [nnode], f_K in L
+    const arma::Mat<double>& density,  // [ncount,nnode], selected n_i, L^-3
+    const arma::Mat<double>& derivative, // matching dn_i/d(delta_b), L^-3
+    const double area_sr               // survey solid angle, sr
   )
 {
   if (distance.n_elem < 1
@@ -77,6 +109,7 @@ py::dict covariance_counts_shell_cpp(
 
   // Abundance and its response share the same catalog and radial axes.
   // C consumes contiguous shell rows; the notebook retains matrix axes.
+  // Planes 0 and 1 hold n_i and B_i; planes 2 and 3 receive S_i and Phi_i.
   for (arma::uword bin=0; bin<ncount; bin++) {
     for (arma::uword node=0; node<nnode; node++) {
       work[0][bin][node] = density(bin, node);
@@ -108,17 +141,38 @@ py::dict covariance_counts_shell_cpp(
 // This wrapper checks shapes before copying the C workspace; returned
 // cross and auto spectra own their data. The galaxy/shear block is supplied
 // separately by the ordinary covariance spectrum builder.
+//
+// With q_c the normalized cluster window (integral q_c dchi = 1), b_c its
+// selected bias and F_ell the core harmonic shear spin factor, the C
+// routine limber_cluster_cov evaluates the Limber spectra
+//
+//   C_cc' = sum_node dchi q_c q_c' b_c b_c' P_NL / f_K^2,
+//   C_cg  = sum_node dchi q_c b_c W_g P_NL / f_K^2,
+//   C_cs  = F_ell sum_node dchi q_c W_s (b_c P_NL + P_cm^1h) / f_K^2.
+//
+// W_g already contains the galaxy bias. Only cluster-source spectra see
+// the selected halo's own mass profile P_cm^1h. No noise, IA,
+// magnification or RSD enters.
+//
+// Inputs: ell arma::Col [nell]; distance and dchi arma::Col [nnode] in L;
+// base arma::Mat [nbase,nnode] (nlens galaxy windows, then lensing
+// windows) and window arma::Mat [ncluster,nnode], both in L^-1; bias
+// arma::Mat [ncluster,nnode]; power arma::Mat [nell,nnode] (P_NL at
+// k=(ell+1/2)/f_K) and profile arma::Cube [nrichness,nell,nnode], both in
+// L^3; richness arma::Col<int> [ncluster], the profile row of each
+// category. Returns a dict of dimensionless arma::Cube: cluster_base
+// [nell,ncluster,nbase] and cluster_cluster [nell,ncluster,ncluster].
 // ---------------------------------------------------------------------------
 py::dict covariance_cluster_spectra_cpp(
-    const arma::Col<double>& ell,       // multipole samples
-    const arma::Col<double>& distance,  // common transverse distances
-    const arma::Col<double>& dchi,      // radial integration weights
-    const arma::Mat<double>& base,      // galaxy and lensing windows
-    const arma::Mat<double>& window,    // normalized cluster windows
-    const arma::Mat<double>& bias,      // selected cluster bias
-    const arma::Mat<double>& power,     // nonlinear matter power
-    const arma::Cube<double>& profile,   // selected one-halo spectra
-    const arma::Col<int>& richness, // profile map
+    const arma::Col<double>& ell,       // [nell], multipoles >= 2
+    const arma::Col<double>& distance,  // [nnode], f_K in L
+    const arma::Col<double>& dchi,      // [nnode], radial weights in L
+    const arma::Mat<double>& base,      // [nbase,nnode], W_g then W_s, L^-1
+    const arma::Mat<double>& window,    // [ncluster,nnode], q_c, L^-1
+    const arma::Mat<double>& bias,      // [ncluster,nnode], selected b_c
+    const arma::Mat<double>& power,     // [nell,nnode], P_NL at (ell+1/2)/f_K
+    const arma::Cube<double>& profile,   // [nrichness,nell,nnode], P_cm^1h, L^3
+    const arma::Col<int>& richness, // [ncluster], profile row of each q_c
     const int nlens                     // leading galaxy fields in base
   )
 {
@@ -217,6 +271,8 @@ py::dict covariance_cluster_spectra_cpp(
 
   // Expose explicit field axes instead of C's triangular pair index.
   // Both auto-spectrum triangles receive exactly the same value.
+  // C rows list the ncluster*nbase (cluster,base) pairs, cluster-major,
+  // then the cluster upper triangle (0,0),(0,1),...,(1,1),... .
   arma::uword pair = 0;
   for (arma::uword field=0; field<ncluster; field++) {
     for (arma::uword other=0; other<nbase; other++) {
@@ -256,11 +312,27 @@ py::dict covariance_cluster_spectra_cpp(
 // them for single and pair moments without choosing a mass function or
 // reading cluster globals. Outputs expose state and selection separately;
 // only the temporary C row map combines them into a flat population index.
+//
+// Write dn S_i for weight (dlnM dn/dlnM times the membership probability
+// S_i, which enters once) and p(k) = (M/rho) u(k|M) for profile. The C
+// routine moments_cluster_cov sums over the mass nodes
+//
+//   density = sum dn S_i,           biased_density = sum dn S_i b,
+//   J01(K)  = sum dn S_i p(K),      J11(K) = sum dn S_i b p(K),
+//   J02(K,Q) = sum dn S_i p(K) p(Q),
+//   J03_KKQ = sum dn S_i p(K)^2 p(Q), J03_KQQ = sum dn S_i p(K) p(Q)^2.
+//
+// Inputs: weight arma::Cube [state,selection,mass] in L^-3, bias
+// arma::Mat [state,mass], profile arma::Cube [state,k,mass] in L^3.
+// Returns a dict: density and biased_density arma::Mat [state,selection]
+// in L^-3; J01 and J11 arma::Cube [state,selection,k], dimensionless;
+// J02, J03_KKQ and J03_KQQ arma::Cube [state,selection,kpair] in L^3,
+// L^6 and L^6, kpair running over the k pairs (0,0),(0,1),...,(1,1),... .
 // ---------------------------------------------------------------------------
 py::dict covariance_cluster_moments_cpp(
-    const arma::Cube<double>& weight,  // [state,selection,mass], selected dn
+    const arma::Cube<double>& weight,  // [state,selection,mass], dn S_i, L^-3
     const arma::Mat<double>& bias,    // [state,mass], linear halo bias
-    const arma::Cube<double>& profile  // [state,k,mass], (M/rho)*u(k|M)
+    const arma::Cube<double>& profile  // [state,k,mass], (M/rho)u(k|M), L^3
   )
 {
   const arma::uword na = weight.n_rows; // independent radial states
@@ -367,11 +439,26 @@ py::dict covariance_cluster_moments_cpp(
 // can inspect the abundance/profile samples or pass an independent model
 // to that integrator. All state and shape guards precede lazy core reads,
 // allocation and parallel work. The output arrays own their storage.
+//
+// For every state a, richness bin and mass node the C routine
+// halo_samples_cluster_cov evaluates the selected abundance measure
+//
+//   weight = dlnM (rho_cb/M) f(nu,a) nu (dlnnu/dlnM) S_lambda(M,z),
+//   nu     = 1.686/sigma_cb(M,a),
+//
+// with the initialized multiplicity f of HMF_TINKER_2010 and lognormal
+// richness selection S_lambda, the linear halo bias b_h(M,a) and the profile
+// (M/rho_m) u_NFW(k|M). Massless neutrinos give rho_cb = rho_m.
+// Inputs: a arma::Col [state]; k arma::Mat [state,k] in (c/H0)^-1; lnm
+// and dlnm arma::Col [mass], ln(M/[Msun/h]) and positive dlnM weights.
+// Returns a dict: weight arma::Cube [state,richness,mass] in (c/H0)^-3,
+// bias arma::Mat [state,mass] and profile arma::Cube [state,k,mass] in
+// (c/H0)^3, ready for covariance_cluster_moments_cpp.
 // ---------------------------------------------------------------------------
 py::dict covariance_cluster_halo_samples_cpp(
     const arma::Col<double>& a,       // scale factors [state]
-    const arma::Mat<double>& k,       // core wavenumbers [state,k]
-    const arma::Col<double>& lnm,     // log masses [mass]
+    const arma::Mat<double>& k,       // wavenumbers [state,k], (c/H0)^-1
+    const arma::Col<double>& lnm,     // ln(M/[Msun/h]) [mass]
     const arma::Col<double>& dlnm     // positive quadrature measures [mass]
   )
 {
@@ -383,6 +470,10 @@ py::dict covariance_cluster_halo_samples_cpp(
     throw std::invalid_argument(
         "need nonempty a[state], k[state,k], lnm[mass], dlnm[mass]");
   }
+
+  // The C routine supports only this initialized model: massless
+  // neutrinos, the HMF_TINKER_2010 abundance, NFW profiles and a lognormal
+  // mass-richness relation with positive scatter and no extra selection.
   if (cosmology.Omega_nu != 0.0
       || cosmology.Omega_m <= 0.0
       || like.halo_model[0] != HMF_TINKER_2010

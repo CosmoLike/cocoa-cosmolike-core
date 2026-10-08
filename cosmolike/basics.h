@@ -153,9 +153,12 @@ gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n);
 // Sum all elements of a double array using AVX2 SIMD intrinsics (via
 // SIMDe for portability).
 //
-// Processes four doubles per iteration with 256-bit vector adds,
-// falling back to scalar arithmetic for any trailing elements that
-// don't fill a full lane. The input array need not be 32-byte aligned.
+// Processes eight doubles per iteration, as two 256-bit loads into two
+// independent four-lane accumulators, then adds each accumulator's lanes
+// in order and the remaining n % 8 elements one at a time. This order of
+// the additions differs from a left-to-right loop, so the result can
+// differ from it in the last bits. The input array need not be 32-byte
+// aligned.
 // ---------------------------------------------------------------------------
 double simd_array_sum(
     const double* RESTRICT a,  // input array, length n (need not be aligned)
@@ -167,11 +170,39 @@ double simd_array_sum(
 // single scalar sum.
 //
 // Performs a horizontal add across all four lanes of the input register
-// and returns the result as a plain double.
+// and returns the result as a plain double: the lanes are stored to
+// memory and added left to right, ((lane 0 + lane 1) + lane 2) + lane 3.
 // ---------------------------------------------------------------------------
 double simd_horizontal_sum(
     simde__m256d four_lanes  // 256-bit register holding four doubles to sum
   );
+
+// ---------------------------------------------------------------------------
+// The malloc*d allocators: layout and ownership rules for all of them
+//
+// One block. Each allocator below makes a single posix_memalign call and
+// returns the start of that block: the pointer tables (2D and higher)
+// followed by the data.
+//
+// Padded rows. The data are stored as rows of the last index. Each row
+// starts on a 64-byte boundary and is padded up to a multiple of 64 bytes:
+// a row of ny doubles occupies nyp = 8*ceil(ny/8) doubles, so row i+1
+// starts nyp (not ny) doubles after row i. The ny values of a row are
+// contiguous; the block is not one flat array of nx*ny values. Pointer
+// tables are padded as a whole, so each table and the data start on a
+// 64-byte boundary. Exceptions: malloc2d_fftwp and malloc2d_ptr pad only
+// the row-pointer table, and calloc1d does not round its size up.
+//
+// Padding stays uninitialized. posix_memalign does not zero memory, and
+// zero2d/zero3d/zero4d zero only the logical values of each row, so no
+// allocator or zeroing function writes the padding; code must not read
+// it. A flat memset or memcpy over a 2D+ block is therefore wrong (see
+// zero2d).
+//
+// One free. free(p) on the returned pointer releases the block, row
+// pointers included. Rows are addresses inside the block, not separate
+// allocations: never free a row, and free each block exactly once.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Allocate a 1D array of int as a single 64-byte-aligned contiguous block.
@@ -310,7 +341,9 @@ void** malloc2d_fftwp(
 // independently allocated data buffer.
 //
 // The caller is responsible for freeing the returned pointer (a single
-// free() releases both the pointer array and the data block).
+// free() releases both the pointer array and the data block of double*
+// entries). Buffers that the caller attaches to the entries are separate
+// allocations, freed separately by their owner.
 // ---------------------------------------------------------------------------
 void*** malloc2d_ptr(
     const long nx,  // number of rows
@@ -340,9 +373,9 @@ void*** malloc3d_complex(
 // Allocate a 1D array of double as a single 64-byte-aligned contiguous
 // block, zero-initialized.
 //
-// The total allocation is padded to a 64-byte boundary, suitable for
-// SIMD and cache-friendly access patterns. All bytes are set to zero
-// before returning.
+// The block starts on a 64-byte boundary, but unlike malloc1d its size
+// is not rounded up: exactly nx doubles, all set to zero before
+// returning.
 //
 // The caller is responsible for freeing the returned pointer.
 // ---------------------------------------------------------------------------
@@ -414,12 +447,15 @@ double interpol1d(
 //
 // Out-of-range behavior differs by axis:
 //   - x out of [ax, bx]: returns 0
-//   - y below ay: linearly extrapolates from the y=ay edge
-//   - y above by: linearly extrapolates from the y=by edge
+//   - y below ay: the edge value f(x, ay), interpolated in x, plus
+//     (y - ay): a straight line of unit slope in y, not the table's own
+//     slope at the edge
+//   - y above by: likewise f(x, by) + (y - by)
 //
-// Boundary cases where the query falls on the last grid index in either
-// dimension are handled by dropping the out-of-bounds terms from the
-// bilinear formula.
+// Inside [ay, by], boundary cases where the query falls on the last grid
+// index in either dimension are handled by dropping the out-of-bounds
+// terms from the bilinear formula. The two y extrapolations always read
+// row i+1, so they need x < bx.
 // ---------------------------------------------------------------------------
 double interpol2d(
     double** f,   // 2D data array of shape [nx][ny]
@@ -453,20 +489,23 @@ double interpol2d(
 //   But the actual stride is nzp, not nz. The flat memset zeros
 //   nx*ny*nz doubles starting from arr[0][0], which undershoots the
 //   true allocation (nx*ny*nzp doubles). The result:
-//     - early rows: logical data zeroed, padding left dirty (harmless)
-//     - late rows: logical data left UNINITIALIZED (dangerous)
+//     - early rows: logical data and padding zeroed (the flat memset runs
+//       straight through the padding between rows)
+//     - late rows: logical data left uninitialized (dangerous)
 //
-//   Example: malloc3d(11, 100, 100), nzp = 104
+//   Example: malloc3d(11, 100, 100), nzp = 104, rows 0-1099
 //     memset zeros:  11*100*100 = 110,000 doubles
 //     actual data:   11*100*104 = 114,400 doubles
-//     last ~4,400 doubles uninitialized — affects rows 1058-1099
+//     last 4,400 doubles uninitialized: rows 1058-1099 entirely, and row
+//     1057 from its value 72 on
 //
 //
 // SOLUTION:
 //   Zero through the pointer indirection, one innermost row at a time.
 //   Each memset follows the actual row pointer (which accounts for
-//   padding) and zeros exactly the logical element count. Safe for
-//   any dimension size, regardless of 64-byte alignment.
+//   padding) and zeros exactly the logical element count, skipping the
+//   padding (left uninitialized, so it must not be read). Safe for any
+//   dimension size, regardless of 64-byte alignment.
 // ---------------------------------------------------------------------------
 void zero2d(double** a, const int nx, const int ny);
 
@@ -476,11 +515,12 @@ void zero4d(double**** a, const int nx, const int ny, const int nz,
             const int nw);
 
 // ---------------------------------------------------------------------------
-// Count the number of non-empty lines in a text file.
+// Count the lines of a text file.
 //
-// Opens the file, scans for newline characters, and accounts for a
-// possible missing trailing newline on the last line. Terminates the
-// program if the file cannot be opened.
+// Counts the newline characters, empty lines included, and adds one for
+// a last line without a trailing newline, provided the file contains at
+// least one newline (a single line without a newline counts as 0).
+// Terminates the program if the file cannot be opened.
 // ---------------------------------------------------------------------------
 int line_count(
     char* filename  // path to the text file
@@ -493,17 +533,18 @@ int line_count(
 // DERIVATION:
 //   A cubic spline S_i(x) = y_i + b_i·δ + c_i·δ^2 + d_i·δ^3 on each
 //   interval [x_i, x_{i+1}] (where δ = x − x_i) must satisfy:
-//     (1) interpolation:  S_i(x_i) = y_i
-//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_i+1)
+//     (1) interpolation:  S_i(x_i) = y_i,  S_i(x_{i+1}) = y_{i+1}
+//     (2) C1 continuity:  S_i'(x_{i+1}) = S_{i+1}'(x_{i+1})
 //     (3) C2 continuity:  S_i''(x_{i+1}) = S_{i+1}''(x_{i+1})
 //
-//   Condition (3) yields a tridiagonal system for the c_i coefficients
+//   Conditions (1) and (3) give b_i and d_i in terms of the c's; then
+//   condition (2) yields a tridiagonal system for the c_i coefficients
 //   (second derivatives / 2). For general spacing h_i = x_{i+1} − x_i:
 //
 //     h_{i-1} c_{i-1} + 2(h_{i-1} + h_i) c_i + h_i c_{i+1}
 //       = 3 [(y_{i+1} − y_i)/h_i − (y_i − y_{i-1})/h_{i-1}]
 //
-//   For a UNIFORM grid (h_i = dx for all i), this simplifies to:
+//   For a uniform grid (h_i = dx for all i), this simplifies to:
 //
 //     dx · c_{i-1} + 4·dx · c_i + dx · c_{i+1} = (3/dx)(y_{i-1} − 2y_i + y_{i+1})
 //
@@ -594,17 +635,20 @@ void spline2d_upsample_uniform(
 // ---------------------------------------------------------------------------
 // Compute the Hankel-transform kernel in Fourier space.
 //
-// Evaluates the ratio of complex gamma functions that appears in the
-// analytic Fourier transform of the Hankel kernel r^(q-1) J_mu(kr),
-// multiplied by a phase factor from the FFTLog decomposition. The
-// result is stored in the caller-provided fftw_complex.
+// Evaluates the FFTLog kernel of Hamilton (2000, Appendix B) at the
+// complex argument q + ix and stores it in the caller-provided
+// fftw_complex:
 //
-// The computation follows the FFTLog formalism (Hamilton 2000), where
-// the kernel is expressed as
-//   u(x) = 2^q * Gamma((1+mu+q)/2 + ix/2) / Gamma((1+mu-q)/2 - ix/2)
+//   U_mu(q + ix) = int_0^inf t^(q + ix) J_mu(t) dt
+//                = 2^(q + ix) Gamma((1+mu+q)/2 + ix/2)
+//                             / Gamma((1+mu-q)/2 - ix/2),
 //
-// The Bessel order mu is rounded to the nearest integer (via the +0.1
-// offset before truncation).
+// i.e. the Gamma ratio times 2^q and the phase 2^(ix) = exp(i x ln 2).
+// The factor (k0 r0)^(-ix) of Hamilton's u_m is not included.
+//
+// The Bessel order is converted with (int)(mu + 0.1): an integer order
+// stored slightly below its value maps to that integer, while a
+// fractional order is truncated (1.5 -> 1).
 // ---------------------------------------------------------------------------
 void hankel_kernel_FT(
     double x,           // Fourier-space frequency variable
@@ -634,8 +678,8 @@ void cdgamma(
 // Compute the 3D Hankel-transform kernel in Fourier space.
 //
 // Identical to hankel_kernel_FT() except that the Bessel order mu is
-// treated as a continuous real value rather than being rounded to the
-// nearest integer. This is appropriate for 3D spherical Bessel
+// treated as a continuous real value rather than being converted to an
+// integer. This is appropriate for 3D spherical Bessel
 // transforms where half-integer orders arise naturally.
 //
 // @see hankel_kernel_FT

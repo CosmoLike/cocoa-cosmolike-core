@@ -8,10 +8,11 @@
 6. [Real-space and Fourier assembly](#real_space_and_fourier_assembly)
 7. [One accuracy boost](#one_accuracy_boost)
 8. [Interpolation and numerical checks](#interpolation_and_numerical_checks)
+9. [Gaussian physics in notebooks and YAML](#gaussian_physics)
 
 # Covariance tools for notebooks <a name="covariance_tools_for_notebooks"></a>
 
-This package prepares inputs for CoCoA's covariance components and assembles
+This package prepares inputs for Cocoa's covariance components and assembles
 requested matrix blocks. The caller supplies its initialized project
 interface; the package never imports a survey's compiled module. Forecast
 assembly does not load likelihood data. The separate comparison reader loads
@@ -39,6 +40,23 @@ fluctuations larger than the survey. See
 [Krause & Eifler](https://arxiv.org/abs/1601.05779),
 [Takada & Hu](https://arxiv.org/abs/1302.6994), and the
 [C implementation and physics guide](../../cosmolike/covariances/README.md).
+
+The whole workflow, from a project's inputs to a saved forecast:
+
+```mermaid
+flowchart TB
+  A["Project adapter: survey numbers + covariance/default.yaml"] --> B["forecast.initialize_forecast: CAMB + setters"]
+  B --> C["survey: all-pairs spectra, with non-Limber and IA choices"]
+  C --> D["Gaussian blocks with pair noise"]
+  C --> E["Shared halo response and trispectrum tables"]
+  E --> F["SSC: shell responses times mask variance"]
+  E --> G["cNG: projected five-term trispectrum"]
+  D --> H["Total matrix + diagnostics + save_forecast"]
+  F --> H
+  G --> H
+  H --> I["Notebook figures: plot_covariances"]
+  H --> J["CLI archive: compute_covariance.py"]
+```
 
 ## Files <a name="files"></a>
 
@@ -116,7 +134,8 @@ Signal and mixed signal-noise retain the supplied finite multipole sum.
 Both sides must use the same disjoint angular bins and footprint.
 
 For a mask, the raw angular power has monopole
-$`C_0^W=\Omega^2/(4\pi)`$. `cap_mask` is an illustrative footprint, not an
+$`C_0^W=\Omega_s^2/(4\pi)`$, where $`\Omega_s`$ is the survey area in
+steradians. `cap_mask` is an illustrative footprint, not an
 approximation to every survey. `covariance_mask_pair_area` and
 `covariance_ssc_mask_variance` both use this raw normalization.
 
@@ -139,7 +158,7 @@ block. Removing selected cross correlations can make a covariance indefinite.
 ## Real-space and Fourier assembly <a name="real_space_and_fourier_assembly"></a>
 
 `survey_cluster.selected_windows` distinguishes counts from density
-contrasts. A shell contains $`dN_i=\Omega f_K^2 n_i\,d\chi`$ objects,
+contrasts. A shell contains $`dN_i=\Omega_s f_K^2 n_i\,d\chi`$ objects,
 where $`n_i`$ includes the observed redshift and richness selections.
 The normalized window is $`q_i=f_K^2 n_i/\bar n_i`$, with
 $`\bar n_i=\int f_K^2 n_i\,d\chi`$ per steradian. Thus a count retains
@@ -228,7 +247,7 @@ conventions explicitly; see their Python `help(...)` documentation.
 
 The supported model uses massless neutrinos, linear galaxy bias, zero
 magnification/RSD and a spherical-cap footprint. Gaussian spectra have
-the [non-Limber and IA choices](#gaussian-physics-in-notebooks-and-yaml)
+the [non-Limber and IA choices](#gaussian_physics)
 described below; SSC/cNG retain zero IA and Limber projection.
 
 SSC uses the isotropic fractional halo response transferred
@@ -385,7 +404,7 @@ Selected cluster mass moments are returned by physical name: `density` and
 `[state,selection,kpair]`. The count–matter helper reads `J11` and `J02`
 directly. These named results replace packed `single` and `pair` role axes.
 
-## Gaussian physics in notebooks and YAML
+## Gaussian physics in notebooks and YAML <a name="gaussian_physics"></a>
 
 `survey.configuration(gaussian={"nonlimber": True, "ia": "NLA", "A1": 0.6})`
 selects non-Limber gg/gs and a constant per-bin NLA amplitude. The CLI reads
@@ -396,8 +415,9 @@ scalar or a list with one value per source bin.
 The C kernels own the model calculation. `forecast.py` validates and
 installs the amplitudes; `survey.py` selects Gaussian spectra and passes
 TATT B modes to the real-space assembler. E-only Fourier measurements
-use the E spectra. SSC/cNG keep their zero-IA Limber inputs and original
-SSC normalization signal, independently of these Gaussian choices.
+use the E spectra. SSC and cNG keep their zero-IA Limber inputs,
+independently of these Gaussian choices; the spectra entering the SSC
+survey-mean normalization response also stay Limber.
 
 `nonlimber_lmax` sets the base correction cutoff.
 `nonlimber_accuracyboost` multiplies the 4096 logarithmic radial intervals.

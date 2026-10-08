@@ -42,9 +42,11 @@ richness bin:
   richness bin too; with a single richness bin drawn, the line
   styles (linestyle, linewidth, marker) follow the list entries,
   exactly as in the galaxy plots.
-- richness (or pairs) selects which richness bins a figure draws,
-  e.g. richness = 0 for the lowest bin only: a sweep then shows one
-  curve per param value in each panel.
+- richness selects which richness bins a figure draws, e.g.
+  richness = 0 for the lowest bin only: a sweep then shows one
+  curve per param value in each panel. pairs selects the richness
+  pairs of cluster clustering, but the (cluster z bin, lens bin)
+  panels of cluster x galaxy.
 - data overlays measurements with error bars on the real-space
   blocks and on the counts; NaN entries (the scale cuts) are
   skipped.
@@ -52,9 +54,24 @@ richness bin:
   of the angular binning), as in the galaxy plots; a ratio needs
   every entry, and the data, on the reference's grid.
 
+Array layouts: each theta / ell block arrives as its notebook
+wrapper returns it, with the richness axis (two of them for cluster
+clustering) right after the x axis of n_x theta values (arcmin) or
+multipoles. Such an array carries four axes, one more than its
+galaxy counterpart:
+
+    cluster lensing     [n_x, n_richness, n_cluster_z, n_source]
+    cluster clustering  [n_x, n_richness, n_richness, n_cluster_z]
+    cluster x galaxy    [n_x, n_richness, n_cluster_z, n_lens]
+
+The plotter keeps the selected richness bins (or pairs) and
+rearranges each array into one panel layout, [n_x, n_curve, n_col,
+n_row]: n_curve curves in each of n_col x n_row panels. The counts
+are a 2D array, [n_richness, n_cluster_z].
+
 Bin arguments (richness, pairs) count from 0, as the arrays do; the
-bin labels printed inside the panels count from 1, as in the galaxy
-plots.
+bin labels printed inside the panels and in the legend count from
+1, as in the galaxy plots.
 
 Pure matplotlib and numpy: nothing here touches CAMB or the compiled
 cosmolike interface. Figure styling (fonts, usetex, rcParams) stays
@@ -81,7 +98,8 @@ def _select_bins(nbins, which):
       which = None (every bin), one index, or a sequence of indices.
 
     Returns:
-      list of int, or None when an index falls outside the axis.
+      list of int, or None when the selection is empty or an index
+      falls outside the axis.
     """
     if which is None:
         return list(range(nbins))
@@ -107,7 +125,8 @@ def _entry_colors(nentry, param, cmap, bar = None):
 
     Arguments:
       nentry = number of list entries (curves of the sweep).
-      param  = the parameter values, or None.
+      param  = the parameter values, one per entry, or None; a list
+               of another length is treated as None.
       cmap   = colormap name.
       bar    = the colorbar _sweep_colorbar returned, or None for a
                figure without one.
@@ -157,6 +176,10 @@ def _sweep_colorbar(fig, axes, param, colorbarlabel, cmap, colorbarshrink):
 
 def _proxy_legend(fig, axes, handles, labels, legendloc, legendfontsize):
     """One figure legend built from proxy handles.
+
+    A proxy handle is a matplotlib Line2D with no data points: it
+    never draws inside a panel and exists only as a legend key, so a
+    key can show one line property (a color or a line style) alone.
 
     Arguments:
       fig, axes = the figure and the array of its panels.
@@ -230,8 +253,14 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
               first column of the per-panel layout, ylabelglued
               once for the rescaled grid.
       xlim  = x-axis range.
-      the remaining arguments = the options of the public
-              functions, passed through unchanged.
+      param, colorbarlabel, marker, linestyle, linewidth, ylim,
+      cmap, legend, legendloc, richnesslegend, datalabel, the *size
+      arguments (yaxislabelsize, yaxisticklabelsize,
+      xaxisticklabelsize, xaxislabelsize), bintextpos, bintextsize,
+      figsize, show, colorbar, colorbarshrink, markersize, rescale,
+      alphatextpos, ydecades, legendfontsize = the options of the
+              public functions (documented in
+              plot_gammat_cluster_tomo), passed through unchanged.
 
     Returns:
       0 on malformed input (a printed message names the problem),
@@ -241,6 +270,10 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
     ncurve, ncol, nrow = Y[0].shape[1:]
     nentry = len(Y)
 
+    # every check runs before a figure exists: malformed input prints
+    # a message naming the problem and returns 0. any(test for ...)
+    # is True when the test holds for at least one list entry; zip
+    # pairs each entry's x axis with its array.
     if any(y.shape[0] != len(x) for (x, y) in zip(X, Y)):
         print("Bad Input (number of theta / ell)")
         return 0
@@ -275,13 +308,17 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
     # rescale=1: alpha[i,j] holds the log10 of the per-panel factor;
     # multiplied in, every panel's maximum lands in [1, 10), so one
     # common y-range (yglued) serves the whole glued grid. Panels
-    # that are identically zero keep alpha = 0 and are skipped.
+    # that are identically zero keep alpha = 0 and are skipped. A
+    # reference switches rescale off: the ratios are dimensionless
+    # and already share one linear band.
     rescale = None if not (Y_ref is None) else rescale
     alpha = np.zeros((ncol, nrow))
     if not (rescale is None):
         panlo, panhi = [], []
         for i in range(ncol):
             for j in range(nrow):
+                # v = |value| of every curve of every list entry in
+                # panel (i, j), joined into one 1D array
                 v = np.abs(np.concatenate([y[:,:,i,j].ravel() for y in Y]))
                 pmax = np.max(v)
                 if pmax == 0:
@@ -339,6 +376,11 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
         linewidth = [1.0]
 
     def style(e, c):
+        """Returns the line keywords of list entry e, richness curve c.
+
+        A dict with the color and either the line style and width or
+        an open marker; ax.plot and Line2D receive it as keywords.
+        """
         # k is the index the line styles follow; % wraps it around,
         # so a list shorter than the curves is cycled
         k = c if ncurve > 1 else e
@@ -375,8 +417,10 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
                 elif excluded:
                     ax.set_yticks([])
                 else:
-                    # per-panel range [ylim[0]*min, ylim[1]*max] over
-                    # the positive values of every curve in the panel
+                    # per-panel range [ylim[0]*min, ylim[1]*max] of the
+                    # |values| of every curve in the panel, zeros left
+                    # out of the minimum (a log axis cannot reach them);
+                    # the data do not enter the range
                     v = np.abs(np.concatenate([y[:,:,i,j].ravel() for y in Y]))
                     ax.set_ylim([ylim[0]*np.min(v[v > 0]), ylim[1]*np.max(v)])
                     ax.set_yscale('log')
@@ -446,11 +490,16 @@ def _plot_cluster_panels(X, Y, X_ref, Y_ref, data, bintext, curvelabel, xlabel, 
                         tmp = np.where(tmp > 0, tmp, np.nan)
                     else:
                         tmp = y[:,c,i,j]/ref - 1
+                    # **style(e, c) unpacks the returned dict into keyword
+                    # arguments: ax.plot(x, y, color = ..., linestyle = ...)
                     ax.plot(X[e], tmp, **style(e, c))
 
                 if not (data is None):
                     d = np.asarray(data[1])[:,c,i,j]
                     err = None if data[2] is None else np.asarray(data[2])[:,c,i,j]
+                    # the data take the form of their curves: |d| and its
+                    # error times the panel factor, or d/ref - 1 with the
+                    # error divided by |ref| (the reference is taken as exact)
                     if Y_ref is None:
                         d = np.abs(d)*fac
                         err = None if err is None else err*fac
@@ -564,7 +613,7 @@ def plot_N_cluster(N, N_ref = None, param = None, colorbarlabel = None, richness
       richness_edges = the n_richness + 1 edges of the richness
                  bins: the steps then span the bins on a log axis
                  with one tick per edge. None (default) draws the
-                 steps against the bin number.
+                 steps against the bin number, counted from 1.
       data     = None, or (values, errors): 2D arrays in the layout
                  of one N entry, drawn as points with error bars at
                  the bin centers (errors may be None); NaN entries
@@ -594,7 +643,8 @@ def plot_N_cluster(N, N_ref = None, param = None, colorbarlabel = None, richness
 
     Returns:
       0 on malformed input (a printed message names the problem),
-      None after drawing, or (fig, axes) when show is None.
+      None after drawing, or (fig, axes) when show is None; axes is
+      the 1D array of panels, one per cluster z bin.
     """
 
     N = [np.asarray(n) for n in N]
@@ -625,7 +675,9 @@ def plot_N_cluster(N, N_ref = None, param = None, colorbarlabel = None, richness
         return 0
 
     # the step edges and the points' x positions: the richness edges
-    # with geometric bin centers (log axis), or the bin numbers
+    # with geometric bin centers (log axis), or the bin numbers 1 to
+    # n_richness (counted from 1, like every label) with the edges
+    # halfway between them
     if richness_edges is None:
         edges = np.arange(nrichness + 1) + 0.5
         center = np.arange(nrichness) + 1.0
@@ -735,8 +787,13 @@ def plot_N_cluster(N, N_ref = None, param = None, colorbarlabel = None, richness
         # times each power of ten, written out in full (a log axis
         # would otherwise label only the powers of ten, often a
         # single one over the range of the counts). The panels share
-        # their y axis, so setting the first one sets them all.
+        # their y axis, so setting the first one sets them all. Over
+        # more than three decades the 1-2-5 ticks would crowd the
+        # axis, so the default powers-of-ten labels stay.
         axes[0].yaxis.set_major_locator(matplotlib.ticker.LogLocator(base = 10.0, subs = (1.0, 2.0, 5.0)))
+        # FuncFormatter calls the one-line function (lambda) for each
+        # tick with its value v and index pos; "%g" % v writes v as a
+        # plain number such as 200
         axes[0].yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, pos: "%g" % v))
         axes[0].yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
 
@@ -793,12 +850,15 @@ def _lensing_panels(theta_y, y_ref, data, richness, richnesslabel, thetashow,
       data    = None, or (theta, values, errors) in the same layout.
       richness, richnesslabel, thetashow = as in the public
                 functions.
-      ylabel, ylabelglued = the y labels of the two absolute
-                layouts.
-      options = the remaining options of _plot_cluster_panels.
+      ylabel, ylabelglued = the y label of the per-panel layout and
+                the single label of the rescaled, glued grid.
+      options = every other keyword argument, gathered by **options
+                into a dict and handed on unchanged to
+                _plot_cluster_panels.
 
     Returns:
-      what _plot_cluster_panels returns.
+      0 on malformed input caught here (a printed message names the
+      problem), otherwise what _plot_cluster_panels returns.
     """
     (theta, y) = theta_y[0]
     ntheta, nrichness, ncluster, nsource = np.shape(y)
@@ -830,6 +890,8 @@ def _lensing_panels(theta_y, y_ref, data, richness, richnesslabel, thetashow,
     if richnesslabel is None:
         richnesslabel = [r"$\lambda$ bin %d" % (nl+1) for nl in range(nrichness)]
 
+    # bintext[i][j] = "(i+1,j+1)" labels the panel of cluster z bin i
+    # (column) and source bin j (row): labels count bins from 1
     return _plot_cluster_panels(
         X = [np.asarray(t) for (t, g) in theta_y], Y = Y,
         X_ref = None if y_ref is None else np.asarray(y_ref[0]), Y_ref = Y_ref,
@@ -856,12 +918,12 @@ def plot_gammat_cluster_tomo(theta_gammat, gammat_ref = None, param = None, colo
 
     One panel per (cluster z bin, source bin) pair: columns are
     cluster redshift bins, rows are source bins, and the label
-    inside each panel reads (cluster z bin, source bin). The
-    richness bins are curves inside each panel, told apart by their
-    line style (see the module docstring for why they are curves
-    and not panels). Without gammat_ref each curve is |gamma_t| on
-    a log scale; with gammat_ref each curve is the fractional
-    difference gamma_t / ref - 1.
+    inside each panel reads (cluster z bin, source bin), counted
+    from 1. The richness bins are curves inside each panel, told
+    apart by their line style (see the module docstring for why
+    they are curves and not panels). Without gammat_ref each curve
+    is |gamma_t| on a log scale; with gammat_ref each curve is the
+    fractional difference gamma_t / ref - 1.
 
     Arguments:
       theta_gammat = list of (theta, gammat) pairs, one per list
@@ -900,8 +962,10 @@ def plot_gammat_cluster_tomo(theta_gammat, gammat_ref = None, param = None, colo
       legend   = one label per list entry, or None.
       richnesslabel = one label per richness bin of the array for
                  the legend of the line styles; None (default)
-                 writes "lambda bin n". richnesslegend = None
-                 suppresses that legend.
+                 writes "lambda bin n", n counted from 1.
+                 richnesslegend = None suppresses that legend, which
+                 appears only when more than one richness bin is
+                 drawn.
       legendloc = None (the default) lays the legend right above
                  the panels, centered on them; an (x, y) pair in
                  figure fractions places its lower-left corner
@@ -934,7 +998,8 @@ def plot_gammat_cluster_tomo(theta_gammat, gammat_ref = None, param = None, colo
     Returns:
       0 on malformed input (a printed message names the problem),
       None after drawing, or (fig, axes) when show is None; axes is
-      the 2D array of panels, [source bin, cluster z bin].
+      the 2D array of panels, [source bin, cluster z bin], or 1D
+      (one per cluster z bin) with a single source bin.
     """
     return _lensing_panels(
         theta_gammat, gammat_ref, data, richness, richnesslabel, thetashow,
@@ -972,9 +1037,9 @@ def plot_sigma_cluster_tomo(theta_sigma, sigma_ref = None, param = None, colorba
     bins), the richness bins as curves told apart by their line
     style. Without sigma_ref each curve is |Sigma| on a log scale;
     with sigma_ref each curve is the fractional difference
-    Sigma / ref - 1. The last angular bin of Sigma is identically
-    zero (the Y transform has no value there): it is left out of
-    every curve and of the ratio.
+    Sigma / ref - 1. With the Y transform on, the last angular bin
+    of Sigma is identically zero (the transform has no value
+    there): it is left out of every curve and of the ratio.
 
     Arguments:
       theta_sigma = list of (theta, sigma) pairs, one per list
@@ -985,8 +1050,9 @@ def plot_sigma_cluster_tomo(theta_sigma, sigma_ref = None, param = None, colorba
                  ratio reference.
       data     = None, or (theta, values, errors): the cluster
                  lensing block of the data vector in the layout of
-                 one sigma array, drawn as points with error bars;
-                 NaN entries (the scale cuts) are skipped.
+                 one sigma array, drawn as points with error bars
+                 (errors may be None); NaN entries (the scale cuts)
+                 are skipped.
       rescale  = 1 glues the absolute panels with a per-panel power
                  of ten alpha, the y-axis label reading
                  alpha |Sigma| (the ylabel argument).
@@ -1002,7 +1068,8 @@ def plot_sigma_cluster_tomo(theta_sigma, sigma_ref = None, param = None, colorba
     Returns:
       0 on malformed input (a printed message names the problem),
       None after drawing, or (fig, axes) when show is None; axes is
-      the 2D array of panels, [source bin, cluster z bin].
+      the 2D array of panels, [source bin, cluster z bin], or 1D
+      (one per cluster z bin) with a single source bin.
     """
     return _lensing_panels(
         theta_sigma, sigma_ref, data, richness, richnesslabel, thetashow,
@@ -1028,8 +1095,8 @@ def _richness_pairs(nrichness, pairs):
                   sequence of (bin 1, bin 2) index pairs.
 
     Returns:
-      list of (int, int), or None when a pair falls outside the
-      array.
+      list of (int, int), or None when the sequence is empty or a
+      pair falls outside the array.
     """
     if pairs is None:
         return [(nl, nl) for nl in range(nrichness)]
@@ -1053,10 +1120,13 @@ def _cc_panels(X, y, X_ref, y_ref, data, pairs, richnesslabel, **options):
               the ratio reference.
       data  = None, or (x, values, errors) in the same layout.
       pairs, richnesslabel = as in the public functions.
-      options = the remaining options of _plot_cluster_panels.
+      options = every other keyword argument, gathered by **options
+              into a dict and handed on unchanged to
+              _plot_cluster_panels.
 
     Returns:
-      what _plot_cluster_panels returns.
+      0 on malformed input caught here (a printed message names the
+      problem), otherwise what _plot_cluster_panels returns.
     """
     nx, nrichness, nrichness2, ncluster = np.shape(y[0])
     if nrichness != nrichness2:
@@ -1071,6 +1141,7 @@ def _cc_panels(X, y, X_ref, y_ref, data, pairs, richnesslabel, **options):
         return 0
 
     def panels(a):
+        """Rearranges one cluster-clustering array into the panel layout."""
         # (n_x, n_richness, n_richness, n_cluster_z) to the panel
         # layout (n_x, n_curve, n_col, n_row): np.stack lines the
         # selected richness pairs up on a new axis 1 (the curves),
@@ -1084,6 +1155,8 @@ def _cc_panels(X, y, X_ref, y_ref, data, pairs, richnesslabel, **options):
     if richnesslabel is None:
         richnesslabel = [r"$\lambda$ bins $(%d,%d)$" % (p+1, q+1) for (p, q) in sel]
 
+    # bintext[i] = ["(i+1)"]: the label of cluster z bin i (column),
+    # in a list of one because the figure has a single row
     return _plot_cluster_panels(
         X = X, Y = [panels(a) for a in y],
         X_ref = X_ref, Y_ref = None if y_ref is None else panels(y_ref), data = data,
@@ -1132,8 +1205,9 @@ def plot_wcc_tomo(theta_wcc, theta_wcc_ref = None, param = None, colorbarlabel =
                  instead.
       richnesslabel = one label per drawn pair for the legend of
                  the line styles; None (default) writes
-                 "lambda bins (n, m)". richnesslegend = None
-                 suppresses that legend.
+                 "lambda bins (n, m)", counted from 1.
+                 richnesslegend = None suppresses that legend, which
+                 appears only when more than one pair is drawn.
       thetashow = x-axis range in arcmin; None (default) spans the
                  theta array itself.
       rescale  = 1 multiplies each panel by its own power of ten,
@@ -1200,7 +1274,10 @@ def _cg_pairs(y, pairs):
     nx, nrichness, ncluster, nlens = np.shape(y[0])
     if pairs is None:
         # the wrappers fill only the pairs of the dataset (its
-        # cg_lens_bins) and leave the others identically zero
+        # cg_lens_bins) and leave the others identically zero. The
+        # comprehension runs i over cluster z bins (outer loop) and g
+        # over lens bins (inner loop), and keeps (i, g) when at least
+        # one list entry is nonzero somewhere in that pair.
         sel = [(i, g) for i in range(ncluster) for g in range(nlens)
                if any(np.any(np.asarray(a)[:,:,i,g]) for a in y)]
     else:
@@ -1224,10 +1301,13 @@ def _cg_panels(X, y, X_ref, y_ref, data, richness, pairs, richnesslabel, **optio
               the ratio reference.
       data  = None, or (x, values, errors) in the same layout.
       richness, pairs, richnesslabel = as in the public functions.
-      options = the remaining options of _plot_cluster_panels.
+      options = every other keyword argument, gathered by **options
+              into a dict and handed on unchanged to
+              _plot_cluster_panels.
 
     Returns:
-      what _plot_cluster_panels returns.
+      0 on malformed input caught here (a printed message names the
+      problem), otherwise what _plot_cluster_panels returns.
     """
     nx, nrichness, ncluster, nlens = np.shape(y[0])
     sel = _select_bins(nrichness, richness)
@@ -1243,10 +1323,12 @@ def _cg_panels(X, y, X_ref, y_ref, data, richness, pairs, richnesslabel, **optio
         return 0
 
     def panels(a):
+        """Rearranges one cluster x galaxy array into the panel layout."""
         # (n_x, n_richness, n_cluster_z, n_lens) to the panel layout
-        # (n_x, n_curve, n_col, n_row): np.stack lines the selected
-        # (cluster z, lens) pairs up on a new last axis (the
-        # columns), and the trailing None adds the single row
+        # (n_x, n_curve, n_col, n_row): after the richness selection,
+        # np.stack lines the selected (cluster z, lens) pairs up on a
+        # new last axis (the columns), and the trailing None adds the
+        # single row
         a = np.asarray(a)[:,sel,:,:]
         return np.stack([a[:,:,i,g] for (i, g) in cg], axis = 2)[:,:,:,None]
 
@@ -1255,6 +1337,8 @@ def _cg_panels(X, y, X_ref, y_ref, data, richness, pairs, richnesslabel, **optio
     if richnesslabel is None:
         richnesslabel = [r"$\lambda$ bin %d" % (nl+1) for nl in range(nrichness)]
 
+    # bintext[k] = ["(i+1,g+1)"] for the k-th drawn pair (i, g): one
+    # label per column, in a list of one because there is one row
     return _plot_cluster_panels(
         X = X, Y = [panels(a) for a in y],
         X_ref = X_ref, Y_ref = None if y_ref is None else panels(y_ref), data = data,
@@ -1276,11 +1360,11 @@ def plot_wcg_tomo(theta_wcg, theta_wcg_ref = None, param = None, colorbarlabel =
     """One panel per (cluster z, lens) pair of cluster x galaxy w_cg.
 
     Only the pairs the dataset holds get a panel (one row), and the
-    label inside each panel reads (cluster z bin, lens bin). The
-    richness bins are curves inside each panel, told apart by their
-    line style. Without theta_wcg_ref each curve is |w_cg| on a log
-    scale; with it each curve is the fractional difference
-    w_cg / ref - 1.
+    label inside each panel reads (cluster z bin, lens bin), counted
+    from 1. The richness bins are curves inside each panel, told
+    apart by their line style. Without theta_wcg_ref each curve is
+    |w_cg| on a log scale; with it each curve is the fractional
+    difference w_cg / ref - 1.
 
     Arguments:
       theta_wcg = list of (theta, wcg) pairs, one per list entry,
@@ -1394,7 +1478,8 @@ def plot_C_cs_tomo_limber(ell, C_cs, C_cs_ref = None, param = None, colorbarlabe
     Returns:
       0 on malformed input (a printed message names the problem),
       None after drawing, or (fig, axes) when show is None; axes is
-      the 2D array of panels, [source bin, cluster z bin].
+      the 2D array of panels, [source bin, cluster z bin], or 1D
+      (one per cluster z bin) with a single source bin.
     """
     nell, nrichness, ncluster, nsource = np.shape(C_cs[0])
     if nell != len(ell):
@@ -1412,7 +1497,8 @@ def plot_C_cs_tomo_limber(ell, C_cs, C_cs_ref = None, param = None, colorbarlabe
 
     # the panel layout (n_x, n_curve, n_col, n_row) is the array's
     # own axis order: richness curves, cluster z columns, source
-    # rows; only the richness selection is applied
+    # rows; only the richness selection is applied. bintext[i][j]
+    # labels column i and row j as "(i+1,j+1)", counted from 1.
     ell = np.asarray(ell)
     return _plot_cluster_panels(
         X = [ell for Cl in C_cs], Y = [np.asarray(Cl)[:,sel,:,:] for Cl in C_cs],
@@ -1468,7 +1554,7 @@ def plot_C_cc_tomo_limber(ell, C_cc, C_cc_ref = None, param = None, colorbarlabe
                  the auto pair (n, n) of every richness bin.
       richnesslabel = one label per drawn pair for the legend of
                  the line styles; None (default) writes
-                 "lambda bins (n, m)".
+                 "lambda bins (n, m)", counted from 1.
       rescale  = 1 glues the absolute panels with a per-panel power
                  of ten alpha and one global y label (the ylabel
                  argument).
@@ -1521,10 +1607,10 @@ def plot_C_cg_tomo_limber(ell, C_cg, C_cg_ref = None, param = None, colorbarlabe
 
     The harmonic-space counterpart of plot_wcg_tomo: only the pairs
     the dataset holds get a panel (one row), the label inside each
-    panel reads (cluster z bin, lens bin), and the richness bins
-    are curves told apart by their line style. Without C_cg_ref
-    each curve is |C_ell| on a log scale; with C_cg_ref each curve
-    is the fractional difference C / C_ref - 1.
+    panel reads (cluster z bin, lens bin) counted from 1, and the
+    richness bins are curves told apart by their line style.
+    Without C_cg_ref each curve is |C_ell| on a log scale; with
+    C_cg_ref each curve is the fractional difference C / C_ref - 1.
 
     Arguments:
       ell      = 1D array of multipoles, shared by every C_cg entry.

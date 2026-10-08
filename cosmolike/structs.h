@@ -22,7 +22,8 @@ extern "C" {
 
 // Slots of every two-entry node-count array of Ntable whose table is
 // computed exactly on coarse nodes and spline-upsampled to dense ones
-// (Ntable.N_ell[], N_M[], dCX_dlnk_nlnk[], halo_hmf_n[][])
+// (Ntable.N_ell[], dCX_dlnk_nlnk[], halo_hmf_n[][]; N_M[] keeps the two
+// slots, but no table reads its coarse entry)
 #define NODES_DENSE 0    // the nodes the table is read on
 #define NODES_COARSE 1   // the exact-quadrature nodes; 0 = exact on
                          // every dense node
@@ -87,9 +88,11 @@ typedef struct
                     // exact: BAO wiggles)
   int Ntheta;
   int N_M[2];       // [NODES_DENSE] ln M nodes of the sigma^2(M) halo-
-                    // model table; [NODES_COARSE] its coarse exact nodes,
-                    // cubic-spline upsampled to the dense ones in
-                    // ln sigma^2; 0 = exact
+                    // model table over limits.halo_m (sigma2_fields_build
+                    // in cosmo3D.c adds lower-mass nodes at the same
+                    // spacing); no table reads [NODES_COARSE], although
+                    // structs.c, init_ntable_nm_internal and the accuracy
+                    // boost still set it
   int NL_Nell_block;   // Cosmo2D - NL = NonLimber
   int NL_Nchi;         // Cosmo2D - NL = NonLimber
   double NL_Nchi_boost; // NL_Nchi multiplier on top of the accuracy boost
@@ -141,7 +144,8 @@ typedef struct
                                       // [0.25, 1]; [NODES_DENSE] dense aa
                                       // lookup nodes
   int halo_nm;      // spectra GL mass nodes at high_def_integration 0
-                    // (doubled per rung; not boosted)
+                    // (x2 at 1, x4 at 2, then 1024, GSL's largest
+                    // tabulated rule, from 3 on; not boosted)
   int halo_nk_step; // p_gm/p_gg coarse ln k step at high_def_integration
                     // 0 (halved per rung, down to exact; not boosted)
   int halo_na_lens; // p_gm/p_gg a nodes per lens bin (boosted)
@@ -185,10 +189,11 @@ typedef struct
   double sigma_8;
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // MATTER POWER SPECTRUM
+  // NONLINEAR MATTER POWER SPECTRUM
   // size = (lnP_nk+1,lnP_nz+1)
   // z = lnP[lnP_nk,j<lnP_nz]
-  // k = lnP[i<lnP_nk,lnP_nz]
+  // log10 k (k in h/Mpc) = lnP[i<lnP_nk,lnP_nz]
+  // ln P (P in (Mpc/h)^3) = lnP[i<lnP_nk,j<lnP_nz]
   // ---------------------------------------------------
   // ---------------------------------------------------
   int lnP_nk;
@@ -207,9 +212,10 @@ typedef struct
   // ---------------------------------------------------
   // ---------------------------------------------------
   // LINEAR MATTER POWER SPECTRUM
-  // size = (lnP_nk+1,lnP_nz+1)
-  // z = lnPL[lnP_nk,j<lnP_nz]
-  // k = lnPL[i<lnP_nk,lnP_nz]
+  // size = (lnPL_nk+1,lnPL_nz+1)
+  // z = lnPL[lnPL_nk,j<lnPL_nz]
+  // log10 k (k in h/Mpc) = lnPL[i<lnPL_nk,lnPL_nz]
+  // ln P (P in (Mpc/h)^3) = lnPL[i<lnPL_nk,j<lnPL_nz]
   // ---------------------------------------------------
   // ---------------------------------------------------
   int lnPL_nk;
@@ -267,8 +273,8 @@ typedef struct
   // GROWTH FACTOR
   // ---------------------------------------------------
   // ---------------------------------------------------
-  // z = G[0,j<chi_nz]
-  // G = G[1,j<chi_nz]
+  // z = G[0,j<G_nz]
+  // G = G[1,j<G_nz], with D = G*a (set_growth)
   int G_nz;
   double** G;
   // Direct-index lookup metadata for the z axis (G[0]).
@@ -357,8 +363,10 @@ typedef struct
   //            b[4][i]: amplitude of magnification bias in clustering bin i 
   //            b[5][i]: nonlocal bK galaxy bias in clustering bin i
   double gb[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS]; // galaxy bias
-  // HOD[i] contains HOD parameters of galaxies in clustering bin i
-  // 5 parameter model of Zehavi et al. 2011 + modification of concentration
+  // hod[i][0..5]: HOD of the galaxies in clustering bin i, the five
+  // parameters of Zehavi et al. 2011 (log10 M_min, sigma_lgM, log10 M_1,
+  // log10 M_0, alpha; masses in M_sun/h) and the central fraction f_c
+  // (0 = unset, read as 1). The concentration modification is gc[i].
   double hod[MAX_SIZE_ARRAYS][MAX_SIZE_ARRAYS]; 
   double gc[MAX_SIZE_ARRAYS];  // galaxy concentration parameter
   // ---------------------------------------------------

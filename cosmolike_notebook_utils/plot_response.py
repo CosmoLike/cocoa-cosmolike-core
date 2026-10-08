@@ -15,8 +15,10 @@ import matplotlib.ticker as mticker
 
 # One dash pattern per tomographic bin. A matplotlib line style is
 # either the string "-" (solid) or a tuple (offset, (on, off, on,
-# off, ...)) giving the dash pattern in points: (0, (6, 2)) draws 6
-# points of ink, then a 2-point gap, and repeats.
+# off, ...)) giving the dash pattern in units of the line width
+# (matplotlib's default lines.scale_dashes multiplies it by the
+# width): (0, (6, 2)) draws 6 widths of ink, then a 2-width gap,
+# and repeats.
 _LINESTYLES = [
     "-",                  # solid
     (0, (6, 2)),          # long dash
@@ -30,7 +32,7 @@ _LINESTYLES = [
 
 
 def _luminance(rgb):
-    """Perceived brightness of an RGB color, between 0 and 1.
+    """Return the perceived brightness of an RGB color, between 0 and 1.
 
     Uses the ITU-R BT.709 weights; green dominates because the eye
     is most sensitive to it. plot_response_function draws brighter,
@@ -49,7 +51,7 @@ def _luminance(rgb):
 
 
 def _style_factor(ls):
-    """Extra line thickness compensating a dashed style's ink loss.
+    """Return the width factor compensating a dashed style's ink loss.
 
     A pattern with short "on" segments puts less ink on the page
     than a solid line of the same width and looks thinner than it
@@ -69,6 +71,9 @@ def _style_factor(ls):
     _, dashes = ls
     on_lengths = dashes[0::2]   # only the "on" (ink) segments
     mean_on = sum(on_lengths) / len(on_lengths)
+    # 6 is the "on" length of the long dash (0, (6, 2)): a mean "on"
+    # segment of 6 widths or more counts as solid (factor 1), and one
+    # of 3 or less doubles the width
     return float(np.clip(6.0 / mean_on, 1.0, 2.0))
 
 
@@ -78,7 +83,7 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
                            show = 1, yaxislabelsize = None, xaxislabelsize = None, 
                            yaxisticklabelsize = None, xaxisticklabelsize = None, 
                            legendfontsize = None):
-    """Response of a data vector to the matter power spectrum vs k.
+    """Plot the response of a data vector to the matter power spectrum vs k.
 
     One curve per (label, tomographic bin) pair, all in one panel.
     The label picks a slice of the response array (a multipole ell,
@@ -93,7 +98,7 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
       resp   = 4D response array (n_k, n_slice, n_bin, n_bin), as
                the notebook response functions return it; only the
                diagonal bins (i, i) are plotted. A 3D array
-               (n_k, n_slice, n_bin) plots bin i directly — the
+               (n_k, n_slice, n_bin) plots bin i directly: the
                single-bin-index probes (CMB lensing x shear) have no
                tomographic pair to take a diagonal of.
       labels = one LaTeX legend label per plotted slice.
@@ -105,19 +110,28 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
                for one per label. Passing more than len(labels)
                reproduces figures whose color list was built for a
                longer slice axis.
-      ntomo  = number of tomographic bins; bin (i, i) takes dash
-               pattern i.
+      ntomo  = maximum number of tomographic bins drawn: the first
+               min(ntomo, n_bin); bin (i, i) takes dash pattern i,
+               and the 8 patterns repeat beyond 8 bins.
       xtickformat = "2g" for two-significant-digit x tick labels
                (0.01, 0.1, 1, 10), or "scalar" for matplotlib's
                plain number formatter.
-      cmap, figsize = matplotlib layout knobs.
+      cmap   = matplotlib colormap name; label j takes color j of
+               ncolors evenly spaced samples of it.
+      figsize = figure size in inches (width, height).
       fontsize = one size for every text element; the family
                knobs below override it one by one.
       yaxislabelsize, xaxislabelsize, yaxisticklabelsize,
       xaxisticklabelsize, legendfontsize = the same size names
                every plotter of plot_datavectors takes; None
                (default) falls back to fontsize.
-      show   = call plt.show() at the end.
+      show   = a true value calls plt.show() at the end; 0 or None
+               leaves the figure open as the current pyplot figure.
+
+    Returns:
+      None in every case: the function opens a new pyplot figure
+      (plt.figure), and with show 0 or None plt.gcf() returns it for
+      saving or further annotation.
     """
     # the family size knobs override the shared fontsize one by
     # one; a None keeps the shared value, so fontsize alone still
@@ -134,6 +148,8 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
         legendfontsize = fontsize
     if ncolors is None:
         ncolors = len(labels)
+    # a colormap called on numbers in [0, 1] returns one RGBA row per
+    # number: ncolors evenly spaced colors, label j taking row j
     colors = plt.get_cmap(cmap)(np.linspace(0, 1, ncolors))
     resp = np.asarray(resp)
     # never plot more bins than the array holds: the default ntomo is a
@@ -153,6 +169,9 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
             y = resp[:, sel, i, i] if resp.ndim == 4 else resp[:, sel, i]
             if normalize:
                 y = y / np.max(y)
+            # width in points: 0.9 for a black line, growing with the
+            # color's brightness and the dash factor up to
+            # 0.9 + 1.2*1*2 = 3.3 for the brightest short-dash line
             lw = 0.9 + 1.2*_luminance(c)*_style_factor(ls)
             if i == 0:
                 # label only the first dash pattern, so the legend
@@ -166,6 +185,9 @@ def plot_response_function(k, resp, labels, ylabel, idx = None, normalize = True
     if xtickformat == "scalar":
         ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
     else:
+        # FuncFormatter calls the lambda with (tick value, tick
+        # position); the format spec .2g prints the value with at
+        # most two significant digits, and the position is unused
         ax.xaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:.2g}"))
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())

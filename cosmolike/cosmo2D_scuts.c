@@ -33,10 +33,12 @@
 //
 // The filtered counterpart of legendre_sums (cosmo2D.c; the reasons for
 // the grouping are given there): 4 spectra and 4 theta bins per pass over
-// l. The product keeps the order of the reference loop, (Pl*filter)*Cl,
+// l. The product keeps the left-to-right order of the plain reference
+// loop, sum += Pl[i][l]*filter[l]*Cl[nz][l], that is (Pl*filter)*Cl,
 // and every (nz, i) keeps its own sum, so the results are bitwise those
-// of the scalar reference. Pl*filter is formed once per
-// theta bin of the group instead of once per (nz, i).
+// of that loop. Pl*filter is formed once per theta bin of the group
+// instead of once per (nz, i). (w_ks_tomo multiplies Cl*filter first;
+// the two orders agree to rounding.)
 //
 // Thread safety: call outside parallel regions.
 //
@@ -143,17 +145,33 @@ static void legendre_sums_filtered(
 // ---------------------------------------------------------------------------
 // Physical scale cuts from the response function RF (2011.06469 eq 17).
 //
-// For an observable X, the weight of the modes below a candidate cut
-// kmax is measured by
+// The cut quantity is the comoving wavenumber k, in h/Mpc. Each data
+// point - one multipole l of C_ss or C_ks, or one angular bin theta of
+// xi_pm or w_ks - receives power from a range of k through the Limber
+// relation k = (l + 1/2)/chi, with chi the comoving distance. For an
+// observable X, the weight of the modes below a candidate cut kmax is
+// measured by
 //
 //   RF(kmax) = int_{-infty}^{ln kmax} dlnk |dlnX/dlnk|
 //              / int_{-infty}^{+infty} dlnk |dlnX/dlnk|,
 //
 // the fraction of X's total logarithmic response contributed by
-// k < kmax (RF grows monotonically from 0 to 1). A data point's scale
-// cut is the kk solving RF(kk) = alpha for a chosen threshold alpha:
-// the modes beyond kk carry less than the fraction 1 - alpha of the
-// response.
+// k < kmax (RF grows monotonically from 0 to 1). Eq 17 writes the
+// condition as int |dlnX/dlnk| dlnk = alpha, with alpha defined in the
+// text as a fraction of the total; the denominator above makes that
+// normalization explicit. The absolute value counts the k ranges where
+// the integrand is negative (xi_+ has some) as response too.
+//
+// A data point's scale cut is the kk solving RF(kk) = alpha for a chosen
+// threshold alpha: the modes beyond kk carry the remaining fraction
+// 1 - alpha of the response. 2011.06469 keeps a point when kk <= kmax,
+// equivalently RF(kmax) >= alpha (alpha = 0.95 there), so at most the
+// fraction 1 - alpha of its response comes from k > kmax.
+//
+// The responses are tabulated on [Ntable.dCX_dlnk_k[RANGE_MIN],
+// Ntable.dCX_dlnk_k[RANGE_MAX]] and are zero outside it, so RF = 0 for
+// kmax at or below that range and RF = 1 at or above it (for a row
+// whose response is not identically zero; see the RF workers' guards).
 //
 // Pipeline:
 //
@@ -165,7 +183,7 @@ static void legendre_sums_filtered(
 //        (real space)
 //     -> RF(kmax, l) and RF(kmax, theta) tables (the RF_*_work
 //        functions)
-//     -> root-find RF = alpha, one kmax per data point.
+//     -> root-find RF(kk) = alpha, one kk per data point.
 //
 // Observables: Fourier C_ss (EE and BB) and C_ks; real-space xi_pm and
 // w_ks. This file only tabulates RF: the root-find happens downstream
@@ -210,32 +228,44 @@ static struct { double**** tab; double lim[6]; int nlnk; int nell; }
 static struct { double*** tab; double lim[6]; int nlnk; int nell; }
     dCks_ = {0};
 
-// basics.h supplies SIMDe in both optimized and debug builds.
+// basics.h supplies SIMDe in both optimized and debug builds. A v4d
+// holds four doubles side by side, its lanes 0, 1, 2, 3 (one AVX2
+// register on x86-64, two NEON registers on arm64); one SIMDe call
+// applies the same operation to all four lanes.
 typedef simde__m256d v4d; // 4 doubles, AVX2-width (as in cosmo2D.c)
 
 // ---------------------------------------------------------------------------
 // Blend two k-rows of a cached (ln k, ln l) table at one fixed weight.
 //
 // At a fixed k, reading a bilinear table on its own ell nodes
-// reduces to out[i] = r0[i] + t (r1[i] - r0[i]) with the SAME t for
-// every entry: linear interpolation between the two k-rows that
-// bracket k. The nointerp fills below call this once per (plane,
+// reduces to out[i] = r0[i] + t (r1[i] - r0[i]) with the same t for
+// every entry: linear interpolation in ln k between the two k-rows
+// that bracket k. The nointerp fills below call this once per (plane,
 // pair) row instead of one scalar table lookup per entry.
 //
-// Why explicit SIMDe instead of an omp simd pragma: the fill loops
-// of this family read through pointer-to-pointer tables, and
-// experience with limber_fill_interp (cosmo2D.c) showed compilers
-// refuse to auto-vectorize them - the pragma silently produces
-// scalar code. The SIMDe intrinsics guarantee the vector form from
-// one source (AVX2 on x86, NEON on Apple Silicon).
+// Why explicit SIMDe instead of an omp simd pragma: under the strict
+// IEEE flags of the default build (-frounding-math -ftrapping-math),
+// clang leaves this loop scalar even with restrict pointers and an omp
+// simd pragma (its loop-vectorize remark reports the loop as not
+// vectorized). The SIMDe intrinsics compile to vector instructions in
+// every build (AVX2 on x86, NEON on Apple Silicon), as in
+// limber_fill_interp (cosmo2D.c).
 //
 // Why this is simpler than limber_fill_interp: there, every output
-// multipole lands at a DIFFERENT grid position, so each vector lane
+// multipole lands at a different grid position, so each vector lane
 // needs its own index and the loads must be gathers. Here the
 // weight t and the row offset are the same for every entry - the k
-// bracket is fixed - so the body is two contiguous 4-wide loads and
-// one fused multiply-add per lane, no gathers, plus a scalar tail
-// for the last nell % 4 entries.
+// bracket is fixed - so the body is two contiguous 4-wide loads, one
+// subtraction and one multiply-add per lane, no gathers, plus a
+// scalar tail for the last nell % 4 entries.
+//
+// Rounding: simde_mm256_fmadd_pd is one fused instruction (one
+// rounding) on x86 built with FMA. Elsewhere, arm64 included, SIMDe
+// computes it as simde_mm256_mul_pd followed by simde_mm256_add_pd:
+// the product t*(r1 - r0) is rounded, then the sum. The compiler
+// contracts the scalar tail's a[i] + t*(b[i] - a[i]) into one fused
+// multiply-add where the CPU has one, so on arm64 the tail entries and
+// the vector entries can differ in the last bit.
 //
 // Parameters:
 //   ntab - number of planes blended together (1 or 2)
@@ -257,16 +287,38 @@ static void limber_krow_blend(
     const int nell                // row length
   )
 {
+  // the blend weight t in all four lanes (set1 copies one scalar into
+  // every lane): every entry of every row uses the same k-bracket weight
   const v4d vt = simde_mm256_set1_pd(t); // the weight in all 4 lanes
   for (int q = 0; q < ntab; q++) {
     const double* restrict a = row0[q];
     const double* restrict b = row1[q];
     double* restrict o = out[q];
+
+    // scalar:
+    //   for (int i = 0; i < nell; i++) {
+    //     o[i] = a[i] + t*(b[i] - a[i]);
+    //   }
+    //
+    // a and b are dC_X/dlnk at the k nodes below and above k, o the
+    // value at k, all along the table's ell nodes. Lane j of an
+    // iteration handles ell node i + j; nothing is added across lanes.
+    // The vector loop runs while four entries remain (i <= nell - 4);
+    // the scalar tail below finishes the last nell % 4 nodes.
     int i = 0;
     for (; i <= nell - 4; i += 4) { // 4 entries per iteration
+      // a[i..i+3]: the lower k-row at ell nodes i..i+3 (loadu reads
+      // four consecutive doubles; no aligned address is required)
       const v4d v0 = simde_mm256_loadu_pd(a + i);
+
+      // b[i..i+3]: the upper k-row at the same ell nodes
       const v4d v1 = simde_mm256_loadu_pd(b + i);
-      // out = v0 + t*(v1 - v0): one fused multiply-add per lane
+
+      // o[i..i+3] = a[i] + t*(b[i] - a[i]), the nested calls evaluated
+      // inside out: sub_pd forms b[i] - a[i] on each lane; fmadd_pd
+      // multiplies that by t and adds a[i] (one rounding with x86 FMA;
+      // on arm64 the product is rounded, then the sum - see the
+      // header); storeu_pd writes the four lanes to o[i..i+3]
       simde_mm256_storeu_pd(o + i,
         simde_mm256_fmadd_pd(vt, simde_mm256_sub_pd(v1, v0), v0));
     }
@@ -281,7 +333,8 @@ static void limber_krow_blend(
 // table filled by dC_ss_dlnk_tomo_limber_work (cosmo2D.c).
 //
 // One table entry = one Limber node. At fixed l, the Limber relation
-// k = (l + 1/2)/chi makes each k select a single line-of-sight point:
+// k = (l + 1/2)/chi makes each k select a single line-of-sight point
+// (k the comoving wavenumber, in h/Mpc; chi the comoving distance):
 //
 //   fixed l:  k -> chi = (l + 1/2)/k -> a(chi) -> one evaluation of
 //   the C_ss integrand core at that node
@@ -294,7 +347,9 @@ static void limber_krow_blend(
 //
 //   dC_ss/dlnk(k, l) = core * ell_prefactor/fK,
 //
-// with fK the comoving angular diameter distance of the node and
+// with fK = chi(a) the node's comoving distance in units of c/H0 (the
+// C_ss code's fK: it equals the comoving angular diameter distance
+// only in a flat cosmology) and
 // ell_prefactor = l*(l-1)*(l+1)*(l+2)/(l+1/2)^4 the curved-sky spin-2
 // prefactor: one factor sqrt((l+2)!/(l-2)!)/(l+1/2)^2 per shear field,
 // -> 1 for l >> 1 (see the prefactor blocks in cosmo2D.c).
@@ -306,10 +361,11 @@ static void limber_krow_blend(
 // itself, not dC/C.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
-// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
-// Ntable.dCX_dlnk_k[RANGE_MAX]] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
-// covering every l >= 1; lookups interpolate bilinearly in (ln k, ln l)
-// and a (k, l) outside the table returns 0.
+// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
+// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]] and
+// nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles covering
+// 1 <= l <= Ntable.LMAX + 1; lookups interpolate bilinearly in
+// (ln k, ln l) and a (k, l) outside the table returns 0.
 //
 // When the internal coarse grids are active (Ntable.N_ell[NODES_COARSE] on
 // the ell axis, Ntable.dCX_dlnk_nlnk[NODES_COARSE] on ln k), the exact
@@ -389,15 +445,14 @@ double dC_ss_dlnk_tomo_limber(
       lxv[i] = exp(lim[0] + i*lim[2]);
     }
 
-    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // Coarse-grid workspace: allocations live here, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
-    // (where the BAO wiggles live; the default 128 keeps the response
-    // error at the level the retired fixed quadrature imposed). An
-    // axis whose knob is 0 (off) or out of range - fewer than the 4
-    // nodes a natural cubic spline needs, or not below the exact
-    // count - keeps its exact count.
+    // (where the BAO wiggles live; structs.c records the measured RF
+    // error of its default). An axis whose knob is 0 (off) or out of
+    // range - fewer than the 4 nodes a natural cubic spline needs, or
+    // not below the exact count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -433,7 +488,7 @@ double dC_ss_dlnk_tomo_limber(
       // single-node Limber evaluation, and the full table is
       // 2 x pairs x nlnk x nell of them - the expensive part. The
       // consumers then read the table through bilinear interpolation
-      // (interpol2d), which needs DENSE nodes to be accurate.
+      // (interpol2d), which needs dense nodes to be accurate.
       //
       // So, exactly as in the 1D C_XY tables (cosmo2D.c): run the
       // exact evaluations on a coarse grid and upsample with a cubic
@@ -450,8 +505,8 @@ double dC_ss_dlnk_tomo_limber(
       // The two axes coarsen independently because their smoothness
       // differs: the ell direction is smooth (as in cosmo2D.c), but
       // the ln k direction carries the BAO wiggles of P(k), so its
-      // knob needs the denser default (128 of 256, set in structs.c;
-      // the workspace note above states the accuracy target).
+      // knob needs the denser default (128 of 256 nodes, set in
+      // structs.c, which records its measured RF error).
       // ---------------------------------------------------------------
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 0, tabc);
@@ -520,9 +575,10 @@ double dC_ss_dlnk_tomo_limber(
 // C_ss maps the entry to 0.
 //
 // Table design: [2][shear_Npowerspectra][nlnk][nell] (EE and BB), with
-// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
-// Ntable.dCX_dlnk_k[RANGE_MAX]] and nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles
-// covering every l >= 1 (the same grid as dC_ss_dlnk_tomo_limber);
+// nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
+// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]] and
+// nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles covering
+// 1 <= l <= Ntable.LMAX + 1 (the same grid as dC_ss_dlnk_tomo_limber);
 // lookups interpolate bilinearly in (ln k, ln l) and a (k, l) outside
 // the table returns 0.
 //
@@ -597,15 +653,14 @@ double dlnC_ss_dlnk_tomo_limber(
       lxv[i] = exp(lim[0] + i*lim[2]);
     }
 
-    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // Coarse-grid workspace: allocations live here, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
-    // (where the BAO wiggles live; the default 128 keeps the response
-    // error at the level the retired fixed quadrature imposed). An
-    // axis whose knob is 0 (off) or out of range - fewer than the 4
-    // nodes a natural cubic spline needs, or not below the exact
-    // count - keeps its exact count.
+    // (where the BAO wiggles live; structs.c records the measured RF
+    // error of its default). An axis whose knob is 0 (off) or out of
+    // range - fewer than the 4 nodes a natural cubic spline needs, or
+    // not below the exact count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -639,8 +694,8 @@ double dlnC_ss_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles; the workspace note above states the
-      // default's accuracy target).
+      // the BAO wiggles; structs.c records the default's measured RF
+      // error).
       dC_ss_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 tomo.shear_Npowerspectra, 1, tabc);
 
@@ -702,9 +757,10 @@ double dlnC_ss_dlnk_tomo_limber(
 //
 //   dC_ks/dlnk(k, l) = core * pf1*pf2/fK,
 //
-// with fK the comoving angular diameter distance of the node and the
-// curved-sky prefactors of the spin-0 x spin-2 cross (1812.05995
-// eqs 74-79):
+// with fK = chi(a) the node's comoving distance in units of c/H0 (as in
+// the ss case: the comoving angular diameter distance only in a flat
+// cosmology) and the curved-sky prefactors of the spin-0 x spin-2
+// cross (1812.05995 eqs 74-79):
 //
 //   pf1 = l*(l+1)/(l+1/2)^2                    (CMB kappa, spin-0)
 //   pf2 = sqrt((l-1)*l*(l+1)*(l+2))/(l+1/2)^2  (shear, spin-2)
@@ -717,7 +773,7 @@ double dlnC_ss_dlnk_tomo_limber(
 // Table design: [shear_nbin][nlnk][nell] (the ks cross has one component
 // per source bin, so there is no EE/BB leading dimension), on the same
 // (ln k, ln l) grid as the ss tables: the Ntable.dCX_dlnk k range and
-// every multipole l >= 1; a (k, l) outside the table returns 0.
+// 1 <= l <= Ntable.LMAX + 1; a (k, l) outside the table returns 0.
 //
 // When the internal coarse grids are active (Ntable.N_ell[NODES_COARSE] on
 // the ell axis, Ntable.dCX_dlnk_nlnk[NODES_COARSE] on ln k), the exact
@@ -794,15 +850,14 @@ double dC_ks_dlnk_tomo_limber(
       lxv[i] = exp(lim[0] + i*lim[2]);
     }
 
-    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // Coarse-grid workspace: allocations live here, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
-    // (where the BAO wiggles live; the default 128 keeps the response
-    // error at the level the retired fixed quadrature imposed). An
-    // axis whose knob is 0 (off) or out of range - fewer than the 4
-    // nodes a natural cubic spline needs, or not below the exact
-    // count - keeps its exact count.
+    // (where the BAO wiggles live; structs.c records the measured RF
+    // error of its default). An axis whose knob is 0 (off) or out of
+    // range - fewer than the 4 nodes a natural cubic spline needs, or
+    // not below the exact count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -836,8 +891,8 @@ double dC_ks_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles; the workspace note above states the
-      // default's accuracy target).
+      // the BAO wiggles; structs.c records the default's measured RF
+      // error).
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 0, tabc);
 
@@ -898,8 +953,9 @@ double dC_ks_dlnk_tomo_limber(
 //
 // Table design: [shear_nbin][nlnk][nell] (one component per source
 // bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
-// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]] and nell = Ntable.N_ell[NODES_DENSE]
-// log-spaced multipoles covering every l >= 1 (the same grid as
+// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]] and
+// nell = Ntable.N_ell[NODES_DENSE] log-spaced multipoles covering
+// 1 <= l <= Ntable.LMAX + 1 (the same grid as
 // dC_ks_dlnk_tomo_limber); lookups interpolate bilinearly in
 // (ln k, ln l) and a (k, l) outside the table returns 0.
 //
@@ -971,15 +1027,14 @@ double dlnC_ks_dlnk_tomo_limber(
       lxv[i] = exp(lim[0] + i*lim[2]);
     }
 
-    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // Coarse-grid workspace: allocations live here, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Each axis
     // coarsens independently: Ntable.N_ell[NODES_COARSE] on the ell axis
     // (smooth) and Ntable.dCX_dlnk_nlnk[NODES_COARSE] on the ln k axis
-    // (where the BAO wiggles live; the default 128 keeps the response
-    // error at the level the retired fixed quadrature imposed). An
-    // axis whose knob is 0 (off) or out of range - fewer than the 4
-    // nodes a natural cubic spline needs, or not below the exact
-    // count - keeps its exact count.
+    // (where the BAO wiggles live; structs.c records the measured RF
+    // error of its default). An axis whose knob is 0 (off) or out of
+    // range - fewer than the 4 nodes a natural cubic spline needs, or
+    // not below the exact count - keeps its exact count.
     if (lnkc != NULL) { free(lnkc); lnkc = NULL; }
     if (lxc  != NULL) { free(lxc);  lxc  = NULL; }
     if (tabc != NULL) { free(tabc); tabc = NULL; }
@@ -1013,8 +1068,8 @@ double dlnC_ks_dlnk_tomo_limber(
       // bicubic of spline2d_upsample_uniform fills the unchanged
       // dense table (full strategy note: dC_ss_dlnk_tomo_limber's
       // refill above; the ell axis is smooth, the ln k axis carries
-      // the BAO wiggles; the workspace note above states the
-      // default's accuracy target).
+      // the BAO wiggles; structs.c records the default's measured RF
+      // error).
       dC_ks_dlnk_tomo_limber_work(lnkc, nkc, lxc, nlc,
                                 redshift.shear_nbin, 1, tabc);
 
@@ -1076,9 +1131,9 @@ double dlnC_ks_dlnk_tomo_limber(
 // ---------------------------------------------------------------------------
 // Exact integrals of |v(x)| over one grid interval, v linear inside.
 //
-// The RF numerators and denominators integrate the ABSOLUTE log
+// The RF numerators and denominators integrate the absolute log
 // response |dlnX/dlnk|, and the tabulated response is piecewise
-// LINEAR in ln k (the dln caches store nodes on the uniform
+// linear in ln k (the dln caches store nodes on the uniform
 // Ntable.dCX_dlnk grid and interpolate linearly between them). The
 // integral of |v| over one interval of width dx is therefore closed
 // form:
@@ -1094,7 +1149,7 @@ double dlnC_ks_dlnk_tomo_limber(
 // or, when the crossing t* lies before tt, the second triangle is
 // cut at tt.
 //
-// These make the RF integrals EXACT for the tabulated integrand:
+// These make the RF integrals exact for the tabulated integrand:
 // summing them interval by interval is not a quadrature rule
 // approximating the tables - it is the integral of what the tables
 // define. A 512-node Gauss-Legendre sweep per kmax would be an
@@ -1131,7 +1186,7 @@ static inline double scuts_abs_lin_part(
     return 0.5*(fabs(va) + fabs(vt))*tt;
   }
   // v changes sign inside [0, tt]. The zero crossing is a property
-  // of the LINE, not of where the integral stops, so the
+  // of the line, not of where the integral stops, so the
   // full-interval formula (from va and vb) still locates it, and
   // va*vt < 0 guarantees ts < tt. Two triangles again, the second
   // one cut at tt with height |v(tt)|.
@@ -1150,10 +1205,10 @@ static inline double scuts_abs_lin_part(
 //
 // and the response it integrates is the dlnC_ss_dlnk table read at
 // fixed l: a table on the uniform Ntable.dCX_dlnk grid in ln k,
-// read by BILINEAR interpolation in (ln k, ln l) - at fixed l that
-// read is LINEAR between the ln k nodes - and exactly zero outside
+// read by bilinear interpolation in (ln k, ln l) - at fixed l that
+// read is linear between the ln k nodes - and exactly zero outside
 // the grid. The integrand is therefore piecewise linear, and both
-// integrals are CLOSED FORM (see scuts_abs_lin_full/_part above):
+// integrals are closed form (see scuts_abs_lin_full/_part above):
 // no quadrature rule, no error.
 //
 // Per (EE/BB, pair, multipole) row:
@@ -1163,7 +1218,7 @@ static inline double scuts_abs_lin_part(
 //        (trapezoids, sign-crossing triangles)
 //     -> denominator = the full cumulative
 //     -> every requested kmax = prefix + the cut last piece,
-//        found by one multiply and a cast (uniform grid, no search)
+//        found by one division and a cast (uniform grid, no search)
 //
 // Vanishing-denominator guard: the BB response is identically zero
 // under NLA, so a zero full cumulative writes 0, never 0/0 = NaN.
@@ -1273,10 +1328,10 @@ void RF_C_ss_tomo_limber_work(
 //
 // and the response it integrates is the dlnC_ks_dlnk table read at
 // fixed l: a table on the uniform Ntable.dCX_dlnk grid in ln k,
-// read by BILINEAR interpolation in (ln k, ln l) - at fixed l that
-// read is LINEAR between the ln k nodes - and exactly zero outside
+// read by bilinear interpolation in (ln k, ln l) - at fixed l that
+// read is linear between the ln k nodes - and exactly zero outside
 // the grid. The integrand is therefore piecewise linear, and both
-// integrals are CLOSED FORM (see scuts_abs_lin_full/_part above):
+// integrals are closed form (see scuts_abs_lin_full/_part above):
 // no quadrature rule, no error.
 //
 // Per (source bin, multipole) row:
@@ -1286,7 +1341,7 @@ void RF_C_ss_tomo_limber_work(
 //        (trapezoids, sign-crossing triangles)
 //     -> denominator = the full cumulative
 //     -> every requested kmax = prefix + the cut last piece,
-//        found by one multiply and a cast (uniform grid, no search)
+//        found by one division and a cast (uniform grid, no search)
 //
 // Vanishing-denominator guard kept for symmetry with RF_C_ss: a zero
 // full cumulative writes 0, never 0/0 = NaN.
@@ -1645,10 +1700,15 @@ double** dlnxi_dlnk_pm_tomo_nointerp(
 //
 // Table design: [2][shear_Npowerspectra*Ntheta][nlnk], one row per
 // (xi component, tomo pair x angular bin), with nlnk =
-// Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
-// Ntable.dCX_dlnk_k[RANGE_MAX]]; lookups interpolate linearly in ln k and a k
-// outside the grid returns 0. The fill calls the nointerp pipeline once
-// per k node (each call returns every pair and angular bin).
+// Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
+// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]]; lookups
+// interpolate linearly in ln k and a k outside the grid returns 0.
+// Each nointerp call returns every pair and angular bin at one k. With
+// the coarse ln k grid active (Ntable.dCX_dlnk_nlnk[NODES_COARSE], on
+// by default) the fill calls it once per coarse node and a natural
+// cubic spline in ln k upsamples every row onto the dense nodes;
+// otherwise it calls it once per dense node. The two end nodes lie on
+// the edges of the nointerp's open k interval, where it returns zeros.
 //
 // Cache invalidation:
 // recomputes when any of these change:
@@ -1694,9 +1754,9 @@ double dlnxi_dlnk_pm_tomo(
     if (table != NULL) free(table);
     table = (double***) malloc3d(2, NSIZE*Ntable.Ntheta, nlnk);
 
-    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // Coarse-grid workspace: allocations live here, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Unlike the
-    // dC tables (whose nodes are cheap), every ln k node of THIS
+    // dC tables (whose nodes are cheap), every ln k node of this
     // cache costs one full nointerp build - the expensive-node case
     // the coarse-exact + cubic-upsample pattern exists for. The same
     // scale-cut k knob gates both grids
@@ -1715,7 +1775,7 @@ double dlnxi_dlnk_pm_tomo(
       for (int f=0; f<nlnk; f++) {
         // fine node f -> its coarse interval and offset: both grids
         // are uniform in ln k with shared endpoints, so the map is
-        // one multiply and a cast, clamped onto the last interval
+        // arithmetic and a cast, clamped onto the last interval
         // against a 1-ulp division overshoot near the top endpoint
         const double r = (double) f * lim[2] / dkc;
         int j = (int) r;
@@ -1970,9 +2030,11 @@ double* dlnw_ks_dlnk_tomo_nointerp(
     NSIZE_alloc = NSIZE;
     cache[4] = Ntable.random;
   }
-  // CMB filter, exactly as w_ks_tomo builds it (cache[6] tracks Ntable
-  // separately from the geometry block above, so a reallocation always
-  // refills the filter)
+  // CMB filter, exactly as w_ks_tomo builds it. cache[6] tracks Ntable
+  // separately from the geometry block above, so a reallocation caused
+  // by an Ntable change also refills the filter. A reallocation caused
+  // only by a change of redshift.shear_nbin (NSIZE != NSIZE_alloc) does
+  // not: cmbf is then left unfilled.
   if (fdiff2(cache[5], cmb.random) || fdiff2(cache[6], Ntable.random)) {
     #pragma omp parallel for schedule(static)
     for (int l=0; l<Ntable.LMAX; l++) {
@@ -2069,10 +2131,15 @@ double* dlnw_ks_dlnk_tomo_nointerp(
 // beam/pixel-window filter w_ks_tomo applies.
 //
 // Table design: [shear_nbin*Ntheta][nlnk], one row per (source bin x
-// angular bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE] log-spaced k in
-// [Ntable.dCX_dlnk_k[RANGE_MIN], Ntable.dCX_dlnk_k[RANGE_MAX]]; lookups interpolate
-// linearly in ln k and a k outside the grid returns 0. The fill calls
-// the nointerp pipeline once per k node (each call returns every bin).
+// angular bin), with nlnk = Ntable.dCX_dlnk_nlnk[NODES_DENSE]
+// log-spaced k in [Ntable.dCX_dlnk_k[RANGE_MIN],
+// Ntable.dCX_dlnk_k[RANGE_MAX]]; lookups interpolate linearly in ln k
+// and a k outside the grid returns 0. Each nointerp call returns every
+// bin at one k; the fill calls it once per coarse ln k node and
+// upsamples with a natural cubic spline when the coarse grid is active
+// (as in dlnxi_dlnk_pm_tomo above), once per dense node otherwise. The
+// two end nodes lie on the edges of the nointerp's open k interval,
+// where it returns zeros.
 //
 // Cache invalidation:
 // recomputes when any of these change:
@@ -2119,9 +2186,9 @@ double dlnw_ks_dlnk_tomo(
     if (table != NULL) free(table);
     table = (double**) malloc2d(NSIZE*Ntable.Ntheta, nlnk);
 
-    // Coarse-grid workspace: allocations live HERE, in the Ntable
+    // Coarse-grid workspace: allocations live here, in the Ntable
     // rebuild block; the per-cosmology refill only fills. Unlike the
-    // dC tables (whose nodes are cheap), every ln k node of THIS
+    // dC tables (whose nodes are cheap), every ln k node of this
     // cache costs one full dlnw nointerp build - the expensive-node case
     // the coarse-exact + cubic-upsample pattern exists for. The same
     // scale-cut k knob gates both grids
@@ -2140,7 +2207,7 @@ double dlnw_ks_dlnk_tomo(
       for (int f=0; f<nlnk; f++) {
         // fine node f -> its coarse interval and offset: both grids
         // are uniform in ln k with shared endpoints, so the map is
-        // one multiply and a cast, clamped onto the last interval
+        // arithmetic and a cast, clamped onto the last interval
         // against a 1-ulp division overshoot near the top endpoint
         const double r = (double) f * lim[2] / dkc;
         int j = (int) r;
@@ -2264,9 +2331,9 @@ double dlnw_ks_dlnk_tomo(
 //
 // and the response it integrates is the dlnxi_dlnk_pm_tomo cache:
 // a table on the uniform Ntable.dCX_dlnk grid in ln k, read by
-// LINEAR interpolation and exactly zero outside the grid. The
+// linear interpolation and exactly zero outside the grid. The
 // integrand is therefore piecewise linear, and both integrals are
-// CLOSED FORM (see scuts_abs_lin_full/_part above): no quadrature
+// closed form (see scuts_abs_lin_full/_part above): no quadrature
 // rule, no error.
 //
 // Per (xi_+/xi_-, pair, angular bin) row:
@@ -2276,7 +2343,7 @@ double dlnw_ks_dlnk_tomo(
 //        (trapezoids, sign-crossing triangles)
 //     -> denominator = the full cumulative
 //     -> every requested kmax = prefix + the cut last piece,
-//        found by one multiply and a cast (uniform grid, no search)
+//        found by one division and a cast (uniform grid, no search)
 //
 // No vanishing-denominator guard: the xi_+/- responses mix the EE
 // rows into every entry, so the full cumulative is positive whenever
@@ -2385,9 +2452,9 @@ void RF_xi_tomo_limber_work(
 //
 // and the response it integrates is the dlnw_ks_dlnk_tomo cache:
 // a table on the uniform Ntable.dCX_dlnk grid in ln k, read by
-// LINEAR interpolation and exactly zero outside the grid. The
+// linear interpolation and exactly zero outside the grid. The
 // integrand is therefore piecewise linear, and both integrals are
-// CLOSED FORM (see scuts_abs_lin_full/_part above): no quadrature
+// closed form (see scuts_abs_lin_full/_part above): no quadrature
 // rule, no error.
 //
 // Per (source bin, angular bin) row:
@@ -2397,7 +2464,7 @@ void RF_xi_tomo_limber_work(
 //        (trapezoids, sign-crossing triangles)
 //     -> denominator = the full cumulative
 //     -> every requested kmax = prefix + the cut last piece,
-//        found by one multiply and a cast (uniform grid, no search)
+//        found by one division and a cast (uniform grid, no search)
 //
 // No vanishing-denominator guard: w_ks has no identically-zero rows
 // (there is no BB analog here), so the full cumulative is positive

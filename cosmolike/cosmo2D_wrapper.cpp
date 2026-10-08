@@ -47,14 +47,16 @@ using cube = arma::Cube<double>;
 // side asks for whole data products, not per-point C calls.
 //
 //   Python -> *_cpp overload (scalar diagnostic or array batch)
-//     -> *_nointerp_ells / w_*_tomo batch engines (cosmo2D.c)
+//     -> *_nointerp_ells / xi_pm_tomo, w_*_tomo engines (cosmo2D.c)
 //     -> numpy arrays (ell-or-theta, bin_i, bin_j), carma-converted
 //
 // Layout conventions: rows = angular bin or multipole; the trailing
-// axes are tomographic bins, and only the enumerated pairs are filled
-// (Z1 <= Z2 for ss, (ZL, ZS) for gs, the diagonal for gg) - all other
-// entries stay zero. The scalar overloads are point diagnostics and
-// pay the full batch cost per call (see each header).
+// axes are tomographic bins. Only the enumerated pairs are filled
+// (Z1 <= Z2 for C_ss, (ZL, ZS) for gs, the diagonal for gg) and all
+// other entries stay zero, except in xi_pm_tomo_cpp, which fills both
+// orderings of each shear pair (xi is symmetric in ni <-> nj). The
+// scalar overloads are point diagnostics and pay the full batch cost
+// per call (see each header).
 // ---------------------------------------------------------------------------
 namespace cosmolike_interface
 {
@@ -66,9 +68,10 @@ namespace cosmolike_interface
 
 // ---------------------------------------------------------------------------
 // Area-weighted bin-center angles (arcmin) of the Ntheta angular bins.
-// Bin edges are log-spaced between Ntable.vt[RANGE_MIN] and Ntable.vt[RANGE_MAX]
-// (radians); each center is the area-weighted mean angle over its
-// annulus,
+// Bin edges are log-spaced between Ntable.vt[RANGE_MIN] and
+// Ntable.vt[RANGE_MAX] (radians); each center is the area-weighted
+// mean angle over its annulus (flat-sky area element 2 pi theta
+// dtheta),
 //
 //   theta_i = (2/3) (tmax^3 - tmin^3) / (tmax^2 - tmin^2),
 //
@@ -245,8 +248,9 @@ arma::Cube<double> w_gg_tomo_cpp()
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// CMB lensing x shear w_ks at every angular bin and source bin (the CMB
-// is a single lens plane, so one column per source bin).
+// CMB lensing x shear w_ks at every angular bin and source bin (CMB
+// lensing has a single source plane, the last-scattering surface, so
+// kappa carries no bin index: one column per source bin).
 //
 // Engine: w_ks_tomo(nt, nz, limber = 1) (full Limber, the only
 // supported option) over all source bins. Serial loop: the first engine
@@ -755,8 +759,8 @@ double C_ks_tomo_limber_cpp(
 // ---------------------------------------------------------------------------
 // CMB-lensing x shear Limber C_l at every source bin and many
 // multipoles: a single batched C_ks_tomo_limber_nointerp_ells call
-// fills every source bin at every multipole (the CMB is a single lens
-// plane, so one spectrum per source bin).
+// fills every source bin at every multipole (CMB lensing has a single
+// source plane, so one spectrum per source bin).
 //
 // Parameters:
 //   l - multipole values (need not be integers); an empty array aborts

@@ -30,6 +30,12 @@ def read_likelihood_covariance(dataset, size=None):
     Missing text entries are zero, as in the likelihood reader. No split
     into SSC and cNG is inferred from a combined non-Gaussian column.
     No Hartlap correction, inversion or eigenvalue repair is performed.
+
+    Raises:
+        ValueError if the mask rows are not consecutive zero-based 0/1
+        cuts, size is not in 1..file_size, a .npy file is not the packed
+        upper triangle, a text file has other than 3, 4 or 10 columns, an
+        index lies outside the mask layout, or a value is nonfinite.
     """
     dataset = Path(dataset).resolve()
     parameters = IniFile(settings=str(dataset))
@@ -86,6 +92,8 @@ def read_likelihood_covariance(dataset, size=None):
 
     if not np.all(np.isfinite(values)):
         raise ValueError("supplied covariance contains nonfinite values")
+    # Keep the entries of the leading size x size block. A file may list
+    # one triangle only, so each value fills both symmetric positions.
     selected = (first < size) & (second < size)
     first = first[selected]
     second = second[selected]
@@ -108,6 +116,9 @@ def select_likelihood_entries(forecast, supplied, block_sizes, block_labels):
     Arguments:
         forecast = computed dict with total, gaussian, ssc and cng matrices
             already in the supplied file's ordering and measurement units.
+            A cluster forecast with the Y transform also supplies
+            valid_indices: every entry except the last angular bin of each
+            cluster-lensing row, where Y is identically zero.
         supplied = read_likelihood_covariance result for that same layout.
         block_sizes, block_labels = contiguous physical probe groups before
             cuts. Groups with no retained entry are omitted from plot labels.
@@ -115,9 +126,10 @@ def select_likelihood_entries(forecast, supplied, block_sizes, block_labels):
         Dict with cut components, supplied total, original indices and cut
         block sizes/labels. The original matrices are left unchanged.
     Raises:
-        ValueError if the shapes disagree or a cluster mask retains a known
-        Y null row. These errors need a corrected layout or physical cut;
-        adding a positive diagonal would hide the underlying mismatch.
+        ValueError if the shapes disagree, the blocks do not partition the
+        uncut vector, the mask retains nothing, or a cluster mask retains a
+        known Y null row. These errors need a corrected layout or physical
+        cut; adding a positive diagonal would hide the underlying mismatch.
     """
     size = len(supplied["mask"])
     if forecast["total"].shape != (size, size):

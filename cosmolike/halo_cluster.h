@@ -12,13 +12,14 @@ extern "C" {
 // Delta = 200 mean), sigma2 (cosmo3D.c), dlognudlogm, conc (Bhattacharya
 // 2013) and the NFW profile. The multiplicity amplitude follows
 // cluster.hmf_alpha_mode: alpha = 0.368 at every z (DES; default) or
-// halo.c's fnu, alpha(a) from int b f dnu = 1. Units: M in Msun/h, k in (c/H0)^-1, number
-// densities in (c/H0)^-3, P(k) in (c/H0)^3.
+// halo.c's fnu, alpha(a) from int b f dnu = 1. Units: M in Msun/h, k in
+// (c/H0)^-1, number densities in (c/H0)^-3, P(k) in (c/H0)^3.
 //
-// The tables below come out of ONE deep-unrolled fill over (richness bin,
+// The tables below come out of one deep-unrolled fill over (richness bin,
 // a node) with Gauss-Legendre nodes in ln M on [ln cluster.m[RANGE_MIN],
-// ln cluster.m[RANGE_MAX]] (halo_nm / high_def_integration ladder). Their a-range
-// covers every cluster redshift bin's support; outside it they return 0.
+// ln cluster.m[RANGE_MAX]] (halo_nm / high_def_integration ladder). Their
+// a-range covers every cluster redshift bin's support; outside it they
+// return 0.
 // Cache keys: Ntable.random, cosmology.random, cluster.random_model,
 // cluster.random_zdist, cluster.random_mor (and cluster.random_selection
 // when cluster.selection_model == CLUSTER_SELECTION_Y1).
@@ -80,9 +81,12 @@ void pcm_1h_richness_fill(const double* k, const double* a, const int n,
   double** out);
 
 // ---------------------------------------------------------------------------
-// Builds every lazily filled cluster table (this file, the kernel and
-// lensing-efficiency tables of redshift_spline_cluster.c) serially. The
-// interface calls it before any threaded loop reads a cluster table.
+// Builds the lazily filled cluster tables serially: the mass tables of
+// this file (its one-halo table only when cluster lensing is in the data
+// vector; the cluster-lensing Limber code warms that table itself), then
+// the selection-kernel, n(z) and lensing-efficiency tables of
+// redshift_spline_cluster.c. The interface calls it before any threaded
+// loop reads a cluster table.
 // ---------------------------------------------------------------------------
 void cluster_warmup(void);
 

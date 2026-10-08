@@ -7,6 +7,10 @@ extern "C" {
 
 // Add the TATT terms beyond NLA to supplied E spectra. Fill B spectra
 // from zero. Both outputs use triangular all-field pairs as in spectra_cov.
+// ee must come from limber_spectra_cov on the same snapshot, built with
+// include_ia = 1 and without RSD. B modes enter the real-space estimators
+// with opposite signs: xi+ measures EE+BB and xi- measures EE-BB
+// (assembly_cov.c applies the signs). Call outside an OpenMP region.
 void tatt_spectra_cov(
     const struct radial_cov* radial, // NLA windows and common quadrature
     const int nell,                 // requested multipole count

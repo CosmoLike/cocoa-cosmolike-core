@@ -2,8 +2,14 @@
 
 This module never imports a compiled project interface. It implements the
 Gaussian four-point identity of Krause & Eifler (2017), arXiv:1601.05779,
-Appendix A. Signal spectra and projection operators are supplied inputs:
-these checks do not certify a cosmological spectrum or an angular kernel.
+Appendix A: for Gaussian fields the Wick pairings give
+
+    Cov(C_AB, C_CD) = [S_AC S_BD + S_AD S_BC]/((2 ell+1) fsky)
+
+at each multipole, with S = C + N, where white noise N enters only the
+auto spectra. gaussian_cov.c computes the same quantity. Signal spectra
+and projection operators are supplied inputs: these checks do not
+certify a cosmological spectrum or an angular kernel.
 
 Noise powers use densities per steradian and ellipticity variance per
 component. Array positions on the last axis are consecutive integer
@@ -28,6 +34,11 @@ def harmonic_covariance(signal, noise, pairs, ell_min, fsky, include_nn):
     Returns:
         float64 [npair, npair, nell] harmonic covariance. Each final-axis
         entry is one ell, not a band average. No input is modified.
+
+    Raises:
+        ValueError for a signal or pairs array of the wrong shape, fsky
+        outside (0, 1], a negative ell_min, an empty ell grid, a pair index
+        outside the field matrix, nonfinite input or a negative noise power.
     """
     signal = np.asarray(signal, dtype=np.longdouble)
     noise = np.asarray(noise, dtype=np.longdouble)
@@ -54,6 +65,8 @@ def harmonic_covariance(signal, noise, pairs, ell_min, fsky, include_nn):
     modes = (2*ell + 1)*fsky
     result = np.empty((len(pairs), len(pairs), len(ell)), dtype=float)
 
+    # Wick pairings (ac)(bd) + (ad)(bc) of the total spectra, over the
+    # (2 ell+1) fsky modes of each multipole.
     for left, (field_a, field_b) in enumerate(pairs):
         for right, (field_c, field_d) in enumerate(pairs):
             moment = total[field_a, field_c]*total[field_b, field_d]
@@ -105,6 +118,13 @@ def spherical_annulus_kernel(edges_rad, ell_max):
     avoid copying the C data-vector kernels or using a flat-sky Bessel
     approximation. Including the monopole here permits an analytic
     completeness check; a data-vector operator may explicitly remove it.
+    Each entry divides a difference of the antiderivative at the two edges
+    by the cosine width; both differences cancel in a narrow bin, so this
+    form suits broad bins.
+
+    Raises:
+        ValueError for edges that are not strictly increasing, 1D and
+        inside [0, pi], or for ell_max < 1.
     """
     edges = np.asarray(edges_rad, dtype=np.longdouble)
     if edges.ndim != 1 or len(edges) < 2 or np.any(np.diff(edges) <= 0):

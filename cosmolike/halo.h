@@ -6,14 +6,17 @@ extern "C" {
 
 // HALO BIAS OPTIONS ---------------------------
 #define HALO_BIAS_TINKER_2010 0
+#define HALO_BIAS_SHETH_MO_TORMEN_2001 1
 
 // HMF OPTIONS ---------------------------------
 #define HMF_TINKER_2010 0
+#define HMF_TINKER_2008 1
 
 // CONCENTRATION OPTIONS -----------------------
 #define CONCENTRATION_BHATTACHARYA_2013 0
+#define CONCENTRATION_DUFFY_2008 1
 
-// HALO PROFILE OPTIONS OPTIONS -----------------------
+// HALO PROFILE OPTIONS ------------------------
 #define HALO_PROFILE_NFW 0
 
 // FIELDS EXPOSED BY sigma2_field(M,a,field) -------------------------

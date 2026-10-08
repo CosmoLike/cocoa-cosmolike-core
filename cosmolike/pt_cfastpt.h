@@ -4,6 +4,15 @@
 extern "C" {
 #endif
 
+// Pd1p3(k), the one-loop correlator of the density with the third-order
+// bias operator (row 5 of FPTbias.tab, filled by get_FPT_bias). A fixed
+// table: it does not change with cosmology. The consumers use it as the
+// a = 1 spectrum, in the units of the other rows ((c/H0)^3), and scale
+// it by D(a)^4. get_FPT_bias reads it as 800 samples uniform in ln k,
+// sample i at tab_d1d3_lnkmin + i*tab_d1d3_dlnk: steps of 0.01 dex from
+// k = 1e-5 h/Mpc, with ln k taken in H0/c units, so tab_d1d3_lnkmax
+// (1e3 h/Mpc) lies one step past the last sample. Outside
+// [tab_d1d3_lnkmin, tab_d1d3_lnkmax] the row is set to zero.
 static double tab_d1d3[800] = {
  3.910971e-18,  4.182876e-18,  4.466778e-18,  4.789119e-18,
  5.133766e-18,  5.508468e-18,  5.890354e-18,  6.301033e-18,  6.736776e-18,  7.223413e-18,

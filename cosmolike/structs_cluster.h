@@ -153,7 +153,7 @@ typedef struct
   //                         Mpc/h), [3] = power of (1+zbar)/1.45 (0 in the
   //                         paper; lighthouse s3)
   //   CLUSTER_SELECTION_Y1: [0] = b_s0, [1] = b_s1 (mass slope),
-  //                         [2] = b_s2 (power of (1+z)/1.45; Y1 eq 31)
+  //                         [2] = b_s2 (power of (1+z)/1.45; Y1 eq F1)
   double selection[MAX_SIZE_ARRAYS];
 
   // ---------------------------------------------------------------------------

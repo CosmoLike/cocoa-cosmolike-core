@@ -19,29 +19,81 @@ namespace cosmolike_interface {
 // ---------------------------------------------------------------------------
 // Expose covariance-owned spectra and their radial inputs as NumPy arrays.
 //
-// The Python boundary validates array shapes before handing raw pointers
-// to C. The returned arrays own their memory; a later covariance call or
-// cosmology change cannot alter an earlier result. The C snapshot is
-// temporary and its unique_ptr releases it even if Python allocation fails.
-// No Ntable field, data-vector mask, covariance or likelihood state changes.
+// PHYSICAL QUANTITY
+// A Gaussian covariance pairs the fields of two measured spectra AB and
+// CD as AC*BD + AD*BC. It therefore needs the angular power spectrum of
+// every pair of catalogs, including pairs absent from the data vector.
+// In the Limber approximation each one is a radial integral,
+//
+//   C_AB(ell) = integral dchi W_A W_B P((ell+1/2)/f_K, a) / f_K^2,
+//
+// evaluated here on one common Gauss-Legendre rule over the supplied
+// scale-factor panels. The fields are the lens samples followed by the
+// source samples of the initialized redshift setup.
+//
+// ARRAYS CROSSING THE BOUNDARY
+// Inputs, borrowed C-contiguous float64 (noconvert rejects a copy):
+//   ell[nell]            finite multipoles >= 1
+//   a_edges[npanel+1]    scale-factor panel edges, increasing in (0,1)
+// Outputs, a dict of newly allocated arrays owned by Python:
+//   spectra[nell,nfield,nfield]    dimensionless signal spectra (E modes
+//                                  for shear) in the core C_ell
+//                                  convention, without noise
+//   b_spectra                      TATT B modes with the same axes, or
+//                                  None for NLA or disabled IA
+//   geometry[4,nnode]              a, chi, f_K (c/H0), dchi weight (c/H0)
+//   windows[3,nfield,nnode]        density, lensing/magnification and
+//                                  signed NLA windows, in (c/H0)^-1
+//   nlens, nsource                 field counts; nfield is their sum
+// Here nnode = npanel*nquad is the number of common radial nodes.
+//
+// VALIDATION BEFORE C
+// Array ranks and sizes; finite ell >= 1; a_edges strictly increasing
+// inside (0,1); a tabulated nquad and nwindow >= 2; distance, growth and
+// linear-power tables set (nonlinear too unless linear); at least one
+// lens and one source bin; IA model NLA or TATT when include_ia; lmax 0
+// or >= 2, nchi=2^n+1 >= 65 and finite chi_min > 0. With lmax > 0 the
+// ell in [2,lmax] must be integers, with no RSD and massless neutrinos.
+// TATT spectra (include_ia with the TATT model) also require no RSD.
+// Flat geometry is not checked here: radial_inputs_cov stops the process
+// for a non-flat cosmology.
+//
+// C WORK AND THREADS
+// radial_inputs_cov samples the windows, limber_spectra_cov integrates
+// all field pairs, tatt_spectra_cov adds the TATT terms beyond NLA, and
+// apply_nonlimber_cov replaces the linear Limber part of gg/gs spectra.
+// Each routine prepares its lazy core tables on the calling thread before
+// its own OpenMP loops: radial_inputs_cov the distance, window and NLA
+// readers, limber_spectra_cov the power and RSD tables, tatt_spectra_cov
+// FAST-PT, apply_nonlimber_cov its logarithmic snapshot and power reader.
+// Call this binding outside any OpenMP region, as Python does. The C++
+// conversion itself calls no BLAS routine.
+//
+// OWNERSHIP AND STATE
+// The C snapshot is temporary and its unique_ptr releases it even if
+// Python allocation fails. No Ntable field, data-vector mask, covariance
+// or likelihood state changes; only lazily built core tables are filled.
 //
 // The C routine stores one row per unordered field pair. Python receives
 // a full symmetric [ell][field][field] array, plus copies of the radial
 // geometry and window tables so it can audit the integration inputs.
 // ---------------------------------------------------------------------------
 static py::dict covariance_limber_spectra(
-    const py::array_t<double, py::array::c_style>& ell, // multipole samples
-    const py::array_t<double, py::array::c_style>& a_edges, // radial panels
+    const py::array_t<double, py::array::c_style>& ell, // [nell] multipoles
+    const py::array_t<double, py::array::c_style>& a_edges, // [npanel+1], a
     const int nquad,        // Gaussian nodes per scale-factor panel
     const int nwindow,      // uniform-a lensing-efficiency samples
-    const bool include_ia,  // include the signed NLA window
+    const bool include_ia,  // NLA window; with TATT also its E and B terms
     const bool include_rsd, // include the lens redshift-distortion window
-    const bool linear,     // select linear rather than nonlinear matter P
+    const bool linear,     // 1: linear p_lin(k,a); 0: run-mode Pdelta(k,a)
     const int nonlimber_lmax, // gg/gs correction through this ell; 0 disables
     const int nonlimber_nchi, // logarithmic radial samples, 2^n+1
     const double nonlimber_chi_min // positive near distance in c/H0
   )
 {
+  // Check the inputs and initialized state before any allocation or C
+  // call. A C fatal check would stop the whole Python process; an
+  // exception here only reports the mistake to the caller.
   if (ell.ndim() != 1
       || ell.size() < 1
       || a_edges.ndim() != 1
@@ -69,12 +121,19 @@ static py::dict covariance_limber_spectra(
     throw std::invalid_argument(
         "covariance_spectra supports NLA or TATT; initialize IA model 0 or 1");
   }
+
+  // C accepts only finite ell >= 1, where the shear spin factor
+  // sqrt[(ell-1)ell(ell+1)(ell+2)] is real; check every entry here.
   for (py::ssize_t index=0; index<ell.size(); index++) {
     if (!std::isfinite(ell.data()[index])
         || ell.data()[index] < 1.0) {
       throw std::invalid_argument("ell must contain finite values >= 1");
     }
   }
+
+  // Each consecutive pair of edges is one Gauss-Legendre panel in scale
+  // factor. Strictly increasing edges inside (0,1) give panels of positive
+  // width between the far boundary and the observer at a=1.
   for (py::ssize_t edge=0; edge<a_edges.size(); edge++) {
     if (!std::isfinite(a_edges.data()[edge])
         || a_edges.data()[edge] <= 0.0
@@ -95,6 +154,10 @@ static py::dict covariance_limber_spectra(
         "nquad must be a tabulated rule: 64,96,128,256,512,1024");
   }
 
+  // The hybrid non-Limber correction starts at ell=2, so lmax is either 0
+  // (disabled) or at least 2. FFTLog needs a power-of-two number of
+  // log-distance intervals, nchi-1 = 2^n >= 64: for m=nchi-1 the bit test
+  // m&(m-1) is zero exactly when m is a power of two.
   if (nonlimber_lmax < 0
       || nonlimber_lmax == 1
       || nonlimber_nchi < 65
@@ -110,6 +173,10 @@ static py::dict covariance_limber_spectra(
       throw std::invalid_argument(
           "non-Limber covariance currently requires no RSD and mnu=0");
     }
+
+    // The correction is tabulated at integer multipoles 2..lmax and C
+    // reads the entry (int) ell - 2. A fractional ell in that range would
+    // silently receive the correction of a neighboring integer.
     for (int index=0; index<ell.size(); index++) {
       const double value = ell.data()[index];
       if (value <= nonlimber_lmax
@@ -144,6 +211,11 @@ static py::dict covariance_limber_spectra(
 
   // --- 2. BUILD THE RADIAL SNAPSHOT AND INTEGRATE ALL SPECTRA ---
 
+  // radial_inputs_cov samples a, chi, f_K, the dchi weight and every field
+  // window on npanel*nquad Gauss-Legendre nodes. limber_spectra_cov then
+  // integrates C_AB for all pairs into rows, in the i-major triangular
+  // order (0,0),(0,1),...,(1,1),... of the field indices.
+  //
   // unique_ptr is the sole owner of this temporary C snapshot. Its
   // specified cleanup function, free_radial_cov, runs when the owner
   // leaves scope, including if a later Python array allocation fails.
@@ -154,6 +226,10 @@ static py::dict covariance_limber_spectra(
   limber_spectra_cov(radial.get(), nell, ell.data(), linear, include_rsd,
                      rows.data());
 
+  // TATT: add the E-mode terms beyond NLA to rows in place, and fill the
+  // B modes from zero. Parity gives B only to source-source pairs; other
+  // rows stay zero. b_triangular is one house malloc2d block [npair][nell]
+  // (row pointers and values together), so a single free releases it.
   double** b_triangular = nullptr;
   if (include_ia
       && nuisance.IA_MODEL == IA_MODEL_TATT) {
@@ -161,6 +237,9 @@ static py::dict covariance_limber_spectra(
     tatt_spectra_cov(radial.get(), nell, ell.data(), rows.data(), b_triangular);
   }
 
+  // Non-Limber: add exact-minus-matched separable linear spectra to every
+  // row containing a lens field, at integer ell in [2,lmax]. Source-source
+  // rows stay Limber. a_edges[0] is the far radial boundary of FFTLog.
   if (nonlimber_lmax > 0) {
     apply_nonlimber_cov(radial.get(), a_edges.data()[0], nwindow, include_ia,
         nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min,
@@ -171,6 +250,8 @@ static py::dict covariance_limber_spectra(
 
   // Store both triangles from the same computed number. This makes the
   // returned field matrix exactly symmetric, independent of thread count.
+  // A default-constructed b_spectra has size zero; it stays empty without
+  // TATT and is returned as None below.
   py::array_t<double> spectra({nell, nfield, nfield});
   py::array_t<double> b_spectra;
   if (b_triangular != nullptr) {
@@ -178,6 +259,10 @@ static py::dict covariance_limber_spectra(
   }
   int pair = 0;
 
+  // Visit the field pairs in the same i-major order that C used for its
+  // rows, so rows[pair] holds the spectrum of (first,second). One
+  // iteration of the inner loop copies one multipole of that pair into
+  // the [ell][field][field] layout, at both (first,second) and its mirror.
   for (int first=0; first<nfield; first++) {
     for (int second=first; second<nfield; second++) {
       for (int node=0; node<nell; node++) {
@@ -198,9 +283,13 @@ static py::dict covariance_limber_spectra(
 
   // Geometry uses roles a, chi, f_K, dchi weight. Windows use density,
   // lensing/magnification and signed NLA roles, then field and radial node.
+  // Distances and the dchi weight are in c/H0; windows are in (c/H0)^-1.
+  // The signed NLA role is zero for lenses and whenever include_ia is off.
   py::array_t<double> geometry({4, radial->nnode});
   py::array_t<double> windows({3, nfield, radial->nnode});
 
+  // Each iteration copies every geometry and window role at one radial
+  // node from the C snapshot, which free_radial_cov releases at return.
   for (int node=0; node<radial->nnode; node++) {
     for (int role=0; role<4; role++) {
       *geometry.mutable_data(role, node) = radial->geometry[role][node];
@@ -228,6 +317,18 @@ static py::dict covariance_limber_spectra(
 }
 
 
+// ---------------------------------------------------------------------------
+// Create the production submodule parent.covariance and fill it.
+//
+// The component and matrix bindings come from components_interface_cov.cpp
+// and matrix_interface_cov.cpp. The spectrum builder above is registered
+// here under covariance_limber_spectra, with covariance_spectra as a second
+// name for the same Python function object. Every array argument is
+// noconvert(): only C-contiguous float64 arrays (int32 for index maps)
+// are accepted, and they are borrowed rather than copied. bind_covariance
+// (generic_interface_cov.cpp) calls this function first, then registers
+// the Armadillo notebook functions with the same names on parent itself.
+// ---------------------------------------------------------------------------
 void bind_covariance_production(py::module_& parent)
 {
   py::module_ module = parent.def_submodule("covariance",

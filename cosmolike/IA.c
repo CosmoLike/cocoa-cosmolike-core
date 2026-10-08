@@ -9,20 +9,33 @@
 
 #include "log.c/src/log.h"
 
-// if (IA_NLA_LF || IA_REDSHIFT_EVOLUTION)
-// ia[0][0] = A_ia          (IA_NLA_LF || IA_REDSHIFT_EVOLUTION)
-// ia[0][1] = eta_ia        (IA_NLA_LF || IA_REDSHIFT_EVOLUTION)
-// ia[0][2] = eta_ia_highz  (IA_NLA_LF, Joachimi2012)
-// ia[0][3] = beta_ia       (IA_NLA_LF, Joachimi2012)
-// ia[0][4] = LF_alpha      (IA_NLA_LF, Joachimi2012)
-// ia[0][5] = LF_P          (IA_NLA_LF, Joachimi2012)
-// ia[0][6] = LF_Q          (IA_NLA_LF, Joachimi2012)
-// ia[0][7] = LF_red_alpha  (IA_NLA_LF, Joachimi2012)
-// ia[0][8] = LF_red_P      (IA_NLA_LF, Joachimi2012)
-// ia[0][9] = LF_red_Q      (IA_NLA_LF, Joachimi2012)
-// if IA_REDSHIFT_EVOLUTION
-// A2_z[1][0] = A2_ia
-// A2_z[1][1] = eta_ia_tt
+// Layout of the IA nuisance array nuisance.ia[row][column] for each
+// redshift model nuisance.IA (IA.h).
+//
+// IA_NLA_LF: the luminosity- and redshift-dependent NLA amplitude of
+// Joachimi et al. 2011 (arXiv:1008.3491), averaged over the red-galaxy
+// luminosity function and multiplied by the red fraction f_red, with the
+// high-redshift slope and the six luminosity-function nuisance
+// parameters of Krause, Eifler & Blazek 2016 (arXiv:1506.08730, Secs.
+// 2.1, 4.1 and 5.1); see A_IA_Joachimi below.
+//   ia[0][0] = A_ia          (also IA_REDSHIFT_EVOLUTION)
+//   ia[0][1] = eta_ia        (also IA_REDSHIFT_EVOLUTION)
+//   ia[0][2] = eta_ia_highz
+//   ia[0][3] = beta_ia
+//   ia[0][4] = LF_alpha
+//   ia[0][5] = LF_P
+//   ia[0][6] = LF_Q
+//   ia[0][7] = LF_red_alpha
+//   ia[0][8] = LF_red_P
+//   ia[0][9] = LF_red_Q
+// IA_REDSHIFT_EVOLUTION: one power law in (1+z)/(1+z0), shared by all
+// source bins (1+z0 = nuisance.oneplusz0_ia)
+//   ia[0][0] = A1 (A_ia), ia[0][1] = eta1 (eta_ia)
+//   ia[1][0] = A2,        ia[1][1] = eta2   (tidal torquing)
+//   ia[2][0] = b_TA                          (density weighting)
+// IA_REDSHIFT_BINNING: one value per source bin n
+//   ia[0][n] = A1, ia[1][n] = A2, ia[2][n] = b_TA
+// A2 and b_TA multiply only the TATT one-loop terms.
 
 static double LF_coefficients[2][5] =
  { 
@@ -90,7 +103,8 @@ double M_abs(const double mag, const double a)
     for (int i = 0; i<size; i++) table[i] = KE[i];
   }
 
-  // no acceptable k-korrection exists for k>3, also no meaningful IA model
+  // the k+e table ends at z = 3, and beyond it there is no meaningful IA
+  // model either: clamp z to 2.99
   const double z = 1./a - 1.0 >= 3.0 ? 2.99 : 1./a - 1.0;
   const double ke = interpol1d(table, 31, 0., 3.0, 0.1, z);
   struct chis chidchi = chi_all(a);
@@ -180,8 +194,14 @@ double A_LF(double mag, double a)
 }
 
 // ---------------------------------------------------------------------------
-// return 1 if combination of all + red galaxy LF parameters is unphysical,
-// i.e. if f_red > 1 for some z < redshift.shear_zdistrpar_zmax
+// Return 1 if the all-galaxy and red-galaxy LF parameters (with their
+// nuisance shifts) are unphysical for the source sample, 0 otherwise
+// (the rejection of Krause, Eifler & Blazek 2016, Sec. 5.1). The scan
+// starts at a = 1/(1 + zmax) + 0.005, zmax =
+// redshift.shear_zdist_zall[RANGE_MAX]. It fails when, at that starting
+// a, the survey limit survey.m_lim maps to an absolute magnitude brighter
+// than M*(z) of either LF, or when f_red > 1 at any a from there to
+// a = 1 in steps of 0.01.
 // ---------------------------------------------------------------------------
 int check_LF(void)
 {
@@ -235,6 +255,42 @@ double A_IA_Joachimi(const double a)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Linear (tidal alignment, NLA) IA amplitude of source bins n1 and n2 at
+// scale factor a:
+//
+//   res[i] = A1(z, n_i) * Omega_m * c1rhocrit_ia / D(a),   i = 0, 1
+//
+// with D(a) = growfac_a, the linear growth factor normalized to D(1) = 1,
+// and c1rhocrit_ia the dimensionless product Cbar1 rho_crit of the
+// SuperCOSMOS normalization (Bridle & King 2007). A1 by nuisance.IA, with
+// the parameters listed at the top of this file:
+//
+//   NO_IA                   0
+//   IA_NLA_LF               A_IA_Joachimi(a), the same for both bins
+//   IA_REDSHIFT_BINNING     ia[0][n_i]
+//   IA_REDSHIFT_EVOLUTION   ia[0][0] * ((1+z)/(1+z0))^ia[0][1]
+//
+// The 1/D(a) keeps the alignment at its formation value: the shapes
+// respond to the tidal field at formation, while the density field they
+// are correlated with keeps growing as D(a).
+//
+// The returned amplitude is positive for A1 > 0. Blazek et al. 2019
+// (arXiv:1708.09247) write the coefficient of the tidal field as
+// C1 = -A1 Cbar1 rho_crit Omega_m / D: galaxies align radially towards
+// overdensities, opposite to the tangential lensing shear. The callers
+// apply that minus sign: they subtract W_source * IA_A1_Z1 from the
+// lensing kernel (cosmo2D.c, cosmo2D_cluster.c, covariances/). The
+// COCOA warnings in the body compare with C1_TA of the original CosmoLike
+// TATT code (cosmo2D_fullsky_TATT.c, not part of this library), which
+// carried the sign itself.
+//
+// Parameters:
+//   a         - scale factor, a > 0
+//   growfac_a - D(a), normalized to D(1) = 1
+//   n1, n2    - source tomographic bin indices
+//   res       - output: res[0] for bin n1, res[1] for bin n2
+// ---------------------------------------------------------------------------
 void IA_A1_Z1Z2(
     const double a, 
     const double growfac_a, 
@@ -302,6 +358,30 @@ double IA_A1_Z1(const double a, const double growfac_a, const int n1)
   return res[0];
 }
 
+// ---------------------------------------------------------------------------
+// Tidal-torquing (TATT) IA amplitude of source bins n1 and n2 at scale
+// factor a:
+//
+//   res[i] = A2(z, n_i) * Omega_m * c1rhocrit_ia / D(a)^2,   i = 0, 1
+//
+// with one 1/D per power of the tidal field in the quadratic term. A2 by
+// nuisance.IA: 0 (NO_IA), ia[1][n_i] (IA_REDSHIFT_BINNING),
+// ia[1][0] * ((1+z)/(1+z0))^ia[1][1] (IA_REDSHIFT_EVOLUTION); IA_NLA_LF
+// has no torquing amplitude and stops with an error.
+//
+// Blazek et al. 2019 (arXiv:1708.09247) write the coefficient of the
+// quadratic tidal field as C2 = 5 A2 Cbar1 rho_crit Omega_m^2
+// / (Omega_m,fid D^2), positive for A2 > 0 (no minus sign, unlike C1).
+// This amplitude leaves out the 5, which the callers apply (5 C2 in the
+// terms linear in C2, 25 in the C2^2 term; cosmo2D.c,
+// covariances/ia_cov.c), and carries one power of Omega_m, the scaling
+// the DES Y1 cosmic-shear analysis adopted for C1 and C2 alike (Troxel et
+// al. 2018, as noted by Blazek et al. 2019). The COCOA warning in the
+// body compares with C2_TT of the original CosmoLike TATT code, which
+// included the 5.
+//
+// Parameters: as IA_A1_Z1Z2.
+// ---------------------------------------------------------------------------
 void IA_A2_Z1Z2(
     const double a, 
     const double growfac_a, 
@@ -367,6 +447,16 @@ double IA_A2_Z1(const double a, const double growfac_a, const int n1)
   return res[0];
 }
 
+// ---------------------------------------------------------------------------
+// Density-weighting coefficient b_TA of source bins n1 and n2 (TATT). The
+// tidal-alignment term weighted by the local density, C1delta (delta s),
+// has C1delta = b_TA C1 (Blazek et al. 2019, arXiv:1708.09247; b_TA = 1
+// is pure density weighting of sources with linear bias 1). b_TA by
+// nuisance.IA: 1 (NO_IA, where C1 = 0 anyway), ia[2][n_i]
+// (IA_REDSHIFT_BINNING), ia[2][0] for every bin and redshift
+// (IA_REDSHIFT_EVOLUTION); IA_NLA_LF stops with an error. a and
+// growfac_a are unused.
+// ---------------------------------------------------------------------------
 void IA_BTA_Z1Z2(
     const double a __attribute__((unused)), 
     const double growfac_a __attribute__((unused)), 

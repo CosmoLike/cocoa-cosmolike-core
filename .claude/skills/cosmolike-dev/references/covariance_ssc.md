@@ -34,7 +34,10 @@ separate beyond-Limber density/tidal calculation before accuracy claims.
 
 Here U differentiates the estimator's catalog mean; it is not assumed
 to equal a short-mode, ell-dependent field window. The supplied C_AB
-must be the same model used in the Gaussian calculation. Differentiating
+must be the mean model whose survey-mean normalization the estimator
+adopts. The shared survey assembly deliberately supplies the zero-IA
+Limber spectra here even when its Gaussian signal adds non-Limber or IA
+terms; that approximation is stated in the package README. Differentiating
 the complete projected estimator derives the radial mean subtraction;
 a narrow constant galaxy slice recovers one bias times P per galaxy leg.
 Choosing the nonlinear response, galaxy-mean/RSD/magnification model and

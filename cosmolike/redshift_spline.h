@@ -33,7 +33,8 @@ double amax_lens(int i);
 // test whether the (l,zl) bin is in the linear clustering regime
 int test_kmax(double l, int zl); 
 
-// test whether source bin zs is behind lens bin zl
+// 1 when (lens bin zl, source bin zs) is a galaxy-galaxy lensing pair of
+// the data vector, 0 when tomo.ggl_exclude lists it (no redshift test)
 int test_zoverlap(int zl, int zs); 
 
 int ZL(int Nbin); // find zlens bin of tomo combination (galaxy-galaxy lensing)
@@ -94,7 +95,8 @@ double g_cmb(double a); // lens efficiency for CMB lensing
 // lens efficiency of source galaxies in tomography bin ni
 double g_tomo(double a, const int ni);
 
-// lens efficiency of source galaxies in tomography bin ni
+// integral of the squared lens efficiency over the source n(z) of bin ni
+// (not the square of g_tomo)
 double g2_tomo(double a, int ni);
 
 // lens efficiency of *lens* galaxies in tomography bin ni

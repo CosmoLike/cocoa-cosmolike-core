@@ -16,8 +16,8 @@ clusterparams cluster =
 // analyses ran), volume-only cluster kernel (what DES ran), scale-dependent
 // selection bias, the Tinker 2010 mass function at the fixed amplitude
 // alpha = 0.368 (what DES ran), Y transform on, NLA-type IA in the 2-halo
-// lensing term, C_c = -2 magnification. The mass range [1e12, 1e16] Msun/h brackets every
-// halo that can reach lambda_obs >= 20.
+// lensing term, C_c = -2 magnification. The mass range [1e12, 1e16] Msun/h
+// brackets every halo that can reach lambda_obs >= 20.
 void reset_cluster_struct(void)
 {
   cluster.random_model = 0;

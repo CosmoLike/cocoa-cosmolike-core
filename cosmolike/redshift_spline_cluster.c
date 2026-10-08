@@ -25,13 +25,14 @@
 // Ntable.random, cluster.random_*) and refills when fdiff2 sees a
 // different one. A refill is not thread-safe: the first call after any
 // key change must run outside OpenMP regions. cluster_warmup (halo_cluster.c)
-// does that for the kernel tables: ONE call of phi_cluster, nz_cluster
+// does that for the kernel tables: one call of phi_cluster, nz_cluster
 // and g_cluster fills every bin and every richness row, because each
 // builder below fills all of them at once. The pair maps are warmed by
 // the interface (any accessor call, see the pair-map banner).
 //
-// Nothing in this file writes the nominal bin edges cluster.zbin[RANGE_MIN]/max
-// or the kernel support cluster.zdist_z[RANGE_MIN]/zmax: the tables copy them.
+// Nothing in this file writes the nominal bin edges cluster.zbin or the
+// kernel support cluster.zdist_z (both [RANGE_MIN|RANGE_MAX][bin]): the
+// tables copy them.
 // ============================================================================
 
 #include <math.h>
@@ -148,7 +149,7 @@ double zmid_cluster(const int ni)
 // photometric redshift z_lambda in bin i (Y1 eq 6). Python passes it as a
 // table (cluster.zdist_table, layout in structs_cluster.h): a top-hat, the
 // erf edges of a Gaussian photo-z kernel, or a kernel measured from
-// randoms. The z column holds SAMPLE POINTS: table[i][j] is <phi_i|z_j>.
+// randoms. The z column holds sample points: table[i][j] is <phi_i|z_j>.
 //
 // Model: <phi_i|z> is the piecewise-linear interpolant of that table on
 // the support [zdist_zmin[i], zdist_zmax[i]] and exactly 0 outside it.
@@ -157,13 +158,13 @@ double zmid_cluster(const int ni)
 // Support convention (set by the interface): the zero nodes that bracket
 // the nonzero values of the column, so the cut removes nothing of the
 // interpolant. It matters for kernels whose edges are ramps: a top-hat
-// tabulated with 0.5 on its edge nodes has the area of a sharp edge AT
+// tabulated with 0.5 on its edge nodes has the area of a sharp edge at
 // that node only if both half-cells of the ramp are kept; a support
 // starting at the first nonzero node (the lens n(z) loader's rule) drops
 // dz/4 at each edge. A top-hat tabulated with 1 on its edge nodes and a
 // support starting there instead gets a sharp edge at the node.
 //
-// The nz_lens_photoz design: the table is resampled ONCE per input change
+// The nz_lens_photoz design: the table is resampled once per input change
 // onto a uniform fine grid per bin whose end nodes are the support edges;
 // the hot path is one multiply for the index (no search) and a linear
 // read.
@@ -174,8 +175,8 @@ double zmid_cluster(const int ni)
 // DZ_FINE_REFERENCE/Ntable.nz_fine_sampling_factor. The narrowest feature
 // of a cluster kernel is the erf edge of a Gaussian photo-z,
 // sigma_z = 0.006 (1 + z) for redMaPPer; at the baseline sampling factor
-// this bound is the 5e-4 that puts more than ten nodes per sigma_z
-// (fable review C3), and every accuracy boost refines it.
+// (5) this bound is the 5e-4 that puts more than ten nodes per sigma_z,
+// and every accuracy boost refines it.
 // ---------------------------------------------------------------------------
 static const double DZ_FINE_REFERENCE = 2.5e-3;
 
@@ -256,7 +257,7 @@ static inline double fine_z_read(const double* table, const int ni,
 // input node is a fine node, and the linear read of the fine table
 // reproduces the input interpolant exactly.
 //
-// Why a LINEAR read and not the house cubic spline (the nz_lens_photoz
+// Why a linear read and not the house cubic spline (the nz_lens_photoz
 // read): a top-hat kernel, or any kernel with a sharp edge, has a jump.
 // An interpolating cubic spline through a unit step overshoots by about
 // 11% on both sides and rings with alternating sign, decaying only by
@@ -448,7 +449,7 @@ double phi_cluster(const double z, const int ni)
 // (halo_cluster.c). Both are tabulated on the fine z grid of phi_, so the
 // Limber integrals read them with one multiply and one linear read per
 // node, never re-evaluating dV/dz. The volume kernel does not depend on
-// the richness bin: its table has ONE row, shared by every nl.
+// the richness bin: its table has one row, shared by every nl.
 
 
 // ---------------------------------------------------------------------------
@@ -541,7 +542,7 @@ static int kernel_row(const int nl)
 //   P(z)  = int_z^{zmax} dz' n(z'),   Q(z) = int_z^{zmax} dz' n(z')/chi(z')
 //
 // This is g_lens of redshift_spline.c (the same integral written in z
-// instead of a: n(z) dz = n(z(a')) da'/a'^2) with the P11 factorization
+// instead of a: n(z) dz = n(z(a')) da'/a'^2) with the factorization
 // g = P - chi Q, valid for flat space (the library is flat:
 // set_cosmological_parameters sets Omega_v = 1 - Omega_m, so f_K = chi;
 // also why dV/dz uses chi^2).
@@ -927,7 +928,7 @@ double g_cluster(const double a, const int ni, const int nl)
 //                           row-major (0,0), (0,1), ..., (1,1), ...;
 //                           N_cc_richness is symmetric in (nl1, nl2)
 //
-// The maps OWN the pair counts: their builder writes
+// The maps own the pair counts: their builder writes
 //   cluster.cs_npowerspectra = zdist_nbin*shear_nbin
 //   cluster.cg_npowerspectra = number of valid cg_lens_bin entries
 //   cluster.cc_npowerspectra = zdist_nbin  (cluster bins with an auto w_cc)

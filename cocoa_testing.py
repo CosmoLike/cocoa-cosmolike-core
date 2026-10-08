@@ -4,17 +4,19 @@ Every Cocoa project repository (roman_real, desy1xplanck, des_y3,
 roman_fourier, roman_kl, ...) carries the same test architecture:
 frozen configurations pinned by a SHA-256 manifest, reference chi2
 values recorded at freeze time, race checks that share one model
-instance, accuracy advisory scans, baryonic-feedback checks, and the
-CFASTPT-vs-FASTPT comparison. The machinery is identical from
-project to project; only the project DATA differs (the examples
-table, the TATT point, the accuracy knobs, the dataset names, the
-comparison contract). This module holds the machinery once; each
-project's tests/cocoa_test_utils.py holds its data, builds ONE
-CocoaTestHarness from it, and re-exports the harness's bound methods
-under the historical names, so the test modules and the generator
-keep importing everything from their project's cocoa_test_utils
-exactly as before. A WORKED EXAMPLE below shows the complete shim a
-new project writes.
+instance, accuracy advisory scans, baryonic-feedback checks, the
+CFASTPT-vs-FASTPT comparison, and the Halofit-vs-EE2 comparison.
+The machinery is identical from project to project; only the
+project DATA differs (the examples table, the TATT point, the
+accuracy knobs, the dataset names, the comparison contract). This
+module holds the machinery once. Each project's
+tests/cocoa_test_utils.py is a "shim", a thin module that adapts
+this shared code to one project: it holds the project's data,
+builds ONE CocoaTestHarness from it, and re-exports the harness's
+bound methods as module-level names. The test modules and the
+generator (generate_frozen_reference.py) import everything from
+their project's shim, never from this module directly. A WORKED
+EXAMPLE below shows the complete shim a new project writes.
 
 THE FROZEN-STATE DOCTRINE
 
@@ -42,15 +44,15 @@ three parts:
     to them as human-readable provenance; no test reads them.)
 
 Every test first verifies the manifest (verify_frozen) and refuses
-to run when any frozen file changed - a tampered frozen state must
+to run when any frozen file changed: a tampered frozen state must
 not produce a plausible-looking chi2. Refreshing the frozen state is
 a deliberate maintainer action: generate_frozen_reference.py
 --overwrite.
 
 WORKER ISOLATION
 
-Every model build runs in its own worker subprocess: the public test
-quantities (single_model_chi2, ten_in_a_row_chi2, the baryon checks)
+Every test quantity is computed in its own worker subprocess:
+single_model_chi2, ten_in_a_row_chi2 and the baryon checks each
 spawn a fresh python that imports the project's cocoa_test_utils by
 file path, evaluates in-process, and hands the numbers back through
 a temporary json file, while its progress lines stream to the same
@@ -60,14 +62,19 @@ when a second configuration with different dimensions initializes
 after the first ("IP::set_mask: inconsistent mask"). In a project
 whose examples share one data set the isolation is preventive rather
 than required; every project keeps the one architecture so they all
-behave identically. The race check is the deliberate exception to
-one-model-per-worker: its 11 evaluations share one model instance
-inside one worker, because leaked state inside that instance is
-exactly what it hunts.
+behave identically. Inside its one worker, the race check
+deliberately runs its 11 evaluations on ONE model instance, because
+leaked state inside that instance is exactly what it hunts; the
+baryon accuracy check builds its default and pushed models there one
+after the other, which the C layer accepts because both carry
+example1's dimensions. The environment variable COCOA_TESTS_WORKER
+separates the two roles: a process where it equals "1" is a worker
+and evaluates in-process; the parent sets it, together with
+OMP_NUM_THREADS, only in the environment copy it hands the worker.
 
 THE ZERO-BASED COMPARISONS
 
-Two families of checks refuse to compare chi2 values taken against
+Three families of checks refuse to compare chi2 values taken against
 shipped data far from its minimum, where the chi2 responds LINEARLY
 to tiny numerical changes and a harmless rounding-level shift reads
 as an alarming difference:
@@ -87,14 +94,42 @@ as an alarming difference:
     settings; python FAST-PT at the doubled grids) runs in its own
     fresh subprocess, so no cobaya cache, CAMB state, or C global
     survives from one block into the next
-    (_fastpt_comparison_block).
+    (_fastpt_comparison_block);
+  - the Halofit-vs-EE2 comparison (advisory checks NL1/NL2) applies
+    the same quadratic form to two nonlinear-P(k) sources at ten
+    cosmologies: at each cosmology the EuclidEmulator2 vector is the
+    reference the Halofit vector is measured against, again with one
+    fresh subprocess per block (_nonlinear_comparison_block).
+
+RUNNING A PROJECT SUITE
+
+Each project keeps its test modules in tests/data_vector/; the
+shim, conftest.py, generate_frozen_reference.py, frozen/, the
+manifest, and pytest.ini sit one level up, in tests/. The
+pytest.ini adds -s to every run, so each test's printed report
+reaches the terminal instead of a bare PASSED. From the Cocoa/
+folder, with the cocoa conda environment active:
+
+    source start_cocoa.sh
+    python -m pytest ./projects/<project>/tests/data_vector
+
+A path to one file (.../data_vector/test_fastpt.py) runs that file
+alone. Two options steer the comparison sweeps (conftest_addoption):
+--high=1 runs the CFASTPT-vs-FASTPT sweep at the high-accuracy
+settings instead of the frozen defaults, and --mask=<name> runs the
+CFASTPT-vs-FASTPT and Halofit-vs-EE2 sweeps under another scale-cut
+mask the project offers. Run one project per pytest invocation:
+every project names its shim cocoa_test_utils, and a python process
+keeps the first module it imports under a name, so a second
+project's tests would bind to the first project's shim.
 
 A WORKED EXAMPLE: A PROJECT SHIM
 
 A new project "demo" whose compiled interface imports as
 cosmolike_demo_interface writes tests/cocoa_test_utils.py as below
-(data values abbreviated; every name shown is part of the public
-surface the test modules and the generator import):
+(data values abbreviated; the test modules, the generator,
+conftest.py and the worker subprocesses reach this module only
+through the shim's names):
 
     import os
     import sys
@@ -116,7 +151,15 @@ surface the test modules and the generator import):
     # ---- the project data --------------------------------------
     TATT_POINT = {"demo_A2_1": 0.05, ...}
     TATT_GENERATORS = {"tatt_demo.dataset": "example2"}
-    EXAMPLES = {"example1": {...}, "example2": {...}, ...}
+    EXAMPLES = {
+        "example1": {
+            "frozen_module": "frozen_config_example1.py",
+            "provenance": "EXAMPLE_EVALUATE1.yaml",
+            "likelihood": "demo.cosmic_shear",
+            "tatt_dataset": "tatt_demo.dataset",
+        },
+        "example2": {...},
+    }
     HIGH_ACCURACY_LIKELIHOOD = {...}
     ACCURACY_KNOBS = [...]
     FASTPT_COMPARISON_TOLERANCE = 0.2
@@ -134,6 +177,7 @@ surface the test modules and the generator import):
     BARYON_POINT_OVERRIDES = _cct.BARYON_POINT_OVERRIDES
     FASTPT_COMPARISON_POINTS = (
         _cct.fastpt_comparison_points("demo"))
+    NONLINEAR_COMPARISON_POINTS = _cct.NONLINEAR_COMPARISON_POINTS
 
     # ---- the harness -------------------------------------------
     _H = _cct.CocoaTestHarness(
@@ -148,7 +192,7 @@ surface the test modules and the generator import):
         fastpt_points=FASTPT_COMPARISON_POINTS,
     )
 
-    # ---- module functions under the historical names -----------
+    # ---- module functions, re-exported -------------------------
     require_cocoa_environment = _cct.require_cocoa_environment
     assert_omp_threads = _cct.assert_omp_threads
     sha256_of = _cct.sha256_of
@@ -163,8 +207,9 @@ surface the test modules and the generator import):
     report_accuracy = _cct.report_accuracy
     report_knob = _cct.report_knob
     report_fastpt_comparison = _cct.report_fastpt_comparison
+    report_nonlinear_comparison = _cct.report_nonlinear_comparison
 
-    # ---- bound harness methods under the historical names ------
+    # ---- bound harness methods, re-exported --------------------
     compute_manifest = _H.compute_manifest
     verify_frozen = _H.verify_frozen
     load_reference = _H.load_reference
@@ -184,15 +229,75 @@ surface the test modules and the generator import):
     _fastpt_comparison_block = _H._fastpt_comparison_block
     _run_fastpt_comparison_worker = _H._run_fastpt_comparison_worker
     cfastpt_vs_fastpt_chi2s = _H.cfastpt_vs_fastpt_chi2s
+    _nonlinear_comparison_block = _H._nonlinear_comparison_block
+    halofit_vs_ee2_dchi2s = _H.halofit_vs_ee2_dchi2s
 
 A project with one project-wide synthetic NLA vector also passes
 nla_dataset="synthetic_demo.dataset" to the constructor; a project
 whose EXAMPLES entries carry their own "nla_dataset" keys needs
 nothing extra (the per-example key wins); a project that evaluates
-NLA against its shipped data_file passes neither. A project with
-extra data blocks the generator reads (SYNTHETIC_VECTORS, a
-NLA_DATASET constant) or project-only report printers keeps them in
-the shim next to the data.
+NLA against its shipped data_file passes neither. A project whose
+comparison sweeps offer more scale-cut masks passes, for example,
+fastpt_masks=("frozen", "ones") and ships the matching frozen
+dataset variants (the class docstring gives the naming rule). A
+project with extra data blocks the generator reads
+(SYNTHETIC_VECTORS, a NLA_DATASET constant) or project-only report
+printers keeps them in the shim next to the data.
+
+Some shim names are looked up by name from another process or file,
+so they must keep their exact spelling: _worker (called by
+_WORKER_DRIVER inside every worker), _fastpt_comparison_block and
+_nonlinear_comparison_block (called by the child programs of the
+comparison sweeps, so a project that runs those sweeps needs them),
+and _cct and _H (read by the project's conftest.py; see the banner
+before conftest_addoption). A missing name surfaces only where it is
+looked up, as an AttributeError.
+
+ADDING A TEST MODULE
+
+A new test file in tests/data_vector/ copies the opening of an
+existing one; the order of its first lines matters:
+
+    import os
+
+    # OpenMP reads OMP_NUM_THREADS once, when the compiled libraries
+    # load: set it before ANY cobaya/cosmolike import
+    os.environ["OMP_NUM_THREADS"] = "4"
+
+    import sys
+    import unittest
+
+    # the shim lives one folder up, in tests/
+    sys.path.insert(0, os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    import cocoa_test_utils as u
+
+    class TestDemo(unittest.TestCase):
+
+        @classmethod
+        def setUpClass(cls):
+            u.require_cocoa_environment()
+            u.verify_frozen()
+            cls.reference = u.load_reference()
+
+        def test_1_chi2_matches_frozen_reference(self):
+            chi2 = u.single_model_chi2("example1", tatt=False)
+            ref = self.reference["example1_nla"]
+            delta = u.report_chi2_test(
+                1, "example1 (cosmic shear, NLA)", chi2, ref,
+                u.CHI2_TOLERANCE)
+            self.assertLess(
+                delta, u.CHI2_TOLERANCE,
+                msg=f"chi2 = {chi2:.6f} vs frozen reference "
+                    f"{ref:.6f} (|delta| >= {u.CHI2_TOLERANCE})")
+
+Each test computes its quantity through a harness method (which
+spawns the worker), prints it with the matching report_* printer,
+and asserts on the difference the printer returns; the printers
+never assert. A race test calls u.assert_omp_threads() first.
+Reference values enter frozen/reference_chi2.json only through
+generate_frozen_reference.py --overwrite: a hand edit fails
+verify_frozen.
 
 MAP OF THIS FILE
 
@@ -200,15 +305,16 @@ MAP OF THIS FILE
     REQUIRED_OMP_THREADS, CHI2_TOLERANCE, RACE_TOLERANCE
     RACE_PERTURBATIONS, HIGH_ACCURACY_CAMB_EXTRA_ARGS
     BARYON_METHODS, BARYON_POINT_OVERRIDES
+    _baryon_method, _baryon_dataset  label helpers of BARYON_METHODS
     fastpt_comparison_points  the 30 comparison points, built for a
                               project's parameter prefix
+    NONLINEAR_COMPARISON_POINTS  the ten Halofit-vs-EE2 cosmologies
 
   Section 2: MODULE FUNCTIONS (no project state)
     require_cocoa_environment, assert_omp_threads, sha256_of
     make_model, evaluate_chi2, _evaluate_cached, _load_datavector
-    _baryon_method, _baryon_dataset
     report_chi2_test, report_race_test, report_accuracy, report_knob
-    report_fastpt_comparison
+    report_fastpt_comparison, report_nonlinear_comparison
 
   Section 3: WORKER-SUBPROCESS PLUMBING (shared text)
     _WORKER_FLAG, _WORKER_DRIVER
@@ -252,13 +358,17 @@ import tempfile
 # =============================================================================
 
 # The race tests must run multi-threaded: with one thread there is no
-# thread scheduling, so an OpenMP race could never show up. The value
-# is a string, not a number: environment variables only carry text.
+# thread scheduling, so an OpenMP race could never show up. Every
+# worker subprocess runs at this count too (_run_isolated and the
+# comparison sweeps' child programs set it). The value is a string,
+# not a number: environment variables only carry text.
 REQUIRED_OMP_THREADS = "4"
 
 # Reference tests: |chi2(now) - chi2(frozen reference)| must stay
 # below this. The bound tolerates compiler and library-version noise
-# but catches a real physics change.
+# but catches a real physics change: no physics is detectable below a
+# chi2 shift of 0.2. The reports print the difference with more
+# decimals than the bound needs, so a drift below it stays visible.
 CHI2_TOLERANCE = 0.2
 
 # Race tests: |chi2(10th of a row) - chi2(fresh model)|. The two
@@ -266,12 +376,14 @@ CHI2_TOLERANCE = 0.2
 # noise is allowed; a state leak produces a much larger shift.
 RACE_TOLERANCE = 1.0e-4
 
-# The nine cosmologies evaluated before the fiducial point in a race
-# test. Each entry replaces the named parameters in the frozen point.
-# They stay inside the priors of the frozen configurations (an
-# out-of-prior point would evaluate to -inf and abort the test), and
-# they change the chi2 by orders of magnitude, so state leaked from
-# any of them would visibly move the final fiducial evaluation.
+# The nine cosmologies a race test evaluates between its two
+# evaluations of the fiducial point. Each entry replaces the named
+# parameters in the frozen point; a name the configuration does not
+# sample is skipped (_ten_in_a_row_impl), so one table serves every
+# project. They stay inside the priors of the frozen configurations
+# (an out-of-prior point would evaluate to -inf and abort the test),
+# and they change the chi2 by orders of magnitude, so state leaked
+# from any of them would visibly move the final fiducial evaluation.
 RACE_PERTURBATIONS = [
     {"As_1e9": 1.95},
     {"As_1e9": 2.25},
@@ -280,6 +392,8 @@ RACE_PERTURBATIONS = [
     {"H0": 64.0},
     {"H0": 71.0},
     {"ns": 0.95},
+    # a configuration that samples w0pwa = w + wa in place of wa
+    # keeps wa = 0 when w0pwa moves together with w
     {"w": -1.1, "w0pwa": -1.1},
     {"omegab": 0.052, "mnu": 0.15},
 ]
@@ -288,7 +402,10 @@ RACE_PERTURBATIONS = [
 # same physics evaluated with the numerical knobs pushed far beyond
 # the defaults. The LIKELIHOOD-side table is project data (real-space
 # projects push lmax; Fourier-space projects have no lmax option), so
-# it lives in each project's spec.
+# it lives in each project's spec. halofit_version, dark_energy_model
+# and accurate_massive_neutrino_transfers are physics choices, not
+# accuracy knobs: they repeat the frozen configurations' values, so
+# the update changes the numerics only.
 HIGH_ACCURACY_CAMB_EXTRA_ARGS = {
     "halofit_version": "takahashi",
     "AccuracyBoost": 2.0,       # default 1.05
@@ -340,8 +457,8 @@ BARYON_METHODS = [
 
 # Cosmology shifts a method needs so its OWN training box contains
 # the evaluation point. BACCOemu's omega_baryon floor is 0.04001,
-# exactly above the fiducial omegab = 0.04, so its checks (and its
-# generated data vector) evaluate at omegab = 0.049 - inside the box
+# just above the fiducial omegab = 0.04, so its checks (and its
+# generated data vector) evaluate at omegab = 0.049, inside the box
 # and inside the yaml prior. Generator and checks apply the SAME
 # override, so the chi2 still sits at the minimum by construction.
 BARYON_POINT_OVERRIDES = {
@@ -368,7 +485,7 @@ def _baryon_method(label):
 
 
 def _baryon_dataset(label):
-    """Dataset descriptor name for one feedback method's own vector.
+    """Return the descriptor name of one feedback method's own vector.
 
     Arguments:
       label = a BARYON_METHODS label.
@@ -433,7 +550,7 @@ _FASTPT_COMPARISON_VALUES = [
 
 
 def fastpt_comparison_points(prefix):
-    """The 30 comparison points under one project's parameter prefix.
+    """Return the 30 comparison points under one project's parameter prefix.
 
     Arguments:
       prefix = the sampled-parameter prefix of the project's five
@@ -461,12 +578,13 @@ def fastpt_comparison_points(prefix):
 # non_linear_emul: 2, the frozen contracts' setting) and compare the
 # data vectors. The points are hard-coded draws shared by every
 # project: drawn ONCE, uniformly in omegam [0.26, 0.38], ns
-# [0.93, 0.99], and As_1e9 [1.8, 2.4] with
-# numpy.random.default_rng(20260923) - inside the sampled priors and
-# EE2's training box - and written out here so every run of every
-# project evaluates exactly these cosmologies (the parameter names
-# are cosmology-level, so no project prefix is involved). Every
-# other parameter keeps the project's frozen fiducial value.
+# [0.93, 0.99], and As_1e9 [1.8, 2.4] (a box inside the sampled
+# priors and EE2's training box) with
+# numpy.random.default_rng(20260923), and written out here so every
+# run of every project evaluates exactly these cosmologies (the
+# parameter names are cosmology-level, so no project prefix is
+# involved). Every other parameter keeps the project's frozen
+# fiducial value.
 NONLINEAR_COMPARISON_POINTS = [
     {"omegam": 0.378775, "ns": 0.961148, "As_1e9": 2.311486},
     {"omegam": 0.285929, "ns": 0.948020, "As_1e9": 2.395017},
@@ -553,8 +671,9 @@ def sha256_of(path):
 
     Returns:
       the 64-character lowercase hexadecimal SHA-256 digest of the
-      file's bytes. Reading happens in 1 MiB blocks so the 80 MB
-      covariance never sits in memory at once.
+      file's bytes. Reading happens in 1 MiB blocks so a frozen
+      covariance (some reach hundreds of MB) never sits in memory at
+      once.
 
     Raises:
       OSError when the file cannot be opened or read.
@@ -630,7 +749,7 @@ def evaluate_chi2(model, point):
 
 
 def _evaluate_cached(model, point):
-    """One evaluation with cobaya's caching left on.
+    """Evaluate one point with cobaya's caching left on.
 
     The CFASTPT-vs-FASTPT comparison points share one cosmology and
     differ only in the five IA parameters, so letting cobaya skip
@@ -775,9 +894,11 @@ def report_accuracy(label, chi2_high, default_ref,
     analysis tolerates is a judgment call, not a fixed bound.
 
     Arguments:
-      label       = one line naming the probe and IA model.
-      chi2_high   = chi2 with HIGH_ACCURACY settings, this run.
-      default_ref = the frozen default-settings reference chi2.
+      label        = one line naming the probe and IA model.
+      chi2_high    = chi2 with HIGH_ACCURACY settings, this run.
+      default_ref  = the frozen default-settings reference chi2.
+      default_name = the label printed in parentheses on the
+                     default-settings line.
 
     Returns:
       chi2_high - default_ref, the printed difference.
@@ -963,11 +1084,29 @@ class CocoaTestHarness:
                          "cosmolike_roman_real_interface" (the
                          CFASTPT-vs-FASTPT comparison reads the
                          masked inverse covariance from it).
-      examples         = the project's EXAMPLES table.
-      tatt_point       = the project's TATT_POINT replacements.
-      accuracy_knobs   = the project's ACCURACY_KNOBS table.
+      examples         = the project's EXAMPLES table, {name: entry}.
+                         The harness reads these entry keys:
+                         "frozen_module" (the configuration's file in
+                         frozen/), "likelihood" (the cobaya likelihood
+                         component name), "tatt_dataset" (the data
+                         descriptor of the TATT variant, needed by
+                         tatt=True and by a non-frozen mask), the
+                         optional "nla_dataset" (a synthetic NLA
+                         descriptor), and "emulator": True with
+                         "exact_example" (the exact-physics entry
+                         whose ggl_exclude layout an emulator entry
+                         copies; see load_frozen_info). Other keys
+                         serve the generator and the test modules.
+      tatt_point       = the project's TATT_POINT, {parameter name:
+                         value} replacing the frozen point's TATT
+                         values.
+      accuracy_knobs   = the project's ACCURACY_KNOBS list of (label,
+                         likelihood overrides, camb extra_args
+                         overrides) tuples, each evaluated alone.
       high_accuracy_likelihood = the project's likelihood-side
-                         high-accuracy settings.
+                         high-accuracy settings, {option: value},
+                         applied together with
+                         HIGH_ACCURACY_CAMB_EXTRA_ARGS.
       fastpt_low_settings, fastpt_high_settings = the comparison's
                          pinned fastpt extra_args tables.
       fastpt_points    = the comparison points under the project's
@@ -1234,7 +1373,8 @@ class CocoaTestHarness:
         Raises:
           ValueError when tatt or high_accuracy is requested for an
           emulator entry (the emulators were trained for the shipped
-          IA settings and carry no camb accuracy knobs to push).
+          IA settings and carry no camb accuracy knobs to push), or
+          when a TATT_POINT name is absent from the frozen params.
         """
         from cobaya.yaml import yaml_load
 
@@ -1317,10 +1457,10 @@ class CocoaTestHarness:
         if tatt:
             # a TATT parameter can be SAMPLED in the frozen
             # configuration (it has a prior; build_point then sets
-            # its value in the evaluation point) or FIXED (a plain
-            # value; it must be replaced here, before the model is
-            # built, because a fixed parameter cannot change per
-            # evaluation)
+            # its value in the evaluation point) or FIXED (a block
+            # with a value and no prior; it must be replaced here,
+            # before the model is built, because a fixed parameter
+            # cannot change per evaluation)
             for name, value in self.tatt_point.items():
                 # .get returns None instead of raising when the name
                 # is missing, so the error below can name the
@@ -1427,7 +1567,7 @@ class CocoaTestHarness:
     def _single_model_chi2_impl(self, example, tatt,
                                 high_accuracy=False, knob=None,
                                 baryon=None):
-        """In-process body of single_model_chi2 (worker side).
+        """Evaluate single_model_chi2's quantity in-process (worker side).
 
         Runs inside the worker subprocess only: building a model
         here, next to a model of different dimensions, would abort
@@ -1453,7 +1593,10 @@ class CocoaTestHarness:
           the frozen fiducial (a training-box violation).
 
         Raises:
-          ValueError when knob names no ACCURACY_KNOBS entry.
+          ValueError when knob names no ACCURACY_KNOBS entry;
+          AssertionError when the sampled-parameter set differs from
+          the frozen point (build_point) or, without baryon, when the
+          chi2 is not finite (evaluate_chi2).
         """
         # `"TATT" if tatt else "NLA"` picks the first name when tatt
         # is True, the second otherwise
@@ -1496,10 +1639,10 @@ class CocoaTestHarness:
         if baryon is not None:
             # With the feedback on, a non-finite chi2 means the
             # method REJECTED the frozen fiducial (a training-box
-            # violation; the warning above names the offending
-            # parameter). The B-checks report that as documented
-            # behavior, so hand back None instead of letting the
-            # assertion kill the worker.
+            # violation; the bfmt block logs a warning naming the
+            # offending parameter). The docstring makes that case a
+            # None return the caller can report, so hand back None
+            # instead of letting the assertion kill the worker.
             try:
                 return evaluate_chi2(model, point)
             except AssertionError:
@@ -1507,7 +1650,7 @@ class CocoaTestHarness:
         return evaluate_chi2(model, point)
 
     def _ten_in_a_row_impl(self, example, tatt, ee2=False):
-        """In-process body of ten_in_a_row_chi2 (worker side).
+        """Run ten_in_a_row_chi2's race check in-process (worker side).
 
         Race check: the fiducial evaluated fresh and as 10th of a
         row. On ONE model instance, in order: the fiducial point (the
@@ -1588,14 +1731,14 @@ class CocoaTestHarness:
 
     # ---- baryonic feedback --------------------------------------------------
     def _baryon_accuracy_delta_impl(self, baryon, knob=None):
-        """Delta chi2 for one feedback method, against its own vector.
+        """Compute one feedback method's delta chi2 against its own vector.
 
         The zero-based mechanism at the frozen fiducial: a
         DEFAULT-settings model with this method's feedback on writes
         its theory vector during evaluation (print_datavector); that
         vector becomes the data of a temporary dataset descriptor, so
         the default chi2 against it is zero by construction; a second
-        model - high accuracy, or one accuracy knob alone - evaluates
+        model (high accuracy, or one accuracy knob alone) evaluates
         at the SAME point against that descriptor, and its chi2 IS
 
             delta chi2 = chi2(pushed settings) - chi2(default)
@@ -1636,7 +1779,7 @@ class CocoaTestHarness:
             # the likelihood joins path + filename for EVERY file a
             # descriptor names, so the temporary directory must look
             # like a complete data folder: symlink each frozen data
-            # file in - except the two files written below. frozen/
+            # file in, except the two files written below. frozen/
             # holds a vector and a descriptor of these names (the
             # drift tests' own), and a write to a symlink goes through
             # to its target: it would overwrite the frozen copies
@@ -1665,7 +1808,8 @@ class CocoaTestHarness:
                     f"print_datavector wrote no file at {vector_path}")
             # full-length check: the covariance and the masks select
             # entries by position, so a short vector would misalign
-            # them
+            # them. sum(1 for _ in f) counts lines: the generator
+            # yields 1 per line of the file and sum adds them up
             with open(vector_path) as f:
                 generated_lines = sum(1 for _ in f)
             with open(os.path.join(frozen_data_dir,
@@ -1674,6 +1818,8 @@ class CocoaTestHarness:
             original_vector = None
             for line in descriptor.splitlines():
                 if line.strip().startswith("data_file"):
+                    # split("=", 1) cuts at the first "=" only; [1] is
+                    # the text after it, the vector's file name
                     original_vector = line.split("=", 1)[1].strip()
             with open(os.path.join(frozen_data_dir,
                                    original_vector)) as f:
@@ -1728,7 +1874,7 @@ class CocoaTestHarness:
             shutil.rmtree(workdir, ignore_errors=True)
 
     def _baryon_drift_chi2_impl(self, baryon):
-        """Drift chi2 of one feedback method against its FROZEN vector.
+        """Compute one feedback method's drift chi2 against its FROZEN vector.
 
         The frozen vector was written at freeze time by
         generate_frozen_reference.py --baryons: the default-settings
@@ -1736,7 +1882,7 @@ class CocoaTestHarness:
         frozen fiducial plus the method's cosmology override. At
         freeze time the chi2 against it was zero by construction, so
         any chi2 above the tolerance today means cosmolike or the
-        bfmt theory block changed its prediction since the freeze -
+        bfmt theory block changed its prediction since the freeze:
         the same pinning idea as the reference tests, applied to the
         feedback pipeline.
 
@@ -1772,8 +1918,10 @@ class CocoaTestHarness:
         """Worker-side entry: run one evaluation and save the numbers.
 
         Arguments:
-          function      = "single" (one chi2), "race" (fresh, tenth),
-                          "bdelta", or "bdrift" (the baryon checks).
+          function      = "single" (one chi2); "race" or "race_ee2"
+                          (fresh, tenth; "race_ee2" takes the
+                          nonlinear P(k) from EuclidEmulator2);
+                          "bdelta" or "bdrift" (the baryon checks).
           example       = a key of the project's EXAMPLES table.
           tatt          = "1" for the TATT variant, "0" for NLA.
           high_accuracy = "1" for the pushed numerical settings, "0"
@@ -1830,15 +1978,15 @@ class CocoaTestHarness:
                       high_accuracy=False, knob=None, baryon=None):
         """Spawn one worker subprocess and hand back its result.
 
-        Every model build runs in its own worker: in a project whose
-        examples use different data-set dimensions, the cosmolike C
-        layer aborts a process that initializes both, and every
-        project keeps one architecture so they all behave
+        Every test quantity runs in its own worker: in a project
+        whose examples use different data-set dimensions, the
+        cosmolike C layer aborts a process that initializes both,
+        and every project keeps one architecture so they all behave
         identically.
 
         Arguments:
-          function      = "single", "race", "bdelta", or "bdrift"
-                          (see _worker).
+          function      = "single", "race", "race_ee2", "bdelta", or
+                          "bdrift" (see _worker).
           example       = a key of the project's EXAMPLES table.
           tatt          = True for the TATT variant.
           high_accuracy = True for the pushed numerical settings.
@@ -1847,8 +1995,10 @@ class CocoaTestHarness:
           baryon        = a BARYON_METHODS label, or None.
 
         Returns:
-          the json value the worker wrote: a float for "single", a
-          two-element list [fresh, tenth] for "race".
+          the json value the worker wrote: a float for "single"
+          (None when a baryon method rejected the fiducial), "bdelta"
+          and "bdrift"; a two-element list [fresh, tenth] for "race"
+          and "race_ee2".
 
         Raises:
           RuntimeError naming the configuration when the worker dies
@@ -1883,8 +2033,8 @@ class CocoaTestHarness:
              knob or "", baryon or "", result_path],
             env=environment)
         # the finally below runs on EVERY exit from the try, an
-        # exception included, so the temporary file never outlives
-        # this call
+        # exception included, so once the worker has exited the
+        # temporary file never outlives this call
         try:
             if completed.returncode != 0:
                 raise RuntimeError(
@@ -1904,7 +2054,7 @@ class CocoaTestHarness:
     # ---- test quantities ----------------------------------------------------
     def single_model_chi2(self, example, tatt, high_accuracy=False,
                           knob=None, baryon=None):
-        """chi2 of the frozen fiducial point, evaluated in a fresh worker.
+        """Evaluate the chi2 of the frozen fiducial point in a fresh worker.
 
         This is the quantity the reference tests compare against the
         frozen reference and the quantity the generator stores as
@@ -1947,7 +2097,7 @@ class CocoaTestHarness:
         return None if value is None else float(value)
 
     def baryon_accuracy_delta(self, baryon, knob=None):
-        """Delta chi2 of one feedback method, in a fresh worker.
+        """Compute one feedback method's delta chi2 in a fresh worker.
 
         See _baryon_accuracy_delta_impl for the mechanism (the
         synthetic on-the-fly data vector). Both models of the pair
@@ -1971,7 +2121,7 @@ class CocoaTestHarness:
                                         knob=knob, baryon=baryon))
 
     def baryon_drift_chi2(self, baryon):
-        """Drift chi2 of one feedback method, in a fresh worker.
+        """Compute one feedback method's drift chi2 in a fresh worker.
 
         See _baryon_drift_chi2_impl for the mechanism (the frozen
         feedback vector written at freeze time).
@@ -1992,7 +2142,7 @@ class CocoaTestHarness:
                                         baryon=baryon))
 
     def ten_in_a_row_chi2(self, example, tatt, ee2=False):
-        """Race check, evaluated in one fresh worker subprocess.
+        """Run the race check in one fresh worker subprocess.
 
         The whole 11-evaluation sequence runs inside ONE worker: the
         race check needs the evaluations to share a model instance,
@@ -2030,7 +2180,7 @@ class CocoaTestHarness:
     # ---- the CFASTPT vs FASTPT comparison -----------------------------------
     def _fastpt_comparison_info(self, example, fastpt, high,
                                 fastpt_settings, mask="frozen"):
-        """The cobaya input of one comparison block.
+        """Build the cobaya input of one comparison block.
 
         Starts from the project's frozen TATT configuration
         (load_frozen_info) and applies the comparison's two
@@ -2103,7 +2253,8 @@ class CocoaTestHarness:
 
         # promote any fixed comparison parameter to a sampled one
         # with its prior box; the evaluation base gains it with a
-        # zero default in _fastpt_comparison_block
+        # zero default in _fastpt_comparison_block. ref and proposal
+        # only serve a sampler, which these tests never run.
         for name in self.fastpt_points[0]:
             spec = info["params"].get(name)
             if (isinstance(spec, dict) and "value" in spec
@@ -2122,7 +2273,7 @@ class CocoaTestHarness:
                                  fastpt_settings=None, label=None,
                                  vectors_dir=None,
                                  reference_label=None, mask="frozen"):
-        """The 30-point sweep on ONE model: the comparison's worker half.
+        """Run the 30-point sweep on ONE model: the comparison's worker half.
 
         Builds the frozen TATT configuration with one
         perturbation-theory implementation selected and evaluates
@@ -2146,7 +2297,7 @@ class CocoaTestHarness:
         (see cfastpt_vs_fastpt_chi2s): process isolation is what
         guarantees that nothing computed under the other
         implementation, or under the other accuracy settings,
-        survives into this block - cobaya's caches, CAMB's state, and
+        survives into this block: cobaya's caches, CAMB's state, and
         the C globals of the compiled cosmolike interface all die
         with their process, so there is no cache to flush by hand.
 
@@ -2178,11 +2329,14 @@ class CocoaTestHarness:
                     from a zero baseline.
 
         Returns:
-          {"chi2s": the per-point chi2 list against the shipped data
-          (informational), "dchi2_vs_reference": the per-point
-          delta^T C^-1 delta list or None, "eval_seconds": per-point
-          wall-clock seconds (the first entry carries CAMB plus the
-          PT tables; the rest are the steady data-vector cost)}.
+          {"chi2s": the per-point chi2 list (informational; against
+          the shipped data under the frozen mask, against the CFASTPT
+          fiducial vector under any other), "dchi2_vs_reference": the
+          per-point delta^T C^-1 delta list or None, "eval_seconds":
+          per-point wall-clock seconds}. The block's first evaluation
+          carries CAMB plus the PT tables: under the frozen mask that
+          is eval_seconds[0]; under another mask it is the baseline
+          evaluation, timed and printed separately before the loop.
 
         Raises:
           AssertionError when the sampled-parameter set differs from
@@ -2196,8 +2350,8 @@ class CocoaTestHarness:
         require_cocoa_environment()
         code = "FASTPT" if fastpt else "CFASTPT"
         if fastpt_settings is not None:
-            # name the fastpt settings by their boost, the one entry
-            # the low and high tables differ in
+            # name the fastpt settings by their accuracyboost, which
+            # differs between the low and high tables
             code += f"(boost {fastpt_settings['accuracyboost']:g})"
         setting = "high accuracy" if high else "default settings"
         print(f"  building model ({example}, TATT, {code}, {setting}, "
@@ -2435,7 +2589,7 @@ class CocoaTestHarness:
 
     def cfastpt_vs_fastpt_chi2s(self, example, high=False,
                                 mask="frozen"):
-        """The comparison-point quantities under the three configurations.
+        """Compute the per-point quantities under the three configurations.
 
         The same 30 hard-coded intrinsic-alignment points evaluated
         three times with everything else identical:
@@ -2508,7 +2662,7 @@ class CocoaTestHarness:
                                     vectors_dir=None,
                                     reference_label=None,
                                     mask="frozen"):
-        """The ten-cosmology sweep on ONE nonlinear-P(k) source.
+        """Run the ten-cosmology sweep on ONE nonlinear-P(k) source.
 
         The worker half of the Halofit-vs-EE2 advisory checks
         (NL1/NL2). Builds the frozen NLA configuration with one
@@ -2610,7 +2764,9 @@ class CocoaTestHarness:
             started = time.perf_counter()
             # the chi2 against the dataset's stored vector is
             # discarded: the evaluation's purpose is the printed
-            # theory vector
+            # theory vector. {**base, **cosmology} is a NEW
+            # dictionary: the fiducial with this cosmology's three
+            # values written over it
             _evaluate_cached(model, {**base, **cosmology})
             elapsed = time.perf_counter() - started
             eval_seconds.append(elapsed)
@@ -2651,6 +2807,8 @@ class CocoaTestHarness:
                     f"disagree ({own.shape}, {ref.shape}, "
                     f"{icov.shape})")
             delta = own - ref
+            # the quadratic form delta^T C^-1 delta, as in
+            # _fastpt_comparison_block
             dchi2s.append(float(delta @ icov @ delta))
         return {"dchi2_vs_reference": dchi2s,
                 "eval_seconds": eval_seconds}
@@ -2662,8 +2820,9 @@ class CocoaTestHarness:
 
         The same isolation mechanism as
         _run_fastpt_comparison_worker (see there): the fresh process
-        is the cache flush; the child imports the project's
-        cocoa_test_utils by path and calls the shim's re-exported
+        is the cache flush; the child pins OMP_NUM_THREADS, puts the
+        project's tests/ first on its import path, imports
+        cocoa_test_utils, and calls the shim's re-exported
         _nonlinear_comparison_block.
 
         Arguments:
@@ -2707,7 +2866,7 @@ class CocoaTestHarness:
         return result
 
     def halofit_vs_ee2_dchi2s(self, example, mask="frozen"):
-        """The per-cosmology Halofit-vs-EE2 differences (NL1/NL2).
+        """Compute the per-cosmology Halofit-vs-EE2 differences (NL1/NL2).
 
         The ten hard-coded cosmologies
         (NONLINEAR_COMPARISON_POINTS) evaluated twice with
@@ -2737,6 +2896,10 @@ class CocoaTestHarness:
         Returns:
           the per-cosmology delta^T C^-1 delta list, index-aligned
           with NONLINEAR_COMPARISON_POINTS.
+
+        Raises:
+          subprocess.CalledProcessError when a block's worker fails
+          (_run_nonlinear_comparison_worker).
         """
         vectors_dir = tempfile.mkdtemp(
             prefix="cocoa_nonlinear_vectors_")
@@ -2778,7 +2941,8 @@ class CocoaTestHarness:
 # run the --mask choices are the first project's. The chosen values
 # still reach every project through the environment variables, and a
 # mask a project does not offer is refused by its harness
-# (_fastpt_comparison_info raises ValueError).
+# (_fastpt_comparison_info and _nonlinear_comparison_block raise
+# ValueError).
 
 
 def conftest_addoption(parser, mask_choices=("frozen",)):
@@ -2789,9 +2953,10 @@ def conftest_addoption(parser, mask_choices=("frozen",)):
     frozen default settings; --high=1 repeats them with the
     HIGH_ACCURACY settings applied to both implementations (the full
     comparison is both invocations). --mask selects the scale-cut
-    mask of the same sweeps: "frozen" (the default) keeps each
-    example's own tatt_dataset, and every other offered name selects
-    the matching frozen dataset variant.
+    mask of the CFASTPT-vs-FASTPT and Halofit-vs-EE2 sweeps:
+    "frozen" (the default) keeps each example's own dataset, and
+    every other offered name selects the matching frozen dataset
+    variant.
 
     Arguments:
       parser       = pytest's option parser (supplied by pytest to

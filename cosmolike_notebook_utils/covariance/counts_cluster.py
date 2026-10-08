@@ -1,4 +1,4 @@
-"""Cluster count means, Poisson/SSC terms and count-matter cross covariance.
+"""Compute cluster count means, Poisson/SSC terms and count-matter cross covariance.
 
 The count bins are exclusive observed categories: an object is assigned to
 one richness/redshift bin. Their true-redshift or true-mass distributions
@@ -8,8 +8,10 @@ while the common large-scale density field correlates the bins through SSC.
 The caller supplies the selected abundance and its response, including any
 environment-dependent selection. This module does not choose that physical
 model. Count-two-point SSC uses the same shell responses as the two-point
-covariance. The non-SSC count-two-point term is a separate calculation;
-an SSC cross block alone is not a complete joint cluster covariance.
+covariance. The separate non-SSC count-two-point term is computed by
+count_matter_cross, for projected matter and linearly biased galaxy
+partners only; an SSC cross block alone is not a complete joint cluster
+covariance.
 """
 
 import numpy as np
@@ -20,37 +22,42 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
     """Project the non-SSC cross covariance of counts and matter spectra.
 
     Schaan, Takada & Spergel (2014), arXiv:1406.3330, Eq. 35 gives
-    integral dchi W_A W_B/f_K^2 [J02(k,k)+2 P_lin(k) I11(k) J11_i(k)].
-    The first term is matter in a counted halo. The second correlates
-    that halo with a different halo; either power-spectrum leg may belong
-    to the counted halo, giving the factor two. The survey area in the
-    absolute count cancels the inverse area of this local covariance.
-    The SSC term is separate and DOES depend on the survey footprint.
+    integral dchi W_A W_B/f_K^2 [J02_i(k,k)+2 P_lin(k) I11(k) J11_i(k)].
+    The first term places both matter points in the counted halo. The
+    second correlates that halo with a different halo; either
+    power-spectrum leg may belong to the counted halo, giving the factor
+    two. The survey area in the absolute count cancels the inverse area
+    of this local covariance. The SSC term, computed separately, does
+    depend on the survey footprint.
 
     Arguments:
         interface = compiled project with covariance_project.
         distance, dchi = positive float [state], f_K and radial weights, L.
         pair_window = finite float [observable,state], W_A*W_B, L^-2.
             These are projected matter fields with fixed ensemble-mean
-            normalization. Constant linear galaxy-bias
-            factors can be included; discrete cluster legs and shared-object
-            catalog noise require additional terms and are not covered.
+            normalization. Constant linear galaxy-bias factors can be
+            included; discrete cluster legs and shared-object catalog
+            noise require additional terms and are not covered.
             Observed-catalog-mean corrections are not supplied here.
         transfer = finite float [observable,k], product of source-leg spin
             factors in the intended harmonic convention (ones for scalars).
-        linear_power, i11 = finite float [state,k], P_lin in L^3 and the
-            dimensionless ALL-HALO biased one-profile moment. Each column
-            follows one angular multipole, with k=(ell+1/2)/f_K per state.
+        linear_power, i11 = finite float [state,k], nonnegative P_lin in
+            L^3 and the dimensionless biased one-profile moment of all
+            halos, not only the selected ones. Each column follows one
+            angular multipole, with k=(ell+1/2)/f_K per state.
         moments = output of covariance_cluster_moments on those same k
             samples. Its selected weights must include the count catalog's
-            radial selection ONCE. J11 is dimensionless; J02 has units L^3.
+            radial selection exactly once. J11 [state,count,k] is
+            dimensionless; J02 [state,count,k*(k+1)/2] has units L^3.
     Returns:
-        Owned one_halo, two_halo and total [count,observable,multipole] arrays.
-        total is only the non-SSC count-spectrum cross block. It is neither
-        a full joint covariance nor a count-count covariance. Angular or
-        bandpower operators can be applied to its final axis afterwards.
+        Dict of owned, dimensionless one_halo, two_halo and total arrays,
+        each [count,observable,multipole]. total is only the non-SSC
+        count-spectrum cross block. It is neither a full joint covariance
+        nor a count-count covariance. Angular or bandpower operators can
+        be applied to its final axis afterwards.
     Raises:
-        ValueError for incompatible shapes or nonphysical radial inputs.
+        ValueError for incompatible shapes, nonpositive distance or dchi,
+        negative linear power or nonfinite inputs.
     """
     distance = np.asarray(a=distance, dtype=float)
     dchi = np.asarray(a=dchi, dtype=float)
@@ -124,7 +131,7 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
         dchi = positive float [nnode] quadrature weights, in the same L.
         density = nonnegative float [ncount,nnode] selected abundance, L^-3.
         derivative = finite float of the same shape, dn_i/d(delta_b), L^-3.
-        area_sr = survey solid angle, inside (0,4*pi].
+        area_sr = survey solid angle in steradians, inside (0,4*pi].
         background_variance = nonnegative float [nnode] sigma_b^2, in L.
             This is the long-mode Limber strength, not a dimensionless
             finite-shell variance. Recompute it when the mask changes.
@@ -132,11 +139,12 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
             after the intended angular/bandpower transform and catalog-mean
             subtraction. None requests no count-two-point SSC block.
     Returns:
-        Dict with mean [ncount]; poisson, ssc, total [ncount,ncount];
-        cross_ssc [ncount,ndata] (zero columns if not requested); and
-        shell_density, shell_response [ncount,nnode], in L^-1.
-        total refers ONLY to the count-count Poisson+SSC model. No array
-        is repaired to enforce positive eigenvalues. No files are written.
+        Dict with mean [ncount] expected counts; poisson, ssc, total
+        [ncount,ncount] in squared counts; cross_ssc [ncount,ndata] (zero
+        columns if not requested); and shell_density, shell_response
+        [ncount,nnode], in L^-1. total covers only the count-count
+        Poisson+SSC model. No array is repaired to enforce positive
+        eigenvalues. No files are written.
     Raises:
         ValueError for incompatible shapes or nonphysical integration inputs.
         Shared-object or weighted count catalogs require a different Poisson
@@ -173,17 +181,19 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
     shell = shells["shell_density"]
     response = shells["shell_response"]
 
-    # Each shell supplies expected objects, not a normalized galaxy window.
-    # Integrating against a row of ones counts all of them. The existing
-    # C contraction owns the ordered sums and OpenMP work for every bin.
+    # Each shell supplies expected objects per unit distance, dN_i/dchi,
+    # not a normalized galaxy window. Integrating against a row of ones
+    # counts all of them. The C contraction owns the ordered sums and
+    # OpenMP work for every bin.
     unity = np.ones(shape=(1, distance.size), dtype=float)
     mean = interface.covariance_project(left=shell, right=unity, weight=dchi)
     mean = mean[:, 0]
     poisson = np.diag(mean)
 
-    # A positive shell variance multiplies the outer product of the SAME
-    # response vector. Every cross-bin term is retained, including bins
-    # whose true-redshift distributions overlap despite distinct labels.
+    # Each shell adds its nonnegative weight dchi*sigma_b^2 times the outer
+    # product of one response vector with itself, so count SSC is positive
+    # semidefinite. Every cross-bin term is retained, including bins whose
+    # true-redshift distributions overlap despite distinct labels.
     weight = np.ascontiguousarray(dchi*variance)
     ssc = interface.covariance_project(left=response, right=response, weight=weight)
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T

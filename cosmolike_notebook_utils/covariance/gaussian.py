@@ -5,9 +5,11 @@ cross-bin spectra are absent from the measured data vector. The routines
 here always receive the complete field matrix. They never apply a survey's
 pair-selection mask to those internal spectra.
 
-Only the Gaussian fsky approximation is assembled here. A supplied mask
-corrects the pure pair-noise term; it does not turn the signal part into
-an exact cut-sky estimator covariance. The C components perform the sums.
+Only the Gaussian fsky approximation is assembled here: each multipole
+has about (2*ell+1)*fsky independent modes, with fsky=area/(4*pi). A
+supplied mask corrects the pure pair-noise term; it does not turn the
+signal part into an exact cut-sky estimator covariance. The C components
+perform the sums.
 """
 
 import numpy as np
@@ -24,7 +26,8 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
         ell = finite 1D multipoles >= 1, in their requested output order.
         a_edges, nquad = common radial panels and Gaussian nodes per panel.
         nwindow = samples for the common lensing-efficiency integrals.
-        include_ia, include_rsd = include the NLA or galaxy RSD windows.
+        include_ia = include the configured NLA or TATT intrinsic alignment.
+        include_rsd = include the galaxy RSD window.
         linear = use linear rather than the configured nonlinear power.
         batch_size = positive multipole count per C call; storage only.
     Returns:
@@ -32,7 +35,10 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
         [4,nradial], windows [3,nfield,nradial], nlens and nsource. Arrays
         are owned. Geometry and base windows come from the first batch.
         Spectra are dimensionless; geometry rows are a, chi, f_K and dchi,
-        with distances in c/H0. Base windows have inverse-distance units.
+        with distances in c/H0. Base windows have inverse-distance units;
+        their rows are density, lensing (magnification for lenses) and
+        signed NLA. b_spectra [nell,nfield,nfield] holds the TATT B-mode
+        spectra, or is None for NLA or disabled IA.
 
     Each multipole has its own radial integral. Dividing the multipoles
     into batches therefore leaves every node and every sum in that integral
@@ -112,7 +118,8 @@ def gaussian_block(interface, spectra, noise, fields, left, right,
     Arguments:
         interface = initialized project's compiled interface.
         spectra = signal-only float [nell,nfield,nfield], observed convention.
-        noise = float [nfield] independent white-noise powers, per steradian.
+        noise = float [nfield] independent white-noise powers 1/n or
+            sigma_component^2/n, with n per steradian (see noise_powers).
         fields = four integer IDs (A,B,C,D), zero based.
         left, right = float [nbin,nell] operators on consecutive integer ell.
         ell_min = first integer multipole, >= 0.
@@ -214,6 +221,9 @@ def realspace_block(interface, spectra, noise, fields, operators,
     noise_ab = np.ascontiguousarray(
         [noise[identifiers[0]], noise[identifiers[1]]], dtype=float
     )
+
+    # Disjoint angular bins share no object pairs, so pure noise enters
+    # only the diagonal of the block, once per bin.
     for bin_index, pair_area in enumerate(areas):
         result[bin_index, bin_index] += interface.covariance_noise_pair(
             probe_left=probe_left,

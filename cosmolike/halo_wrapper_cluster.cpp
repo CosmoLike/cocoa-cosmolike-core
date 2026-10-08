@@ -293,11 +293,12 @@ arma::Cube<double> prob_richness_bin_given_m_cpp(
 //   P1h_nl(k, a) = int dlnM dn/dlnM P(nl|M) (M/rho_m) u_NFW(k|M) / n_nl
 //                                            (one-halo cluster-matter)
 //
-// over [cluster.m[RANGE_MIN], cluster.m[RANGE_MAX]]. halo_cluster.c tabulates them on
-// an a grid that covers the support of every cluster redshift bin and
-// returns 0 outside it; the tables refill when the cosmology, the
-// cluster model, the selection kernels or the mass-observable relation
-// change.
+// over [cluster.m[RANGE_MIN], cluster.m[RANGE_MAX]]. halo_cluster.c
+// tabulates them on an a grid that covers the support of every cluster
+// redshift bin and returns 0 outside it; the tables refill when the
+// cosmology, the precision settings (Ntable), the cluster model, the
+// selection kernels, the mass-observable relation or, under
+// CLUSTER_SELECTION_Y1, the selection-bias parameters change.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -432,8 +433,8 @@ arma::Mat<double> bcl_richness_cpp(
 // spline in ln k, linear in a, flat below the lowest tabulated k and a
 // power law above the highest) after cluster_warmup on the calling
 // thread. cluster_warmup builds this table only when cluster lensing is
-// on (cluster.probe[CLUSTER_PROBE_CS]); otherwise the first read builds it, here, on
-// the calling thread.
+// on (cluster.probe[CLUSTER_PROBE_CS]); otherwise the first read builds
+// it, here, on the calling thread.
 //
 // Parameters:
 //   k  - wavenumber in (c/H0)^-1
@@ -808,7 +809,7 @@ arma::Cube<double> W_cluster_cpp(
 
 // ---------------------------------------------------------------------------
 // Magnification kernel of the clusters of redshift bin ni,
-// W_mag_cluster(a) = 1.5 Omega_m f_K(chi(a))/a g_cluster(a), WITHOUT
+// W_mag_cluster(a) = 1.5 Omega_m f_K(chi(a))/a g_cluster(a), without
 // the coefficient cluster.magnification the spectra multiply it by.
 //
 // Calls radial_weights_cluster.c W_mag_cluster with fK = f_K(chi(a))

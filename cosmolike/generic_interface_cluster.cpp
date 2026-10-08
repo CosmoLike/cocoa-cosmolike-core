@@ -175,7 +175,7 @@ void reset_cluster()
 //
 //   4x2pt_N = CL+GC of arXiv 2503.13631: gg + cg + N + cc + cs
 //   6x2pt_N = CL+3x2pt: every block
-//   n, n_cc, n_cs, cs, cc, cg: subsets for the milestones and the tests
+//   n, n_cc, n_cs, cs, cc, cg: subsets for validation runs and tests
 //   3x2pt   = the joint layout with every cluster probe off
 // ---------------------------------------------------------------------------
 void init_probes_cluster(std::string possible_probes)
@@ -394,7 +394,7 @@ void init_cluster_adopt_limber(
 // (the richness binning belongs to that key); a new number of bins also
 // draws cluster.random_pairs (the w_cc richness-pair map).
 //
-// Validation: equal sizes within MAX_SIZE_ARRAYS, finite edges with
+// Validation: equal sizes within MAX_SIZE_ARRAYS, no NaN edge, and
 // 0 < lambda_min < lambda_max (the MOR works in ln lambda).
 // ---------------------------------------------------------------------------
 void init_cluster_richness_bins(vector lambda_min, vector lambda_max)
@@ -476,9 +476,9 @@ void init_cluster_richness_bins(vector lambda_min, vector lambda_max)
 // Cache invalidation: when the table or an edge changed (fdiff), draws
 // cluster.random_zdist; a new number of bins also draws
 // cluster.random_pairs and clears the w_cg pairing (cg_lens_bin), so
-// init_cluster_pairs must run again before the next data vector. The fine-z kernel table of
-// redshift_spline_cluster.c is rebuilt by cluster_warmup at the next
-// computation, single-threaded.
+// init_cluster_pairs must run again before the next data vector. The
+// fine-z kernel table of redshift_spline_cluster.c is rebuilt by
+// cluster_warmup at the next computation, single-threaded.
 //
 // Validation: 0 < nbin <= MAX_SIZE_ARRAYS, at least two z rows, strictly
 // increasing z >= 0, finite non-negative kernels with a positive maximum,
@@ -964,7 +964,8 @@ matrix compute_cluster_ytransform_matrix()
         Mpc/h (= chi in a flat universe), r_0 in comoving Mpc/h.
       The redshift factor is the lighthouse s3 extension (0 in the paper).
    2. theta = the area-weighted center of each angular bin (radians),
-      zbar = zmid_cluster(ni), the nominal bin midpoint.
+      zbar = zmid_cluster(ni), the nominal bin midpoint (as lighthouse;
+      the paper defines zbar as the mean redshift of the bin's clusters).
    3. Sigma and w_cg carry B, w_cc carries B^2 (one factor per cluster
       leg); the counts carry none. */
 //
@@ -1183,9 +1184,9 @@ static void compute_cc_block_masked(
 //
 /* PHYSICAL DERIVATION & LOGIC FLOW
    1. gamma_t(theta_k) of the (cluster bin, source bin, richness bin) row
-      at EVERY theta bin: T couples bin i to bins i-4 .. N-1, so a masked
-      bin still feeds the unmasked ones (only a fully masked row is
-      skipped).
+      at every theta bin with the Y transform (at the unmasked bins only
+      without it): T couples bin i to bins i-4 .. N-1, so a masked bin
+      still feeds the unmasked ones (only a fully masked row is skipped).
    2. Localization, eq (15): Sigma_i = sum_k T_ik gamma_t(theta_k)
       (cluster.ytransform = 1); Sigma = gamma_t otherwise (Y1).
    3. Selection bias, eq (23), after the transform: Sigma_i *= B_i.
@@ -1303,8 +1304,10 @@ vector compute_data_vector_cluster_masked()
   // --- 2. CLUSTER BLOCKS ---
 
   if (1 == any_cluster_probe()) {
-    // every lazily filled cluster table is built here, single-threaded,
-    // before any threaded loop of a C function reads it
+    // the pair maps and the lazily filled cluster tables are built here,
+    // single-threaded, before any threaded loop of a C function reads
+    // them (cluster_warmup skips the one-halo table when cluster lensing
+    // is off; only the cs block reads it)
     warmup_cluster_pair_maps();
     cluster_warmup();
 
@@ -1647,7 +1650,7 @@ static matrix read_npy_packed_upper_cov(const std::string& file_name, const int 
 // Stages after assembly (see the class header for why the squeezed
 // matrix is the one inverted):
 //   squeeze to the unmasked entries -> positive diagonal check -> eig_sym
-//   check of the CORRELATION matrix (every eigenvalue > 0) -> invert it by
+//   check of the correlation matrix (every eigenvalue > 0) -> invert it by
 //   solve(R, I) and check the residual R R^-1 - I -> rescale by the
 //   standard deviations -> expand the inverse to the full layout (zero rows
 //   and columns at masked entries).

@@ -62,17 +62,19 @@ namespace cosmolike_interface
 //
 // Cosmolike caches its expensive tables in C static variables keyed on
 // the .random members of the global structs (cosmology.random,
-// Ntable.random, nuisance.random_*, redshift.random_*, cmb.random).
-// Each cached function stores the nonce its table was built with and
-// starts by comparing (fdiff/fdiff2) that copy against the current
-// struct member: equal = reuse the table, different = rebuild.
+// Ntable.random, nuisance.random_*, redshift.random_*, tomo.random_ggl,
+// cmb.random, and cluster.random_* in the cluster interface). Each
+// cached function stores the nonce its table was built with and starts
+// by comparing (fdiff2) that copy against the current struct member:
+// equal = reuse the table, different = rebuild.
 //
-// The set_/init_ functions in generic_interface.cpp write a fresh draw
-// into the relevant member only when an input actually changed, so one
-// draw invalidates exactly the tables keyed on that member:
+// The set_ functions in generic_interface.cpp write a fresh draw into
+// the relevant member only when an input actually changed (most init_
+// functions, called once at setup, draw on every call), so one draw
+// invalidates exactly the tables keyed on that member:
 //
 //   set_* sees a changed input -> X.random = RandomNumber::get()
-//     -> next C call finds fdiff(cache, X.random) -> table rebuilt
+//     -> next C call finds fdiff2(cache, X.random) -> table rebuilt
 //
 // A Mersenne-Twister-64 singleton seeded from std::random_device;
 // draws are uniform on [1, 2^64), so a nonce is never 0 (the value of
@@ -129,7 +131,9 @@ class RandomNumber
 //   data_masked_         = data vector, full length, zeroed off-mask
 //   cov_masked_, inv_cov_masked_
 //                        = covariance and inverse, full layout, with
-//                          masked rows/columns zeroed
+//                          masked rows/columns zeroed (the covariance
+//                          keeps its diagonal so it stays invertible;
+//                          the inverse zeroes the diagonal too)
 //   data_masked_sqzd_, cov_masked_sqzd_, inv_cov_masked_sqzd_
 //                        = the same content compacted to sqzd layout
 //
@@ -302,9 +306,9 @@ private:
 // name = meaning of the wrapped fields:
 //   fwhm                   = kappa-map beam fwhm (rad)
 //   healpixwin             = HealPix pixel window, one entry per l
-//   lmink_wxk, lmaxk_wxk   = multipole range of the w_xk sums
+//   lk_wxk[RANGE_MIN/MAX]  = multipole range of the w_xk sums
 //   nbp_kk                 = number of kk band powers
-//   lminbp_kk, lmaxbp_kk   = multipole range entering the bands
+//   lbp_kk[RANGE_MIN/MAX]  = multipole range entering the bands
 //   binning_matrix_kk      = (nbp) x (lmax - lmin + 1) band weights
 //   theory_offset_kk       = per-band offset subtracted from theory
 //   alpha_Hartlap_cov_kkkk = kkkk covariance debias factor
@@ -694,8 +698,10 @@ void init_probes(
 
 void initial_setup();
 
-// Keep the linked OpenBLAS at one thread. Explicit CosmoLike OpenMP
+// Ask the linked OpenBLAS for one thread. Explicit CosmoLike OpenMP
 // loops own parallelism; this setting is not restored after inversion.
+// A pthreads OpenBLAS keeps the limit; an OpenMP OpenBLAS resizes its
+// team from omp_get_max_threads() at its next call (generic_interface.cpp).
 // Has no effect when the linked BLAS does not export the OpenBLAS API.
 void set_blas_single_threaded();
 
@@ -853,7 +859,7 @@ arma::Col<double> compute_add_baryons_pcs(arma::Col<double> Q, arma::Col<double>
 //   M = number of two-point probes: 3 = 3x2pt, 6 = 6x2pt
 //
 // Block sizes (Nlen = Ntable.Ntheta real / like.Ncl fourier):
-//   sizes(0) = 2*Ntheta*shear_Npowerspectra  real ss: xi+ AND xi-
+//   sizes(0) = 2*Ntheta*shear_Npowerspectra  real ss: xi+ and xi-
 //            = Ncl*shear_Npowerspectra       fourier ss: EE only
 //   sizes(1) = Nlen*ggl_Npowerspectra        gs (lens, source) pairs
 //   sizes(2) = Nlen*clustering_Npowerspectra gg auto pairs
@@ -1219,7 +1225,9 @@ arma::Col<double> compute_add_calib_and_set_mask_Mx2pt_N(
 //
 // Only mask == 1 entries are computed; masked ones stay at the
 // caller's zeros. Fourier ss additionally skips ells at or above
-// like.lmax_shear - the shear ell cut rides on top of the mask file.
+// like.lmax_shear: those entries keep theory 0 even where the mask is
+// 1, and the data and inverse covariance keep them, so the mask file
+// must also exclude them or chi2 compares the data there against 0.
 //
 // kk bandpower branch (IPCMB::is_kk_bandpower() == 1):
 //   zero the bands -> C_kk(L) at every integer L in [lminbp, lmaxbp]
@@ -1598,7 +1606,7 @@ arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
 //     -> validate: every entry is 0 or 1 (after the +1e-13
 //        float-to-int rounding guard)
 //     -> zero the blocks of probes disabled by init_probes: the file
-//        mask AND the like.* probe flags both gate an entry
+//        mask and the like.* probe flags both gate an entry
 //     -> ndata_sqzd_ = number of surviving 1s (must be > 0)
 //     -> index_sqzd_(i) = running count of 1s before i, -1 if masked
 //
