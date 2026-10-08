@@ -47,8 +47,9 @@ not a substitute for those physical derivations.
 One radial rule supplies all count and two-point shell responses. The
 selected own-profile contribution is J11/n at fixed reference n; subtract
 the observed catalog response once as (U_A+U_B)*C_AB after angular
-projection. U=chi^2*B/nbar for cluster density, and zero for shear.
-Absolute counts instead respond as Omega*chi^2*B. Their common weighted
+projection. U=f_K^2*B/nbar for cluster density, and zero for shear.
+Absolute counts instead respond as Omega*f_K^2*B (f_K is the transverse
+comoving distance; the implementation uses it, not chi). Their common weighted
 outer product supplies all SSC cross blocks, including cross-redshift
 and cross-richness categories.
 
