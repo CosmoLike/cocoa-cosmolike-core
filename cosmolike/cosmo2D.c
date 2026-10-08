@@ -39,7 +39,7 @@
 //                       probes: gg reads p_gg/p_gm and gs reads p_gm
 //                       from halo.c (Limber-only; no RSD, no one-loop
 //                       bias; gs is NLA-only); the gk batched path
-//                       still aborts. 0 by default.
+//                       aborts. 0 by default.
 //   include_halo_IA   = halo-model intrinsic alignments (Fortuna et al.
 //                       2021; halo.c ia_* readers) in the Limber ss and
 //                       gs engines: NLA 2-halo for red centrals times
@@ -49,10 +49,13 @@
 //                       scale-cut responses abort. Runtime
 //                       (set_include_halo_IA); 0 by default.
 //   include_RSD_GS/GK = add the W_RSD (redshift-space distortion)
-//                       kernel to that probe's Limber integrand
-//   include_RSD_GG    = same gate for gg; defaults to 1 so the Limber
-//                       C_gg carries the RSD term the non-Limber
-//                       C_cl_tomo always includes
+//                       kernel to that probe's Limber integrand; GS
+//                       also gates the RSD row of the non-Limber
+//                       C_gs_tomo
+//   include_RSD_GG    = same gate for gg, in the Limber C_gg and in
+//                       the RSD row of the non-Limber C_cl_tomo (the
+//                       FKEM pair cancels at high l only when both
+//                       carry the term); 1 by default
 //   include_RSD_GY    = never read (no gy probe in this file)
 static int include_HOD_GX = 0; // 0 or 1
 static int include_halo_IA = 0; // 0 or 1
@@ -64,8 +67,10 @@ static int include_RSD_GY = 0; // 0 or 1
 // ---------------------------------------------------------------------------
 // Runtime switch of include_HOD_GX (generic_interface.cpp
 // init_include_HOD_GX; the likelihoods read the yaml key of the same
-// name). The C_l^gg interpolation table keys its cache on the flag, so
-// flipping it rebuilds the table on the next read.
+// name). The C_l^gg and C_l^gs interpolation tables key their caches on
+// the flag, so flipping it rebuilds them on the next read. The real-space
+// projections key on nuisance.random_galaxy_bias instead, which
+// init_include_HOD_GX redraws on a flip.
 // ---------------------------------------------------------------------------
 void set_include_HOD_GX(const int flag)
 {
@@ -139,23 +144,25 @@ static void halo_IA_unsupported(const char* where)
 // Real space (the public entry points the data vector calls):
 //
 //   xi_pm_tomo / w_gammat_tomo / w_gg_tomo / w_gk_tomo / w_ks_tomo
-//     -> l = 1..LMIN_tab:        C_xy_tomo_limber_nointerp_batch
+//     -> l = 1..LMIN_tab-1:      C_xy_tomo_limber_nointerp_batch
 //                                (exact quadrature per integer multipole)
-//     -> l = LMIN_tab..LMAX:     C_xy_tomo_limber builds the log-spaced
+//     -> l = LMIN_tab..LMAX-1:   C_xy_tomo_limber builds the log-spaced
 //                                C_l table (optionally: exact quadrature
 //                                on a coarse grid -> cubic-spline
 //                                upsampling onto the dense table)
 //                                -> C_xy_tomo_limber_fill reads the
 //                                table at every integer l (AVX2 batch)
-//     -> Legendre sum over l = 1..LMAX against the bin-averaged kernels
+//     -> Legendre sum over l = 1..LMAX-1 against the bin-averaged kernels
 //
 // Limber engines (one chain per probe):
 //
 //   C_xy_tomo_limber_nointerp_ells
 //     -> create_cosmo_nodes      (chi, D, H/H0, dchi/da at the
-//                                Gauss-Legendre nodes; ell/bin
-//                                independent, computed once; the lens
-//                                bins of gs, gg, gk go through
+//                                Gauss-Legendre nodes; ell
+//                                independent, computed once per call:
+//                                one node set for ss, one per bin for
+//                                gs, gg, gk, ks; the lens bins of gs,
+//                                gg, gk go through
 //                                create_cosmo_nodes_lens, one rule on
 //                                the n(z) support and one on the
 //                                magnification foreground)
@@ -194,8 +201,9 @@ static void halo_IA_unsupported(const char* where)
 //   l - multipole moment
 //
 // Returns:
-//   B_l for l inside [cmb.lk_wxk[RANGE_MIN], cmb.lk_wxk[RANGE_MAX]], the multipole range
-//   used for the CMB lensing cross-correlations (gk, ks, kk); 0 outside it
+//   B_l for l inside [cmb.lk_wxk[RANGE_MIN], cmb.lk_wxk[RANGE_MAX]], the
+//   multipole range of the real-space CMB-lensing cross-correlation sums
+//   (gk, ks); 0 outside it
 // ---------------------------------------------------------------------------
 double beam_cmb(
     const int l  // multipole moment
@@ -253,19 +261,20 @@ static int has_b2_galaxies(void) {
 // SIMD type aliases for readability.
 //
 // All SIMD code goes through SIMDe (SIMD Everywhere), which provides
-// portable intrinsics that compile to native AVX2/SSE2 on x86 and fall
-// back to scalar emulation on other architectures (ARM, POWER, etc.).
+// portable intrinsics: native AVX2/SSE2 instructions on x86; on arm64,
+// NEON instructions, a 256-bit operation running as two 128-bit halves.
+// An operation without a NEON counterpart (the gather) runs as a loop
+// over its lanes.
 //
-// The short aliases keep the vectorized fill/dot-product code readable
-// without repeating the simde__ prefix on every variable declaration.
+// The short aliases keep the vectorized code readable without repeating
+// the simde__ prefix on every variable declaration.
 //
-//   v4d  = 256-bit register holding 4 doubles (AVX2)
-//          used for the main arithmetic in limber_fill_interp, xipm dot products
-//   v2d  = 128-bit register holding 2 doubles (SSE2)
-//          used for horizontal reduction (sum the 4 lanes of a v4d down to scalar)
-//   v4i  = 128-bit register holding 4 int32s (SSE2)
-//          used as index registers for AVX2 gather instructions (i32gather_pd)
-//          which load 4 non-contiguous doubles from a table in one instruction
+//   v4d  = 4 doubles (one AVX2 register on x86, two NEON registers on
+//          arm64): the lanes of limber_fill_interp and of the Fy
+//          normalization in cfftlog_ells_p2
+//   v2d  = 2 doubles (SSE2, one NEON register); not used in this file
+//   v4i  = 4 int32s (SSE2): the per-lane table indices of the gathers in
+//          limber_fill_interp (i32gather_pd: one instruction on x86 AVX2)
 // ---------------------------------------------------------------------------
 typedef simde__m256d v4d;   // 4 doubles, AVX2-width
 typedef simde__m128d v2d;   // 2 doubles (SSE2)
@@ -289,10 +298,11 @@ typedef simde__m128i v4i;   // 4 int32s (SSE2) - used for SIMD gather indices
 // SIMD path (AVX2):
 //   Processes 4 ells per iteration using 256-bit vector arithmetic.
 //   The table access uses i32gather_pd (AVX2 gather instruction) because
-//   the grid indices ic are data-dependent - different ells map to different
-//   table positions, so contiguous vector loads are not possible. GCC cannot
-//   auto-vectorize this pattern, which is why we use explicit intrinsics.
-//   A scalar tail handles the remaining lmax % 4 elements.
+//   the grid indices ic are data-dependent - different ells map to
+//   different table positions, so contiguous vector loads are not
+//   possible. GCC cannot auto-vectorize this pattern, which is why the
+//   loop uses explicit intrinsics. A scalar tail handles the remaining
+//   (lmax - lmin) % 4 multipoles.
 //
 // The inner loop over q (number of tables) is unrolled by the compiler
 // when ntab is a compile-time constant at the call site:
@@ -334,16 +344,26 @@ void limber_fill_interp(
   const v4d vmax_idx = simde_mm256_set1_pd((double)(n - 2)); // upper clamp
   const v4i vone     = simde_mm_set1_epi32(1);       // to form ic + 1
   // Why the clamp is n - 2 and not n - 1: linear interpolation reads the
-  // PAIR (tab[ic], tab[ic + 1]), so a grid with n points has only n - 1
+  // pair (tab[ic], tab[ic + 1]), so a grid with n points has only n - 1
   // segments (slopes) between them, and the last valid left index is
   // ic = n - 2. Clamping to it makes a multipole beyond the grid follow
   // the last segment (edge extrapolation) instead of reading past the
   // end of the table.
+
+  // scalar: for every multipole l = lmin..lmax-1 and every table q,
+  //   r  = (ln_ell[l] - a)*inv_dx;
+  //   ic = min(max(floor(r), 0), n - 2);
+  //   t  = r - ic;
+  //   out[q][l] = tab[q][ic] + t*(tab[q][ic + 1] - tab[q][ic]);
+  // The vector loop runs these statements on four multipoles per pass
+  // (lane j of every v4d below holds multipole l + j); the scalar loop
+  // after it runs them on the last (lmax - lmin) % 4 multipoles.
   int l = lmin;
   for (; l <= lmax - 4; l += 4) { // 4 multipoles per iteration (AVX2 width)
     // load ln(l), ln(l+1), ln(l+2), ln(l+3) with one contiguous load
     v4d vlnell = simde_mm256_loadu_pd(ln_ell + l);
-    // fractional grid position r = (ln(l) - a)/dx, all 4 lanes at once
+    // fractional grid position r = (ln_ell[l + j] - a)*inv_dx on lane j:
+    // sub forms ln(l + j) - a, mul scales it by 1/dx (the scalar order)
     v4d vr = simde_mm256_mul_pd(simde_mm256_sub_pd(vlnell, va), vinv_dx);
     // i = floor(r): the grid cell each of the 4 multipoles falls into
     v4d vi = simde_mm256_floor_pd(vr);
@@ -365,8 +385,14 @@ void limber_fill_interp(
       // scale, sizeof(double)), not contiguous vector loads
       v4d v0 = simde_mm256_i32gather_pd(tab[q], vic, 8);
       v4d v1 = simde_mm256_i32gather_pd(tab[q], vicp1, 8);
-      // linear interpolation out = v0 + t*(v1 - v0) as one fused
-      // multiply-add, stored back for the 4 multipoles at once
+      // linear interpolation out[q][l + j] = v0 + t*(v1 - v0) on lane j:
+      // sub forms v1 - v0, fmadd forms t*(v1 - v0) + v0, storeu writes
+      // out[q][l..l+3]. This 256-bit fmadd is one fused rounding only on
+      // x86 built with FMA; elsewhere (arm64, x86 without FMA) SIMDe
+      // composes it from a multiply and an add intrinsic, two roundings
+      // the compiler does not contract. On arm64 the compiler does fuse
+      // the scalar tail's expression into one fma, so there the tail and
+      // the lanes can differ in the last bit.
       simde_mm256_storeu_pd(out[q] + l,
         simde_mm256_fmadd_pd(vt, simde_mm256_sub_pd(v1, v0), v0));
     }
@@ -414,7 +440,9 @@ void limber_fill_interp(
 //   KIA[7]  <- FPTbias.tab[2]  d1s2  (delta x s_2 correlator)
 //   KIA[8]  <- FPTbias.tab[5]  d1p3  (delta x psi_3 correlator)
 //
-// These mappings are used with the LERP macro in the precompute loops:
+// These mappings are used with the LERP macro in the precompute loops
+// (the ss form; the gs loops store KIA[offset+m][zl][i][p] without g4
+// and apply g4 in the main loop):
 //   for (int m = 0; m < N; m++)
 //     KIA[offset+m][i][p] = g4 * LERP(FPTIA.tab[SRC[m]], idx, dr);
 // ---------------------------------------------------------------------------
@@ -505,7 +533,7 @@ void C_ks_tomo_limber_fill(
 // Pl[i] again for every spectrum: two values fetched from memory per
 // multiply-add, and the loop waits on memory, not on arithmetic.
 //
-// The default loop takes 4 spectra and 4 theta bins in one pass over l: 8
+// The loop below takes 4 spectra and 4 theta bins in one pass over l: 8
 // values fetched per 16 multiply-adds, each Cl[nz] read ntheta/4 times and
 // each Pl[i] read NSIZE/4 times. Each of the 16 sums adds the same products
 // in the same order as the reference loop does for that (nz, i), so the
@@ -618,7 +646,7 @@ void legendre_sums(
 // Same idea as legendre_sums (see the note there): the reference loop
 // makes one full pass over l per (nz, i), fetching
 // four values (EE, BB, Gl+, Gl-) for two multiply-adds and recomputing
-// EE + BB and EE - BB for every theta bin. The default loop takes 2 pairs
+// EE + BB and EE - BB for every theta bin. The loop below takes 2 pairs
 // and 4 theta bins in one pass: 12 values fetched per 16 multiply-adds,
 // and EE +- BB computed once per pair. Each sum adds the same products in
 // the same order as the reference, so the results are bitwise identical.
@@ -745,16 +773,19 @@ void legendre_sums_xipm(
 //   xi_+(theta_i) = sum_l Gl_+(i,l) * [C_l^EE + C_l^BB]
 //   xi_-(theta_i) = sum_l Gl_-(i,l) * [C_l^EE - C_l^BB]
 //
-// The Gl_pm kernels are precomputed from associated Legendre polynomials
-// and their derivatives (Pmin, Pmax, dPmin, dPmax) evaluated at the angular
-// bin edges (xmin = cos(theta_min), xmax = cos(theta_max), following
-// set_bin_average in basics.c: the min/max names track the theta edges,
-// so xmin > xmax numerically). This replaces
-// the naive point-evaluation J_0/J_4 Hankel transform with an exact bin average.
+// The Gl_pm kernels are precomputed from the Legendre polynomials P_l and
+// their derivatives P_l' (Pmin, Pmax, dPmin, dPmax) evaluated at the
+// angular bin edges (xmin = cos(theta_min), xmax = cos(theta_max),
+// following set_bin_average in basics.c: the min/max names track the
+// theta edges, so xmin > xmax numerically). This replaces the naive
+// point-evaluation J_0/J_4 Hankel transform with an exact bin average
+// (the closed forms of Friedrich et al. 2021, arXiv:2012.08568, appendix
+// on bin averaging).
 //
 // The C_l array is filled in two stages:
-//   1. Low-ell (l = 1..LMIN_tab): direct quadrature via _nointerp (or batch)
-//   2. High-ell (l = LMIN_tab..LMAX): fast interpolation from the cached
+//   1. Low-ell (l = 1..LMIN_tab-1): batch quadrature via
+//      C_ss_tomo_limber_nointerp_batch
+//   2. High-ell (l = LMIN_tab..LMAX-1): fast interpolation from the cached
 //      log-spaced table via C_ss_tomo_limber_fill with AVX2 gather
 //
 // The final Hankel sum over ~100k multipoles is legendre_sums_xipm (above):
@@ -902,12 +933,10 @@ double xi_pm_tomo(
     // THE KERNEL:
     //   The Wigner d-matrices for spin-2 fields can be decomposed into
     //   Legendre polynomials P_l(x) and their derivatives dP_l/dx.
-    //   The spin-2 prefactor gives an overall 1/[l(l+1)]^2, so:
+    //   The code multiplies the bracket below by
     //
     //     prefactor = (2l+1) / (2*pi * l^2 * (l+1)^2)
-    //               = [(2l+1)/(4*pi)] * [1/(l(l+1))^2]
-    //                  ~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
-    //                  Legendre norm     spin-2 factors (one per shear field)
+    //               = [(2l+1)/(4*pi)] * [2/(l(l+1))^2]
     //
     //   The un-integrated kernel (what the big bracket below is the
     //   antiderivative of; upper signs xi_+, lower signs xi_-):
@@ -923,8 +952,11 @@ double xi_pm_tomo(
     //     G_l^{+/-}(x) = (1/2) * [(l+2)!/(l-2)!] * d^l_{2,+/-2}(x),
     //
     //   so prefactor * G_l^{+/-} = [(2l+1)/(4 pi)] * d^l_{2,+/-2} times
-    //   the spin-2 conversion (l+2)!/(l-2)! / [l(l+1)]^2, which -> 1 at
-    //   large l.
+    //   (l+2)!/(l-2)! / [l(l+1)]^2 = (l-1)(l+2)/[l(l+1)], which -> 1 at
+    //   large l. The C_l^EE, C_l^BB summed against this kernel come from
+    //   C_ss_tomo_limber_work, whose ell_pf applies
+    //   sqrt((l-1)l(l+1)(l+2))/(l+1/2)^2 per source leg: relative to the
+    //   d^l_{2,+/-2} sum, the code applies both factors.
     //
     // ANALYTIC BIN INTEGRATION:
     //   Every term of G_l^{+/-} has a closed-form antiderivative via the
@@ -1061,9 +1093,10 @@ double xi_pm_tomo(
 //
 //   gamma_t(theta_i) = sum_l Pl(i,l) * C_l^gs
 //
-// The kernel Pl encodes the bin-averaged P_2(cos(theta)) projection
-// (spin-2 field x spin-0 field), computed from associated Legendre
-// polynomials at the bin edges following Kilbinger+ (2017).
+// The kernel Pl is the bin average of the associated Legendre polynomial
+// P_l^2(cos(theta)) (spin-2 field x spin-0 field), in closed form from
+// the Legendre polynomials P_{l-1}, P_l, P_{l+1} at the bin edges
+// (Friedrich et al. 2021, arXiv:2012.08568, appendix on bin averaging).
 //
 // The C_l array is filled via two paths depending on the limber flag:
 //   limber = 1: full Limber approximation
@@ -1086,7 +1119,8 @@ double xi_pm_tomo(
 // recomputes when cosmology, photo-z (shear or clustering),
 // IA, redshift distributions, Ntable, galaxy bias parameters, or the limber
 // flag change. The flag is part of the cache key so that one process can
-// switch between the two paths (tests/test_nonlimber_ggl.py does).
+// switch between the two paths (the projects'
+// tests/data_vector/test_nonlimber_ggl.py do).
 //
 // Parameters:
 //   nt     - angular bin index (0..Ntable.Ntheta-1)
@@ -1174,16 +1208,22 @@ double w_gammat_tomo(
       }
     }
     // -----------------------------------------------------------------------
-    // Bin-averaged Hankel transform kernel Pl for gamma_t(theta) (tangential shear).
+    // Bin-averaged Hankel transform kernel Pl for gamma_t(theta)
+    // (tangential shear).
     //
     // MOTIVATION:
-    //   The galaxy-shear (GGL) correlation function is:
-    //     gamma_t(theta) = sum_l (2l+1)/(4pi*l*(l+1)) * C_l^gs * P_l^2(cos(theta))
-    //   where P_l^2(x) is the associated Legendre polynomial of degree l, order 2.
-    //   The prefactor 1/[l(l+1)] comes from the single spin-2 shear field
-    //   (contrast with xi_pm which has two spin-2 fields giving 1/[l(l+1)]^2).
+    //   The code evaluates the galaxy-shear (GGL) correlation function as
+    //     gamma_t(theta) = sum_l (2l+1)/(4pi*l*(l+1)) * C_l^gs
+    //                      * P_l^2(cos(theta))
+    //   where P_l^2(x) is the associated Legendre polynomial of degree l,
+    //   order 2. With P_l^2 = sqrt((l+2)!/(l-2)!) d^l_{20}, this kernel is
+    //   (2l+1)/(4pi) d^l_{20} times sqrt((l-1)(l+2)/[l(l+1)]), which -> 1
+    //   at large l. The C_l^gs summed against it carries
+    //   sqrt((l-1)l(l+1)(l+2)) on its source leg (over (l+1/2)^2 in the
+    //   ell_prefactor2 of C_gs_tomo_limber_work, over k^2 in the F_src of
+    //   C_gs_tomo): relative to the d^l_{20} sum, the code applies both.
     //
-    //   As with xi_pm, we bin-average the kernel over [theta_min, theta_max]:
+    //   As with xi_pm, the kernel is bin-averaged over [theta_min, theta_max]:
     //
     //     Pl(i,l) = 1/(xmin - xmax) * integral_{xmax}^{xmin} kernel_l(x) dx
     //
@@ -1220,7 +1260,7 @@ double w_gammat_tomo(
     //   (2l+1) / (4*pi*l*(l+1))
     //   = [(2l+1)/(4*pi)] * [1/(l*(l+1))]
     //     ~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
-    //     Legendre norm       single spin-2 field factor
+    //     Legendre norm       1/[l(l+1)] (see MOTIVATION)
     // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
@@ -1320,7 +1360,7 @@ double w_gammat_tomo(
 //
 //   w(theta_i) = sum_l Pl(i,l) * C_l^gg
 //
-// The kernel Pl encodes the bin-averaged P_0(cos(theta)) projection
+// The kernel Pl encodes the bin-averaged P_l(cos(theta)) projection
 // (spin-0 x spin-0), computed from Legendre polynomials at the bin edges.
 //
 // The C_l array is filled via two paths depending on the limber flag:
@@ -1337,9 +1377,11 @@ double w_gammat_tomo(
 //
 // Cache invalidation:
 // recomputes when cosmology, clustering photo-z,
-// clustering redshift distribution, Ntable, galaxy bias, or the limber
+// clustering redshift distribution, Ntable, galaxy bias, the source
+// n(z) (with magnification it sets the lens range), or the limber
 // flag change. The flag is part of the cache key so that one process can
-// switch between the two paths (tests/test_nonlimber_gg.py does).
+// switch between the two paths (the projects'
+// tests/data_vector/test_nonlimber_gg.py do).
 //
 // Parameters:
 //   nt     - angular bin index (0..Ntable.Ntheta-1)
@@ -1574,7 +1616,8 @@ double w_gg_tomo(
 //
 // Cache invalidation:
 // recomputes when cosmology, clustering photo-z,
-// clustering redshift distribution, Ntable, galaxy bias, or the CMB
+// clustering redshift distribution, Ntable, galaxy bias, the source
+// n(z) (with magnification it sets the lens range), or the CMB
 // configuration (cmb.random) change.
 //
 // Parameters:
@@ -1801,7 +1844,7 @@ double w_gk_tomo(
 // w_pixel(l) when cmb.healpixwin_ncls > 0.
 //
 // Includes the NLA intrinsic alignment contribution (C1 * W_source x
-// W_k_cmb). One source bin index only (the CMB is a single lens plane).
+// W_k_cmb). One source bin index only (the CMB is a single source plane).
 //
 // Cache invalidation:
 // recomputes when cosmology, shear photo-z, IA,
@@ -1895,11 +1938,15 @@ double w_ks_tomo(
     //
     // MOTIVATION:
     //   The CMB convergence (spin-0) crossed with the shear field (spin-2)
-    //   has the same harmonic expansion as galaxy-shear gamma_t(theta):
-    //     w_ks(theta) = sum_l (2l+1)/(4*pi*l*(l+1)) * C_l^ks * P_l^2(cos(theta))
+    //   uses the same harmonic expansion as galaxy-shear gamma_t(theta):
+    //     w_ks(theta) = sum_l (2l+1)/(4*pi*l*(l+1)) * C_l^ks
+    //                   * P_l^2(cos(theta))
     //   where P_l^2(x) is the associated Legendre polynomial of degree l,
-    //   order 2, and the prefactor 1/[l(l+1)] comes from the single spin-2
-    //   shear field (contrast with xi_pm, two spin-2 fields, 1/[l(l+1)]^2).
+    //   order 2; as in w_gammat_tomo, this kernel is (2l+1)/(4pi) d^l_{20}
+    //   times sqrt((l-1)(l+2)/[l(l+1)]). The C_l^ks summed against it
+    //   carries sqrt((l-1)l(l+1)(l+2))/(l+1/2)^2 on its source leg and
+    //   l(l+1)/(l+1/2)^2 on its CMB leg (C_ks_tomo_limber_work): relative
+    //   to the d^l_{20} sum, the code applies both shear factors.
     //   Only the C_l summed against differs (C_l^ks instead of C_l^gs).
     //
     //   Bin-averaging the kernel over [theta_min, theta_max]:
@@ -1932,7 +1979,7 @@ double w_ks_tomo(
     //   (2l+1) / (4*pi*l*(l+1))
     //   = [(2l+1)/(4*pi)] * [1/(l*(l+1))]
     //     ~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~
-    //     Legendre norm       single spin-2 field factor
+    //     Legendre norm       1/[l(l+1)] (see MOTIVATION)
     // -----------------------------------------------------------------------
     #pragma omp parallel for collapse(2) schedule(static)
     for (int i=0; i<Ntable.Ntheta; i++) {
@@ -2054,10 +2101,10 @@ double w_ks_tomo(
 // (ell, bin-pair) combinations.
 //
 // This is the core data structure enabling the loop-inversion optimization
-// in C_ss_tomo_limber_work and C_gs_tomo_limber: instead of recomputing
-// chi(a), D(a), H(a)/H0 inside every per-ell integrand call, we evaluate
-// them once at all quadrature nodes and pass flat arrays to the vectorized
-// inner loops.
+// of the Limber _work engines (ss, gs, gg, gk, ks): instead of recomputing
+// chi(a), D(a), H(a)/H0 inside every per-ell integrand call, the engines
+// evaluate them once at all quadrature nodes and pass flat arrays to the
+// vectorized inner loops.
 //
 // Memory layout: data[CN_NPARAMS][npts], contiguous via malloc2d.
 // ---------------------------------------------------------------------------
@@ -2088,7 +2135,7 @@ enum {
 //
 // The quadrature points and weights come from the GSL fixed-order table w,
 // which is shared with the Limber integration routines. The number of points
-// (96-1024 for ss, 64-1024 for gs/gk/ks/kk, keyed on
+// (96-1024 for ss, 128-1024 for gg, 64-1024 for gs/gk/ks, keyed on
 // Ntable.high_def_integration) controls the
 // accuracy of the numerical integration.
 //
@@ -2315,19 +2362,20 @@ static cosmo_nodes create_cosmo_nodes_lens(
 // TATT shear-shear EE integrand core.
 // Pure arithmetic on preloaded scalars for vectorization.
 //
-// Extends NLA with tidal torquing (C2, bta) and one-loop IA kernels
-// (tt, ta, ta_dE, mix). The formula expands the product
+// Extends NLA with tidal torquing (C2), density weighting (bta) and
+// one-loop IA kernels (tt, ta, ta_dE, mix). The formula expands the product
 //   (WK1 - WS1*IA1) * (WK2 - WS2*IA2) * PK
 // where IA_i includes linear (C1*PK), density-weighted (C1*bta*ta_dE),
 // and quadratic (C2*mix, C2^2*tt) contributions.
 //
 // Where the factors 5 and 25 come from: Blazek et al. 2019
 // (arXiv:1708.09247) define the tidal-torquing amplitude as
-//   C2 = 5 * A2 * Cbar1 * rho_crit * Omega_m / D(z)^2
-// while IA_A2_Z1 (IA.c) returns A2 * Omega_m * c1rhocrit_ia / D^2 with
-// the 5 left out. The 5 is applied here instead, one per power of the
-// quadratic field in each correlator: 5*C2 in the terms linear in C2,
-// 25 = 5^2 in the C2*C2 (tt) term.
+//   C2 = 5 * A2 * Cbar1 * rho_crit * Omega_m^2 / (Omega_m,fid * D(z)^2)
+// while IA_A2_Z1 (IA.c) returns A2 * Omega_m * c1rhocrit_ia / D^2: one
+// power of Omega_m (the DES Y1 scaling of Troxel et al. 2018, noted by
+// Blazek et al. 2019) and the 5 left out. The 5 is applied here instead,
+// one per power of the quadratic field in each correlator: 5*C2 in the
+// terms linear in C2, 25 = 5^2 in the C2*C2 (tt) term.
 //
 // Parameters:
 //   PK     - P_delta(k, a): nonlinear matter power spectrum
@@ -2389,12 +2437,14 @@ static inline double int_for_C_ss_tomo_limber_tatt_EE_core(
 // TATT shear-shear BB integrand core.
 // Pure arithmetic on preloaded scalars for vectorization.
 //
-// BB modes arise only from the quadratic IA terms (tidal torquing).
+// BB modes arise only from the IA terms quadratic in the fields (density
+// weighting, bta, and tidal torquing, C2).
 // There is no tree-level BB contribution, so WK does not appear:
 //   BB = WS1*WS2 * (C11*C12*bta1*bta2*ta
 //                    - 5*(C11*bta1*C22 + C12*bta2*C21)*mix
 //                    + 25*C21*C22*tt)
-// For NLA (C2 = 0, bta = 0), BB = 0 identically.
+// For NLA the one-loop kernels (tt, ta, mix) are zero, so BB = 0
+// identically, whatever C2 and bta are.
 // The 5/25 factors are the Blazek et al. 2019 C2 normalization, applied
 // once per power of the quadratic field (see the EE core above).
 //
@@ -2445,15 +2495,15 @@ static inline double int_for_C_ss_tomo_limber_tatt_BB_core(
 // Single-ell shear-shear C_l: a point diagnostic on the batch engine.
 //
 // Runs one C_ss_tomo_limber_nointerp_ells call at a single multipole and
-// reads one entry, so it pays the WHOLE-TOMOGRAPHY batch cost per call
+// reads one entry, so it pays the whole-tomography batch cost per call
 // (every enumerated Z1 <= Z2 pair is computed even though one number is
 // returned). Never loop this over (l, ni, nj): call
 // C_ss_tomo_limber_nointerp_ells once and index the result instead.
 //
 // Kept in the API as the exact per-multipole entry point a future
 // non-Limber computation needs (the non-Limber pipelines evaluate the
-// Limber part per integer multipole, the way C_gg_tomo consumes its
-// scalar today).
+// Limber part per integer multipole; C_cl_tomo and C_gs_tomo take it from
+// their batch engines).
 //
 // Parameters:
 //   l    - multipole moment
@@ -2637,13 +2687,14 @@ static void C_ss_tomo_limber_work(
       const double lnk = log(k);
       KIA[10][i][p] = pn[i];
       if (nuisance.IA_MODEL == IA_MODEL_TATT) {
-        // Hold-last-node clamp (the idiom of every FPTIA/FPTbias LERP
+        // Top-of-table clamp (the idiom of every FPTIA/FPTbias LERP
         // read in this file): the table spacing is limTATT[2] =
         // range/FPTIA.N, so the gated k range's top lies up to one
         // spacing beyond the last node and b can reach FPTIA.N. When
         // b+1 would step past the table, the read clamps to
-        // idx = N - 2 with dr = 0 - it holds a top-of-table node
-        // instead of indexing out of bounds.
+        // idx = N - 2 with dr = 0: it returns the penultimate sample
+        // tab[N - 2] (not the last node tab[N - 1]) instead of
+        // indexing out of bounds.
         if (lnk >= limTATT[0] && lnk <= limTATT[1]) {
           const double r = (lnk - limTATT[0]) / limTATT[2];
           const int b = (int) floor(r);
@@ -2683,7 +2734,9 @@ static void C_ss_tomo_limber_work(
   // -----------------------------------------------------------------------
   // Main integration loop.
   // Always uses the TATT core function, which reduces identically to NLA
-  // when C2 = BTA = 0 (as enforced by the memset initialization of KIA).
+  // when the one-loop kernels KIA[0..9] are zero: every C2 and bta term
+  // multiplies one of them, and they keep their zero3d initialization
+  // unless the IA model is TATT.
   // This avoids the IA model switch inside the loop, so the SIMD reduction
   // over quadrature points (p) sees only pure arithmetic - no branches.
   // The restrict pointers are hoisted before the p-loop to eliminate
@@ -2694,6 +2747,8 @@ static void C_ss_tomo_limber_work(
   // so
   //   ell_pf = [sqrt((l-1)*l*(l+1)*(l+2))/(l+0.5)^2]^2
   //          = l*(l-1)*(l+1)*(l+2)/(l+0.5)^4
+  // xi_pm_tomo's bin-averaged kernel applies a further (l-1)(l+2)/[l(l+1)]
+  // relative to the d^l_{2,+/-2} sum (see the note there).
   // -----------------------------------------------------------------------
   #pragma omp parallel for collapse(2) schedule(static)
   for (int i = 0; i < nell; i++) {
@@ -3099,7 +3154,8 @@ void dC_ss_dlnk_tomo_limber_work(
       const double l = lx[i];
       const double ell = l + 0.5;
       // the (k, ell) pair selects one Limber node: chi(a) = ell/k, with k
-      // converted from (Mpc/h)^{-1} to ((Mpc/h)/(c/H0=100))^{-1}
+      // converted from h/Mpc to the code's units of H0/c (times
+      // cosmology.coverH0 = c/H0 in Mpc/h)
       const double a = a_chi(f_K(ell/(exp(lnkx[f])*cosmology.coverH0)));
       if (!(a > amin && a < amax)) {
         AMP[p] = 0.0;
@@ -3142,12 +3198,12 @@ void dC_ss_dlnk_tomo_limber_work(
   // Main fill loop.
   //
   // Where the derivative differs from C_ss: in C_ss_tomo_limber_work each
-  // output is a quadrature SUM over the line of sight,
+  // output is a quadrature sum over the line of sight,
   //
   //   C_ss(l) = sum_p core(p) * (dchida[p]/fK[p]^2) * ell_prefactor * wt[p],
   //
   // because every scale factor contributes to one C_ell. Here each output
-  // is ONE core evaluation with no reduction,
+  // is one core evaluation with no reduction,
   //
   //   dC_ss/dlnk(k, l) = core(p(k, l)) * (1/fK) * ell_prefactor,
   //
@@ -3168,7 +3224,9 @@ void dC_ss_dlnk_tomo_limber_work(
   // intermediate dC table exists and no pass re-reads the output.
   //
   // Always uses the TATT core function, which reduces identically to NLA
-  // when C2 = BTA = 0 (as enforced by the zero initialization of KIA).
+  // when the one-loop kernels (KIA[0..9], KIAq[0..9]) keep their zero
+  // initialization, i.e. unless the IA model is TATT: every C2 and bta
+  // term multiplies one of them.
   // This avoids the IA model switch inside the loop, so the SIMD body over
   // the nell contiguous nodes of each f sees only pure arithmetic.
   // The restrict pointers are hoisted before the inner loops to eliminate
@@ -3345,8 +3403,9 @@ static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
 //
 // The struct is how the table travels between the two functions.
 // The builder (this function) and the reader (the _fill) never call
-// each other - the real-space projection calls one, the C_ell paths
-// call the other - so no argument list connects them. Instead the
+// each other - the real-space projection calls the builder once to
+// refresh the table and then the reader, the C_ell paths call only the
+// builder - so no argument list connects them. Instead the
 // builder publishes the table pointer and the grid geometry (the
 // ln(ell) limits, spacing and node count) in the file-scope struct,
 // and the reader picks them up there.
@@ -3354,7 +3413,8 @@ static struct { double*** tab; double lim[3]; int nell; } ss_ = {0};
 // Cache invalidation:
 // recomputes when any of these change:
 //   cosmology.random, nuisance.random_photoz_shear, nuisance.random_ia,
-//   redshift.random_shear, Ntable.random
+//   redshift.random_shear, Ntable.random, include_halo_IA,
+//   nuisance.random_ia_halo
 //
 // Parameters:
 //   l  - multipole moment (continuous, interpolated from the cached table)
@@ -3419,7 +3479,7 @@ double C_ss_tomo_limber(
 
     // Coarse-grid workspace (the strategy is explained where the grid
     // is used, in the refill block below): every allocation lives
-    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // here, in the Ntable rebuild block; the per-cosmology refill only
     // fills. The pieces are:
     //   lxc        - the ncoarse ell nodes, log-spaced over the same
     //                [lim[0], lim[1]] range as the fine table
@@ -3456,7 +3516,7 @@ double C_ss_tomo_limber(
         //               -> qdel = (r - j)*dlnc (offset inside it)
         //
         // The spline evaluates on interval [j, j+1], so the largest
-        // legal j is ncoarse-2, the left node of the LAST interval.
+        // legal j is ncoarse-2, the left node of the last interval.
         //
         // Why the clamp: at the shared top endpoint, i*lim[2] and
         // (ncoarse-1)*dlnc are two floating-point roundings of the
@@ -3498,11 +3558,11 @@ double C_ss_tomo_limber(
       // The real-space projections (xi_pm_tomo, via the shared ss_
       // struct and C_ss_tomo_limber_fill) read this table at every
       // integer ell up to Ntable.LMAX ~ 1e5 inside their Legendre
-      // sums. At that call rate only the optimized, vectorized LINEAR
+      // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
-      // A linear read, however, is only accurate on a DENSE table -
+      // A linear read, however, is only accurate on a dense table -
       // and each of the N_ell = 512 nodes costs one exact Limber
       // quadrature, which is the expensive part.
       //
@@ -3677,7 +3737,7 @@ void C_ss_tomo_limber_fill(
 // The last term (bk*k^2*PK) is the higher-derivative counterterm that absorbs
 // sensitivity to small-scale modes beyond the perturbative regime.
 //
-// This function returns the one-loop piece only - it does NOT include the
+// This function returns the one-loop piece only - it does not include the
 // tree-level b1*PK contribution, which is handled separately in the calling
 // NLA/TATT core functions to enforce one-loop consistency (oneloop x linear IA
 // only, avoiding two-loop cross terms).
@@ -3717,7 +3777,8 @@ static inline double int_for_C_gs_tomo_limber_bias_oneloop_core(
 // TATT galaxy-shear (galaxy-galaxy lensing) Limber integrand core.
 // Pure arithmetic on preloaded scalars for SIMD vectorization.
 //
-// Extends the NLA core with tidal torquing (C2, BTA) and one-loop IA kernels.
+// Extends the NLA core with tidal torquing (C2), density weighting
+// (BTA) and one-loop IA kernels.
 // The intrinsic alignment field is:
 //   IA = C1*PK + IATATT
 // where IATATT = C1*BTA*(ta_dE1 + ta_dE2) - 5*C2*(mixA + mixB) collects
@@ -3736,13 +3797,15 @@ static inline double int_for_C_gs_tomo_limber_bias_oneloop_core(
 // one-loop order in the perturbative fields (products of two first-order
 // tidal/density fields). Crossing them with the one-loop galaxy bias would
 // produce two-loop contributions. Therefore:
-//   - Tree-level galaxy (b1*PK) multiplies the FULL IA (C1*PK + IATATT)
-//   - One-loop galaxy (oneloop) multiplies only LINEAR IA (WK - WS*C1)
+//   - Tree-level galaxy (b1*PK) multiplies the full IA (C1*PK + IATATT)
+//   - One-loop galaxy (oneloop) multiplies only linear IA (WK - WS*C1)
 //   - RSD and magnification are tree-level, so they get the full IA
 //
 // Reduces to the NLA product (WGAL*b1 + WMAG*ep*bmag + WRSD) *
-// (WK - WS*C1) * PK when C2 = 0, BTA = 0,
-// and all TATT kernels are zero (as enforced by memset for NLA).
+// (WK - WS*C1) * PK when the TATT kernels (ta_dE1, ta_dE2, mixA, mixB)
+// and oneloop are zero: every C2 and BTA term multiplies a kernel, and
+// the caller's kernel table keeps its zero4d initialization unless the
+// IA model is TATT.
 //
 // Parameters:
 //   PK      - P_delta(k, a): nonlinear matter power spectrum
@@ -3808,7 +3871,7 @@ static inline double int_for_C_gs_tomo_limber_tatt_core(
 // engine.
 //
 // Runs one C_gs_tomo_limber_nointerp_ells call at a single multipole and
-// reads one entry, so it pays the WHOLE-TOMOGRAPHY batch cost per call
+// reads one entry, so it pays the whole-tomography batch cost per call
 // (every enumerated lens-source pair is computed even though one number is
 // returned). Never loop this over (l, nl, ns): call
 // C_gs_tomo_limber_nointerp_ells once and index the result instead.
@@ -3864,7 +3927,7 @@ double C_gs_tomo_limber_nointerp(
 // quantities on a fixed grid of quadrature points, then evaluates the Limber
 // integral for every (ell, tomo-pair) combination with SIMD-vectorized inner loops.
 //
-// Key difference from SS: galaxy-shear has DIFFERENT integration limits per
+// Key difference from SS: galaxy-shear has different integration limits per
 // lens bin (amin_lens, amax_lens vary with nl), so cosmo_nodes are created
 // per lens bin (cn_all[clustering_nbin]) rather than a single global cn.
 // The node count may differ between lens bins as well (cn_all[zl].npts):
@@ -4105,7 +4168,7 @@ static void C_gs_tomo_limber_work(
   }
   
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
-  // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
+  // COSMO2D_FKEM_PIVOT_Z0 selects the z = 0 anchor instead.
   double apivw[MAX_SIZE_ARRAYS];
   double invgf2w[MAX_SIZE_ARRAYS];
   if (NULL != table_lin) {
@@ -4215,7 +4278,7 @@ static void C_gs_tomo_limber_work(
           if (1 == hod) {
             KH[0][zl][i][p] = p_gm(k, a, zl);
           }
-          // RSD in Limber samples the kernel at TWO radii: the j_l''
+          // RSD in Limber samples the kernel at two radii: the j_l''
           // of the exact velocity term couples neighboring Bessel
           // orders, so the extended-Limber W_RSD (radial_weights.c)
           // combines n(z)*H*f at the j_l peak chi_0 = (l+1/2)/k and at
@@ -4291,12 +4354,15 @@ static void C_gs_tomo_limber_work(
 
   // -----------------------------------------------------------------------
   // Main integration loop.
-  // Always calls _tatt_core (reduces to NLA when C2=BTA=0 via memset).
+  // Always calls _tatt_core (it reduces to NLA when the TATT kernels
+  // KIA[2..5] keep their zero4d initialization, i.e. without TATT).
   // restrict pointers hoisted for contiguous AVX2 loads.
   //
   // Ell prefactors (1812.05995 eqs 74-79):
   //   ell_prefactor  = l*(l+1)/(l+0.5)^2       (magnification)
   //   ell_prefactor2 = sqrt(l*(l-1)*(l+1)*(l+2))/(l+0.5)^2  (shear field)
+  // w_gammat_tomo's bin-averaged kernel applies a further
+  // sqrt((l-1)(l+2)/[l(l+1)]) relative to the d^l_{20} sum (see there).
   // -----------------------------------------------------------------------
   #pragma omp parallel for collapse(2) schedule(static)
   for (int j = 0; j < tomo.ggl_Npowerspectra; j++) {
@@ -4670,9 +4736,10 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 // Galaxy-shear angular power spectrum C_l^gs with interpolation.
 //
 // On first call (or when cosmology/nuisance parameters change), builds a
-// log-spaced interpolation table covering l = LMIN_tab..LMAX (Ntable.N_ell[NODES_DENSE]
-// points) using C_gs_tomo_limber_work with per-lens-bin cosmo_nodes and
-// precomputed ell prefactors, then caches it for subsequent lookups.
+// log-spaced interpolation table covering l = LMIN_tab..LMAX
+// (Ntable.N_ell[NODES_DENSE] points) using C_gs_tomo_limber_work with
+// per-lens-bin cosmo_nodes and precomputed ell prefactors, then caches
+// it for subsequent lookups.
 // Returns the interpolated value at the requested l via interpol1d.
 //
 // When Ntable.N_ell[NODES_COARSE] is active, the exact quadrature instead
@@ -4692,8 +4759,9 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 //
 // The struct is how the table travels between the two functions.
 // The builder (this function) and the reader (the _fill) never call
-// each other - the real-space projection calls one, the C_ell paths
-// call the other - so no argument list connects them. Instead the
+// each other - the real-space projection calls the builder once to
+// refresh the table and then the reader, the C_ell paths call only the
+// builder - so no argument list connects them. Instead the
 // builder publishes the table pointer and the grid geometry (the
 // ln(ell) limits, spacing and node count) in the file-scope struct,
 // and the reader picks them up there.
@@ -4707,7 +4775,8 @@ static struct { double** tab; double lim[3]; int nell; } gs_ = {0};
 //   cosmology.random, nuisance.random_photoz_shear,
 //   nuisance.random_photoz_clustering, nuisance.random_ia,
 //   redshift.random_shear, redshift.random_clustering,
-//   Ntable.random, nuisance.random_galaxy_bias
+//   Ntable.random, nuisance.random_galaxy_bias, include_HOD_GX,
+//   include_halo_IA, nuisance.random_ia_halo
 //
 // Parameters:
 //   l  - multipole moment (continuous; outside the grid the lookup warns
@@ -4775,7 +4844,7 @@ double C_gs_tomo_limber(
 
     // Curved-sky (extended Limber) ell prefactors, tabulated per node
     // (1812.05995 eqs 74-79). The Limber kernel is evaluated at
-    // k = (l + 1/2)/chi, and each projected field carries the exact
+    // k = (l + 1/2)/chi, and each projected field carries the
     // prefactor of its spin:
     //
     //   ep  = l(l+1)/(l+1/2)^2                  magnification (the
@@ -4800,7 +4869,7 @@ double C_gs_tomo_limber(
 
     // Coarse-grid workspace (the strategy is explained where the grid
     // is used, in the refill block below): every allocation lives
-    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // here, in the Ntable rebuild block; the per-cosmology refill only
     // fills. The pieces are:
     //   lxc, epc, ep2c - the ncoarse ell nodes, log-spaced over the
     //                same [lim[0], lim[1]] range as the fine table,
@@ -4848,7 +4917,7 @@ double C_gs_tomo_limber(
         //               -> qdel = (r - j)*dlnc (offset inside it)
         //
         // The spline evaluates on interval [j, j+1], so the largest
-        // legal j is ncoarse-2, the left node of the LAST interval.
+        // legal j is ncoarse-2, the left node of the last interval.
         //
         // Why the clamp: at the shared top endpoint, i*lim[2] and
         // (ncoarse-1)*dlnc are two floating-point roundings of the
@@ -4896,11 +4965,11 @@ double C_gs_tomo_limber(
       // The real-space projections (w_gammat_tomo, via the shared gs_
       // struct and C_gs_tomo_limber_fill) read this table at every
       // integer ell up to Ntable.LMAX ~ 1e5 inside their Legendre
-      // sums. At that call rate only the optimized, vectorized LINEAR
+      // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
-      // A linear read, however, is only accurate on a DENSE table -
+      // A linear read, however, is only accurate on a dense table -
       // and each of the N_ell = 512 nodes costs one exact Limber
       // quadrature, which is the expensive part.
       //
@@ -5064,8 +5133,8 @@ void C_gs_tomo_limber_fill(
 // and GS, these have Npowerspectra = nbin (auto-correlations only for GG,
 // or one index per bin for GK/KS/KK), not nbin*(nbin+1)/2. GG, GK and KS
 // use the same _work batch design as SS and GS (cosmo_nodes, precomputed
-// radial weights and kernels, SIMD-vectorized quadrature); KK keeps the
-// legacy scalar pattern (a single spectrum, no tomography).
+// radial weights and kernels, SIMD-vectorized quadrature); KK uses a
+// scalar GSL quadrature per multipole (a single spectrum, no tomography).
 //
 // The vectorized _fill functions (C_gg_tomo_limber_fill, etc.) are used
 // for the real-space Hankel transforms, sharing limber_fill_interp with
@@ -5094,7 +5163,7 @@ void C_gs_tomo_limber_fill(
 // diagnostic on the batch engine.
 //
 // Runs one C_gg_tomo_limber_linpsopt_nointerp_ells call at a single
-// multipole and reads one entry, so it pays the WHOLE-TOMOGRAPHY batch cost
+// multipole and reads one entry, so it pays the whole-tomography batch cost
 // per call (every lens bin is computed even though one number is returned).
 // Never loop this over (l, ni): call the batch once and index the result
 // instead.
@@ -5204,7 +5273,7 @@ double C_gg_tomo_limber_nointerp(
 // bK) are evaluated once per node, and only P(k,a), W_RSD and the one-loop
 // tables once per (node, ell); the sum over nodes is a vectorized loop.
 // W_RSD and P_delta dominate the cost (lsst_y1, 1750 ells x 5 bins, one
-// thread: 33 ms; the retired per-(node, ell) GSL path took 45 ms).
+// thread: 33 ms).
 //
 // Memory layout (npts = npts_max, the largest node count over the bins;
 // the precompute loops skip a bin's padding nodes and its sum never reads
@@ -5256,8 +5325,8 @@ static void C_gg_tomo_limber_work(
 {
   // -------------------------------------------------------------------------
   // HOD mode (include_HOD_GX = 1): the galaxies are the halo-model
-  // occupation field, so the density weight is W_gal alone (the legacy
-  // W_HOD weight n_i(z) H/H0; no bias factor - the bias lives inside
+  // occupation field, so the density weight is W_gal alone
+  // (n_i(z) H/H0; no bias factor - the bias lives inside
   // the HOD spectra) and the power comes from halo.c:
   //
   //   density-density         W_gal^2                  p_gg(k, a, zl, zl)
@@ -5265,9 +5334,9 @@ static void C_gg_tomo_limber_work(
   //   magnification-magnif.   (W_mag ep b_mag)^2       P_delta(k, a)
   //
   // The one-loop bias expansion and the RSD term have no HOD
-  // counterpart (the legacy C_cl_HOD carried neither); both are off in
-  // this mode. HOD C_l^gg is Limber-only, so the linear term of the
-  // non-Limber split aborts: run with adopt_limber_gg = 1.
+  // counterpart; both are off in this mode. HOD C_l^gg is Limber-only,
+  // so the linear term of the non-Limber split aborts: run with
+  // adopt_limber_gg = 1.
   // -------------------------------------------------------------------------
   const int hod = include_HOD_GX;
   if (1 == hod && NULL != table_lin) {
@@ -5366,7 +5435,7 @@ static void C_gg_tomo_limber_work(
   }
 
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
-  // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
+  // COSMO2D_FKEM_PIVOT_Z0 selects the z = 0 anchor instead.
   double apivw[MAX_SIZE_ARRAYS];
   double invgf2w[MAX_SIZE_ARRAYS];
   if (NULL != table_lin) {
@@ -5458,10 +5527,10 @@ static void C_gg_tomo_limber_work(
     //
     // schedule(dynamic): the iterations cost very different amounts - a
     // padding node returns at once, a node the RSD mask drops skips
-    // a_chi and W_RSD, a full node pays for all of them - so the static
-    // split left threads idle at this loop's barrier (~4% of all cycles
-    // of a des_cluster 6x2pt+N evaluation, perf on amypond, v5.00), and
-    // one thread preempted by another process stalled the whole team.
+    // a_chi and W_RSD, a full node pays for all of them - so a static
+    // split leaves threads idle at this loop's barrier (~4% of all cycles
+    // of a des_cluster 6x2pt+N evaluation), and one thread preempted by
+    // another process stalls the whole team.
     // Each iteration writes only its own (bin, ell, node) slots, so the
     // order the chunks run in cannot change a bit of the result. A chunk
     // of 128 iterations is ~50 us of work, far above the cost of taking
@@ -5853,10 +5922,10 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 // (auto spectra only: ni must equal nj).
 //
 // Builds the (lens bin, log ell) table with one
-// C_gg_tomo_limber_nointerp_ells call (log-spaced grid, Ntable.N_ell[NODES_DENSE]
-// points covering l = LMIN_tab..LMAX), then caches it for subsequent
-// lookups. Returns the interpolated value at the requested l via
-// interpol1d.
+// C_gg_tomo_limber_nointerp_ells call (log-spaced grid,
+// Ntable.N_ell[NODES_DENSE] points covering l = LMIN_tab..LMAX), then
+// caches it for subsequent lookups. Returns the interpolated value at
+// the requested l via interpol1d.
 //
 // Why the table is shared through the gg_ static struct: the
 // real-space projection (w_gg_tomo) needs C_l at every integer
@@ -5870,14 +5939,15 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 //
 // The struct is how the table travels between the two functions.
 // The builder (this function) and the reader (the _fill) never call
-// each other - the real-space projection calls one, the C_ell paths
-// call the other - so no argument list connects them. Instead the
+// each other - the real-space projection calls the builder once to
+// refresh the table and then the reader, the C_ell paths call only the
+// builder - so no argument list connects them. Instead the
 // builder publishes the table pointer and the grid geometry (the
 // ln(ell) limits, spacing and node count) in the file-scope struct,
 // and the reader picks them up there.
 //
 // The table keeps the exact per-node quadrature at every one of its
-// N_ell nodes: do NOT apply the internal coarse-grid upsampling of the
+// N_ell nodes: do not apply the internal coarse-grid upsampling of the
 // ss/gs tables here (Ntable.N_ell[NODES_COARSE]) - the clustering auto
 // spectra carry BAO wiggles in exactly the ell range the spline would
 // smooth over.
@@ -5886,8 +5956,9 @@ static struct { double** tab; double lim[3]; int nell; } gg_ = {0};
 // the static table and grid limits rebuild when the
 // table is NULL or Ntable.random changes; the values refill when any of
 // cosmology.random, nuisance.random_photoz_clustering,
-// redshift.random_clustering, Ntable.random, or
-// nuisance.random_galaxy_bias change.
+// redshift.random_clustering, Ntable.random,
+// nuisance.random_galaxy_bias, include_HOD_GX, or redshift.random_shear
+// (with magnification the source n(z) sets the lens range) change.
 //
 // Parameters:
 //   l  - multipole moment (continuous; outside the grid the lookup warns
@@ -6042,8 +6113,8 @@ void C_gg_tomo_limber_fill(
 // The one-loop bias terms (second line) enter only when has_b2_galaxies()
 // and read the FPTbias tables (zero outside their k range, as in the gg
 // batch). RSD is gated on the file-scope include_RSD_GK with the same
-// reach mask as the gg batch. HOD is not implemented in the batched path
-// (log_fatal), as in gg.
+// reach mask as the gg batch. HOD is not implemented here (log_fatal),
+// unlike the gg batch, which has an HOD branch.
 //
 // Memory layout (npts = npts_max, the largest node count over the lens
 // bins, as in the gg batch: each bin's sum runs over its own nodes):
@@ -6434,7 +6505,7 @@ void C_gk_tomo_limber_nointerp_batch(
 // engine.
 //
 // Runs one C_gk_tomo_limber_nointerp_ells call at a single multipole and
-// reads one entry, so it pays the WHOLE-TOMOGRAPHY batch cost per call
+// reads one entry, so it pays the whole-tomography batch cost per call
 // (every lens bin is computed even though one number is returned). Never
 // loop this over (l, ni): call C_gk_tomo_limber_nointerp_ells once and
 // index the result instead.
@@ -6489,10 +6560,10 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 // Galaxy x CMB-lensing angular power spectrum C_l^gk with interpolation.
 //
 // Builds the (lens bin, log ell) table with one
-// C_gk_tomo_limber_nointerp_ells call (log-spaced grid, Ntable.N_ell[NODES_DENSE]
-// points covering l = LMIN_tab..LMAX), then caches it for subsequent
-// lookups. Returns the interpolated value at the requested l via
-// interpol1d.
+// C_gk_tomo_limber_nointerp_ells call (log-spaced grid,
+// Ntable.N_ell[NODES_DENSE] points covering l = LMIN_tab..LMAX), then
+// caches it for subsequent lookups. Returns the interpolated value at
+// the requested l via interpol1d.
 //
 // Why the table is shared through the gk_ static struct: the
 // real-space projection (w_gk_tomo) needs C_l at every integer
@@ -6506,8 +6577,9 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 //
 // The struct is how the table travels between the two functions.
 // The builder (this function) and the reader (the _fill) never call
-// each other - the real-space projection calls one, the C_ell paths
-// call the other - so no argument list connects them. Instead the
+// each other - the real-space projection calls the builder once to
+// refresh the table and then the reader, the C_ell paths call only the
+// builder - so no argument list connects them. Instead the
 // builder publishes the table pointer and the grid geometry (the
 // ln(ell) limits, spacing and node count) in the file-scope struct,
 // and the reader picks them up there.
@@ -6524,8 +6596,9 @@ static struct { double** tab; double lim[3]; int nell; } gk_ = {0};
 // the static table and grid limits rebuild when the
 // table is NULL or Ntable.random changes; the values refill when any of
 // cosmology.random, nuisance.random_photoz_clustering,
-// redshift.random_clustering, Ntable.random, or
-// nuisance.random_galaxy_bias change.
+// redshift.random_clustering, Ntable.random,
+// nuisance.random_galaxy_bias, or redshift.random_shear (with
+// magnification the source n(z) sets the lens range) change.
 //
 // Parameters:
 //   l  - multipole moment (continuous; outside the grid the lookup warns
@@ -6573,7 +6646,7 @@ double C_gk_tomo_limber(const double l, const int ni)
 
     // Coarse-grid workspace (the strategy is explained where the grid
     // is used, in the refill block below): every allocation lives
-    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // here, in the Ntable rebuild block; the per-cosmology refill only
     // fills. The pieces are:
     //   lxc        - the ncoarse ell nodes, log-spaced over the same
     //                [lim[0], lim[1]] range as the fine table
@@ -6610,7 +6683,7 @@ double C_gk_tomo_limber(const double l, const int ni)
         //               -> qdel = (r - j)*dlnc (offset inside it)
         //
         // The spline evaluates on interval [j, j+1], so the largest
-        // legal j is ncoarse-2, the left node of the LAST interval.
+        // legal j is ncoarse-2, the left node of the last interval.
         //
         // Why the clamp: at the shared top endpoint, i*lim[2] and
         // (ncoarse-1)*dlnc are two floating-point roundings of the
@@ -6649,11 +6722,11 @@ double C_gk_tomo_limber(const double l, const int ni)
       // The real-space projection (w_gk_tomo, via the shared gk_
       // struct and C_gk_tomo_limber_fill) reads this table at every
       // integer ell up to Ntable.LMAX ~ 1e5 inside its Legendre
-      // sums. At that call rate only the optimized, vectorized LINEAR
+      // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
-      // A linear read, however, is only accurate on a DENSE table -
+      // A linear read, however, is only accurate on a dense table -
       // and each of the N_ell = 512 nodes costs one exact Limber
       // quadrature, which is the expensive part.
       //
@@ -6793,9 +6866,10 @@ void C_gk_tomo_limber_fill(
 // Pure arithmetic on preloaded scalars - no branches, no table lookups -
 // so GCC can vectorize the calling loop with #pragma omp simd.
 //
-// The IA contribution is the linear alignment amplitude only (C1 * Z1):
-// the CMB convergence is a single spin-0 lens plane, so the cross keeps
-// the NLA term under every IA model.
+// The IA contribution is the linear alignment term only (C1 of the
+// source bin) under every IA model: the TATT one-loop terms, which
+// C_gs_tomo_limber_work includes for the galaxy density leg, are not
+// implemented for the CMB convergence leg.
 //
 // Computes: (WK1 - WS1) * WKC * PK
 //
@@ -6825,7 +6899,7 @@ static inline double int_for_C_ks_tomo_limber_core(
 // engine.
 //
 // Runs one C_ks_tomo_limber_nointerp_ells call at a single multipole and
-// reads one entry, so it pays the WHOLE-TOMOGRAPHY batch cost per call
+// reads one entry, so it pays the whole-tomography batch cost per call
 // (every source bin is computed even though one number is returned). Never
 // loop this over (l, ns): call C_ks_tomo_limber_nointerp_ells once and
 // index the result instead.
@@ -7025,7 +7099,7 @@ static void C_ks_tomo_limber_work(
 //   ells    - array of multipole values, length nell (need not be integers)
 //   nell    - number of multipole values
 //   NSIZE   - number of source tomographic bins (= redshift.shear_nbin;
-//             the CMB is a single lens plane, so one spectrum per bin)
+//             the CMB is a single source plane, so one spectrum per bin)
 //   out     - output array [NSIZE][nell], indexed as out[nz][i]
 //
 // Returns:
@@ -7321,7 +7395,8 @@ void dC_ks_dlnk_tomo_limber_work(
       const double l = lx[i];
       const double ell = l + 0.5;
       // the (k, ell) pair selects one Limber node: chi(a) = ell/k, with k
-      // converted from (Mpc/h)^{-1} to ((Mpc/h)/(c/H0=100))^{-1}
+      // converted from h/Mpc to the code's units of H0/c (times
+      // cosmology.coverH0 = c/H0 in Mpc/h)
       const double a = a_chi(f_K(ell/(exp(lnkx[f])*cosmology.coverH0)));
       if (!(a > aminw && a < amaxw)) {
         AMP[p] = 0.0;
@@ -7354,12 +7429,12 @@ void dC_ks_dlnk_tomo_limber_work(
   // Main fill loop.
   //
   // Where the derivative differs from C_ks: in C_ks_tomo_limber_work each
-  // output is a quadrature SUM over the line of sight,
+  // output is a quadrature sum over the line of sight,
   //
   //   C_ks(l) = sum_p core(p) * (dchida[p]/fK[p]^2) * ell_prefactor * wt[p],
   //
   // because every scale factor contributes to one C_ell. Here each output
-  // is ONE core evaluation with no reduction,
+  // is one core evaluation with no reduction,
   //
   //   dC_ks/dlnk(k, l) = core(p(k, l)) * ell_prefactor / fK,
   //
@@ -7496,8 +7571,9 @@ static struct { double** tab; double lim[3]; int nell; } ks_ = {0};
 //
 // The struct is how the table travels between the two functions.
 // The builder (this function) and the reader (the _fill) never call
-// each other - the real-space projection calls one, the C_ell paths
-// call the other - so no argument list connects them. Instead the
+// each other - the real-space projection calls the builder once to
+// refresh the table and then the reader, the C_ell paths call only the
+// builder - so no argument list connects them. Instead the
 // builder publishes the table pointer and the grid geometry (the
 // ln(ell) limits, spacing and node count) in the file-scope struct,
 // and the reader picks them up there.
@@ -7517,7 +7593,7 @@ static struct { double** tab; double lim[3]; int nell; } ks_ = {0};
 // Parameters:
 //   l  - multipole moment (continuous; outside the grid the lookup warns
 //        and extrapolates)
-//   ni - source redshift bin (the CMB is a single lens plane, so there
+//   ni - source redshift bin (the CMB is a single source plane, so there
 //        is no second bin index)
 //
 // Returns:
@@ -7564,7 +7640,7 @@ double C_ks_tomo_limber(
 
     // Coarse-grid workspace (the strategy is explained where the grid
     // is used, in the refill block below): every allocation lives
-    // HERE, in the Ntable rebuild block; the per-cosmology refill only
+    // here, in the Ntable rebuild block; the per-cosmology refill only
     // fills. The pieces are:
     //   lxc        - the ncoarse ell nodes, log-spaced over the same
     //                [lim[0], lim[1]] range as the fine table
@@ -7601,7 +7677,7 @@ double C_ks_tomo_limber(
         //               -> qdel = (r - j)*dlnc (offset inside it)
         //
         // The spline evaluates on interval [j, j+1], so the largest
-        // legal j is ncoarse-2, the left node of the LAST interval.
+        // legal j is ncoarse-2, the left node of the last interval.
         //
         // Why the clamp: at the shared top endpoint, i*lim[2] and
         // (ncoarse-1)*dlnc are two floating-point roundings of the
@@ -7636,11 +7712,11 @@ double C_ks_tomo_limber(
       // The real-space projection (w_ks_tomo, via the shared ks_
       // struct and C_ks_tomo_limber_fill) reads this table at every
       // integer ell up to Ntable.LMAX ~ 1e5 inside its Legendre
-      // sums. At that call rate only the optimized, vectorized LINEAR
+      // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
-      // A linear read, however, is only accurate on a DENSE table -
+      // A linear read, however, is only accurate on a dense table -
       // and each of the N_ell = 512 nodes costs one exact Limber
       // quadrature, which is the expensive part.
       //
@@ -7983,20 +8059,20 @@ double C_kk_limber(const double l)
 // prime factors are 2, 3, 5, or 7.
 //
 // The FFT algorithm works by recursively splitting a size-N transform into
-// smaller sub-transforms based on N's prime factorization. 
-// FFTW has highly optimized, SIMD-vectorized "codelets" for small prime factors 
+// smaller sub-transforms based on N's prime factorization. FFTW has
+// highly optimized, SIMD-vectorized "codelets" for small prime factors
 // (2, 3, 5, 7), making these splits very fast.
 //
 // When N has a large prime factor p, FFTW cannot split it efficiently and
-// must fall back to generic algorithms, which are slower and cannot be vectorized. 
+// must fall back to generic algorithms, which are slower.
 //
 // For example:
 //   N = 10240 = 2^11 x 5  -> 11 radix-2 stages + 1 radix-5 stage, all fast
 //   N = 10201 = 101 x 101 -> two levels of prime-101 sub-transforms, slow
 //
-// Padding to a slightly larger FFT-friendly size does not affect the convolution
-// result: the extra elements are zeros, and we read the same output indices
-// regardless of the padded size.
+// Padding to a slightly larger FFT-friendly size does not affect the
+// convolution result: the extra elements are zeros, and the code reads
+// the same output indices regardless of the padded size.
 //
 // Parameters:
 //   n - minimum acceptable transform size
@@ -8068,7 +8144,7 @@ typedef struct config
 //   Phase 2 (cfftlog_ells_p2): ell-dependent inverse transform.
 //     For each multipole l, computes the Gamma-function kernel g_l(z),
 //     multiplies it against the forward-transformed data, and inverse-FFTs
-//     to obtain the projected power spectrum Fy[i][j][k][q]. This is called
+//     to obtain the projected functions Fy[i][j][k][q]. This is called
 //     repeatedly in blocks of BLOCK ells with early termination when the
 //     non-Limber result converges to the Limber result.
 //
@@ -8081,7 +8157,8 @@ typedef struct config
 //   fx[SIZE1][SIZE2][Nx]:  input radial weight functions on the chi grid
 //     fx[i][0] = chi * n(z) * D(a) * (H/H0) * b1(z)    (galaxy density)
 //     fx[i][1] = -chi * n(z) * D(a) * (H/H0) * f(a)    (RSD velocity)
-//     fx[i][2] = (W_mag / fK / coverH0^2) * D(a)        (magnification, optional)
+//     fx[i][2] = (W_mag / fK / real_coverH0^2) * D(a)   (magnification,
+//                optional; real_coverH0 = c/H0 in Mpc)
 //     (rows are lens bins in C_cl_tomo; C_gs_tomo appends source rows
 //     whose slot 2 carries the lensing + IA kernel instead)
 //   toutfwd[SIZE1*SIZE2][Nmax/2+1]: output forward FFT coefficients
@@ -8274,10 +8351,10 @@ void cfftlog_ells_p1(
 // radial functions Fy[i][j][k][q] and wavenumber grid y[i][k][q] for each
 // radial row i, radial component j, multipole k, and chi-node q.
 //
-// Called repeatedly from C_cl_tomo and C_gs_tomo in a while-loop over
-// blocks of BLOCK multipoles, with early termination when the non-Limber
-// result converges to the Limber result (rows whose spectra have all
-// converged are skipped via the converged array).
+// Called from C_cl_tomo_core and C_gs_tomo_core in a loop over runs of
+// at most BLOCK = 16 multipoles, with early termination when the
+// non-Limber result converges to the Limber result (rows whose spectra
+// have all converged are skipped via the converged array).
 //
 // Algorithmic steps for each block:
 //
@@ -8295,10 +8372,13 @@ void cfftlog_ells_p1(
 //      Optimization: only the first two ells (ks, ks+1) are computed from
 //      the full Lanczos formula. Subsequent ells use the Gamma recurrence
 //      relation Gamma(a+1) = a*Gamma(a), which gives:
-//        gl[k+2] = gl[k] * (k + z + offset) / (k + 3 - z + offset)
+//        gl[k+2] = gl[k] * (k + z - d) / (k + 3 - z + d)
+//      with d = cfg[j].derivative (the case blocks below spell out each).
 //      This reduces O(BLOCK * N/2) Lanczos evaluations to O(2 * N/2)
 //      plus O(BLOCK * N/2) complex multiplies - a major speedup since
-//      Lanczos involves 9 complex divisions + clog + cexp per evaluation.
+//      each lnGamma costs 8 complex divisions and 2 clog (plus a csin and
+//      a clog on the reflection branch), and each gl two lnGamma and a
+//      cexp.
 //
 //   3. Inverse FFT: for each (bin i, component j, multipole k):
 //      - Multiply forward FFT coefficients (from p1) by the phase shift
@@ -8308,7 +8388,7 @@ void cfftlog_ells_p1(
 //      - Extract the unpadded region and normalize:
 //        Fy[i][j][k][q] = outbcw[N_pad + q] * sqrt(pi) / (4*N * y^nu)
 //
-//      Phase rotation optimization (SIMD path): instead of computing
+//      Phase rotation optimization: instead of computing
 //      cos/sin per q, uses a rotating phasor (complex multiply per step)
 //      with periodic exact recomputation every 1024 steps to prevent drift.
 //
@@ -8461,7 +8541,7 @@ void cfftlog_ells_p2(
     }
   }
 
-  // base_j = the log-grid origin shifted DOWN by the two N_pad guard
+  // base_j = the log-grid origin shifted down by the two N_pad guard
   // bands: x0 * exp(-2 * N_pad * dlnx). It enters only through the
   // phase exp(-i * eta_m * ln(base_j * y0)) applied to the forward
   // coefficients below, which rotates the circular convolution so the
@@ -8472,7 +8552,7 @@ void cfftlog_ells_p2(
     base_j[j] = x0 / exp(2 * N[j][0] * dlnx); // x depends on cosmo (chi_min/max)
   }
 
-  // Output wavenumber grid, log-spaced like x but REVERSED relative to
+  // Output wavenumber grid, log-spaced like x but reversed relative to
   // it: y[i][k][q] = (k+1)/x[Nx-1-q], so q runs from
   // (k+1)/x_max up to (k+1)/x_min. The FFTLog convolution naturally
   // produces the transform on this reciprocal grid; (k+1) rescales it
@@ -8713,7 +8793,7 @@ void cfftlog_ells_p2(
         const int id = 0;
 #endif 
         const double lnbase = log(base_j[j] * y[i][k][0]);    
-        // Explore the fact that the phase eta_m[j][q] is linear in q
+        // Exploit the fact that the phase eta_m[j][q] is linear in q
         const double delta_phase = -eta_m[j][1] * lnbase;
         double step_re, step_im;
         cosmo_sincos(delta_phase, &step_im, &step_re);
@@ -8722,9 +8802,10 @@ void cfftlog_ells_p2(
         for(int q=0; q<(N[j][2]/2+1); q++) {
           fftw_complex val = toutfwd[i*SIZE2+j][q];
           if (q > 0 && (q % 1024) == 0) {
-            // recompute phasor exactly to prevent drift (numerical error)
-            // if N/2 becomes >> 1000 (right now is <1000)
-            // This is extra safety (paranoia!)
+            // recompute the phasor exactly every 1024 steps, bounding the
+            // rounding drift of the repeated complex multiply; at the
+            // default grid sizes N/2 + 1 < 1024, so only boosted grids
+            // reach this branch
             const double exact_phase = -eta_m[j][q] * lnbase;
             cosmo_sincos(exact_phase, &phasor_im, &phasor_re);
           }
@@ -8764,16 +8845,34 @@ void cfftlog_ells_p2(
         const double* RESTRICT ob = outbcw[id] + N[j][0];
         const double* RESTRICT xnu = x_pow_nu[j];
         
+        // scalar:
+        //   for (int q = 0; q < Nx; q++) {
+        //     Fy_ijk[q] = ob[q] * prefactor * xnu[q];
+        //   }
+        // ob[q] is the unnormalized inverse transform at chi node q (past
+        // the front guard band) and xnu[q] = x[Nx-1-q]^nu, so
+        // prefactor*xnu[q] = sqrt(pi)/(4 N[j][2]) y^-nu. The vector loop
+        // takes nodes q..q+3 per pass (lane m holds node q + m) and
+        // multiplies in the scalar order, (ob*prefactor)*xnu, so every
+        // lane equals the scalar result bitwise; the scalar tail finishes
+        // the last Nx % 4 nodes.
+        //
+        // prefactor in all four lanes (set1 copies one scalar into every
+        // lane)
         v4d vpre = simde_mm256_set1_pd(prefactor); // [pf | pf | pf | pf]
         
         int q = 0;
         for (; q <= Nx - 4; q += 4) {
+          // ob[q..q+3]: the transform at chi nodes q..q+3 (loadu reads
+          // four consecutive doubles; no vector-aligned address needed)
           v4d vob  = simde_mm256_loadu_pd(ob + q);  // ob[q..q+3]
+          // xnu[q..q+3]: x^nu at the same four chi nodes
           v4d vxnu = simde_mm256_loadu_pd(xnu + q); // xnu[q..q+3]
-          // Two multiplies: (ob * prefactor) * xnu
-          //   first:  vtmp = [ ob[q]*pf | ob[q+1]*pf | ... | ... ]
-          //   second: vres = [vtmp[0]*xnu[q] | vtmp[1]*xnu[q+1] | ... | ...  ]
+          // first multiply, lane m = ob[q+m]*prefactor:
+          //   vtmp = [ ob[q]*pf | ob[q+1]*pf | ob[q+2]*pf | ob[q+3]*pf ]
           v4d vtmp = simde_mm256_mul_pd(vob, vpre);
+          // second multiply, lane m = (ob[q+m]*prefactor)*xnu[q+m]:
+          //   vres = [ vtmp[0]*xnu[q] | ... | vtmp[3]*xnu[q+3] ]
           v4d vres = simde_mm256_mul_pd(vtmp, vxnu);
           // Store 4 results back to Fy_ijk[q..q+3]
           simde_mm256_storeu_pd(Fy_ijk + q, vres);
@@ -8789,7 +8888,8 @@ void cfftlog_ells_p2(
 }
 
 // ---------------------------------------------------------------------------
-// Non-Limber galaxy clustering C_l via the FFTLog algorithm.
+// Non-Limber galaxy clustering C_l via the FFTLog algorithm: C_cl_tomo,
+// defined after its worker C_cl_tomo_core (whose header follows this one).
 //
 // At low multipoles (l < LMAX_NOLIMBER), the Limber approximation breaks
 // down for galaxy clustering because the lens galaxy redshift distributions
@@ -8802,8 +8902,8 @@ void cfftlog_ells_p2(
 //   Cl[i][l] = Cl_fftlog(P_lin) + Cl_limber(P_delta) - Cl_limber(P_lin)
 // The last two terms correct for the difference between the linear power
 // spectrum used in FFTLog and the nonlinear power spectrum used in the
-// Limber integral. Both come from one batched call each
-// (C_gg_tomo_limber_linpsopt_nointerp_ells at l = 0..LMAX_NOLIMBER-1).
+// Limber integral. Both come from one batched call
+// (C_gg_tomo_limber_nl_lin_nointerp_ells at l = 0..LMAX_NOLIMBER-1).
 //
 // The FFTLog term needs separable growth, P(k; z1, z2) = D(z1)*D(z2)*
 // P_lin(k, a_piv)/D(a_piv)^2 anchored per lens bin at
@@ -8818,11 +8918,11 @@ void cfftlog_ells_p2(
 // wavenumbers of l ~ 100.
 //
 // Algorithm overview:
-//   1. Build the log-spaced chi grid (chi_min..chi_max, dimensionless)
+//   1. Build the log-spaced chi grid (chi_min..chi_max, in Mpc)
 //   2. Evaluate the three radial weight functions per lens bin:
 //        fx[i][0] = chi * n(z) * D(a) * (H/H0) * b1   (galaxy density)
 //        fx[i][1] = -chi * n(z) * D(a) * (H/H0) * f    (RSD velocity)
-//        fx[i][2] = (W_mag / fK / coverH0^2) * D        (magnification)
+//        fx[i][2] = (W_mag / fK / real_coverH0^2) * D   (magnification)
 //      The magnification component is skipped when bmag = 0 for all bins.
 //      The RSD component is zero unless include_RSD_GG = 1 and the HOD is
 //      off, the gate of the Limber terms it is paired with.
@@ -8851,14 +8951,14 @@ void cfftlog_ells_p2(
 // Only auto-correlations (ni = nj) are supported.
 //
 // Cache invalidation:
-// the static work arrays (LMAX, x, fx, y, Fy, vres,
+// the static work arrays of C_cl_tomo_core (x, fx, y, Fy, vres,
 // CLnl, CLlin, lx) and the FFTLog configuration cfg rebuild when any of
 // them is NULL or Ntable.random changes. Kernels and transforms are
 // recomputed at every call (the caller caches the output instead).
 //
 // Parameters:
 //   Cl  - output array Cl[nbins][LMAX_NOLIMBER]: non-Limber C_l per lens bin
-//   tol - convergence tolerance for switching to Limber (typically 0.01)
+//   tol - convergence tolerance for switching to Limber (w_gg_tomo: 0.002)
 //
 // Returns:
 //   nothing; the result is written into Cl
@@ -8937,14 +9037,14 @@ static double** C_cl_tomo_core(
     // one end of the chi array re-enters at the other (wrap-around
     // aliasing). The zero-padding N_pad is the guard band that absorbs
     // that leakage. What protects the integral is the guard band's
-    // LOG-LENGTH N_pad*dlnchi, not its point count: the chi range is
+    // log-length N_pad*dlnchi, not its point count: the chi range is
     // fixed, so dlnchi shrinks like 1/nchi when the accuracy boost
     // raises nchi = Ntable.NL_Nchi, and a constant N_pad would shrink
     // the guard band until the long low-ell kernel tails wrap into the
     // non-Limber C_gg (measured on a 6x2pt data vector: chi2 shifts of
     // +27 at accuracy boost 5). Scaling N_pad with nchi keeps the guard
-    // band at the log-length these constants gave at the unboosted
-    // grid, nchi = 512, so results at accuracy boost 1 are unchanged.
+    // band at the log-length these constants give at the unboosted
+    // grid, nchi = 512, where the formulas return exactly 200 and 500.
     cfg[0].nu = 1.;
     cfg[0].c_window_width = 0.25;
     cfg[0].derivative = 0;
@@ -9268,7 +9368,7 @@ void C_cl_tomo(
 // |dC/C^limber| < tol and take Limber from there) is a truncation error of
 // that size, and at the band centers it is visible: with tol = 0.01 it
 // moved the roman_kl 3x2pt chi2 by 1.9 and roman_fourier's by 0.10
-// (delta^T C^-1 delta, measured 2026-10-01). With ~2 integers per band
+// (delta^T C^-1 delta). With ~2 integers per band
 // center below LMAX_NOLIMBER, computing them all costs little.
 //
 // Band centers with l < 1 or l >= LMAX_NOLIMBER - 1 keep the Limber value.
@@ -9377,13 +9477,17 @@ void C_gg_tomo_ells(
 //   F_lens(k) = INT dlnchi fx_dens(chi) j_l(k chi)
 //             + INT dlnchi fx_rsd(chi) j_l''(k chi)
 //             + bmag * l(l+1)/k^2 * INT dlnchi fx_mag(chi) j_l(k chi)
-//   F_src(k)  = sqrt((l-1) l (l+1) (l+2))/k^2 * INT dlnchi fx_src(chi) j_l(k chi)
+//   F_src(k)  = sqrt((l-1) l (l+1) (l+2))/k^2
+//               * INT dlnchi fx_src(chi) j_l(k chi)
 //
-//   with the radial kernels (chi in c/H0 units, W_* from radial_weights.c)
+//   with the radial kernels (chi in c/H0 units, W_* from radial_weights.c;
+//   k in 1/Mpc on the FFTLog grid, so fx_mag and fx_src carry
+//   1/real_coverH0^2, real_coverH0 = c/H0 in Mpc, and are in Mpc^-2)
 //     fx_dens =  chi * n_lens(z) * D * (H/H0) * b1
-//     fx_rsd  = -chi * n_lens(z) * D * (H/H0) * f      (zero unless include_RSD_GS)
-//     fx_mag  = (W_mag / chi) * D
-//     fx_src  = ((W_kappa - W_source*C1) / chi) * D
+//     fx_rsd  = -chi * n_lens(z) * D * (H/H0) * f
+//               (zero unless include_RSD_GS)
+//     fx_mag  = (W_mag / chi) * D / real_coverH0^2
+//     fx_src  = ((W_kappa - W_source*C1) / chi) * D / real_coverH0^2
 //
 //   Lensing and the linear (NLA) intrinsic alignment share the spin-2 radial
 //   structure j_l(k chi)/(k chi)^2, so one source kernel carries both: the
@@ -9415,8 +9519,8 @@ void C_gg_tomo_ells(
 //      LMIN_tab, the interpolation table (C_gs_tomo_limber_fill) above.
 //
 //   Steps 1-5 live in C_gs_tomo_core, which works on runs of integer
-//   multipoles: this function hands it blocks of 16 from 0 to
-//   LMAX_NOLIMBER - 1 (the loop above), the Fourier-space C_gs_tomo_ells
+//   multipoles: C_gs_tomo (defined after it, below) hands it blocks of
+//   16 from 0 to LMAX_NOLIMBER - 1, the Fourier-space C_gs_tomo_ells
 //   only the integers next to its band centers.
 //
 //   Example (lsst_y1 3x2pt fiducial, 25 pairs, tol = 0.01): the 10 pairs with
@@ -9438,8 +9542,9 @@ void C_gg_tomo_ells(
 //     SIZE2 = 2 (all bmag = 0), the FFTW plans cached inside
 //     cfftlog_ells_p1/p2 are rebuilt at each switch between the two calls.
 //
-// The unit test tests/test_nonlimber_ggl.py of every project compares the
-// data vectors with and without this function.
+// The projects' data-vector tests (tests/data_vector/test_nonlimber_ggl.py;
+// test_nonlimber.py in des_y6) compare the data vectors with and without
+// this function.
 //
 // Cache invalidation:
 // the chi grid, work arrays and FFT configuration are
@@ -9541,7 +9646,7 @@ static double** C_gs_tomo_core(
     // caches are shared with the gg calls. N_pad scales with nchi because
     // the circular FFT is periodic and the zero-padded guard band absorbs
     // its wrap-around leakage; what protects the integral is the band's
-    // LOG-length N_pad*dlnchi. The chi range is fixed, so dlnchi shrinks
+    // log-length N_pad*dlnchi. The chi range is fixed, so dlnchi shrinks
     // like 1/nchi when the accuracy boost raises nchi = Ntable.NL_Nchi,
     // and a constant N_pad would shrink the band until the long low-ell
     // kernel tails wrap into the output. These constants reproduce the
@@ -9733,7 +9838,7 @@ static double** C_gs_tomo_core(
   double*** PK = (double***) malloc3d(redshift.clustering_nbin, BLOCK,
                                       nchi); // per lens bin (pivot spectrum)
   // FKEM pivot per lens bin, as in C_cl_tomo (see the note there);
-  // COSMO2D_FKEM_PIVOT_Z0 restores the z = 0 anchor.
+  // COSMO2D_FKEM_PIVOT_Z0 selects the z = 0 anchor instead.
   double apivL[redshift.clustering_nbin];
   double invgf2L[redshift.clustering_nbin];
   for (int i=0; i<redshift.clustering_nbin; i++) {

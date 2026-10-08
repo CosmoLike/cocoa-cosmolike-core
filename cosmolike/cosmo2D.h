@@ -45,7 +45,8 @@ double w_gk_tomo(const int nt, const int ni, const int limber);
 double w_ks_tomo(const int nt, const int ni, const int limber);
 
 // CMB beam transfer function B_l (Gaussian approximation); zero outside
-// the [cmb.lk_wxk[RANGE_MIN], cmb.lk_wxk[RANGE_MAX]] cross-correlation multipole range.
+// the [cmb.lk_wxk[RANGE_MIN], cmb.lk_wxk[RANGE_MAX]] cross-correlation
+// multipole range.
 double beam_cmb(const int l);
 
 // Precomputed HEALPix pixel window function at multipole l; zero for
@@ -294,8 +295,9 @@ void C_gk_tomo_limber_nointerp_batch(
     double** Cl
   );
 
-// Batch CMB-lensing x shear C_l at arbitrary multipole values
-// (the CMB is a single lens plane, so one spectrum per source bin).
+// CMB-lensing x shear C_l (the CMB is a single source plane, so one
+// spectrum per source bin): the single-multipole point diagnostic, then
+// the batch at arbitrary multipole values.
 double C_ks_tomo_limber_nointerp(
     const double l,   // multipole moment
     const int ns      // source redshift bin index
