@@ -36,14 +36,19 @@ def load_run_configuration(filename, survey, default_space="real", joint=False):
         default_space = native "real" or "fourier" measurement space.
         joint = True restricts the selected-cluster forecast to real space.
     Returns:
-        (settings, run): resolved survey/cosmology settings and run options
-        containing space, threads from OMP_NUM_THREADS, output, timing
-        and optional CAMB path. The environment must specify the team size.
+        (settings, run): resolved survey/cosmology settings, with the parsed
+        YAML in settings["run_yaml"], and run options containing space,
+        threads from OMP_NUM_THREADS, output, timing and optional CAMB path.
     Raises:
-        ValueError for unsupported blocks, missing cosmology values or
-        sampling requests. Fixed params and Cobaya input expressions are
-        accepted. A param with a prior needs an explicit evaluate.override;
-        the covariance generator never chooses a random reference cosmology.
+        ValueError for unsupported blocks or keys, missing or unphysical
+        cosmology values, nonzero mnu, sampling requests, a missing CAMB
+        directory, a covariance.threads key, an unset or nonpositive
+        OMP_NUM_THREADS (the OpenMP thread count) or a missing output name.
+        Fixed params and Cobaya input expressions are accepted. A param with
+        a prior needs an explicit evaluate.override; the covariance
+        generator never chooses a random reference cosmology.
+    Side effects:
+        Configures Cobaya's logging from the optional debug key.
     """
     info = yaml_load_file(file_name=str(filename))
     allowed = {
@@ -188,8 +193,12 @@ def run_covariance(interface, survey, default_space="real", joint=False,
         Path of the written .npz archive. --help prints usage and exits.
     Side effects:
         Resolves the YAML, initializes CAMB and the project, applies
-        OMP_NUM_THREADS and saves G/SSC/cNG/total. No plots or eigenproblems run.
-        Invalid options or a disabled build stop before numerical setup.
+        OMP_NUM_THREADS and saves G/SSC/cNG/total. Prepends theory.camb.path
+        to sys.path when given and prints the saved size, plus timings
+        unless the YAML sets timing to false. No plots or eigenproblems run.
+        A disabled build or invalid output options exit through argparse
+        (status 2), and a rejected YAML setting raises ValueError, all before
+        numerical setup.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="covariance evaluate YAML")
@@ -230,12 +239,19 @@ def run_covariance(interface, survey, default_space="real", joint=False,
     started = time.perf_counter()
     survey.initialize(interface=interface, settings=settings)
     setup_seconds = time.perf_counter()-started
+    # A library loaded during initialization can reset the process-wide
+    # OpenMP thread count; apply the requested team again before assembly.
     interface.set_omp_threads(n=run["threads"])
     if run["timing"]:
         print(f"Initialization including CAMB: {setup_seconds:.2f} s", flush=True)
 
     def progress(stage, elapsed_seconds):
-        """Report elapsed matrix-construction time, excluding initial setup."""
+        """Report elapsed matrix-construction time, excluding initial setup.
+
+        Arguments:
+            stage = label printed before the time.
+            elapsed_seconds = seconds since matrix construction began.
+        """
         if run["timing"]:
             print(f"{stage}: {elapsed_seconds:.2f} s", flush=True)
 

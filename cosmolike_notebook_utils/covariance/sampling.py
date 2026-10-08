@@ -12,10 +12,13 @@ from scipy.interpolate import CubicSpline
 
 
 class DenseLogTable:
-    """Cubic construction and linear queries on one fixed physical k interval.
+    """Tabulate a cubic spline once on uniform ln(k) nodes; read it linearly.
+
+    The table covers one fixed physical interval, from k[0] to k[-1].
 
     Arguments:
-        k = strictly increasing positive coarse wavenumbers [ncoarse].
+        k = at least four strictly increasing positive coarse wavenumbers
+            [ncoarse], in the unit of the later queries.
         values = finite [...,ncoarse] samples; the final axis is k.
         ndense = integer number of uniform log-k nodes, at least ncoarse.
         logarithmic = interpolate ln(values), requiring positive samples;
@@ -35,6 +38,8 @@ class DenseLogTable:
         """Validate the supplied samples before constructing a cubic spline."""
         wave = np.asarray(a=k, dtype=float)
         samples = np.asarray(a=values, dtype=float)
+        # Four samples are the fewest that determine a cubic: with fewer,
+        # SciPy's default not-a-knot spline is a line or a parabola.
         if wave.ndim != 1 or len(wave) < 4:
             raise ValueError("k needs at least four coarse samples")
         if not np.all(np.isfinite(wave)) or np.any(wave <= 0):
@@ -69,13 +74,23 @@ class DenseLogTable:
         self.values = np.ascontiguousarray(spline(x=dense_coordinate))
 
     def __call__(self, k):
-        """Read adjacent dense nodes by arithmetic indexing; do not extrapolate."""
+        """Read adjacent dense nodes by arithmetic indexing; do not extrapolate.
+
+        Arguments:
+            k = finite query wavenumbers of any shape, inside
+                [self.minimum_k, self.maximum_k].
+        Returns:
+            float array [...,*k.shape]; a query outside raises ValueError.
+        """
         wave = np.asarray(a=k, dtype=float)
         if not np.all(np.isfinite(wave)):
             raise ValueError("query k must be finite")
         if np.any(wave < self.minimum_k) or np.any(wave > self.maximum_k):
             raise ValueError("query k lies outside the sampled physical interval")
 
+        # Uniform ln(k) spacing replaces a table search by one division;
+        # astype truncates the nonnegative position to its lower node. The
+        # clamp keeps k = maximum_k in the last interval, with fraction one.
         position = (np.log(wave)-self.minimum)/self.step
         node = np.minimum(position.astype(np.intp), self.values.shape[-1]-2)
         fraction = position-node

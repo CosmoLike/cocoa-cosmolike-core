@@ -11,12 +11,23 @@ from scipy.linalg import eigh
 
 
 def _symmetric_matrix(matrix):
-    """Validate a finite square matrix before using its symmetric eigenproblem."""
+    """Validate a finite square matrix before using its symmetric eigenproblem.
+
+    Arguments:
+        matrix: array-like [ndata,ndata] covariance.
+
+    Returns:
+        The matrix as a float array. ValueError is raised for a non-square,
+        empty, nonfinite or asymmetric input.
+    """
     values = np.asarray(a=matrix, dtype=float)
     if values.ndim != 2 or values.shape[0] != values.shape[1]:
         raise ValueError("covariance must be a square 2D array")
     if len(values) == 0 or not np.all(np.isfinite(values)):
         raise ValueError("covariance must be nonempty and finite")
+    # Symmetric eigensolvers read only one triangle, so an asymmetric input
+    # would be analysed as a different matrix. The 1e-12 tolerance, relative
+    # to the largest entry, admits assembly roundoff.
     scale = np.max(np.abs(values))
     difference = np.max(np.abs(values-values.T))
     if difference > 1.e-12*scale:
@@ -34,12 +45,17 @@ def covariance_modes(matrix):
         matrix: finite symmetric [ndata,ndata] total or component covariance.
 
     Returns:
-        dict with diagonal/eigenvalue diagnostics. Correlation eigenvalues
-        are available only when every diagonal is positive; otherwise that
-        field is None. A negative individual cNG contribution need not be a
-        failure, but a total covariance must give nonnegative variance to
-        every linear combination. An invertible total must be positive
-        definite. Raw largest eigenvalues do not rank cosmological information.
+        dict with minimum_diagonal (float), positive_diagonal (bool),
+        eigenvalues (ascending [ndata], in the units of matrix),
+        correlation_eigenvalues (ascending [ndata], dimensionless) and
+        positive_definite (bool). Correlation eigenvalues are available
+        only when every diagonal is positive; otherwise that field is None
+        and positive_definite is False, because a nonpositive variance
+        already excludes positive definiteness. A negative individual cNG
+        contribution need not be a failure, but a total covariance must
+        give nonnegative variance to every linear combination. An
+        invertible total must be positive definite. Raw largest eigenvalues
+        do not rank cosmological information.
 
         positive_definite uses the correlation matrix when all variances
         are positive. Dividing each observable by its standard deviation
@@ -80,10 +96,15 @@ def compare_covariances(matrix, reference):
         The reference must be positive definite.
 
     Returns:
-        dict with generalized eigenvalues and their maximum distance from
-        one. For any vector v, these eigenvalues bound the ratio
+        dict with generalized_eigenvalues, the ascending [ndata] lambda of
+        matrix v = lambda reference v, and maximum_fractional_variance_change
+        = max|lambda-1|. For any vector v, these eigenvalues bound the ratio
         (v.T matrix v)/(v.T reference v). They avoid ranking modes solely
         by dimensionful covariance eigenvalues.
+
+    Raises:
+        ValueError for invalid or mismatched matrices; LinAlgError when the
+        reference is not positive definite.
 
     This is a numerical refinement diagnostic. Parameter errors and Fisher
     Figures of Merit still require derivatives of the predicted data vector;

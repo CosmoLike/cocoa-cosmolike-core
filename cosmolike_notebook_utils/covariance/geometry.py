@@ -1,5 +1,10 @@
 """Survey geometry and integration inputs shared by covariance notebooks.
 
+noise_powers turns catalog densities into shot and shape noise, cap_mask
+gives the angular power of an idealized circular footprint, and
+angular_rule builds the angle quadrature for the tree-level terms of the
+halo trispectrum.
+
 Angles are radians, solid angles are steradians, and number densities are
 per square arcminute at the input boundary. The C routines use densities
 per steradian. None of these helpers selects a survey's numerical accuracy.
@@ -14,12 +19,19 @@ def noise_powers(lens_density, source_density, sigma_component):
     Arguments:
         lens_density: 1D number densities per square arcminute.
         source_density: 1D effective shape densities in the same units.
-        sigma_component: 1D rms ellipticity PER COMPONENT for each source bin.
+        sigma_component: 1D rms ellipticity of one shear component, not the
+            two-component total, for each source bin.
 
     Returns:
-        float64 vector N_g=1/n_g followed by N_s=sigma_component^2/n_s.
+        float64 vector [nlens+nsource] of N_g=1/n_g followed by
+        N_s=sigma_component^2/n_s, in steradians (n per steradian).
         Catalog overlap in redshift does not imply shared objects. These
         powers assume disjoint object catalogs and uniform noise per bin.
+
+    Raises:
+        ValueError unless both densities are nonempty 1D arrays,
+        sigma_component matches source_density, and every value is finite
+        and positive.
     """
     lens = np.asarray(a=lens_density, dtype=float)
     source = np.asarray(a=source_density, dtype=float)
@@ -46,14 +58,21 @@ def cap_mask(area_sr, ell_max):
         ell_max: last mask multipole, including L=0 and L=1.
 
     Returns:
-        float64 [ell_max+1] C_L, with C_0=area_sr^2/(4*pi).
+        float64 [ell_max+1] C_L in sr^2, with C_0=area_sr^2/(4*pi).
+
+    Raises:
+        ValueError for an area that is not finite and inside (0,4*pi], or
+        for a negative or non-integer ell_max.
 
     A cap centered on the pole has only m=0 spherical-harmonic
     coefficients. Integrating P_L over its polar extent gives those
-    coefficients analytically. Rotating the cap changes its coefficients
-    but not C_L. This is a chosen idealized footprint, not a reconstruction
-    of a real survey mask. It follows the raw-mask convention used by
-    ssc_cov.c and mask_cov.c.
+    coefficients analytically: with x_c = 1-area_sr/(2*pi), the cosine of
+    the cap radius, the integral of P_L from x_c to 1 is
+    (P_{L-1}(x_c)-P_{L+1}(x_c))/(2L+1) for L >= 1, and C_L is pi times
+    its square. Rotating the cap changes its coefficients but not C_L.
+    This is a chosen idealized footprint, not a reconstruction of a real
+    survey mask. It follows the raw-mask convention used by ssc_cov.c and
+    mask_cov.c.
     """
     if not np.isfinite(area_sr) or not 0 < area_sr <= 4*np.pi:
         raise ValueError("area_sr must be finite and inside (0,4*pi]")
@@ -88,11 +107,18 @@ def angular_rule(nquad, npanel, interface):
 
     Returns:
         theta, weight, corner: 1D float64 arrays, each length nquad*npanel.
-        Weights sum to one; corner=1+cos(theta) is evaluated without
-        subtracting nearly equal numbers near theta=pi.
+        theta is in radians. Weights sum to one; corner=1+cos(theta) is
+        evaluated without subtracting nearly equal numbers near theta=pi.
+
+    Raises:
+        ValueError for an unsupported nquad, npanel outside 1..40, or a
+        node that rounds to theta=pi.
 
     When K approximately equals Q, the internal wavenumber |K+Q| changes
-    rapidly near theta=pi. Panels halve their width toward that endpoint.
+    rapidly near theta=pi. Panel edges are pi-pi/2^j for j=0..npanel-1,
+    then pi: widths halve toward that endpoint, and the last two panels
+    share the finest width pi/2^(npanel-1). At the cap of 40 panels this
+    width, about 6e-12 rad, still spans about 1e4 rounding steps of pi.
     The last panel reaches pi, but Gaussian nodes never touch the singular
     endpoint. Callers refine both counts rather than treating them as a
     universal production setting.
