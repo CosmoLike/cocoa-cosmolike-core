@@ -22,12 +22,34 @@ namespace py = pybind11;
 
 namespace cosmolike_interface {
 
+// ---------------------------------------------------------------------------
+// Production bindings to the individual covariance components.
+//
 // NumPy owns all arrays. A C-style array has adjacent elements within each
 // row, so its rows can be passed directly to the existing C components.
 // The small pointer vectors below describe those rows; they copy no data.
+//
+// Inputs are borrowed: every array argument is registered with noconvert(),
+// so pybind11 accepts only C-contiguous float64 (cov_array) or int32
+// (cov_int_array) arrays and never makes a converted copy. C reads them
+// and never writes to them. Each output is a cov_array allocated in its
+// binding and owned by Python once returned.
+//
+// Units are the core ones: distances in c/H0, wavenumbers in (c/H0)^-1,
+// power in (c/H0)^3, angles in radians and areas in steradians.
+//
+// Threads: these conversions open no OpenMP region and call no BLAS
+// routine. Each C component distributes its own loop over the OpenMP
+// team. Only covariance_halo_moments and covariance_power read core state
+// that is initialized on first use (lazy halo tables; the Pdelta run-mode
+// latch). Their C routines initialize it serially before any worker reads
+// it, and the vector power path is serial throughout.
+// ---------------------------------------------------------------------------
 using cov_array = py::array_t<double, py::array::c_style>;
 using cov_int_array = py::array_t<int, py::array::c_style>;
 
+// Reject NaN and infinity anywhere in an array. C arithmetic would carry
+// them silently into every covariance entry that reads the value.
 static void finite_cov(const cov_array& values, const char* name)
 {
   // size() multiplies the array dimensions; do it once before the scan.
@@ -41,6 +63,7 @@ static void finite_cov(const cov_array& values, const char* name)
   }
 }
 
+// A nonempty, finite 1D input.
 static void vector_cov(const cov_array& values, const char* name)
 {
   if (values.ndim() != 1
@@ -51,6 +74,7 @@ static void vector_cov(const cov_array& values, const char* name)
   finite_cov(values, name);
 }
 
+// A finite 2D input with at least one row and one column.
 static void matrix_cov(const cov_array& values, const char* name)
 {
   if (values.ndim() != 2
@@ -62,6 +86,10 @@ static void matrix_cov(const cov_array& values, const char* name)
   finite_cov(values, name);
 }
 
+// Collect the address of each row of a C-contiguous 2D array for C
+// routines that take row pointers (const double* const*). The vector owns
+// only the addresses; the values stay in the NumPy array, which outlives
+// the synchronous C call. output_rows_cov does the same for an output.
 static std::vector<const double*> input_rows_cov(const cov_array& values)
 {
   std::vector<const double*> rows(values.shape(0));
@@ -80,6 +108,8 @@ static std::vector<double*> output_rows_cov(cov_array& values)
   return rows;
 }
 
+// GSL tabulates the Gauss-Legendre nodes for these sizes; the C kernels
+// accept no other rule, so reject the rest before calling them.
 static void quadrature_cov(const int nquad)
 {
   if (nquad != 64
@@ -92,6 +122,8 @@ static void quadrature_cov(const int nquad)
   }
 }
 
+// Angular-bin edges in radians: at least two finite values, inside
+// [0,pi] (the possible separations on the sphere), strictly increasing.
 static void angles_cov(const cov_array& edges)
 {
   vector_cov(edges, "edges_rad");
@@ -111,8 +143,11 @@ static void angles_cov(const cov_array& edges)
 // the C radial, mass and angular kernels. Row 0 contains nodes on [-1,1];
 // row 1 contains positive weights for integration over that interval.
 // Python maps these onto its physical panels without generating another
-// rule. The supported sizes all have at least 64 nodes. NumPy owns the
-// copy, so releasing GSL's descriptor cannot invalidate the returned data.
+// rule: on [lo,hi] a node x becomes (lo+hi)/2 + (hi-lo)/2 x and a weight w
+// becomes w (hi-lo)/2. The supported sizes all have at least 64 nodes.
+// NumPy owns the output [2,nquad], so releasing GSL's descriptor cannot
+// invalidate the returned data. Only nquad is validated; the GSL calls
+// are serial and read no cosmology state.
 static cov_array covariance_integration_rule(
     const int nquad // precomputed rule size: 64,96,128,256,512,1024
   )
@@ -140,6 +175,14 @@ static cov_array covariance_integration_rule(
 // responses on both sides and positive weights preserves nonnegative
 // variance. The caller can request a rectangular matrix subblock without
 // changing the summation order. All parallel work remains in the C code.
+//
+// Arrays: left[nleft,nnode], right[nright,nnode] and weight[nnode] in,
+// output[nleft,nright] out; the units are those of the caller's rows.
+// Validation: both matrices and the weights are finite and nonempty, and
+// share the node count. gaussian_project_cov first forms the weighted
+// left rows in the scratch array (allocated here, discarded at return),
+// then one ordered dot product per entry. A standalone call distributes
+// output tiles over the OpenMP team; no core table is read.
 // ---------------------------------------------------------------------------
 static cov_array covariance_project(
     const cov_array& left,   // [nleft,nnode], left response/operator rows
@@ -168,9 +211,24 @@ static cov_array covariance_project(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Gaussian covariance of two spectra C_AB and C_CD at each integer ell.
+//
 // The four rows are the AC, BD, AD and BC pairings of an AB-by-CD block.
 // Noise is supplied separately so real-space calculations can replace the
 // pure noise product by the analytic number of available galaxy pairs.
+// For ell = ell_min, ..., ell_min+nell-1 the output is
+//
+//   G(ell) = [(C_AC+N_AC)(C_BD+N_BD) + (C_AD+N_AD)(C_BC+N_BC)]
+//            / [(2 ell+1) fsky],
+//
+// with the pure noise products N*N omitted unless include_noise_noise.
+// Arrays: cross_spectra[4,nell] signal spectra, cross_noise[4] white
+// noise 1/n or sigma_component^2/n with n per steradian (zero unless the
+// two catalogs coincide), output G[nell]. Validation: finite inputs, four
+// rows, ell_min >= 0 and 0 < fsky <= 1. gaussian_wick_cov distributes
+// the multipoles over the OpenMP team; it reads no global state.
+// ---------------------------------------------------------------------------
 static cov_array covariance_gaussian_wick(
     const cov_array& cross_spectra, // [4,nell], signal only
     const cov_array& cross_noise,   // [4], matching white-noise powers
@@ -197,8 +255,23 @@ static cov_array covariance_gaussian_wick(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Full-sky operators K[probe,bin,ell] that turn a harmonic spectrum into
+// an angular-bin average: X_bin = sum_ell K[probe,bin,ell] C_ell.
+//
 // Build all four estimator operators together. The flattened C row order
 // is probe*nbin+bin; reshape on return without copying the owned data.
+// Probes are xi+, xi-, gamma_t and w (0..3), and each row already holds
+// the (2 ell+1)/(4 pi) factor and the area average over its bin. The
+// output [4,nbin,ell_max+1] is dimensionless and covers ell = 0..ell_max;
+// spin rows are zero below ell=2. The shear rows act on unit-normalized
+// observed-shear spectra; operators_cov.c gives the factor that converts
+// each source leg of a core-convention spectrum. Validation:
+// edges_rad[nbin+1] finite, strictly increasing inside [0,pi]; tabulated
+// nquad; ell_max >= 2.
+// realspace_operator_cov gives each OpenMP worker one (probe,bin) row;
+// it reads no cosmology, so the result can be kept across cosmologies.
+// ---------------------------------------------------------------------------
 static cov_array covariance_realspace_operator(
     const cov_array& edges_rad, // angular-bin boundaries in radians
     const int ell_max,          // last integer multipole, inclusive
@@ -218,6 +291,17 @@ static cov_array covariance_realspace_operator(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Mode-weighted Fourier band operators on a consecutive integer ell grid.
+//
+// Each ell carries 2 ell+1 independent modes, so a band average weights
+// it by (2 ell+1)/N_band, where N_band = sum over the band of (2 ell+1).
+// Arrays: first[nband] and last[nband], int32 inclusive absolute
+// multipoles; output [nband,nell] dimensionless, column j at ell_min+j,
+// zero outside each band. Validation: equal nonempty 1D bounds, ell_min
+// >= 0, nell >= 1 and every band inside the grid. bandpower_operator_cov
+// gives each OpenMP worker one band; no cosmology state is read.
+// ---------------------------------------------------------------------------
 static cov_array covariance_bandpower_operator(
     const cov_int_array& first, // inclusive lower multipole of each band
     const cov_int_array& last,  // inclusive upper multipole
@@ -234,6 +318,9 @@ static cov_array covariance_bandpower_operator(
     throw std::invalid_argument(
         "need equal 1D band bounds and a valid ell grid");
   }
+
+  // Each band must be nonempty and lie on the supplied grid, whose last
+  // multipole is ell_min+nell-1; the C routine would stop otherwise.
   for (py::ssize_t band=0; band<first.size(); band++) {
     if (first.data()[band] < ell_min
         || last.data()[band] < first.data()[band]
@@ -249,6 +336,21 @@ static cov_array covariance_bandpower_operator(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Pure shot/shape-noise covariance of two estimators in one angular bin.
+//
+// For w_AB and w_CD the noise pairings give
+//   (delta_AC delta_BD + delta_AD delta_BC) N_A N_B / pair_area,
+// where delta compares catalog IDs and N = 1/n or sigma_component^2/n,
+// with n per steradian. gamma_t keeps only the direct pairing; xi+ and
+// xi- double the w expression; different estimators give zero.
+// Inputs: two probe IDs (0 xi+, 1 xi-, 2 gamma_t, 3 w), fields[4] int32
+// catalog IDs A,B,C,D (one unique ID per catalog across lenses and
+// sources), noise_ab[2] = N_A, N_B, and the ordered-pair area in sr^2.
+// Validation: probe IDs in 0..3, four nonnegative IDs, two finite
+// nonnegative noise powers, finite positive pair area. The scalar result
+// comes from gaussian_noise_pair_cov; there is no threading or state.
+// ---------------------------------------------------------------------------
 static double covariance_noise_pair(
     const int probe_left,       // xi+, xi-, gamma_t, w: 0,1,2,3
     const int probe_right,      // right estimator in the same convention
@@ -305,6 +407,21 @@ static void raw_mask_cov(const cov_array& mask, const double area)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Ordered-pair angular area of a common footprint in each angular bin.
+//
+// Two unclustered positions inside the mask W, separated by an angle in
+// the bin, give n_A n_B A_pair expected ordered pairs. With the raw mask
+// power C_L^W and the scalar-bin operator K[bin,L] of w (including its
+// (2L+1)/(4 pi) factor and bin average), mask_pair_area_cov evaluates
+//   A_pair = 8 pi^2 Delta_x sum_L C_L^W K[bin,L],
+// Delta_x = cos(theta_low)-cos(theta_high). The result feeds the pure
+// noise term of covariance_noise_pair. Arrays: edges_rad[nbin+1] radians,
+// mask_cl[nmask] raw C_L^W from L=0, scalar_kernel[nbin,nmask]; output
+// [nbin] in sr^2. Validation: edges, raw-mask convention and shapes.
+// C stops the process if a reconstructed area is not positive (check the
+// footprint and its band limit). Each OpenMP worker owns two bins.
+// ---------------------------------------------------------------------------
 static cov_array covariance_mask_pair_area(
     const cov_array& edges_rad,    // angular-bin edges in radians
     const cov_array& mask_cl,      // raw footprint spectrum, L=0 onward
@@ -327,9 +444,22 @@ static cov_array covariance_mask_pair_area(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Variance of the survey-averaged background mode delta_b at each shell.
+//
 // The output describes the background power of a radial shell in the
 // long-mode Limber approximation. It has units of length; the radial
-// quadrature weight is applied later when the observable responses meet.
+// quadrature weight is applied later when the observable responses meet:
+//
+//   sigma_b^2(chi) = sum_L (2L+1) C_L^W P_lin((L+1/2)/f_K, a)
+//                    / [area_sr^2 f_K^2].
+//
+// Arrays: mask_cl[nmask] raw mask power, distance[nnode] f_K in c/H0,
+// power[nnode,nmask] = P_lin((L+1/2)/f_K, a) in (c/H0)^3 at each node and
+// L; output sigma_b^2[nnode] in c/H0. Validation: raw-mask convention,
+// shapes, finite values and positive distances. ssc_mask_variance_cov
+// gives each OpenMP worker two radial nodes; it reads no core table.
+// ---------------------------------------------------------------------------
 static cov_array covariance_ssc_mask_variance(
     const cov_array& mask_cl, // raw footprint spectrum
     const double area_sr,    // footprint area in steradians
@@ -357,9 +487,24 @@ static cov_array covariance_ssc_mask_variance(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Response of each projected spectrum to the background mode of a shell.
+//
 // Each row describes one observable at one multipole. Its shell response
 // includes the change of matter clustering and, when present, the change
-// in the catalog mean used to define observed galaxy density.
+// in the catalog mean used to define observed galaxy density:
+//
+//   Phi(chi) = W_A W_B D((ell+1/2)/f_K, chi)/f_K^2 - (U_A+U_B) C_AB(ell),
+//
+// where D = dP/d(delta_b) and U describes the catalog-mean response.
+// SSC is then sum_node dchi sigma_b^2 Phi_i Phi_j. Arrays: distance[nnode]
+// f_K, signal[nrow] dimensionless C_AB, pair_window[nrow,nnode] W_A W_B in
+// (c/H0)^-2, mean_window[nrow,nnode] U_A+U_B in (c/H0)^-1 (zero without a
+// catalog-mean normalization), power_response[nrow,nnode] in (c/H0)^3;
+// output Phi[nrow,nnode] in (c/H0)^-1, without the dchi weight.
+// Validation: finite values, matching shapes, positive distances.
+// ssc_shell_response_cov gives each OpenMP worker one row; no core table.
+// ---------------------------------------------------------------------------
 static cov_array covariance_ssc_shell_response(
     const cov_array& distance,       // [nnode], transverse distances
     const cov_array& signal,         // [nrow], complete projected spectra
@@ -400,12 +545,33 @@ static cov_array covariance_ssc_shell_response(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Halo-model mass integrals of the cold-matter-plus-baryon (cb) field.
+//
 // Return both the one-profile moment and the five pair moments. Their
 // NumPy arrays own the values after the C routine releases its workspace.
 // The temporary pointers merely give C access to [role][a][pair] rows;
 // no moment is copied and no covariance approximation is chosen here.
 // A response slope can request I11 alone: its other moments are already
 // available at the central k. Return None for the omitted pair array.
+//
+//   I_mu^beta = integral dlnM (dn/dlnM) b_beta (M/rho_cb)^mu
+//               product_i u(k_i|M),
+// with b_0 = 1 and b_1 the linear halo bias; array names write beta first
+// (I11, I02, ...). I11 receives the completion that restores I11(k->0)=1
+// for halos below the lowest mass edge.
+// Arrays: a[na]; k[na,nk] in (c/H0)^-1; lnm_edges[npanel+1] = ln(M/[Msun/h]).
+// Outputs: i11[na,nk], dimensionless; moments[5,na,nk*(nk+1)/2] for the
+// roles I02(K,Q), I12(K,Q), I13(K,Q,Q), I13(K,K,Q), I04(K,K,Q,Q), in
+// (c/H0)^3,^3,^6,^6,^9, pairs in (0,0),(0,1),...,(1,1),... order of k.
+// Validation: linear power and growth tables set; NFW profiles; finite
+// inputs; limits.a_min <= a < 1; k >= 0; edges increasing inside
+// [ln halo_sigma_min, ln halo_m[max]]; tabulated nquad. The default
+// eleven four-decade panels from 10^-40 to 10^4 Msun/h switch on the
+// C routine's Wynn extrapolation of I11; other layouts are finite sums.
+// halo_moments_cov warms its lazy core tables serially at entry, then
+// runs its OpenMP loops over (a,mass), (a,k) and (a,k-pair) work.
+// ---------------------------------------------------------------------------
 static py::tuple covariance_halo_moments(
     const cov_array& a,         // scale factors
     const cov_array& k,         // [na,nk], inverse c/H0
@@ -466,6 +632,9 @@ static py::tuple covariance_halo_moments(
   std::vector<std::vector<double*>> moment_rows(5);
   std::vector<double**> roles(5);
 
+  // Build the [role][a] row map that C expects: moment_rows[role][row]
+  // points at moments[role,row,0], the first of its npair pair entries,
+  // and roles[role] points at that role's list of rows.
   for (int role=0; role<5; role++) {
     moment_rows[role].resize(na);
     for (py::ssize_t row=0; row<na; row++) {
@@ -479,10 +648,19 @@ static py::tuple covariance_halo_moments(
   return py::make_tuple(i11, moments);
 }
 
+// ---------------------------------------------------------------------------
+// Matter power P(k,a) at one scale factor, read from the core tables.
+//
 // Read one vector or a matrix of physical wavenumbers at a shared a.
-// Matrix rows are independent integration batches distributed by C over
-// OpenMP workers. A vector retains the original serial core-reader path.
-// The output has the input's shape; the covariance owns the input grid.
+// Matrix rows are independent batches of table reads, distributed by C
+// (power_rows_cov) over OpenMP workers after it touches the Pdelta
+// run-mode latch serially. A vector retains the original serial
+// core-reader path (p_lin_at_a or Pdelta_at_a). The output has the
+// input's shape; the caller chooses the k grid and no core grid changes.
+// k is in (c/H0)^-1 and P in (c/H0)^3. linear selects p_lin(k,a); else
+// the run-mode Pdelta. Validation: finite k > 0, 1D or 2D and nonempty;
+// limits.a_min <= a < 1; linear (and, if needed, nonlinear) tables set.
+// ---------------------------------------------------------------------------
 static cov_array covariance_power(
     const double a,      // scale factor inside the initialized range
     const cov_array& k,  // physical wavenumbers in inverse c/H0
@@ -527,9 +705,21 @@ static cov_array covariance_power(
 }
 
 
+// ---------------------------------------------------------------------------
+// Planar angular averages of tree-level P, B and T for the covariance.
+//
 // The angular rule and its power samples are supplied together. The
 // arrays must describe the same K,Q pairs and the same angular nodes;
 // otherwise the cancellations between perturbation diagrams are lost.
+// The average over the angle theta between k and q uses the measure
+// dtheta/pi. Arrays: k[2,npair] = K,Q in (c/H0)^-1; pk[2,npair] linear
+// P(K), P(Q) in (c/H0)^3; corner[nangle] = 1+cos(theta), computed as
+// 2 sin^2((pi-theta)/2) near pi; weight[nangle]; ps[npair,nangle] linear
+// P(|k+q|). Output [3,npair]: <P>, <B_tree>, <T_tree> in (c/H0)^3,^6,^9.
+// Validation: finite values and matching shapes; K,Q > 0; 0 < corner
+// <= 2; positive weights summing to one within 1e-10. tree_averages_cov
+// gives each OpenMP worker two (K,Q) pairs; it reads no core table.
+// ---------------------------------------------------------------------------
 static cov_array covariance_tree_averages(
     const cov_array& k,      // [2,npair], positive K and Q
     const cov_array& pk,     // [2,npair], matching linear power
@@ -552,6 +742,10 @@ static cov_array covariance_tree_averages(
     throw std::invalid_argument(
         "tree input pair and angle dimensions disagree");
   }
+
+  // The stable kernel formulas divide by K and Q. The angular nodes must
+  // exclude theta=pi (corner=0), where |k+q| can vanish, and their weights
+  // must form a normalized average.
   for (py::ssize_t point=0; point<k.size(); point++) {
     if (k.data()[point] <= 0.0) {
       throw std::invalid_argument("tree wavenumbers must be positive");
@@ -581,9 +775,20 @@ static cov_array covariance_tree_averages(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Angle-averaged halo-model trispectrum T(K,Q) of the connected covariance.
+//
 // Keep the five halo contributions separate in the returned array so
 // callers can examine their scale dependence before projecting their sum.
 // All supplied moments and powers must refer to the same density field.
+// Arrays (one column per (K,Q,a) point): pk[2,npoint] linear P(K), P(Q);
+// i11[2,npoint] I11(K), I11(Q); moments[5,npoint] in halo_cov order
+// I02, I12, I13(K,Q,Q), I13(K,K,Q), I04 (I02 unused); tree[3,npoint]
+// <P>, <B>, <T> from covariance_tree_averages. Output [5,npoint]: 1h,
+// 2h(1+3), 2h(2+2), 3h, 4h, each in (c/H0)^9. Validation: finite values
+// and the 2,2,5,3 row counts with a common point count; signs are kept.
+// halo_trispectrum_cov splits points over the OpenMP team; no core table.
+// ---------------------------------------------------------------------------
 static cov_array covariance_halo_trispectrum(
     const cov_array& pk,      // [2,npoint], linear power at K,Q
     const cov_array& i11,     // [2,npoint], one-profile moments
@@ -618,10 +823,24 @@ static cov_array covariance_halo_trispectrum(
   return output;
 }
 
+// ---------------------------------------------------------------------------
+// Halo power and its response to a background density mode delta_b.
+//
 // The two coefficients and the differentiated spectrum are explicit:
 // the Python workflow selects a response prescription, not the binding.
 // Row 0 returns halo power; row 1 returns its dimensional response or
-// the fractional response transferred to the supplied target power.
+// the fractional response transferred to the supplied target power:
+//
+//   P_halo = I11^2 P_lin + I02,
+//   D_halo = (growth - dilation * slope) I11^2 P_lin + I12,
+//   D      = (D_halo/P_halo) P_target if fractional, else D_halo.
+//
+// Input rows [6,npoint]: P_lin, P_target, I11, I02(k,k), I12(k,k) and the
+// slope dlnP_X/dlnk, at independent (k,a) points; powers and moments in
+// (c/H0)^3, I11 and slope dimensionless. Output [2,npoint] in (c/H0)^3.
+// Validation: finite inputs and coefficients, six rows, P_halo > 0.
+// halo_response_cov splits points over the OpenMP team; no core table.
+// ---------------------------------------------------------------------------
 static cov_array covariance_halo_response(
     const cov_array& inputs,            // [6,npoint], documented halo inputs
     const double growth_coefficient,   // constant growth contribution
@@ -636,6 +855,10 @@ static cov_array covariance_halo_response(
     throw std::invalid_argument(
         "need six response rows and finite coefficients");
   }
+
+  // The fractional response divides by P_halo, and C stops the process
+  // when P_halo <= 0. Repeat its check at every point so Python receives
+  // an exception instead.
   for (py::ssize_t point=0; point<inputs.shape(1); point++) {
     const double i11 = *inputs.data(2, point);
     const double phalo = i11*i11*(*inputs.data(0, point))
@@ -654,6 +877,9 @@ static cov_array covariance_halo_response(
   return output;
 }
 
+// Register every component above on the production submodule. Each
+// string is the Python help text; noconvert() on an array argument makes
+// pybind11 reject, rather than copy, a non-contiguous or mistyped array.
 void bind_production_components_cov(py::module_& module)
 {
 

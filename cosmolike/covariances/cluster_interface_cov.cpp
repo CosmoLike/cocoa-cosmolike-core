@@ -18,6 +18,22 @@ namespace py = pybind11;
 
 namespace cosmolike_interface {
 
+// ---------------------------------------------------------------------------
+// Production bindings for the cluster parts of the joint covariance.
+//
+// Inputs are borrowed: every array argument is noconvert(), so pybind11
+// accepts only C-contiguous float64 arrays (int32 for richness indices)
+// and C reads the caller's memory without copying or modifying it. Every
+// output is a new NumPy array owned by Python.
+//
+// Threads and lazy tables. The conversions open no OpenMP region and call
+// no BLAS routine. counts_shell_cluster_cov, limber_cluster_cov and
+// moments_cluster_cov read only their arguments and run their own OpenMP
+// loops. halo_samples_cluster_cov warms the core readers it needs on the
+// calling thread before its OpenMP loops. The catalog readers at the end
+// of this file use serial loops; ncl_richness, bcl_richness and
+// pcm_1h_richness call cluster_warmup() first.
+// ---------------------------------------------------------------------------
 using cluster_cov_array = py::array_t<double, py::array::c_style>;
 
 // ---------------------------------------------------------------------------
@@ -25,10 +41,22 @@ using cluster_cov_array = py::array_t<double, py::array::c_style>;
 //
 // NumPy supplies selected abundances and their background-density
 // derivatives. C converts them to counts per radial distance, using the
-// shell volume. Shape and value checks precede C, so a malformed notebook
-// input raises a Python exception instead of stopping the Python process.
+// shell volume. Shape and value checks precede C, so a malformed input
+// raises a Python exception instead of stopping the Python process.
 // Returned arrays own their data and remain valid after subsequent calls.
 // No likelihood, nuisance parameter or cosmology state is read or changed.
+//
+// A shell of thickness dchi subtends the volume area_sr f_K^2 dchi, so
+//
+//   shell_density  S_i(chi)   = area_sr f_K^2 n_i         (dN_i/dchi),
+//   shell_response Phi_i(chi) = area_sr f_K^2 dn_i/d(delta_b).
+//
+// Arrays: distance[nnode] f_K in one length unit L; density and
+// derivative [ncount,nnode] in L^-3; outputs [ncount,nnode] in L^-1,
+// without a dchi weight. Validation: shapes, 0 < area_sr <= 4 pi, finite
+// positive distances, finite nonnegative densities, finite derivatives
+// of either sign. counts_shell_cluster_cov collapses (bin, node pair)
+// over the OpenMP team.
 // ---------------------------------------------------------------------------
 static py::dict covariance_counts_shell(
     const cluster_cov_array& distance, // [nnode], transverse distances
@@ -76,6 +104,7 @@ static py::dict covariance_counts_shell(
 
   // The pointer vectors describe NumPy's rows without copying values.
   // Separate output arrays ensure that C never overwrites an input.
+  // One loop iteration records the four row addresses of one count bin.
   const py::ssize_t ncount = density.shape(0);
   const py::ssize_t nnode = distance.size();
   cluster_cov_array shell({ncount, nnode});
@@ -111,16 +140,36 @@ static py::dict covariance_counts_shell(
 // This interface checks shapes before passing row pointers to C; returned
 // cross and auto spectra own their data. The galaxy/shear block is supplied
 // separately by the ordinary covariance spectrum builder.
+//
+// In the Limber approximation, with q_c the normalized cluster window and
+// b_c its selected bias, limber_cluster_cov evaluates
+//
+//   C_cc'(ell) = integral dchi q_c b_c q_c' b_c' P_NL / f_K^2,
+//   C_cg(ell)  = integral dchi q_c b_c W_g P_NL / f_K^2,
+//   C_cs(ell)  = F_ell integral dchi q_c W_s (b_c P_NL + P_cm^1h) / f_K^2,
+//
+// at k=(ell+1/2)/f_K, with the core shear factor F_ell for source fields.
+// Arrays (one length unit L): ell[nell] >= 2; distance, dchi [nnode] in L;
+// base[nbase,nnode] = nlens biased galaxy windows then source lensing
+// windows, in L^-1; window[ncluster,nnode] in L^-1 (integral q_c dchi =
+// 1); bias[ncluster,nnode] dimensionless; power[nell,nnode] and
+// profile[nrichness,nell,nnode] in L^3; richness[ncluster] int32 rows of
+// profile. Outputs: cluster_base[nell,ncluster,nbase] and
+// cluster_cluster[nell,ncluster,ncluster], dimensionless.
+// Validation: ranks and shapes, finite values, ell >= 2, positive distance
+// and dchi, 0 <= nlens <= nbase, richness indices in [0,nrichness).
+// limber_cluster_cov reads no global state or lazy table and spreads
+// (ell, pair group) outputs over the OpenMP team.
 // ---------------------------------------------------------------------------
 static py::dict covariance_cluster_spectra(
-    const cluster_cov_array& ell,       // multipole samples
-    const cluster_cov_array& distance,  // common transverse distances
-    const cluster_cov_array& dchi,      // radial integration weights
-    const cluster_cov_array& base,      // galaxy and lensing windows
-    const cluster_cov_array& window,    // normalized cluster windows
-    const cluster_cov_array& bias,      // selected cluster bias
-    const cluster_cov_array& power,     // nonlinear matter power
-    const cluster_cov_array& profile,   // selected one-halo spectra
+    const cluster_cov_array& ell,       // [nell] multipoles
+    const cluster_cov_array& distance,  // [nnode] transverse distances f_K
+    const cluster_cov_array& dchi,      // [nnode] radial integration weights
+    const cluster_cov_array& base,      // [nbase,nnode] galaxy, then lensing
+    const cluster_cov_array& window,    // [ncluster,nnode] normalized q_c
+    const cluster_cov_array& bias,      // [ncluster,nnode] selected b_c
+    const cluster_cov_array& power,     // [nell,nnode] nonlinear matter P
+    const cluster_cov_array& profile,   // [nrichness,nell,nnode] P_cm^1h
     const py::array_t<int, py::array::c_style>& richness, // profile map
     const int nlens                     // leading galaxy fields in base
   )
@@ -196,6 +245,8 @@ static py::dict covariance_cluster_spectra(
 
   // Row-pointer vectors describe the supplied contiguous arrays without
   // copying their values. They remain alive until C finishes reading them.
+  // The profile cube needs two levels: profile_planes[bin] points at the
+  // nell row addresses of that richness bin, stored in profile_rows.
   std::vector<const double*> base_rows(nbase);
   std::vector<const double*> window_rows(ncluster);
   std::vector<const double*> bias_rows(ncluster);
@@ -219,6 +270,9 @@ static py::dict covariance_cluster_spectra(
     }
   }
 
+  // C writes one row per pair: first the ncluster*nbase cluster-major
+  // (cluster,base) pairs, then the cluster upper triangle (0,0),(0,1),...
+  // The temporary triangular array holds them until the copy below.
   const py::ssize_t ncross = ncluster*nbase;
   const py::ssize_t npair = ncross+ncluster*(ncluster+1)/2;
   cluster_cov_array triangular({npair, nell});
@@ -233,6 +287,8 @@ static py::dict covariance_cluster_spectra(
 
   // Python receives explicit field axes, not the C triangular row map.
   // Copy both auto-spectrum triangles from the same integrated value.
+  // pair walks the C rows in their written order: the first double loop
+  // consumes the cross rows, the second the cluster upper triangle.
   cluster_cov_array cross({nell, ncluster, nbase});
   cluster_cov_array auto_spectra({nell, ncluster, ncluster});
   py::ssize_t pair = 0;
@@ -262,13 +318,30 @@ static py::dict covariance_cluster_spectra(
 
 
 // ---------------------------------------------------------------------------
-// Keep the selection and mass rule explicit at the notebook boundary.
+// Keep the selection and mass rule explicit at the Python boundary.
 //
 // weight already contains the selected abundance and mass quadrature.
 // Profiles are shared by every selection at a given state, so C can reuse
 // them for single and pair moments without choosing a mass function or
 // reading cluster globals. Outputs expose state and selection separately;
 // only the temporary C row map combines them into a flat population index.
+//
+// With dn S_i = weight (dlnM dn/dlnM times one membership probability)
+// and p(k) = (M/rho) u(k|M), moments_cluster_cov sums over mass nodes
+//
+//   density = sum dn S_i,  biased_density = sum dn S_i b,
+//   J01(K) = sum dn S_i p(K),  J11(K) = sum dn S_i b p(K),
+//   J02(K,Q) = sum dn S_i p(K) p(Q),
+//   J03_KKQ = sum dn S_i p(K)^2 p(Q),  J03_KQQ = sum dn S_i p(K) p(Q)^2.
+//
+// Arrays (one length unit L): weight[state,selection,mass] in L^-3,
+// bias[state,mass], profile[state,k,mass] in L^3. Outputs: density and
+// biased_density [state,selection] in L^-3; J01, J11 [state,selection,k],
+// dimensionless; J02, J03_KKQ, J03_KQQ [state,selection,kpair] in
+// L^3, L^6, L^6, with kpair in (0,0),(0,1),...,(1,1),... order of k.
+// Validation: ranks, positive counts, shared state and mass axes, finite
+// values, weight >= 0. C collapses (state, selection, k or pair) over the
+// OpenMP team and keeps each mass sum in increasing node order.
 // ---------------------------------------------------------------------------
 static py::dict covariance_cluster_moments(
     const cluster_cov_array& weight,  // [state,selection,mass], selected dn
@@ -315,6 +388,8 @@ static py::dict covariance_cluster_moments(
 
   // Pointer maps retain the original mass rows without copying numerical
   // inputs. Their vectors own the maps until the synchronous C call ends.
+  // One iteration of the state loop builds that state's plane views:
+  // weight_planes[state][bin] and profile_planes[state][mode] are mass rows.
   const py::ssize_t nrow = na*nselection; // flattened populations
   const py::ssize_t npair = nk*(nk+1)/2; // triangular k-pair count
   std::vector<const double*> weight_rows(nrow);
@@ -334,9 +409,11 @@ static py::dict covariance_cluster_moments(
     }
   }
 
-  // Named arrays preserve the notebook's physical axes without an
-  // Armadillo allocation or a packed fourth numerical axis. C combines
-  // (state,selection) into one population index only for its row pointers.
+  // Named arrays keep the notebook API's physical axes without an
+  // Armadillo allocation or a packed fourth numerical axis. C addresses
+  // populations by the flat row = state*nselection+selection. In these
+  // C-order arrays that row is exactly element (state,selection), so only
+  // the row pointers below use the flat index.
   cluster_cov_array density({na, nselection});
   cluster_cov_array biased_density({na, nselection});
   cluster_cov_array j01({na, nselection, nk});
@@ -355,7 +432,9 @@ static py::dict covariance_cluster_moments(
   double** pair_planes[3];
 
   // Only addresses are copied. The NumPy values remain in their owned
-  // output arrays for the entire synchronous mass integration.
+  // output arrays for the entire synchronous mass integration. Roles
+  // follow moments_cluster_cov: single 0,1 = J01, J11; pair 0,1,2 = J02,
+  // J03_KKQ, J03_KQQ. Each role's plane holds nrow population rows.
   for (int role=0; role<3; role++) {
     pair_planes[role] = pair_rows.data()+role*nrow;
     if (role < 2) {
@@ -391,6 +470,26 @@ static py::dict covariance_cluster_moments(
 // can inspect the abundance/profile samples or pass an independent model
 // to that integrator. All state and shape guards precede lazy core reads,
 // allocation and parallel work. The output arrays own their storage.
+//
+// At each scale factor and mass node, halo_samples_cluster_cov returns
+//
+//   weight[state,lambda,mass]  = dlnM (dn/dlnM) S_lambda(M,z),
+//   bias[state,mass]           = linear halo bias b_h(M,a),
+//   profile[state,k,mass]      = (M/rho_m) u_NFW(k|M,a),
+//
+// with the Tinker mass function, its initialized amplitude convention and
+// the lognormal richness selection S_lambda of each richness bin. Units:
+// a dimensionless; k in (c/H0)^-1; lnm = ln(M/[Msun/h]); weight in
+// (c/H0)^-3; bias dimensionless; profile in (c/H0)^3. No redshift-bin
+// selection or catalog normalization is included.
+// Validation: shapes and finite values; massless neutrinos, Omega_m > 0,
+// Tinker 2010 mass function and NFW profiles; at least one richness bin,
+// a lognormal mass-observable relation with positive scatter and pivots,
+// selection_model 0 and hmf_alpha_mode 0 or 1; limits.a_min <= a < 1;
+// k >= 0; lnm inside [ln halo_m[RANGE_MIN], ln halo_m[RANGE_MAX]], the
+// halo.c mass range; dlnm > 0. halo_samples_cluster_cov warms the core
+// readers it uses on the calling thread, then distributes (state, mass)
+// and (state, k, mass) work over the OpenMP team.
 // ---------------------------------------------------------------------------
 static py::dict covariance_cluster_halo_samples(
     const cluster_cov_array& a,       // scale factors [state]
@@ -460,9 +559,9 @@ static py::dict covariance_cluster_halo_samples(
   const py::ssize_t nk = k.shape(1); // wavenumbers per state
   const py::ssize_t nmass = lnm.size(); // mass quadrature nodes
   const py::ssize_t nrichness = cluster.richness_nbin; // selection bins
-  cluster_cov_array weight({na, nrichness, nmass}); // selected dn, L^-3
+  cluster_cov_array weight({na, nrichness, nmass}); // dn S, (c/H0)^-3
   cluster_cov_array bias({na, nmass}); // dimensionless linear halo bias
-  cluster_cov_array profile({na, nk, nmass}); // (M/rho)*u, L^3
+  cluster_cov_array profile({na, nk, nmass}); // (M/rho_m)*u, (c/H0)^3
   std::vector<const double*> k_rows(na); // input row views
   std::vector<double*> weight_rows(na*nrichness); // output mass rows
   std::vector<double**> weight_planes(na); // state views of richness rows
@@ -472,6 +571,7 @@ static py::dict covariance_cluster_halo_samples(
 
   // Numerical values stay in NumPy-owned contiguous arrays. Only these
   // small pointer maps translate their axes into C's row-pointer format.
+  // One iteration fills every row address of one scale-factor state.
   for (py::ssize_t state=0; state<na; state++) {
     k_rows[state] = k.data(state, 0);
     weight_planes[state] = weight_rows.data()+state*nrichness;
@@ -496,12 +596,27 @@ static py::dict covariance_cluster_halo_samples(
 }
 
 
+// ---------------------------------------------------------------------------
 // Sample existing catalog tables directly into production-owned arrays.
+//
 // These loops only call the public C readers; the halo integrals and
-// interpolation remain in the original C implementations. Warm-up happens
-// serially before reading lazily built tables, just as in the data vector.
+// interpolation remain in the original C implementations. Every loop here
+// is serial. ncl_richness, bcl_richness and pcm_1h_richness first call
+// cluster_warmup(), which builds the lazy cluster tables on this thread,
+// as the data-vector path does before its threaded loops. phi_cluster
+// calls no warm-up: its first read builds the selection table on this
+// same thread. A table that cluster_warmup skips (the one-halo table when
+// cluster lensing is off) is likewise built by its first serial read.
+// The readers return zero outside their tables: phi outside a bin's
+// redshift support, abundance, bias and P1h outside the cluster a grid.
+// Inputs are borrowed C-contiguous float64 vectors; outputs are owned.
+// ---------------------------------------------------------------------------
 static void bind_production_catalog_cov(py::module_& module)
 {
+  // <phi_i|z>: probability that a cluster at true redshift z is assigned
+  // to cluster redshift bin i. z[node] must be finite and >= 0; the
+  // output [node,zbin] is dimensionless. One iteration of the outer read
+  // loop evaluates every redshift bin at one z node.
   module.def("phi_cluster", [](const cluster_cov_array& z) {
     if (z.ndim() != 1
         || z.size() < 1
@@ -526,6 +641,10 @@ static void bind_production_catalog_cov(py::module_& module)
 
   // Abundance and bias share the same (a,richness) table axes. The flag
   // selects which public C reader fills the output, without mixing them.
+  // The loop registers two Python functions; each lambda keeps its own
+  // copy of the flag. ncl_richness returns the selected comoving abundance
+  // n_lambda(a) in (c/H0)^-3, bcl_richness the dimensionless selected bias
+  // b_lambda(a), both [node,richness] for a[node] inside (0,1).
   for (const bool bias : {false, true}) {
     const char* name = bias ? "bcl_richness" : "ncl_richness";
     module.def(name, [bias](const cluster_cov_array& a) {
@@ -555,6 +674,10 @@ static void bind_production_catalog_cov(py::module_& module)
         py::arg("a").noconvert());
   }
 
+  // P_cm^1h(k,a): the one-halo cluster-matter power of each richness bin,
+  // the selected halos' own mass profile averaged within the bin, in
+  // (c/H0)^3. k[nk] > 0 in (c/H0)^-1 and a[na] inside (0,1); the output
+  // is [k,a,richness]. The three read loops visit every combination once.
   module.def("pcm_1h_richness", [](
       const cluster_cov_array& k, const cluster_cov_array& a) {
     if (k.ndim() != 1
@@ -593,6 +716,11 @@ static void bind_production_catalog_cov(py::module_& module)
       py::arg("k").noconvert(), py::arg("a").noconvert());
 }
 
+// Add the cluster bindings to the production submodule parent.covariance.
+// That submodule must already exist: bind_covariance_production, called
+// through bind_covariance, creates it, so a project interface calls
+// bind_covariance before bind_covariance_cluster. Without it, the
+// attribute lookup below raises AttributeError during module import.
 void bind_production_cluster_cov(py::module_& parent)
 {
   py::module_ module = parent.attr("covariance").cast<py::module_>();

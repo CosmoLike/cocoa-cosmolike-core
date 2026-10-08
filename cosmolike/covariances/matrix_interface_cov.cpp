@@ -11,6 +11,10 @@
 namespace py = pybind11;
 
 namespace cosmolike_interface {
+// Every array argument below is registered with noconvert(): pybind11
+// accepts only C-contiguous float64 (matrix_array_cov) or int32
+// (index_array_cov) arrays, and the C assemblers read the caller's memory
+// directly. Each returned matrix is a new NumPy array owned by Python.
 using matrix_array_cov = py::array_t<double, py::array::c_style>;
 using index_array_cov = py::array_t<int, py::array::c_style>;
 
@@ -29,10 +33,31 @@ using index_array_cov = py::array_t<int, py::array::c_style>;
 // SIMDe contractions. The shared C assembler distributes observable blocks
 // across OpenMP workers; each worker retains the same ordered ell sums.
 //
-// Validate inputs once, transpose spectra once into contiguous field-pair
-// rows, and allocate scratch once per worker. NumPy owns the
-// returned matrix, so later calls or cosmology changes cannot alter it.
-// No cosmology or likelihood state is read or changed in this calculation.
+// This boundary validates the inputs once and transposes the spectra once
+// into contiguous field-pair rows. gaussian_matrix_cov then allocates its
+// scratch once per worker. NumPy owns the returned matrix, so later calls
+// or cosmology changes cannot alter it. No cosmology or likelihood state
+// is read or changed in this calculation.
+//
+// ARRAYS CROSSING THE BOUNDARY
+//   spectra[nell,nfield,nfield]  signal C_AB at ell_min..ell_min+nell-1,
+//                                with shear legs in the observed-shear
+//                                convention; dimensionless
+//   noise[nfield]                white noise 1/n or sigma_component^2/n,
+//                                n per steradian; nonnegative
+//   rows[nobs,3] or [nobs,2]     int32 (probe,A,B) in real space, (A,B)
+//                                for Fourier bands; probe 0..3 is xi+,
+//                                xi-, gamma_t, w
+//   operators[4,nbin,nell]       real-space bin operators, or
+//   operators[nbin,nell]         Fourier band weights
+//   pair_area[nbin]              real space: ordered-pair area in sr^2
+//   b_spectra                    empty, or [nell,nfield,nfield] BB
+//                                signal (real space only)
+//   output[nobs*nbin,nobs*nbin]  owned matrix, bin inside observable
+// Validation: ranks and shapes, finite values, ell_min >= 0 (>= 2 in real
+// space), 0 < area_sr <= 4 pi, nonnegative noise, probe IDs in 0..3,
+// field IDs below nfield and positive pair areas. No lazy core table is
+// read, so no warm-up is needed; the conversion calls no BLAS routine.
 // ---------------------------------------------------------------------------
 static matrix_array_cov gaussian_matrix_cpp(
     const matrix_array_cov& spectra,   // [ell][field][field], observed signal
@@ -91,7 +116,9 @@ static matrix_array_cov gaussian_matrix_cpp(
   const int ndata = nobs*nbin;      // dimension of the returned covariance
 
   // These four numeric arrays enter arithmetic directly. Reject NaN/Inf
-  // here so the production caller gets an exception before a C primitive runs.
+  // here so the production caller gets an exception before a C primitive
+  // runs. The outer loop visits each array once; the inner loop scans its
+  // flat C-order storage.
   for (const auto* array : {&spectra, &noise, &operators, &pair_area}) {
     for (py::ssize_t index=0; index<array->size(); index++) {
       if (!std::isfinite(array->data()[index])) {
@@ -104,6 +131,9 @@ static matrix_array_cov gaussian_matrix_cpp(
       throw std::invalid_argument("white noise powers must be nonnegative");
     }
   }
+
+  // C indexes spectra[A*nfield+B] and the operator role by probe, so an
+  // out-of-range ID would read outside the supplied arrays.
   for (int observable=0; observable<nobs; observable++) {
     if (realspace
         && (rows.at(observable, 0) < XI_PLUS_COV
@@ -145,6 +175,8 @@ static matrix_array_cov gaussian_matrix_cpp(
   // C integrates along ell. In the input, adjacent values instead belong
   // to different fields. This one transpose gives each Wick input a full
   // contiguous ell row, reused by every observable that needs that pair.
+  // The transposed copies are temporary vectors owned by this call; row
+  // A*nfield+B of power holds C_AB(ell) for every ell (B modes likewise).
   std::vector<double> power((size_t) nfield*nfield*nell);
   std::vector<double> b_power;
   std::vector<const double*> b_rows;
@@ -181,6 +213,10 @@ static matrix_array_cov gaussian_matrix_cpp(
   for (size_t row=0; row<kernel_rows.size(); row++) {
     kernel_rows[row] = operators.data()+row*nell;
   }
+
+  // C reads one flat [nobs,3] (probe,A,B) map in both modes. Fourier rows
+  // carry no probe column, so their probe slot is 0: the single operator
+  // role [nbin,nell].
   for (int row=0; row<nobs; row++) {
     layout[3*row] = realspace ? rows.at(row, 0) : 0;
     layout[3*row+1] = rows.at(row, offset);
@@ -215,6 +251,20 @@ static matrix_array_cov gaussian_matrix_cpp(
 // The shared connected_matrix_cov C routine owns grouping, parallel work
 // and SIMD radial sums. This boundary only checks the arrays and borrows
 // their rows. NumPy owns the result; neither interface changes the input.
+//
+// ARRAYS CROSSING THE BOUNDARY
+//   probes[nobs]                    int32 probe of each observable, 0..3
+//   pair_window[nobs,nnode]         W_A W_B, in (c/H0)^-2
+//   projected[4*nbin,4*nbin,nnode]  T after both angular/band transforms,
+//                                   in (c/H0)^9; C reads only entries whose
+//                                   combined row index t <= column index
+//   measure[nnode]                  dchi/(area*f_K^6), in (c/H0)^-5
+//   output[nobs*nbin,nobs*nbin]     dimensionless, bin inside observable;
+//                                   each computed entry is mirrored
+// Validation: ranks and shapes (projected square with a multiple of four
+// rows), probe IDs in 0..3 and finite values. C runs one OpenMP team over
+// (probe,bin) blocks with private scratch and reads no core table; the
+// conversion calls no BLAS routine.
 // ---------------------------------------------------------------------------
 static matrix_array_cov connected_matrix_cpp(
     const index_array_cov& probes,       // [observable], probe IDs 0..3
@@ -264,6 +314,8 @@ static matrix_array_cov connected_matrix_cpp(
 
   // Borrow radial rows in their original order. Grouping catalogs and
   // assigning blocks to workers belong to C, shared with the notebook API.
+  // Row t*ntransform+u of matter is the radial T row of the combined
+  // indices (t,u), which is how C addresses projected.
   std::vector<const double*> windows(nobs);
   std::vector<const double*> matter(ntransform*ntransform);
   matrix_array_cov output({ndata, ndata});
@@ -282,6 +334,11 @@ static matrix_array_cov connected_matrix_cpp(
   return output;
 }
 
+// Register the connected projection and the two Gaussian assemblers on the
+// production submodule. The real-space lambda selects the pair-count pure
+// noise and optional BB spectra; the default b_spectra is an empty array,
+// meaning E modes only. The Fourier lambda passes empty arrays for the
+// unused pair areas and B modes. Every array argument is noconvert().
 void bind_production_matrices_cov(py::module_& module)
 {
   module.def("covariance_project_connected", &connected_matrix_cpp,

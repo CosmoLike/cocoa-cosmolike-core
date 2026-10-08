@@ -7,6 +7,29 @@
 namespace py = pybind11;
 namespace cosmolike_interface {
 
+// ---------------------------------------------------------------------------
+// Register the cluster covariance layers on a cluster project's module.
+//
+// bind_production_cluster_cov adds the production bindings, which borrow
+// C-contiguous NumPy inputs, to the submodule module.covariance created
+// earlier by bind_covariance. These include production versions of the
+// catalog readers phi_cluster, ncl_richness, bcl_richness and
+// pcm_1h_richness; the project interface binds its own data-vector
+// versions of those readers on module itself.
+//
+// The four notebook bindings below share the production names; their
+// docstrings drop only the contiguity requirement. Each lambda checks the
+// rank of every array argument and copies it with notebook_input_cov into
+// an owning Armadillo container (float64, or int32 for richness),
+// whatever the dtype and memory layout of the NumPy input. It forwards
+// the scalars unchanged and calls the *_cpp wrapper of
+// cluster_wrapper_cov.cpp. That wrapper repeats the production
+// validation, calls the same C routine, and exports owned NumPy arrays
+// through CARMA, so the axes and units in each docstring hold for both
+// layers. Threading is that of the shared C routine:
+// halo_samples_cluster_cov warms its core readers on the calling thread,
+// and every C routine runs its own OpenMP loops.
+// ---------------------------------------------------------------------------
 void bind_covariance_cluster(py::module_& module)
 {
   bind_production_cluster_cov(module);
