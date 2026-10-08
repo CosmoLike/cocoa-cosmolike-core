@@ -48,6 +48,31 @@ which protects the 0.368/alpha(a) identity from the T08 option. No
 Python setter for halo_model exists yet; selecting an option currently
 needs interface-level code.
 
+Caveat 1 (data-vector pass, ea613ca): halo_cluster.c checks
+halo_model[0] and [3] only. Nothing guards [1] (bias) or [2]
+(concentration), so SMT01 or Duffy 2008 would flow silently into the
+cluster b_nl and one-halo P1h tables, while the commentary and
+arXiv 2503.13631 assume Tinker 2010 bias and Bhattacharya 2013 (with
+its D_cb^1.15 neutrino treatment; Duffy has no growth factor at all).
+Owner decision needed before exposing the menu to cluster runs: guard
+the cluster path or document the combination.
+
+Caveat 2 (halo batch, 0a761b5; Fable-verified): selecting
+HALO_BIAS_SHETH_MO_TORMEN_2001 also RESCALES the default Tinker 2010
+mass function, because tinker_alpha normalizes int b f dnu = 1 with the
+selected bias: alpha = 0.3207 at z = 0 instead of 0.3684 (-13 percent;
+-14.5 percent at z = 1; independently reproduced as 0.3208/0.3686).
+This changes every mass-function consumer and will not match pyccl's
+Tinker10 + Sheth01 (pyccl does not re-normalize). Owner options: pin
+the Tinker bias inside tinker_alpha, or guard the combination.
+
+Caveat 3 (halo batch, 0a761b5): bias_norm, hod_tables, p_gm, p_gg and
+ia_tables are not keyed on like.halo_model[0..2] (only tinker_alpha
+is): changing the menu mid-process returns stale tables. Harmless
+today only because no Python setter exists. Under HMF_TINKER_2008,
+int f dnu diverges logarithmically at small nu, so 1 - bias_norm loses
+its "missing share" meaning.
+
 ## Validation (ccl conda env, scratchpad/halo_menu_pyccl_check.py)
 
 Formula-level comparison of the exact committed expressions against

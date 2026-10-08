@@ -121,3 +121,40 @@ Report-only code issues moved to
 the lsst_y1 covariance suite (128 passed) ran on the committed tree
 together with the halo-menu additions recorded in
 `halo_model_options.md`.
+
+## Data-vector C-comment pass, 2026-10-08
+
+Nine review-mode batches over the 50-file data-vector corpus (61,670
+lines), Opus-drafted and Fable-verified, committed as 7c7842c (baryons),
+77373fa (cluster interface), ea613ca (cluster data-vector), 9452d7d
+(scuts/wrappers), a86fb0b (generic_interface), 07ce152
+(redshift/IA/pt), 953d312 (cosmo3D/basics/structs), 0a761b5 (halo),
+c8e05b6 (cosmo2D). Protocol per batch: independent token-equality rerun
+(c_strip --collapse vs the pre-batch commit), over-80 and style scans,
+full diff read, and re-derivation or reproduction of the load-bearing
+claims (alpha integrations, frozen-reference values, paper LaTeX,
+disassembly, GSL/HDF5 probes).
+
+Durable lessons (verified, do not relearn):
+- SIMDe rounding is width- and intrinsic-specific. 128-bit
+  fmadd/fnmadd: fused by SIMDe on NEON (vfmaq_f64/vfmsq_f64) and on
+  x86+FMA. 128-bit fmsub and the 256-bit fmadd/fmsub: composed of
+  mul and add/sub INTRINSICS without native FMA - fixed two roundings,
+  not compiler-contractible. 256-bit fnmadd/fnmsub: per-lane C loops -
+  the compiler contracts them like scalar code (fused under the
+  project's clang 19 arm64 flags; two roundings with
+  -ffp-contract=off). Check fma.h for the exact intrinsic before any
+  rounding claim.
+- The omp simd refusals in this codebase come from the strict FP flags
+  (-frounding-math -ftrapping-math), not from pointer-to-pointer
+  tables (reproduced both ways).
+- set_blas_single_threaded holds only for a pthreads OpenBLAS; the
+  macOS conda env pins the OpenMP build, which resizes from
+  omp_get_max_threads() on every BLAS call outside a parallel region.
+  Serial BLAS on this Mac rests on OMP_NUM_THREADS=1 at load.
+- The halo option menu couples through tinker_alpha: the SMT01 bias
+  rescales the default Tinker 2010 amplitude (0.3207 vs 0.3684 at
+  z = 0); see halo_model_options.md caveats.
+- MNRAS papers number appendix equations per appendix (eq F1, B1-B2,
+  C1-C9): main-text equation numbers in comments that exceed the paper
+  count are a red flag worth checking against the LaTeX.
