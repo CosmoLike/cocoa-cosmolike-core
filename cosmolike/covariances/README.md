@@ -498,7 +498,7 @@ assigned to a peak-height interval, with $`\nu=\delta_c/\sigma(M)`$.
 An ideal model with all matter in halos satisfies both
 $`\int f\,d\nu=1`$ and $`\int b_1f\,d\nu=1`$.
 
-- **CoCoA retains the Tinker fits:** its multiplicity amplitude enforces
+- **Cocoa retains the Tinker fits:** its multiplicity amplitude enforces
   the bias-weighted condition, following
   [Tinker et al. (2010), Section 4](https://arxiv.org/pdf/1001.3162).
   Wynn improves numerical convergence; it does not force the separate
@@ -750,12 +750,13 @@ and derivatives explicitly: a bias fitted to cluster lensing need not
 describe how environmental selection changes the counts.
 
 For exclusive observed bins and Poisson sampling at fixed background,
-the long-mode Limber model gives
+the long-mode Limber model, with the shell weight $`s_b`$ defined above,
+gives
 
 ```math
 \mathrm{Cov}(N_i,N_j)
  =\delta_{ij}\bar N_i+
-   \int d\chi\,\sigma_b^2(\chi)\Phi_i^N(\chi)\Phi_j^N(\chi).
+   \int d\chi\,s_b(\chi)\Phi_i^N(\chi)\Phi_j^N(\chi).
 ```
 
 Disjoint observed labels can have overlapping true-mass and true-redshift
