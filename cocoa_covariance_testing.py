@@ -31,6 +31,8 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
         No likelihood matrix, mask or reference snapshot is read or changed.
     """
     settings = survey.configuration(accuracy_boost=1)
+    # The shared halo-mass panels (halo_mass_edges) cover the whole sigma(M) table
+    # of the C code, from 1e-40 to 1e17 Msun/h; edges are ln(M/[Msun/h]).
     assert settings["lnm_edges"][0] == np.log(1.e-40)
     assert settings["lnm_edges"][-1] == np.log(1.e17)
     nlens = len(settings["lens_density_arcmin2"])
@@ -40,12 +42,13 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
         excluded_gammat=settings["excluded_gammat"],
     )
     assert len(full_rows)*(len(settings["theta_edges_arcmin"])-1) == expected_sizes[0]
+    # Fourier space has no xi- rows (probe ID 1): shear has one E-mode spectrum per pair.
     nfourier = np.count_nonzero(full_rows[:, 0] != 1)
     assert nfourier*len(settings["band_first"]) == expected_sizes[1]
     assert len(settings["sigma_e_component"]) == nsource
 
     # Scientific bins must stay fixed when only numerical accuracy changes.
-    # Otherwise a comparison would mix quadrature error with a new observable.
+    # Otherwise a comparison would mix numerical error with a new observable.
     refined = survey.configuration(accuracy_boost=2)
     assert settings["power_refinement"] == 8
     assert refined["power_refinement"] == 16
@@ -61,8 +64,9 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
     assert len(refined["ng_ell"]) > len(settings["ng_ell"])
 
     # Use each real redshift distribution and the project's noise inputs,
-    # while reducing the quadrature size for this assembly check. These
-    # settings are deliberately not an inference-accuracy prescription.
+    # while reducing the multipole range, the quadrature and the measured bins
+    # (two angular bins, two bands) for this assembly check. These settings
+    # are deliberately not an inference-accuracy prescription.
     settings.update({
         "ell_max": 160,
         "ng_ell": np.geomspace(2.5, 160.5, 12)-0.5,
@@ -78,8 +82,10 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
         "band_first": np.array([20, 60], dtype=np.int32),
         "band_last": np.array([59, 160], dtype=np.int32),
     })
-    # Select one retained row of each probe. A project's measured-pair cuts
-    # can exclude the first lens paired with the first source, as in Roman KL.
+    # Select one retained row of shear (probe 0), galaxy-galaxy lensing (2) and
+    # clustering (3), the probes of both spaces; three rows of two bins give the
+    # 6 x 6 matrices below. A project's measured-pair cuts can exclude the first
+    # lens paired with the first source, as in Roman KL.
     selected_rows = []
     for probe in (0, 2, 3):
         candidates = full_rows[full_rows[:, 0] == probe]
@@ -111,6 +117,8 @@ def check_project_forecast(interface, survey, expected_sizes, directory):
                     assert matrix.shape == (6, 6)
                     assert np.all(np.isfinite(matrix))
                     np.testing.assert_array_equal(matrix, matrix.T)
+                    # The uint64 view reads each float64 as its raw 64-bit pattern:
+                    # one and eight OpenMP threads must agree bit for bit.
                     if previous is not None:
                         np.testing.assert_array_equal(
                             matrix.view(np.uint64),
