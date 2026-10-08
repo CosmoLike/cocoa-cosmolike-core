@@ -76,6 +76,17 @@ them; the covariance modules stay separate because covariance
 generation is optional at compilation and its notebooks follow their
 [own guide](covariance/README.md).
 
+How one figure is produced, from a notebook to the screen:
+
+```mermaid
+flowchart TB
+  A["Project notebook: parameters and bins"] --> B["Project wrapper: calls the compiled interface"]
+  B --> C["Shared plotting function: pure numpy and matplotlib"]
+  C --> D["show = 1: the figure is drawn"]
+  C --> E["show = None: returns fig and axes for the notebook to extend"]
+  C --> F["Malformed input: one Bad Input message, returns 0"]
+```
+
 # The modules <a name="modules"></a>
 
 | Module | What it supplies |
@@ -154,6 +165,14 @@ the likelihoods' split: the CAMB side receives the factor
 boost. The growth factor is normalized at the end of the 2D redshift
 grid, exactly as in the likelihoods, so notebook spectra and
 likelihood spectra agree at the shared settings.
+
+```mermaid
+flowchart TB
+  A["Notebook data-vector function dv"] --> B["get_ddv: finite-difference derivatives"]
+  B --> C["get_Fisher: assemble the Fisher matrix"]
+  C --> D["get_FoM: one parameter pair's figure of merit"]
+  C --> E["plot_Fisher: getdist contour figure"]
+```
 
 The Fisher helpers build forecasts from any function that maps a
 parameter vector to a data vector:

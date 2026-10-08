@@ -41,6 +41,23 @@ fluctuations larger than the survey. See
 [Takada & Hu](https://arxiv.org/abs/1302.6994), and the
 [C implementation and physics guide](../../cosmolike/covariances/README.md).
 
+The whole workflow, from a project's inputs to a saved forecast:
+
+```mermaid
+flowchart TB
+  A["Project adapter: survey numbers + covariance/default.yaml"] --> B["forecast.initialize_forecast: CAMB + setters"]
+  B --> C["survey: all-pairs spectra, with non-Limber and IA choices"]
+  C --> D["Gaussian blocks with pair noise"]
+  C --> E["Shared halo response and trispectrum tables"]
+  E --> F["SSC: shell responses times mask variance"]
+  E --> G["cNG: projected five-term trispectrum"]
+  D --> H["Total matrix + diagnostics + save_forecast"]
+  F --> H
+  G --> H
+  H --> I["Notebook figures: plot_covariances"]
+  H --> J["CLI archive: compute_covariance.py"]
+```
+
 ## Files <a name="files"></a>
 
 | File | Calculation and responsibility |
