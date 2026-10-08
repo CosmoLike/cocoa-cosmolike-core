@@ -395,7 +395,8 @@ const int type)
         }
         else if (type == 1)
         {
-          //this is for white_noise agrument in the hmf emulator
+          // hmf emulator: the per-sample variance plus a white-noise term,
+          // the square of the mean per-sample standard deviation
           result += emu_tinker_hmf_variances[i][nparam];
           double mean_std = 0; 
           for (int k=0; k<nsamp; ++k)

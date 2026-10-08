@@ -16,35 +16,6 @@
 #include "log.c/src/log.h"
 
 // ---------------------------------------------------------------------------
-// get_FPT_bias: compute all 5 nonlinear galaxy bias spectra
-// ---------------------------------------------------------------------------
-//
-// Computes the one-loop bias power spectra needed for nonlinear galaxy
-// bias modeling: Pd1d2, Pd2d2, Pd1s2, Pd2s2, Ps2s2. These are the
-// correlators between the density field (d), its square (d2), the tidal
-// field squared (s2), and the third-order bias operator (p3).
-//
-// The combined version dispatches all 13 terms in a single J_abl_ar call,
-// then accumulates the results with the appropriate coefficients:
-//   Pd1d2(k) = sum_{terms 0,1,2} coeff[i] * Fy[i](k)
-//   Pd2d2(k) = coeff[3] * Fy[3](k)
-//   Pd1s2(k) = sum_{terms 4..8} coeff[i] * Fy[i](k)
-//   ...etc
-//
-// FPTbias.tab layout (8 rows x FPTbias.N columns):
-//   [0] Pd1d2   - density * density-squared correlator
-//   [1] Pd2d2   - density-squared auto-correlator
-//   [2] Pd1s2   - density * tidal-squared correlator
-//   [3] Pd2s2   - density-squared * tidal-squared correlator
-//   [4] Ps2s2   - tidal-squared auto-correlator
-//   [5] Pd1p3   - density * third-order (from precomputed table, not FAST-PT)
-//   [6] k       - wavenumber grid (log-spaced from k_min to k_max)
-//   [7] P_lin   - linear power spectrum at z=0 (a=1)
-//
-// Caching: recomputed only when cosmology or Ntable settings change
-// (tracked via cosmology.random and Ntable.random hash values).
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // fpt_regrid: move FFTLog outputs from the internal convolution grid onto
 // the output table.
 //
@@ -109,6 +80,48 @@ static void fpt_regrid(
   }
 }
 
+// ---------------------------------------------------------------------------
+// get_FPT_bias: compute all 5 nonlinear galaxy bias spectra
+// ---------------------------------------------------------------------------
+//
+// Computes the one-loop bias power spectra needed for nonlinear galaxy
+// bias modeling: Pd1d2, Pd2d2, Pd1s2, Pd2s2, Ps2s2. These are the
+// correlators between the density field (d), its square (d2), the tidal
+// field squared (s2), and the third-order bias operator (p3).
+//
+// One J_abl call evaluates all 13 FFTLog terms, and the coefficients of
+// the table at the top of the function combine them into the spectra:
+//   Pd1d2(k) = sum_{terms 0,1,2} coeff[i] * Fy[i](k)
+//   Pd2d2(k) = coeff[3] * Fy[3](k)
+//   Pd1s2(k) = sum_{terms 4..8} coeff[i] * Fy[i](k)
+//   ...etc
+//
+// FPTbias.tab layout (8 rows x FPTbias.N columns; k in H0/c, spectra in
+// (c/H0)^3 at a = 1, which the Limber integrands of cosmo2D.c scale by
+// D(a)^4):
+//   [0] Pd1d2   - density * density-squared correlator
+//   [1] Pd2d2   - density-squared auto-correlator
+//   [2] Pd1s2   - density * tidal-squared correlator
+//   [3] Pd2s2   - density-squared * tidal-squared correlator
+//   [4] Ps2s2   - tidal-squared auto-correlator
+//   [5] Pd1p3   - density * third-order (from precomputed table, not FAST-PT)
+//   [6] k       - wavenumber grid (log-spaced from k_min to k_max)
+//   [7] P_lin   - linear power spectrum at z=0 (a=1)
+//
+// Caching: rows 0-4 depend only on P_lin(k, a = 1), but they are
+// recomputed whenever cosmology.random changes (each cosmology setter of
+// generic_interface.cpp draws a new value when its input changes), when
+// Ntable.random changes (grid and accuracy settings), and when
+// FPTbias.tab is not the table this function allocated. Row 5 comes from
+// the fixed table tab_d1d3 of pt_cfastpt.h: it does not change with
+// cosmology.
+//
+// Two producers share FPTbias.tab. With nuisance.IA_code = 1, set_bias_PS
+// (generic_interface.cpp) frees this function's table and installs the
+// Python FAST-PT one (its own k grid and size), and cosmo2D.c stops
+// calling this function. When it runs again (IA_code = 0), it finds the
+// foreign table, frees it and rebuilds its own grid and spectra.
+// ---------------------------------------------------------------------------
 void get_FPT_bias(void)
 {
   const int NTAB = 8; // FPTbias.tab rows: 5 spectra, Pd1p3, k, P_lin
@@ -303,7 +316,7 @@ void get_FPT_bias(void)
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// INTRINSIC ALIGMENT
+// INTRINSIC ALIGNMENT
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -349,6 +362,44 @@ static int Nmax_from_terms(int N, int (*terms)[NCOLS]) {
   return Nmax;
 }
 
+// ---------------------------------------------------------------------------
+// get_FPT_IA: compute the ten one-loop TATT spectra of FPTIA.tab
+// ---------------------------------------------------------------------------
+//
+// The one-loop intrinsic-alignment power spectra of the TATT model
+// (Blazek et al. 2019, arXiv:1708.09247), evaluated with FAST-PT from the
+// linear power spectrum at a = 1. The 184 FFTLog terms of eight J_table
+// expansions go through one J_abJ1J2Jk call; two P_13-like terms are
+// direct convolutions.
+//
+// FPTIA.tab layout (12 rows x FPTIA.N columns; k in H0/c, spectra in
+// (c/H0)^3 at a = 1, which cosmo2D.c and covariances/ia_cov.c scale by
+// D(a)^4, each term being quadratic in P_lin):
+//   [0] tt_E,    [1] tt_B     - (s s) auto power, E and B
+//   [2] ta_dE1,  [3] ta_dE2   - delta with (delta s): A_{0|0E}, C_{0|0E}
+//   [4] ta_0E0E, [5] ta_0B0B  - (delta s) auto power, E and B
+//   [6] mix_A,   [7] mix_B    - delta with (s s): A_{0|E2}, B_{0|E2}
+//   [8] mix_DEE, [9] mix_DBB  - (delta s) with (s s), E and B
+//   [10] k                    - wavenumber grid, uniform in ln k
+//   [11] P_lin                - linear power spectrum at a = 1
+// with s the tidal field, (s s) its trace-free square and (delta s) the
+// density-weighted tidal field (term names of Blazek et al. 2019).
+//
+// Cache invalidation: the spectra depend only on P_lin(k, a = 1), but
+// they are recomputed whenever cosmology.random changes (each cosmology
+// setter of generic_interface.cpp draws a new value when its input
+// changes: parameters, distances, growth, linear or nonlinear power),
+// when Ntable.random changes (grids, FAST-PT accuracy boosts), and when
+// FPTIA.tab is not the table this function allocated.
+//
+// Two producers share FPTIA.tab. With nuisance.IA_code = 1, set_IA_PS
+// (generic_interface.cpp) frees the table and installs the Python
+// FAST-PT one, with its own k grid and size; cosmo2D.c then stops
+// calling this function. When it runs again (cosmo2D.c with IA_code = 0,
+// or covariances/ia_cov.c, which calls it whatever IA_code says), it
+// finds the foreign table, frees it and rebuilds its own grid and
+// spectra.
+// ---------------------------------------------------------------------------
 void get_FPT_IA(void)
 {
   const int NTAB = 12; // FPTIA.tab rows: 10 spectra, k, P_lin
@@ -418,11 +469,11 @@ void get_FPT_IA(void)
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
     // Instead of calling IA_tt, IA_ta, IA_mix separately (3 calls to
-    // J_abJ1J2Jk_ar with 3 separate extrapolation setups, 3 separate
+    // J_abJ1J2Jk with 3 separate extrapolation setups, 3 separate
     // alpha/beta FFT precomputations, and 3 separate OpenMP regions),
-    // we expand all J_tables here, concatenate into one big array, and
-    // make a single call. OpenMP then gets ~184 terms in one parallel
-    // region for much better load balancing.
+    // this function expands all J_tables here, concatenates them into one
+    // big array, and makes a single call. OpenMP then gets ~184 terms in
+    // one parallel region for much better load balancing.
     //
     // Output mapping (8 groups → 8 output arrays):
     //   Group 0: IA_tt  E-mode   → FPTIA.tab[0]
@@ -435,7 +486,7 @@ void get_FPT_IA(void)
     //   Group 7: IA_mix D_BB     → FPTIA.tab[9]
     //
     // The two direct convolution terms (IA_ta deltaE2, IA_mix B) don't
-    // use J_abJ1J2Jk_ar and are computed separately below.
+    // use J_abJ1J2Jk and are computed separately below.
     // -------------------------------------------------------------------------
     // -------------------------------------------------------------------------
 
@@ -693,7 +744,7 @@ void get_FPT_IA(void)
 
     // -----------------------------------------------------------------------
     // Concatenate all NGROUPS J_table outputs into flat arrays for a single
-    // J_abJ1J2Jk_ar call. Each group g contributes Njterms[g] rows starting
+    // J_abJ1J2Jk call. Each group g contributes Njterms[g] rows starting
     // at offset starts[g]. The flat arrays (alpha_all, beta_all, J1_all,
     // J2_all, Jk_all, coeff_all) are indexed from 0 to Ntotal-1.
     //
@@ -746,7 +797,8 @@ void get_FPT_IA(void)
     //              ^               ^                   ^
     //   Fy_ptrs:  [0]             [1]                 [Ntotal-1]
     //
-    // After the J_abJ1J2Jk_ar call, Fy_ptrs[i][j] = result for term i at k-point j.
+    // After the J_abJ1J2Jk call, Fy_ptrs[i][j] = result for term i at
+    // k-point j.
     // -----------------------------------------------------------------------
     // the work arrays and the FFTLog configuration depend only on the
     // grids (Ntotal is fixed by the hardcoded term tables), so they
@@ -815,7 +867,7 @@ void get_FPT_IA(void)
     //   ID_MIX_DBB → FPTIA.tab[9]   (IA_mix D_BB)
     //
     // Note: FPTIA.tab[3] (deltaE2) and FPTIA.tab[7] (mix B) are computed
-    // separately below via direct convolution, not J_abJ1J2Jk_ar.
+    // separately below via direct convolution, not J_abJ1J2Jk.
     // -----------------------------------------------------------------------
     double *outputs[NGROUPS];
     outputs[ID_TT_E]    = tab_int[0];
@@ -866,19 +918,27 @@ void get_FPT_IA(void)
     //
     // Computes P_deltaE2(k) = 2 * k^3 / (896 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
     //
-    // The 1/(896 pi^2) prefactor comes from the angular integration of the delta-E2
-    // perturbation theory kernel in the TATT model. See Blazek et al (2019)
-    // 
-    // The convolution kernel f(r) has three regimes:
-    //   r << 1 (far below midpoint): asymptotic expansion in negative powers of r
-    //   r ~ 1  (near midpoint):      exact closed-form with log(|r-1|/(r+1)) term
-    //   r >> 1 (far above midpoint): asymptotic expansion in positive powers of r
+    // This is C_{0|0E} of Blazek et al. 2019 (arXiv:1708.09247), the
+    // density-weighted tidal-alignment part of the density-shape (GI)
+    // correlator: a P_13-like integral, Pin(k) times a convolution of Pin
+    // with an angular kernel. The leading 2 is its prefactor, which
+    // FAST-PT's IA_ta also applies; the 1/(896 pi^2) comes from the
+    // angular integration of the kernel.
     //
-    // The cutoff Ncut = floor(3/dL) determines where to switch between the
-    // exact formula and the asymptotic expansions. The exact formula has a
-    // log singularity at r=1, so the midpoint f[Nk-1] is set analytically.
+    // Array index i of f stands for s = dL*(i - Nk + 1) and for the ratio
+    // r = exp(-s) = k'/k, so low indices hold r >> 1 and high indices
+    // r << 1. The convolution kernel f(r) has three regimes:
+    //   r >> 1 (index far below the midpoint): asymptotic expansion in
+    //          negative powers of r
+    //   r ~ 1  (near the midpoint): exact closed form with the
+    //          log(|r-1|/(r+1)) term
+    //   r << 1 (index far above the midpoint): asymptotic expansion in
+    //          positive powers of r
     //
-    // r = exp(-dL*(i - Nk + 1)) maps array index i to the ratio k'/k.
+    // The cutoff Ncut = floor(3/dL) switches between the exact formula and
+    // the asymptotic expansions near |s| = 3, as FAST-PT does. The exact
+    // formula has a log singularity at r=1, so the midpoint f[Nk-1] is set
+    // analytically.
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
@@ -891,7 +951,7 @@ void get_FPT_IA(void)
 
       int i;
 
-      // Region 1: r << 1 (asymptotic expansion for small r)
+      // Region 1: r >> 1 (asymptotic expansion for large r)
       for (i = 0; i < Nk-1-Ncut; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2;
@@ -915,7 +975,7 @@ void get_FPT_IA(void)
                 + log(fabs(r-1.)/(r+1.)) * (15./r - 60.*r + 90*r3 - 60*r5 + 15*r7));
       }
 
-       // Region 4: r >> 1 (asymptotic expansion for large r)
+       // Region 4: r << 1 (asymptotic expansion for small r)
       for ( ; i < 2*Nk-1; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2, r12 = r6*r6, r14 = r8*r6;
@@ -950,21 +1010,27 @@ void get_FPT_IA(void)
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
     // -----------------------------------------------------------------------
-    // IA_mix B term: direct convolution (not via J_abJ1J2Jk_ar).
+    // IA_mix B term: direct convolution (not via J_abJ1J2Jk).
     //
     // Computes P_B(k) = 4 * k^3 / (2 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
     //
-    // The factor of 4 absorbs the rescaling that was previously done in a
-    // separate loop (FPTIA.tab[7][i] *= 4).
+    // This is B_{0|E2} of Blazek et al. 2019 (arXiv:1708.09247), the
+    // tidal-torquing part of the density-shape (GI) correlator. "B" names
+    // the term: it is an E-mode contribution, not a B mode. Like deltaE2
+    // it is a P_13-like integral, Pin(k) times a convolution of Pin with
+    // an angular kernel; the 4 is its prefactor, which FAST-PT's IA_mix
+    // also applies to this output (P_Btype2).
     //
     // Same structure as the deltaE2 kernel but with a different convolution
-    // kernel f(r) arising from the IA_mix B-mode perturbation theory integral.
-    //
-    // The kernel has three regimes:
-    //   r << 1 (far below midpoint): asymptotic expansion in negative powers of r
-    //   r ~ 1  (near midpoint):      exact closed-form with log(|r-1|/(r+1)) term
-    //                                 and (r^2-1)^4 factor from the angular integral
-    //   r >> 1 (far above midpoint): asymptotic expansion in positive powers of r
+    // kernel f(r), the same index-to-r map (low indices hold r >> 1, high
+    // indices r << 1) and three regimes:
+    //   r >> 1 (index far below the midpoint): asymptotic expansion in
+    //          negative powers of r
+    //   r ~ 1  (near the midpoint): exact closed form with the
+    //          log(|r-1|/(r+1)) term and the (r^2-1)^4 factor from the
+    //          angular integral
+    //   r << 1 (index far above the midpoint): asymptotic expansion in
+    //          positive powers of r
     //
     // The overall /2 factor in each region is part of the kernel normalization.
     //
@@ -982,7 +1048,7 @@ void get_FPT_IA(void)
       }
       int i;
 
-      // Region 1: r << 1 (asymptotic expansion for small r)
+      // Region 1: r >> 1 (asymptotic expansion for large r)
       for (i = 0; i < Nk-1-Ncut; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2, r12 = r6*r6;
@@ -1014,7 +1080,7 @@ void get_FPT_IA(void)
                 - 29./315.*r2) / 2.;
       }
 
-      // Region 4: r >> 1 (asymptotic expansion for large r)
+      // Region 4: r << 1 (asymptotic expansion for small r)
       for ( ; i < 2*Nk-1; i++) {
         double r = exps[i];
         double r2 = r*r, r4 = r2*r2, r6 = r4*r2, r8 = r4*r4, r10 = r8*r2, r12 = r6*r6, r14 = r8*r6, r16 = r8*r8;
@@ -1035,8 +1101,7 @@ void get_FPT_IA(void)
       fftconvolve_real(Pin, f, Nk, 2*Nk-1, g);
       
       // P_B(k) = 4 * k^3 / (2 * pi^2) * Pin(k) * [Pin ⊛ f](k) * dL
-      // The factor of 4 is folded in here (was previously a separate
-      // FPTIA.tab[7][i] *= 4 loop after IA_mix).
+      // The 4 is the prefactor of B_{0|E2} (see the block header above).
       for (i = 0; i < Nk; i++) {
         double ki3 = k[i] * k[i] * k[i];
         tab_int[7][i] = 4. * ki3 / (2.*M_PI*M_PI) * Pin[i] * g[Nk-1+i] * dL;

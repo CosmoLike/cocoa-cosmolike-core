@@ -26,7 +26,7 @@
 // file applies the stretch only to the lens sample; the source model
 // is shift-only.
 //
-// Caching idiom, shared by every function here with static tables:
+// Caching idiom of the functions here whose tables follow changing inputs:
 // each global (cosmology, redshift, nuisance, tomo, Ntable) carries a
 // random_* stamp that changes whenever its contents do; a table stores
 // the stamps it was built with and rebuilds when fdiff2 sees a
@@ -36,6 +36,9 @@
 // are not thread-safe: the first call after any stamp change must
 // happen outside OpenMP regions, which is why builders warm the caches
 // single-threaded, e.g. "(void) nz_source_photoz(0., 0)".
+// The exceptions carry no stamp and are built once: the pair maps
+// Z1/Z2/N_shear and ZCL1/ZCL2/N_CL (they depend only on the bin counts)
+// and the reference distances of test_kmax.
 // ---------------------------------------------------------------------------
 
 #include <assert.h>
@@ -186,7 +189,7 @@ double amax_source(int i __attribute__((unused)))
 //   ni - source tomographic bin index (0 .. shear_nbin-1)
 //
 // Returns:
-//   1 / (1 + max(shear_zdist_zmin_all, 0.001)).
+//   1 / (1 + max(redshift.shear_zdist_zall[RANGE_MIN], 0.001)).
 // ---------------------------------------------------------------------------
 double amax_source_IA(int ni) 
 {
@@ -248,7 +251,7 @@ double amin_lens(int ni)
 // magnification bias is active for the bin (gbmag(0, ni) != 0), the
 // kernel W_mag has support well in front of the lens galaxies, and
 // the bound widens to the source-sample value
-// 1 / (1 + max(shear_zdist_zmin_all, 0.001)) (same as amax_source).
+// 1 / (1 + max(shear_zdist_zall[RANGE_MIN], 0.001)) (same as amax_source).
 //
 // Parameters:
 //   ni - lens tomographic bin index (0 .. clustering_nbin-1)
@@ -511,9 +514,9 @@ int ZS(int nj)
 // Cache invalidation:
 // static map stamped with tomo.random_ggl. The
 // rebuild guard is N[0][0] < -1, so the static-initializer sentinel (-42)
-// triggers the first build and a changed stamp triggers later ones; when
-// pair (0, 0) itself is excluded, its stored -1 keeps the guard true and
-// the map is rebuilt on every call.
+// triggers the first build and a changed stamp triggers later ones; an
+// excluded pair (0, 0) stores -1, which does not satisfy the guard, so it
+// does not force a rebuild.
 //
 // Warmed single-threaded by init_ntomo_powerspectra; the first call
 // after a key change must happen outside OpenMP regions.
@@ -961,11 +964,14 @@ double nz_source_photoz(double zz, const int nj)
   // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
   // type 0 with convention 1 gives 1 + 0 + 8 = 9.
   //
-  // Because the type can never reach 8, two DIFFERENT settings pairs
-  // can never produce the SAME packed number. (With a multiplier of 2
-  // they could: type 2 with convention 0 and type 0 with convention 1
-  // would both give 3, and that settings change would be mistaken for
-  // "nothing changed" - stale n(z) tables, silently wrong physics.)
+  // As long as the type stays in 0-7 and the convention is 0 or 1, two
+  // different settings pairs never produce the same packed number. (With
+  // a multiplier of 2 they could: type 2 with convention 0 and type 0
+  // with convention 1 would both give 3, and that settings change would
+  // be mistaken for "nothing changed" - stale n(z) tables, silently wrong
+  // physics.) The meaningful types are 0, 1 and 2 (malloc_gsl_interp maps
+  // any other value to Steffen); init_photoz_conventions does not reject
+  // values outside the ranges this encoding assumes.
   //
   // The 1+ offset keeps a stamped slot nonzero, so it can never equal
   // the zero that C puts in the static cache array before the first
@@ -1221,15 +1227,18 @@ double int_for_zmean_source(double z, void* params)
 //
 //   zmean_source(ni) = int_{zmin[ni]}^{zmax[ni]} z * n_i(z) dz
 //
-// over the bin's tabulated range, with n_i = nz_source_photoz (already
-// normalized to unit integral, so no norm division is needed). All bins
-// are tabulated at once with fixed-order Gauss-Legendre quadrature
-// (256/512/1024 nodes, chosen by |Ntable.high_def_integration|).
+// over the bin's tabulated range, with n_i = nz_source_photoz
+// (normalized to unit integral over all z; no norm division is applied,
+// unlike zmean_all). All bins are tabulated at once with fixed-order
+// Gauss-Legendre quadrature (256/512/1024 nodes, chosen by
+// |Ntable.high_def_integration|).
 //
 // Cache invalidation:
 // the table rebuilds when Ntable.random or
 // redshift.random_shear change. nz_source_photoz is warmed
 // single-threaded before the parallel loop over bins.
+// The source photo-z shifts enter through nz_source_photoz at the
+// rebuild; a later shift change does not rebuild the table.
 //
 // Parameters:
 //   ni - source tomographic bin index (0 .. shear_nbin-1)
@@ -1352,7 +1361,8 @@ double pf_histo_n(double z, const int ni)
 //     z → (z − Δz_i − z̄_i) / σ_i + z̄_i
 //   where Δz_i = nuisance.photoz[1][0][nj] is the per-bin shift,
 //   σ_i = nuisance.photoz[1][1][nj] is the per-bin stretch, and
-//   z̄_i = clustering_zdist_zmean[nj] is the fiducial mean redshift.
+//   z̄_i = redshift.clustering_zdist_z[ZDIST_MEAN][nj] is the fiducial mean
+//   redshift (the value zmean returns).
 //   The returned value is divided by σ_i to preserve normalization
 //   under the stretch (∫ n(z) dz = 1).
 //
@@ -1421,11 +1431,14 @@ double nz_lens_photoz(double zz, int nj)
   // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
   // type 0 with convention 1 gives 1 + 0 + 8 = 9.
   //
-  // Because the type can never reach 8, two DIFFERENT settings pairs
-  // can never produce the SAME packed number. (With a multiplier of 2
-  // they could: type 2 with convention 0 and type 0 with convention 1
-  // would both give 3, and that settings change would be mistaken for
-  // "nothing changed" - stale n(z) tables, silently wrong physics.)
+  // As long as the type stays in 0-7 and the convention is 0 or 1, two
+  // different settings pairs never produce the same packed number. (With
+  // a multiplier of 2 they could: type 2 with convention 0 and type 0
+  // with convention 1 would both give 3, and that settings change would
+  // be mistaken for "nothing changed" - stale n(z) tables, silently wrong
+  // physics.) The meaningful types are 0, 1 and 2 (malloc_gsl_interp maps
+  // any other value to Steffen); init_photoz_conventions does not reject
+  // values outside the ranges this encoding assumes.
   //
   // The 1+ offset keeps a stamped slot nonzero, so it can never equal
   // the zero that C puts in the static cache array before the first
@@ -1712,9 +1725,11 @@ double norm_for_zmean(double z, void* params)
 //   out[i] = int z * n_i(z) dz / int n_i(z) dz
 //
 // over the bin's tabulated range [zdist_zmin[i], zdist_zmax[i]], with
-// n_i = nz_lens_photoz. Unlike zmean_source, this explicitly divides by
-// the norm because nz_lens_photoz includes a stretch factor that breaks
-// unit normalization. Fixed-order Gauss-Legendre quadrature (256/512/1024
+// n_i = nz_lens_photoz. Unlike zmean_source, this divides by the norm:
+// the 1/sigma of nz_lens_photoz keeps the integral over all z at one,
+// but a shift or a stretch can move part of n_i outside the bin's
+// tabulated range, and the division makes the result the mean of n_i
+// over that range. Fixed-order Gauss-Legendre quadrature (256/512/1024
 // nodes, chosen by |Ntable.high_def_integration|).
 //
 // No cache: set_lens_sample calls it once per n(z) load, with the lens
@@ -1808,9 +1823,10 @@ double zmean(const int ni)
 //   redshift distribution for bin j and the 1/a'^2 Jacobian converts
 //   dz → da.  This is the same functional form as
 //   g_lens, but integrated against the source distribution rather than the
-//   lens distribution.  It appears in W_κ(a, j) = g(a, j) / χ(a), which
-//   enters every shear-related angular power spectrum (shear-shear,
-//   galaxy-shear, CMB lensing × shear).
+//   lens distribution.  It enters the convergence kernel
+//   W_κ(a, j) = (3/2) Ω_m (χ(a)/a) g(a, j) (W_kappa in radial_weights.c,
+//   distances in c/H0), which enters every shear-related angular power
+//   spectrum (shear-shear, galaxy-shear, CMB lensing × shear).
 //
 //   Splitting the geometric factor [1 − χ(a)/χ(a')] gives two cumulative
 //   integrals:
@@ -1929,21 +1945,21 @@ double g_tomo(double ainput, const int ni) {
 // Integral of the squared lensing kernel for source tomographic bin ni.
 //
 // PHYSICS:
-//   Several terms in the angular power spectrum of source galaxy clustering
-//   (and magnification–magnification correlations) involve the integral of
-//   the *squared* lensing efficiency kernel over the source distribution,
-//   here in its flat-cosmology (f_K = χ) form:
+//   The integral of the *squared* lensing efficiency kernel over the
+//   source distribution, here in its flat-cosmology (f_K = χ) form:
 //
 //     g2(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
 //                            × [1 − χ(a)/χ(a')]^2  da'
 //
 //   This is distinct from [g(a)]^2: g2 is the integral of the square,
-//   not the square of the integral.  Physically, g(a) gives the mean
-//   lensing weight (used in galaxy-shear cross-correlations), while g2(a)
-//   gives the second moment of the lensing weight along the line of sight
-//   (used when computing magnification auto-correlations or source
-//   clustering terms where two lensing factors share the same radial
-//   integration variable).
+//   not the square of the integral.  g(a) is the lensing weight of the
+//   matter at a, averaged over the source galaxies of bin j, so [g(a)]^2
+//   pairs two different source galaxies, as every shear power spectrum
+//   does ([g_lens(a)]^2 likewise pairs two magnified lens galaxies in the
+//   magnification auto-correlations). g2(a) averages the squared weight
+//   of a single source galaxy: the form a term takes when both lensing
+//   factors belong to the same galaxy. In this library only W2_kappa
+//   (radial_weights.c) calls g2_tomo, and nothing calls W2_kappa.
 //
 //   Expanding the squared kernel:
 //
@@ -2079,11 +2095,11 @@ double g2_tomo(double a, int ni)
 // Bin-averaged lensing efficiency g(a) for lens tomographic bin ni.
 //
 // PHYSICS:
-//   In the flat-sky Limber approximation for galaxy-galaxy lensing (and
-//   magnification), the angular power spectrum C_l^{gκ} involves a radial
-//   projection kernel that weights lens galaxies by how efficiently they
-//   lens background sources. For a flat cosmology (f_K = χ), this kernel
-//   factors as:
+//   Lensing magnification of the lens sample: the matter at scale factor
+//   a magnifies the lens galaxies of bin j that lie behind it (a' < a).
+//   The magnification kernel W_mag (radial_weights.c) weights that matter
+//   by the lensing efficiency of the lens galaxies themselves, treated as
+//   sources; for a flat cosmology (f_K = χ):
 //
 //     g(a) = ∫_{a_min}^{a} [n_j(z(a')) / a'^2]
 //                           × [1 - χ(a)/χ(a')] da'
@@ -2091,9 +2107,9 @@ double g2_tomo(double a, int ni)
 //   where n_j = nz_lens_photoz is the (normalized) photometric redshift
 //   distribution for lens bin j, and the 1/a'^2 Jacobian converts dz → da.
 //   The geometric factor [1 − χ(a)/χ(a')] = [χ(a') − χ(a)] / χ(a')
-//   is the standard lensing efficiency: it vanishes when the lens sits
-//   at the same distance as the source (χ = χ') and grows as the lens
-//   moves closer to the observer relative to the source.
+//   is the standard lensing efficiency: it vanishes when the deflecting
+//   matter sits at the same distance as the galaxy (χ = χ') and grows as
+//   the matter moves closer to the observer relative to the galaxy.
 //
 //   Rather than evaluating the full expression directly, the code splits
 //   the kernel into two simpler cumulative integrals:

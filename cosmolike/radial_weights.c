@@ -49,8 +49,10 @@ double W_kappa(const double a, const double fK, const int nz)
 //
 // g2_tomo is the integral of the squared lensing efficiency over the
 // source n(z), not the square of the integral, so W2_kappa differs from
-// W_kappa^2; it is used where two lensing factors share the same
-// line-of-sight integration variable. Distances in c/H0 units.
+// W_kappa^2: both of its lensing factors belong to the same source
+// galaxy (see g2_tomo in redshift_spline.c). Nothing in this library
+// calls W2_kappa, and radial_weights.h does not declare it. Distances in
+// c/H0 units.
 //
 // Parameters:
 //   a  - scale factor, 0 < a < 1
@@ -202,8 +204,7 @@ double f_rsd(double a)
 //   l  - multipole argument of the RSD prefactors (callers pass ell + 0.5)
 //   a0 - scale factor of the first evaluation point, 0 < a0 < 1
 //   a1 - scale factor of the second evaluation point, 0 < a1 < 1
-//   ni - lens tomographic bin index; the guard admits -1, but
-//        nz_lens_photoz only accepts 0 .. clustering_nbin-1
+//   ni - lens tomographic bin index (0 .. clustering_nbin-1)
 //
 // Returns:
 //   RSD kernel value.
