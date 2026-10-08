@@ -196,7 +196,7 @@ limits of each shortcut.
 | Quantity | Convention |
 | --- | --- |
 | Angle | The plotters take and display theta in arcminutes; the C core integrates in radians, and the project wrappers convert. |
-| Multipole | Integer ell; the spectrum plotters draw C_ell itself (no ell(ell+1)/2 pi weighting). |
+| Multipole | Integer ell. The shear plotter draws ell(ell+1) C_ell / 2 pi; the galaxy-galaxy lensing and clustering plotters draw C_ell itself. |
 | Wavenumber | `get_camb_cosmology` hands the interface log10 k in 1/Mpc and shifts to h/Mpc where the tuple requires it; `plot_baryon_suppression` takes log10 k in 1/Mpc. |
 | Power tables | Natural logarithm of P in (Mpc/h)^3, as the interface expects. |
 | Bin index | Function arguments count bins from 0, as the arrays do; panel labels and legends count from 1. |
