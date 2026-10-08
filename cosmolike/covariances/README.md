@@ -187,7 +187,7 @@ headers inside each file carry the equations and units.
 | Intrinsic alignment in the Gaussian part | [The IA subsection](#spectra); `spectra_cov.c` (the signed NLA window); `ia_cov.c` (TATT E/B); `assembly_cov.c` (B-mode signs in xi+/xi-). |
 | Projection: from C_ell to measured bins | [The operators section](#operators); `operators_cov.c` (bin and band operators); `assembly_cov.c` (both-side contraction and block scheduling). |
 | The cluster blocks | [The counts](#counts), [cluster spectra](#cluster_spectra) and [moments](#cluster_moments) sections; `halo_cluster_cov.c`; `moments_cluster_cov.c`; `counts_cluster_cov.c`; `spectra_cluster_cov.c`. |
-| How Python drives the calculation | [Running the calculation](#notebooks); the [shared Python guide](../../cosmolike_notebook_utils/covariance/README.md); then `python_components_cov.cpp` (production bindings) or `components_wrapper_cov.cpp` (notebook wrappers). |
+| How Python drives the calculation | [Running the calculation](#notebooks); the [shared Python guide](../../cosmolike_notebook_utils/covariance/README.md); then `components_interface_cov.cpp` (production bindings) or `python_components_cov.cpp` (notebook bindings) with `components_wrapper_cov.cpp` (their Armadillo wrappers). |
 
 Three of those paths, drawn as the order in which a student reads the
 files. Every arrow is "then read":
