@@ -1,14 +1,17 @@
-"""Real-space and Fourier 3x2pt matrices under an explicit Limber halo model.
+"""Real-space and Fourier 3x2pt covariances under an explicit Limber halo model.
 
-The Gaussian, super-sample and connected terms follow the decomposition
-in Krause & Eifler (2017), Appendix A, arXiv:1601.05779. SSC uses the
-isotropic halo response of Takada & Hu (2013), corrected Eq. 44 and
-Appendix A, arXiv:1302.6994. The mask is a spherical cap; long and short
-modes in SSC/cNG use Limber. Gaussian gg/gs can retain radial mode coupling. This is not a calibrated nonlinear tidal response.
+The Gaussian (G), super-sample (SSC) and connected non-Gaussian (cNG)
+terms follow the decomposition in Krause & Eifler (2017), Appendix A,
+arXiv:1601.05779. SSC uses the isotropic halo response of Takada & Hu
+(2013), corrected Eq. 44 and Appendix A, arXiv:1302.6994; it is not a
+calibrated nonlinear tidal response. The mask is a spherical cap; long
+and short modes in SSC/cNG use Limber. The Gaussian galaxy-galaxy and
+galaxy-shear spectra can include non-Limber radial mode coupling.
 
-All cross-bin blocks are retained. The first survey assembly supports
-massless neutrinos, linear galaxy bias and zero magnification. Gaussian
-IA is selectable; SSC/cNG retain zero IA and their original mean signal.
+All cross-bin blocks are retained. The survey assembly requires massless
+neutrinos and zero magnification; it uses linear galaxy bias and no RSD.
+Gaussian IA is selectable; SSC/cNG always use zero IA and Limber spectra,
+including the mean signal of the SSC survey-mean subtraction.
 It returns a forecast, not a replacement for a project's supplied matrix.
 Numerical refinement and Fisher convergence remain separate checks.
 """
@@ -61,16 +64,18 @@ def observable_rows(nlens, nsource, excluded_gammat=()):
 def compress_operators(operators, ell, coarse_ell, source_factor=None):
     """Project linear interpolation weights instead of a dense trispectrum.
 
-    If T(l,l') is bilinear in x=ln(l+1/2), write
-    T(l,l') = sum_ij h_i(x) T_ij h_j(x'). Then K T K^T equals B T B^T,
-    where B_i=sum_l K_l h_i(x_l). The two nonzero h values are the
-    ordinary lower/upper linear weights. This works because interpolation
-    and projection are both linear sums: their order can be exchanged.
-    No oscillatory theta kernel is
-    sampled sparsely: every integer multipole contributes to B.
+    If T(l,l') is interpolated linearly in x=ln(l+1/2) from its samples
+    T_ij on coarse_ell, T(l,l') = sum_ij h_i(x) T_ij h_j(x'). Then
+    K T K^T equals B T B^T, where B_i=sum_l K_l h_i(x_l). The two nonzero
+    h values are the ordinary lower/upper linear weights. This works
+    because interpolation and projection are both linear sums: their order
+    can be exchanged. No oscillatory theta kernel is sampled sparsely:
+    every integer multipole contributes to B.
 
     operators is [4,ntheta,nell] and contains the observed spin kernels.
-    Attach the Limber shear factor (l-1)(l+2)/(l+1/2)^2 per source leg.
+    By default each source leg receives (l-1)(l+2)/(l+1/2)^2: the core
+    Limber shear factor sqrt[(l-1)l(l+1)(l+2)]/(l+1/2)^2 times the spin
+    conversion of observed_spectra, matching the real-space mean and G.
     The coarse trispectrum stays signed. Accuracy depends on refining
     coarse_ell; this algebra does not claim that a particular grid suffices.
 
@@ -93,6 +98,9 @@ def compress_operators(operators, ell, coarse_ell, source_factor=None):
         raise ValueError("coarse_ell must be uniform in ln(ell+1/2)")
     if query[0] < grid[0] or query[-1] > grid[-1]:
         raise ValueError("the coarse grid must cover every integer multipole")
+    # left is each multipole's coarse interval and fraction its position
+    # inside it. A multipole on the last node stays in the last interval
+    # (fraction near one), so left+1 is always a valid node.
     position = (query-grid[0])/step
     left = np.minimum(position.astype(np.intp), len(grid)-2)
     fraction = position-left
@@ -103,8 +111,11 @@ def compress_operators(operators, ell, coarse_ell, source_factor=None):
             raise ValueError("source_factor must be finite and match ell")
     result = np.empty((4, operators.shape[1], len(grid)))
 
-    # A source leg carries one shear factor; galaxy density carries none.
+    # A source leg carries one shear factor; galaxy density carries none,
+    # so xi+, xi-, gamma_t and w have 2, 2, 1 and 0 source legs.
     # Accumulate both interpolation endpoints with their signed kernels.
+    # np.bincount(index, weights=...) adds each multipole's weight into the
+    # coarse node named by its index: a scatter-add over multipoles.
     for probe, source_legs in enumerate((2, 2, 1, 0)):
         for angular_bin, kernel in enumerate(operators[probe]):
             values = kernel*spin**source_legs
@@ -192,13 +203,19 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
         nquad=settings["tree_nquad"], npanel=settings["tree_npanel"],
         interface=interface,
     )
+    # (first, second) list the K<=Q pairs of the upper triangle row by row,
+    # the pair order of the C halo moments.
     first, second = np.triu_indices(n=len(coarse_ell))
-    # K,Q both scale as 1/chi along a Limber shell. Build the angular
+    # K,Q both scale as 1/f_K along a Limber shell. Build the angular
     # geometry once in multipole units, then rescale at each radial node.
+    # |K+Q|^2 = (K-Q)^2+2KQ(1+cos theta) keeps precision when K and Q are
+    # nearly opposite; corner holds 1+cos theta from angular_rule.
     modes = coarse_ell+0.5
     magnitude = np.sqrt((modes[first, None]-modes[second, None])**2
                         +2*modes[first, None]*modes[second, None]*corner)
     unit_weight = np.ones(len(coarse_ell))
+    # Keep the factors exp(-step) and exp(+step) of the centered slope
+    # below; [[0, 2]] selects the first and last of the three samples.
     shift = np.exp(np.array([-settings["response_step"], 0.0,
                              settings["response_step"]]))
     shift = shift[[0, 2]]
@@ -232,9 +249,9 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
         )
         shifted_single = shifted_single.reshape(shifted_k.shape)
 
-        # A fixed multipole samples k=(ell+1/2)/chi, so each shell still
-        # needs its own power spectrum and tree-level angular terms. Keep
-        # those physical k values and both final projections unchanged.
+        # A fixed multipole samples k=(ell+1/2)/f_K, so each shell needs its
+        # own power spectrum and tree-level angular terms. Only the halo
+        # moments above are batched; the rest runs one shell at a time.
         for row, node in enumerate(range(begin, end)):
             a = scale_factor[row]
             distance = geometry[2, node]
@@ -270,9 +287,9 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
                 left=half, right=transform, weight=unit_weight
             )
 
-            # Evaluate the same centered difference at k*exp(+/-step).
-            # Omitting the unused central sample does not change either
-            # endpoint or their logarithmic separation of twice the step.
+            # Centered difference: d ln(I11^2 P)/d ln k is the log ratio of
+            # the samples at k*exp(+step) and k*exp(-step), divided by their
+            # logarithmic separation of twice the step.
             shifted_power = interface.covariance_power(
                 a=a, k=shifted_k[row], linear=True
             )
@@ -283,6 +300,11 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
             # The halo model predicts the fractional response to background
             # density. Transfer that fraction to the chosen nonlinear power;
             # this defines the stated SSC approximation, not a tidal response.
+            # Input rows: P_lin, P_target, I11, I02(k,k) and I12(k,k) (moment
+            # roles 0 and 1 on the K=Q diagonal), then the slope of the
+            # two-halo power P_2h=I11^2 P_lin. Takada & Hu corrected Eq. 44
+            # sets the coefficients 47/21 and 1/3:
+            #   68/21-(1/3)dln(k^3 P_2h)/dlnk = 47/21-(1/3)dlnP_2h/dlnk.
             target = interface.covariance_power(a=a, k=k, linear=False)
             dimensional = interface.covariance_halo_response(
                 inputs=np.array([
@@ -305,6 +327,7 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
             long_power[node] = interface.covariance_power(
                 a=a, k=mask_modes/distance, linear=True
             )
+            # Report every 32nd shell, which keeps the progress output short.
             if progress is not None and node % 32 == 0:
                 progress(node+1, nnode)
     return {
@@ -384,7 +407,12 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             tree_nquad, tree_npanel = relative-wavevector angular rule;
             response_step = centered finite-difference step in ln(k);
             area_sr, edges_rad = common footprint area and angular-bin edges;
-            mnu = initialized neutrino mass in eV, currently required zero.
+            mnu = initialized neutrino mass in eV, which must be zero;
+            gaussian = optional model resolved by forecast.gaussian_model;
+                without it the Gaussian spectra are zero-IA Limber;
+            nonlimber_lmax, nonlimber_nchi = non-Limber cutoff and
+                log-distance samples, read only when gaussian nonlimber is true;
+            band_first, band_last = Fourier bands, see fourier_covariance.
         rows = int32 [nobservable,3] from observable_rows(...).
         noise = float [nlens+nsource] white powers from noise_powers(...).
         progress = optional callable receiving a stage name and elapsed seconds.
@@ -396,11 +424,21 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         geometry [4,nradial] (a,chi,f_K,dchi); pair_area_sr2 [nbin]; and
         stages_s elapsed times. Here ndata=nobservable*nbin; distances
         have units c/H0. The function writes no files and repairs no modes.
+        signal is the measured mean from the Gaussian spectra, including
+        IA, non-Limber and (real space) TATT B-mode terms when selected.
+        ssc_normalization_signal [nobservable,nbin] is the zero-IA Limber
+        mean that the SSC survey-mean subtraction uses.
 
     Returned arrays order observables first, then angular bins or bands.
     Times include Python preparation, core workspaces and cold table builds;
     CAMB/initialization, diagnostic eigenproblems and file writing are outside
     this function. No shared table is recomputed inside a tomographic block.
+
+    Raises:
+        ValueError for nonzero mnu, a response_step that is not finite and
+        positive, malformed rows or bands, xi- rows in Fourier space,
+        nonzero lens magnification, or noise or field IDs that do not
+        match the initialized fields.
     """
     if settings["mnu"] != 0.0:
         raise ValueError("the full halo matter model currently requires mnu=0")
@@ -456,10 +494,12 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         raise ValueError("noise count must match the initialized field count")
     if np.any(rows[:, 1:] >= base.shape[1]):
         raise ValueError("an observable field ID exceeds the initialized count")
-    # SSC/cNG keep their established lensing-only, Limber normalization.
-    # Gaussian spectra below are a separate snapshot; changing their IA or
-    # radial-mode treatment must not alter the SSC mean-subtraction signal.
+    # SSC/cNG use this zero-IA Limber snapshot: its windows and, for the
+    # SSC survey-mean subtraction, its spectra. Gaussian spectra below are
+    # a separate snapshot; changing their IA or radial-mode treatment must
+    # not alter the SSC mean-subtraction signal.
     lensing_spectra = snapshot["spectra"]
+    # Settings without a gaussian entry use zero-IA Limber Gaussian spectra.
     model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
     if model["ia"] != "none":
         snapshot = limber_spectra(
@@ -468,6 +508,9 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             include_ia=True, include_rsd=False, linear=False,
         )
     if model["nonlimber"]:
+        # Recompute multipoles through the cutoff with the non-Limber
+        # correction (exact minus Limber, linear power) on galaxy-galaxy
+        # and galaxy-shear pairs; shear-shear and higher ell stay Limber.
         cutoff = min(settings["nonlimber_lmax"], ell_max)
         selected = ell <= cutoff
         low = interface.covariance_spectra(
@@ -476,7 +519,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             include_ia=model["ia"] != "none", include_rsd=False, linear=False,
             nonlimber_lmax=cutoff, nonlimber_nchi=settings["nonlimber_nchi"],
         )
-        # Copy when Gaussian and SSC still reference the same no-IA array.
+        # Without IA, Gaussian and SSC share one array: copy it before the
+        # in-place update so the SSC mean signal stays Limber.
         snapshot["spectra"] = snapshot["spectra"].copy()
         snapshot["spectra"][selected] = low["spectra"]
     b_signal = snapshot.get("b_spectra")
@@ -528,7 +572,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         )
         # All Fourier fields use the same band average. Keep four operator
         # slots so the common SSC/cNG projection can attach two, one or no
-        # shear transfer factors to E-E, galaxy-E and galaxy density.
+        # shear transfer factors to E-E, galaxy-E and galaxy density. Slot 1,
+        # the real-space xi- position, stays unused in Fourier space.
         kernels = np.repeat(bands[None, :, :], repeats=4, axis=0)
     nbin = kernels.shape[1]
     ndata = len(rows)*nbin
@@ -557,7 +602,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     checkpoint("gaussian_blocks", tick)
 
     # The SSC mean subtraction uses the full projected signal of each
-    # measured observable, rather than its local radial integrand.
+    # measured observable, rather than its local radial integrand. The
+    # reported mean signal instead projects the Gaussian spectra.
     tick = time.perf_counter()
     observable_signal = np.empty((len(rows), nbin))
     gaussian_signal = np.empty_like(observable_signal)
@@ -566,8 +612,12 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         if len(selected) == 0:
             continue
         fields = rows[selected, 1:]
+        # Paired index arrays pick C_AB(ell) for each selected (A,B) row;
+        # the transpose gives [nrow,nell] for the projection.
         spectra = np.ascontiguousarray(ssc_signal[:, fields[:, 0], fields[:, 1]].T)
         gaussian_power = signal[:, fields[:, 0], fields[:, 1]].T.copy()
+        # xi+ projects C_EE+C_BB and xi- projects C_EE-C_BB, so TATT B modes
+        # enter with opposite signs. Fourier rows are E-mode only.
         if b_signal is not None and space == "real" and probe in (0, 1):
             sign = 1.0 if probe == 0 else -1.0
             gaussian_power += sign*b_signal[:, fields[:, 0], fields[:, 1]].T
@@ -591,6 +641,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         operators=kernels, ell=ell, coarse_ell=coarse_ell,
         source_factor=source_factor,
     )
+    # Rows are probe-major with angular bins inside: the 4*nbin axis order
+    # that project_connected expects.
     transform = compressed.reshape(4*nbin, -1)
     def report_matter(completed, total):
         """Translate shared-table progress into the survey's elapsed time."""
@@ -612,6 +664,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # Lenses contribute b*n and sources contribute lensing efficiency.
     # Normalizing galaxy density by its observed survey mean subtracts
     # (U_A+U_B)*C_AB from its response to a background density fluctuation.
+    # A lens U equals its window b*n, the radial weight of its mean count.
     # Shear has no galaxy-count normalization, so its U is zero.
     tick = time.perf_counter()
     windows = np.concatenate((base[0, :nlens], base[1, nlens:]))
@@ -619,21 +672,28 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     mean = np.zeros_like(windows)
     mean[:nlens] = base[0, :nlens]
     pair_mean = mean[rows[:, 1]]+mean[rows[:, 2]]
+    # shell [ndata,nnode], bins inside observables, at each radial node:
+    # Phi_AB = W_A W_B (dP/d delta_b)/f_K^2 - (U_A+U_B) C_AB.
     response = response.reshape(4, nbin, nnode)
     shell = pair_window[:, None, :]*response[rows[:, 0]]/geometry[2]**2
     shell -= pair_mean[:, None, :]*observable_signal[:, :, None]
     shell = shell.reshape(ndata, nnode)
+    # sigma_b^2 at each node: the cap's long-mode background variance from
+    # linear power. Its unit is length, because it multiplies a radial delta.
     variance = interface.covariance_ssc_mask_variance(
         mask_cl=mask, area_sr=settings["area_sr"],
         distance=np.ascontiguousarray(geometry[2]), power=long_power,
     )
 
-    # Shared responses on both sides with positive radial weights form a
-    # weighted outer product. Keeping every cross-bin entry preserves that
-    # nonnegative SSC construction before the separate cNG term is added.
+    # Shared responses on both sides with positive radial weights
+    # dchi*sigma_b^2 form a weighted outer product. Keeping every cross-bin
+    # entry preserves that positive semidefinite SSC construction before
+    # the separate cNG term is added.
     ssc = interface.covariance_project(
         left=shell, right=shell, weight=geometry[3]*variance
     )
+    # The projection rounds the (i,j) and (j,i) sums separately; copying
+    # the upper triangle onto the lower one makes ssc exactly symmetric.
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T
     cng = project_connected(
         interface=interface, rows=rows, pair_window=pair_window,

@@ -2,12 +2,14 @@
 
 A project supplies its redshift files, cosmology, catalog densities and
 measurement bins. This module installs that forecast through the ordinary
-project setters and binds those inputs to the shared G/SSC/cNG calculation.
+project setters and binds those inputs to the shared Gaussian (G),
+super-sample (SSC) and connected non-Gaussian (cNG) calculation.
 It imports no project interface and reads no supplied likelihood covariance.
-The forecast uses massless neutrinos, linear bias, zero magnification,
-photo-z shifts and shear calibration. Gaussian IA/non-Limber choices are
-explicit; SSC/cNG keep their original zero-IA Limber model. CMB and cluster
-fields need separate models; increasing the galaxy-bin count is insufficient.
+The forecast uses massless neutrinos and linear bias, with zero
+magnification, photo-z shifts and shear calibration. Gaussian IA and
+non-Limber choices are explicit; SSC/cNG always use the zero-IA Limber
+model. CMB and cluster fields need separate models; increasing the
+galaxy-bin count is insufficient.
 """
 
 import json
@@ -24,13 +26,22 @@ from .survey import observable_rows, realspace_covariance, fourier_covariance
 def gaussian_model(gaussian, nsource):
     """Resolve Gaussian-only spectra choices before changing core state.
 
-    gaussian = optional mapping with nonlimber, ia (none/NLA/TATT), A1,
-        A2 and B_TA. Amplitudes are constants per source bin: a scalar
-        applies to all bins; an array needs one value per bin. The core
-        supplies the standard growth dependence. No redshift power law is
-        inferred from a two-element list. SSC/cNG retain zero IA and Limber.
-    nsource = number of source bins.
-    Returns a new mapping with explicit per-bin amplitude lists.
+    Arguments:
+        gaussian = optional mapping with nonlimber (bool, default True), ia
+            (none/NLA/TATT, default none), A1, A2 and B_TA (default 0).
+            Amplitudes are constants per source bin: a scalar applies to
+            all bins; an array needs one value per bin. The core supplies
+            the standard growth dependence. No redshift power law is
+            inferred from a two-element list. SSC/cNG retain zero IA and
+            Limber.
+        nsource = number of source bins.
+    Returns:
+        A new mapping with nonlimber, ia and explicit per-bin amplitude
+        lists A1, A2 and B_TA. The supplied mapping is not modified.
+    Raises:
+        ValueError for an unknown key, a non-boolean nonlimber, another IA
+        model, nonfinite amplitudes or a wrong amplitude count, nonzero
+        amplitudes with ia=none, or nonzero A2/B_TA with NLA.
     """
     choices = {} if gaussian is None else dict(gaussian)
     allowed = {"nonlimber", "ia", "A1", "A2", "B_TA"}
@@ -59,9 +70,20 @@ def gaussian_model(gaussian, nsource):
 
 
 def set_gaussian_model(interface, settings):
-    """Install explicitly resolved per-bin IA for the Gaussian calculation."""
+    """Install explicitly resolved per-bin IA for the Gaussian calculation.
+
+    Arguments:
+        interface = compiled project interface.
+        settings = mapping with source_density_arcmin2 (one entry per
+            source bin) and an optional gaussian mapping (see
+            gaussian_model).
+    Side effects:
+        Replaces the interface's IA model and amplitudes: TATT when
+        requested, otherwise NLA, with constant per-bin amplitudes
+        (ia_redshift_evolution=2); ia=none installs zero amplitudes.
+    """
     nsource = len(settings["source_density_arcmin2"])
-    # Legacy low-level settings retain their original zero-IA state.
+    # Settings without a gaussian entry select zero IA and Limber spectra.
     requested = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
     model = gaussian_model(gaussian=requested, nsource=nsource)
     interface.init_IA(
@@ -79,9 +101,14 @@ def initialize_forecast(interface, settings, project):
             generation enabled at build time.
         settings = resolved project mapping. cosmology supplies CAMB inputs;
             lens_file/source_file are paths relative to project;
-            lens_density_arcmin2/source_density_arcmin2 specify bin counts;
+            lens_density_arcmin2/source_density_arcmin2 give one density
+            per bin, in objects per arcmin^2; sigma_e_component gives one
+            per-component shape dispersion per source bin;
             bias contains one linear bias per lens bin; photoz_interpolation
             and photoz_zmid select the project's redshift-file convention.
+            power_refinement, core_accuracyboost and integration_accuracy
+            set the power tables and core accuracy; gaussian is the
+            optional Gaussian IA model (see gaussian_model).
             lens_photoz_stretch, when present, supplies the per-bin width
             factors required by the DESxPlanck and DES cluster setters.
         project = project directory, a Path or string.
@@ -92,6 +119,12 @@ def initialize_forecast(interface, settings, project):
     Side effects:
         Replaces the interface's cosmology and galaxy/source nuisance state.
         No likelihood data, mask or covariance is read or overwritten.
+    Raises:
+        RuntimeError when the build lacks covariance support;
+        FileNotFoundError for a missing redshift file; ValueError for
+        missing bins, a bias count that differs from the lens count,
+        nonzero mnu, or invalid densities or dispersions. These checks run
+        before the interface state changes.
     """
     if not getattr(interface, "has_covariance", False):
         raise RuntimeError(
@@ -114,8 +147,10 @@ def initialize_forecast(interface, settings, project):
     if cosmology["mnu"] != 0.0:
         raise ValueError("the full halo forecast currently requires mnu=0")
 
-    # These catalog powers are also validated before changing C state.
-    # n(z) fixes each bin's radial shape, not its number of observed objects.
+    # Validate the catalog densities and dispersions before changing C
+    # state; compute_forecast recomputes these powers, so the result is
+    # discarded here. n(z) fixes each bin's radial shape, not its number
+    # of observed objects.
     noise_powers(
         lens_density=settings["lens_density_arcmin2"],
         source_density=settings["source_density_arcmin2"],
@@ -199,20 +234,28 @@ def compute_forecast(interface, settings, space="real", rows=None,
         progress = optional callable taking (stage, elapsed_seconds).
     Returns:
         Dict with G/SSC/cNG/total, mean signals and diagnostic arrays from
-        the survey assembler, plus coordinate (arcminutes or multipoles),
-        coordinate_label and the fully resolved integration settings.
-        No files are written and no eigenvalues are repaired.
+        the survey assembler, plus coordinate (geometric bin or band
+        centers, in arcminutes or multipoles), coordinate_label and the
+        fully resolved integration settings. No files are written and no
+        eigenvalues are repaired.
+    Side effects:
+        Reapplies the core accuracy boost and the Gaussian IA model to
+        interface before the calculation.
     """
     if space not in ("real", "fourier"):
         raise ValueError("space must be 'real' or 'fourier'")
-    # Apply internal reader resolution on every calculation. The caller
+    # Reapply the core accuracy boost (the resolution of the C table
+    # readers) and the Gaussian IA model on every calculation. The caller
     # must reinitialize when changing power_refinement; those input tables
-    # are prepared before this assembly step. Quadrature stays independent.
+    # are prepared before this assembly step. Covariance quadrature does
+    # not follow the core boost.
     interface.init_accuracy_boost(
         accuracy_boost=settings["core_accuracyboost"],
         integration_accuracy=settings["integration_accuracy"],
     )
     set_gaussian_model(interface=interface, settings=settings)
+    # The production bindings belong to the same compiled module, so they
+    # read the core state configured above.
     if backend is not None:
         interface = backend
     nlens = len(settings["lens_density_arcmin2"])
@@ -222,6 +265,8 @@ def compute_forecast(interface, settings, space="real", rows=None,
             nlens=nlens, nsource=nsource,
             excluded_gammat=settings["excluded_gammat"],
         )
+        # One E-mode spectrum supplies both shear correlations in Fourier
+        # space, so the xi- rows (probe 1) are dropped.
         if space == "fourier":
             rows = rows[rows[:, 0] != 1]
     rows = np.asarray(rows)
@@ -261,7 +306,18 @@ def compute_forecast(interface, settings, space="real", rows=None,
 
 
 def _json_array(value):
-    """Represent numerical settings in JSON without losing their resolved values."""
+    """Represent numerical settings in JSON without losing their resolved values.
+
+    json.dumps calls this function for each value it cannot encode itself.
+
+    Arguments:
+        value = the value json.dumps could not encode.
+    Returns:
+        A list for a numpy array, or the Python scalar of a numpy scalar.
+    Raises:
+        TypeError for any other type, so no setting is written in a
+        silently changed form.
+    """
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, np.generic):
@@ -274,7 +330,8 @@ def save_forecast(result, filename):
 
     Arguments:
         result = dict returned by compute_forecast.
-        filename = output .npz path, outside the likelihood's data directory.
+        filename = output .npz path, outside the likelihood's data directory;
+            numpy.savez appends .npz when the name lacks it.
     Returns:
         Nothing. Replaces the named output if it already exists.
         Arrays load with numpy.load(..., allow_pickle=False). settings_json
@@ -282,9 +339,9 @@ def save_forecast(result, filename):
         Archive CAMB input tables separately when exact input reuse is needed.
     """
     settings = json.dumps(result["settings"], default=_json_array, allow_nan=False)
-    # Before Gaussian-only model choices, both means were the same. Keep
-    # older notebook results saveable while recording the separate SSC mean
-    # whenever the Gaussian spectrum now contains non-Limber or IA terms.
+    # compute_forecast always returns the zero-IA Limber mean used by SSC.
+    # A result without it is saved with its Gaussian signal in that slot,
+    # which equals the SSC mean only for zero-IA Limber Gaussian spectra.
     ssc_signal = result.get("ssc_normalization_signal", result["signal"])
     np.savez(
         file=filename,
