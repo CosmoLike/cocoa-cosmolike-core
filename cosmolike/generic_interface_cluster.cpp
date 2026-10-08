@@ -1742,10 +1742,15 @@ void IPCluster::set_inv_cov(std::string cov_filename)
 
   // --- 4. CHECK AND INVERT THE SQUEEZED MATRIX ---
 
-  // Pin OpenBLAS itself before any matrix check or factorization. This
-  // stays at one after initialization; only explicit CosmoLike OpenMP
-  // loops use multiple threads.
+  // Ask OpenBLAS for one thread, then hold the dense algebra itself on
+  // one thread with the scope guard: a pthreads OpenBLAS keeps the
+  // limit, but the OpenMP build resizes its team from
+  // omp_get_max_threads() at every call outside a parallel region, and
+  // its threaded factorization has produced a wrong inverse in the
+  // sibling IP::set_inv_cov (caught by the residual test). The scope
+  // runs through the solve, the residual check and the rescale below.
   set_blas_single_threaded();
+  [[maybe_unused]] const ScopedSerialAlgebra serial_algebra;
 
   for (int a=0; a<this->ndata_sqzd_; a++) {
     if (!(this->cov_masked_sqzd_(a,a) > 0.0)) [[unlikely]] {

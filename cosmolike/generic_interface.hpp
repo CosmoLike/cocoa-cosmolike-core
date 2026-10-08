@@ -24,6 +24,9 @@ using namespace std::literals; // enables "sv" literal
 // ARMADILLO LIB AND PYBIND WRAPPER (CARMA)
 #include <carma.h>
 #include <armadillo>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // cosmolike
 #include "cosmolike/basics.h"
@@ -49,6 +52,38 @@ using namespace std::literals; // enables "sv" literal
 
 namespace cosmolike_interface
 {
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Struct ScopedSerialAlgebra
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Run one scope's dense Armadillo algebra on a single OpenMP thread.
+//
+// set_blas_single_threaded caps a pthreads OpenBLAS once and for all,
+// but the OpenMP build (the one Cocoa's macOS environment pins) resizes
+// its team from omp_get_max_threads() on every BLAS call made outside a
+// parallel region, and its threaded factorization has produced
+// incorrect inverses that only the residual guards catch (one caught
+// instance: max |R R^-1 - I| = 1.7e-4 on a matrix the same build
+// inverts correctly on one thread). An instance of this struct caps
+// omp_get_max_threads() at one for its scope and restores the entering
+// team when the scope ends, so CosmoLike's own parallel loops after it
+// keep their requested width. Declare one right before a factorization,
+// inversion or decomposition, in a scope that closes before the next
+// omp parallel region.
+// ---------------------------------------------------------------------------
+struct ScopedSerialAlgebra
+{
+#ifdef _OPENMP
+  const int team = omp_get_max_threads();
+  ScopedSerialAlgebra() { omp_set_num_threads(1); }
+  ~ScopedSerialAlgebra() { omp_set_num_threads(team); }
+#endif
+  // without OpenMP the struct is empty and the guard is a no-op
+};
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
@@ -701,7 +736,9 @@ void initial_setup();
 // Ask the linked OpenBLAS for one thread. Explicit CosmoLike OpenMP
 // loops own parallelism; this setting is not restored after inversion.
 // A pthreads OpenBLAS keeps the limit; an OpenMP OpenBLAS resizes its
-// team from omp_get_max_threads() at its next call (generic_interface.cpp).
+// team from omp_get_max_threads() at its next call (generic_interface.cpp),
+// which is why the dense-algebra call sites also hold a
+// ScopedSerialAlgebra guard for the factorizations themselves.
 // Has no effect when the linked BLAS does not export the OpenBLAS API.
 void set_blas_single_threaded();
 
@@ -1546,9 +1583,18 @@ arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
   const int nscenarios = bs.nscenarios();
 
   // Compute Cholesky Decomposition of the Covariance Matrix --------------
+  // The factorization runs on one thread (ScopedSerialAlgebra: the
+  // OpenMP OpenBLAS resizes its team on every call outside a parallel
+  // region, and threaded factorizations have produced wrong results);
+  // the scope closes before the scenario loop below, whose data-vector
+  // evaluations keep the full CosmoLike team.
   debug("{}: Cholesky Decomposition of the cov Matrix begins", fname);
-  matrix L = arma::chol(ip.get_cov_masked_sqzd(), "lower");
-  matrix inv_L = arma::inv(L);
+  matrix L, inv_L;
+  {
+    [[maybe_unused]] const ScopedSerialAlgebra serial_algebra;
+    L = arma::chol(ip.get_cov_masked_sqzd(), "lower");
+    inv_L = arma::inv(L);
+  }
   debug("{}: Cholesky Decomposition of the cov Matrix ends", fname);
 
   // Compute Dark Matter data vector --------------------------------------
@@ -1574,13 +1620,17 @@ arma::Mat<double> compute_baryon_pcas_Mx2pt_N(arma::Col<int>::fixed<M> ord)
   reset_bary_struct();
   cosmology.random = RandomNumber::get_instance().get();  // clear cosmolike cache
 
-  // weight the diff matrix by inv_L; then SVD ----------------------------  
-  matrix U, V;
+  // weight the diff matrix by inv_L; then SVD ----------------------------
+  // one thread again for the decomposition and the dense products
+  matrix U, V, PC;
   vector s;
-  arma::svd(U, s, V, inv_L * D);
+  {
+    [[maybe_unused]] const ScopedSerialAlgebra serial_algebra;
+    arma::svd(U, s, V, inv_L * D);
 
-  // compute PCs ----------------------------------------------------------
-  matrix PC = L * U; 
+    // compute PCs --------------------------------------------------------
+    PC = L * U;
+  }
 
   // Expand the number of dims --------------------------------------------
   matrix R = matrix(ndata, nscenarios); 

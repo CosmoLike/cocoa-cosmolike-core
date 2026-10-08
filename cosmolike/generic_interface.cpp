@@ -70,7 +70,10 @@ namespace cosmolike_interface
 //     OpenBLAS was loaded (num_cpu_avail in OpenBLAS's common_thread.h).
 //     After set_omp_threads(n) the next BLAS call therefore sizes its
 //     team to min(n, load-time value): BLAS stays serial only when
-//     OMP_NUM_THREADS was 1 at load (the Cocoa default).
+//     OMP_NUM_THREADS was 1 at load (the Cocoa default). The dense
+//     algebra call sites therefore also hold a ScopedSerialAlgebra
+//     guard (generic_interface.hpp), which caps omp_get_max_threads()
+//     at one for the factorization scope and restores the team after.
 // dlsym finds the function in the loaded libraries without requiring an
 // OpenBLAS-specific link symbol when another BLAS backend is used.
 //
@@ -4284,12 +4287,17 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
-  // Ask OpenBLAS for one thread before the matrix algebra (a pthreads
-  // build keeps it; an OpenMP build follows omp_get_max_threads() at its
-  // next call, see set_blas_single_threaded). Subsequent explicit OpenMP
-  // loops keep their own requested team size. Do not restore a larger
-  // BLAS team.
+  // Ask OpenBLAS for one thread (a pthreads build keeps it; an OpenMP
+  // build follows omp_get_max_threads() at its next call, see
+  // set_blas_single_threaded), then hold the dense algebra itself on one
+  // thread with the scope guard: the OpenMP build's threaded
+  // factorization has produced a wrong inverse here, caught by the
+  // residual test below at max |R R^-1 - I| = 1.7e-4 on a matrix the
+  // same build inverts correctly serially. The scope closes before the
+  // masking loops, which keep their own requested team size.
   set_blas_single_threaded();
+  {
+  [[maybe_unused]] const ScopedSerialAlgebra serial_algebra;
   vector eigvals = arma::eig_sym(this->cov_masked_);
   for(int i=0; i<this->ndata_; i++) {
     if(eigvals(i) < 0) [[unlikely]] {
@@ -4313,6 +4321,7 @@ void IP::set_inv_cov(std::string cov_filename)
     critical("{}: the inverse of the masked correlation matrix is wrong "
       "(max |R R^-1 - I| = {})", fname, residual);
     exit(1);
+  }
   }
 
   // apply mask again to make sure numerical errors in matrix inversion don't 
@@ -4542,6 +4551,10 @@ void ima::RealData::set_PMmarg(std::string U_PMmarg_file)
   };
   // Calculate precision matrix correction
   // invC * U * (I+UT*invC*U)^-1 * UT * invC
+  // one thread for the dense products, the inversion and the eigenvalue
+  // checks (ScopedSerialAlgebra: the OpenMP OpenBLAS hazard of
+  // IP::set_inv_cov); the scope runs to the end of this function
+  [[maybe_unused]] const cosmolike_interface::ScopedSerialAlgebra serial_algebra;
   arma::Mat<double> iden = arma::eye<arma::Mat<double>>(tomo.clustering_Nbin, tomo.clustering_Nbin);
   arma::Mat<double> central_block = iden + U.t() * this->inv_cov_masked_ * U;
   // test positive-definite
