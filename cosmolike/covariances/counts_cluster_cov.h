@@ -6,7 +6,12 @@ extern "C" {
 #endif
 
 // Convert selected comoving abundances into counts per radial distance.
-// density and density_response already include the redshift selection.
+// For observed bin i and radial node j, with shell volume per unit
+// distance Omega_s f_K^2 (area_sr times distance[j] squared):
+//   shell[i][j]    = S_i   = dN_i/dchi = Omega_s f_K^2 n_i,
+//   response[i][j] = Phi_i = Omega_s f_K^2 B_i, the SSC count response,
+// where n_i = density[i][j] and B_i = density_response[i][j] =
+// dn_i/d(delta_b). Both already include the redshift selection.
 // They have units L^-3; distance uses L; both outputs have units L^-1.
 // No dchi integration weight or catalog-mean normalization is included.
 // The output rows are caller-owned and disjoint from all input rows.
