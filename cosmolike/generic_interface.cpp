@@ -50,16 +50,27 @@ namespace cosmolike_interface
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Keep BLAS matrix operations serial while CosmoLike's explicit OpenMP
-// loops use the requested number of workers.
+// Ask the linked OpenBLAS to run BLAS matrix operations on one thread
+// while CosmoLike's explicit OpenMP loops use the requested number of
+// workers.
 //
 // Armadillo sends matrix products, eigenvalue calculations and inversions
 // to BLAS/LAPACK. OpenBLAS can start its own workers there, independently
-// of our parallel loops. Besides oversubscribing the machine, its threaded
-// factorization has produced incorrect cluster covariance inverses.
+// of CosmoLike's parallel loops. Besides oversubscribing the machine, its
+// threaded factorization has produced incorrect cluster covariance
+// inverses.
 //
 // Set the OpenBLAS limit directly: an OpenMP build of OpenBLAS need not
-// obey OPENBLAS_NUM_THREADS. The setting stays at one after this call.
+// obey OPENBLAS_NUM_THREADS. How long the limit lasts depends on the
+// build:
+//   pthreads build - it stays at one until changed again.
+//   OpenMP build   - (pinned by Cocoa's macOS conda environment) every
+//     BLAS call outside a parallel region resizes the team to
+//     omp_get_max_threads(), capped at the value that function had when
+//     OpenBLAS was loaded (num_cpu_avail in OpenBLAS's common_thread.h).
+//     After set_omp_threads(n) the next BLAS call therefore sizes its
+//     team to min(n, load-time value): BLAS stays serial only when
+//     OMP_NUM_THREADS was 1 at load (the Cocoa default).
 // dlsym finds the function in the loaded libraries without requiring an
 // OpenBLAS-specific link symbol when another BLAS backend is used.
 //
@@ -117,8 +128,9 @@ void set_blas_single_threaded()
 //     otherwise be misattributed to this parse.
 //   - end == tok.c_str() is the canonical "no digits consumed" check;
 //     this catches empty tokens, pure whitespace, and garbage like "abc".
-//   - Tokens like "nan" parse successfully and are not finite, so they are
-//     rejected here -- the right outcome for table data.
+//   - Tokens like "nan" and "inf" parse without a range error, so they
+//     come back as NaN or +/-inf rather than being rejected; a caller
+//     that must exclude them needs its own isfinite check.
 //
 // Error behavior: throws std::runtime_error when the token contains no
 // numeric prefix (strtod consumes zero characters) or on overflow
@@ -158,7 +170,9 @@ double parse_double_or_throw(const std::string& tok) {
 // Validation / error behavior: critical() + exit(1) when the file cannot be
 // opened, is empty, or a row disagrees with the first-row column count;
 // parse_double_or_throw throws std::runtime_error on unparsable or
-// overflowing tokens (underflow to subnormal/zero is accepted).
+// overflowing tokens (underflow to subnormal/zero is accepted). Only a
+// first-row error reaches the caller as an exception: later rows parse
+// inside the OpenMP loop, where an uncaught throw terminates the process.
 //
 // Parameters:
 //   file_name - path of the ASCII table
@@ -286,12 +300,13 @@ arma::Mat<double> read_table(const std::string file_name)
 //
 // Stages: trim and lowercase; restore the canonical family spelling
 // (owls_AGN, BAHAMAS, HzAGN, TNG) and translate the legacy temperature
-// suffixes (_t80/_t85/_t87, _t78/_t76) into numeric tags; split at the last
-// "-" into name and integer tag; a label without "-" gets tag = 1.
+// suffixes into numeric tags (owls_AGN: _t80/_t85/_t87 -> 1/2/3;
+// BAHAMAS: _t78/_t76/_t80 -> 1/2/3); split at the last "-" into name and
+// integer tag; a label without "-" gets tag = 1.
 //
 // Validation: more than one "-" is rejected with critical() + exit(1)
-// (the two-dash range syntax is expanded earlier, in
-// BaryonScenario::set_scenarios).
+// (the two-dash range syntax is expanded earlier, by the two-argument
+// BaryonScenario::set_scenarios only).
 //
 // Parameters:
 //   sim - scenario label from python, case-insensitive (e.g. "owls_agn_t80")
@@ -377,8 +392,8 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 //                                              -> consumer
 //   probe            -> init_probes            -> like.probe[PROBE_SS]..kk
 //                       -> gates every Mx2pt block (the hpp templates)
-//   n_theta, theta_* -> init_binning_real_space-> Ntable.Ntheta/vtmin/
-//                       vtmax -> real-space kernels (cosmo2D.c)
+//   n_theta, theta_* -> init_binning_real_space-> Ntable.Ntheta/vt[]
+//                       -> real-space kernels (cosmo2D.c)
 //   accuracyboost    -> init_accuracy_boost    -> Ntable.N_a/N_ell/...
 //                       -> every interpolation-table resolution
 //   lmax             -> init_ntable_lmax       -> Ntable.LMAX
@@ -392,12 +407,15 @@ std::tuple<std::string,int> get_baryon_sim_name_and_tag(std::string sim)
 // ---------------------------------------------------------------------------
 // Reset every Cosmolike global struct to a defined startup state.
 //
-// Zeroes the probe flags (like.probe[PROBE_SS]/shear_pos/pos_pos, gk/kk/ks),
-// the Fourier binning (like.Ncl/lmin/lmax) and the cluster flags, then runs
-// the reset_*_struct family (redshift, nuisance, cosmology, tomo, Ntable,
-// like, cmb). Afterwards sets the defaults like.adopt_limber[LIMBER_GG] = 0,
-// like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit", and loads
-// the spdlog verbosity from the environment (SPDLOG_LEVEL).
+// First asks OpenBLAS for one thread (set_blas_single_threaded) and loads
+// the spdlog verbosity from the environment (SPDLOG_LEVEL). Then zeroes
+// every like.probe[] slot (ss, gs, gg, gk, kk, ks and the tSZ slots) and
+// the Fourier binning (like.Ncl, like.lrange), runs the reset_*_struct
+// family (redshift, nuisance, cosmology, tomo, Ntable, like, cmb), and
+// sets the defaults like.adopt_limber[LIMBER_GG] = 0,
+// like.adopt_limber[LIMBER_GS] = 1 and pdeltaparams.runmode = "Halofit".
+// The cluster probe flags (cluster.probe[]) are reset by reset_cluster
+// (generic_interface_cluster.cpp), not here.
 //
 // Runs once, before any other init_/set_ call, so later writes land on a
 // defined state.
@@ -558,13 +576,14 @@ void init_ntable_dcx_dlnk_nlnk_internal(const int nlnk_internal) {
 }
 
 // ---------------------------------------------------------------------------
-// Set the internal coarse mass grid of the sigma^2(M) halo-model table.
+// Set Ntable.N_M[NODES_COARSE], the coarse mass-grid knob of the
+// sigma^2(M) halo-model table (0 = exact on every dense node).
 //
-// sigma^2(M)'s cached table keeps Ntable.N_M[NODES_DENSE] nodes in ln M; when this
-// knob is active the exact lobe-summed quadratures run on the coarse
-// nodes only and the house cubic spline upsamples ln sigma^2 onto the
-// unchanged dense table (ln sigma^2 is smooth and monotone in ln M).
-// 0 disables the trick: the A/B switch for validation.
+// No code reads this value: sigma2_fields_build (cosmo3D.c) computes
+// sigma^2(M, a) by FFTLog and tabulates it at the ln M spacing set by
+// Ntable.N_M[NODES_DENSE], so the setting changes no table value (the
+// Ntable.random bump below still forces a rebuild). The setter only
+// validates and stores it.
 //
 // init_accuracy_boost (the catch-all) also scales this knob from its
 // first-boost-call baseline; calling this setter afterwards
@@ -761,7 +780,7 @@ static double nl_accuracy_boost = 1.0;
 // Why a separate knob: the non-Limber C_l (C_gs_tomo, C_cl_tomo and their
 // Fourier-space versions) sample the radial kernels on a log chi grid over
 // z = 0.002 - 4, and narrow lens bins need a finer grid than the rest of
-// cosmolike needs tables. Measured on 2026-10-01 at the 3x2pt fiducial with
+// cosmolike needs tables. Measured at the 3x2pt fiducial with
 // non-Limber gg: roman_kl (10 narrow bins) moves by delta^T C^-1 delta =
 // 8.4, 0.09, 1e-5 from NL_Nchi 512 to 1024, 2048, 4096, while roman_fourier,
 // roman_real and lsst_y1 move by <= 1e-4 already from 512 to 1024. Raising
@@ -840,10 +859,9 @@ void init_adopt_limber_gs(const int adopt_limber_gs)
 // ---------------------------------------------------------------------------
 // Choose the galaxy clustering C_l^gg computation, writing
 // like.adopt_limber[LIMBER_GG]: 0 = the non-Limber C_cl_tomo below
-// limits.LMAX_NOLIMBER (the default of the real-space projects), in
+// limits.LMAX_NOLIMBER (the default here and in every likelihood), in
 // w(theta) (w_gg_tomo) and in the Fourier-space data vectors
-// (C_gg_tomo_ells); 1 = Limber at every multipole (the default of the
-// Fourier-space projects, set in their likelihood yamls). Likelihood yaml
+// (C_gg_tomo_ells); 1 = Limber at every multipole. Likelihood yaml
 // key: adopt_limber_gg. Example: adopt_limber_gg: 1 in combo_3x2pt.yaml of
 // lsst_y1 -> the likelihood calls init_adopt_limber_gg(1) and the next
 // data vector uses Limber w(theta). No cache key is bumped here: w_gg_tomo
@@ -873,13 +891,14 @@ void init_adopt_limber_gg(const int adopt_limber_gg)
 // ---------------------------------------------------------------------------
 // Switch the galaxy probes to the halo-model (HOD) galaxy power,
 // writing cosmo2D.c's include_HOD_GX through set_include_HOD_GX: 0 =
-// the perturbative galaxy bias model (the default), 1 = C_l^gg from
-// p_gg/p_gm of halo.c (HOD occupations set per lens bin with
-// set_nuisance_hod). HOD C_l^gg is Limber-only, so 1 requires
-// adopt_limber_gg = 1; the batched engine aborts otherwise. Likelihood
-// yaml key: include_HOD_GX. A flip redraws nuisance.random_galaxy_bias,
-// the tag every galaxy-bias consumer (C_gg, C_gs, w, gamma_t) keys on,
-// so it takes effect on the next data vector.
+// the perturbative galaxy bias model (the default), 1 = C_l^gg and
+// C_l^gs from p_gg/p_gm of halo.c (HOD occupations set per lens bin with
+// set_nuisance_hod). HOD C_l^gg and C_l^gs are Limber-only, so 1
+// requires adopt_limber_gg = 1 and adopt_limber_gs = 1; the batched
+// engines abort otherwise. Likelihood yaml key: include_HOD_GX. A flip
+// redraws nuisance.random_galaxy_bias, the tag every galaxy-bias
+// consumer (C_gg, C_gs, w, gamma_t) keys on, so it takes effect on the
+// next data vector.
 //
 // Validation: the value must be 0 or 1, else critical() + exit(1).
 //
@@ -985,7 +1004,7 @@ void init_include_halo_IA(const int include_halo_IA)
 // so the coarse/dense ratios are boost-invariant, and a knob whose
 // baseline is 0 (disabled) stays 0 under any boost. The dedicated setters (init_ntable_ell_internal,
 // init_ntable_dcx_dlnk_nlnk_internal, init_fpt_internal_boost) remain
-// for individual overrides: called BEFORE the first boost call they
+// for individual overrides: called before the first boost call they
 // define the baseline, called after they overwrite the boosted value.
 //
 // Also writes Ntable.FPTboost (int(boost - 1) for boost > 1, else 0;
@@ -1022,7 +1041,7 @@ void init_accuracy_boost(
   // likelihoods). ceil(baseline*boost) re-phased the nodes at every
   // boost: desy1xplanck's 6x2pt chi2 (real data, far from its best fit)
   // jumped between +0.28 and -0.17 from boost 2 to 5 with no trend, for
-  // data-vector changes of delta^T C^-1 delta <= 1e-4 (2026-10-01).
+  // data-vector changes of delta^T C^-1 delta <= 1e-4.
   // Boost <= 1 (the emulator path asks for 0.35) keeps ceil(baseline*boost).
   if (0 == cache[0]) cache[0] = Ntable.N_a;
   if (accuracy_boost > 1.0) {
@@ -1306,9 +1325,10 @@ void init_binning_fourier(
 // ---------------------------------------------------------------------------
 // Define the real-space angular binning of the data vector.
 //
-// Writes Ntable.Ntheta and the angular range Ntable.vt[RANGE_MIN]/vtmax (input in
-// arcmin, stored in rad). Bin centers derive from these in
-// compute_binning_real_space and in the real-space projections (cosmo2D.c).
+// Writes Ntable.Ntheta and the angular range Ntable.vt[RANGE_MIN] to
+// Ntable.vt[RANGE_MAX] (input in arcmin, stored in rad). Bin centers
+// derive from these in compute_binning_real_space and in the real-space
+// projections (cosmo2D.c).
 //
 // Cache invalidation:
 // bumps Ntable.random when Ntheta or the range changed (fdiff), so the
@@ -1377,8 +1397,8 @@ void init_binning_real_space(
 // the IPCMB singleton (a front end to the C global struct cmb).
 //
 // Writes cmb.fwhm (input beam fwhm in arcmin, stored in rad),
-// cmb.lk_wxk[RANGE_MIN]/lmaxk_wxk, and the tabulated HealPix window
-// (cmb.healpixwin = column 1 of healpixwin_filename).
+// cmb.lk_wxk[RANGE_MIN] and cmb.lk_wxk[RANGE_MAX], and the tabulated
+// HealPix window (cmb.healpixwin = column 1 of healpixwin_filename).
 //
 // Cache invalidation:
 // bumps cmb.random so tables keyed on it rebuild.
@@ -1429,10 +1449,10 @@ void init_cmb_cross_correlation (
 // Configure the CMB lensing auto-spectrum (kk) bandpower compression
 // through the IPCMB singleton.
 //
-// Writes cmb.nbp_kk/lminbp_kk/lmaxbp_kk, the nbins x (lmax - lmin + 1)
-// binning matrix, the per-band theory offsets (zeros when theory_offset is
-// an empty string) and the Hartlap alpha that IP::set_inv_cov applies to
-// the kkkk covariance block.
+// Writes cmb.nbp_kk and cmb.lbp_kk[RANGE_MIN, RANGE_MAX], the nbins x
+// (lmax - lmin + 1) binning matrix, the per-band theory offsets (zeros
+// when theory_offset is an empty string) and the Hartlap alpha that
+// IP::set_inv_cov applies to the kkkk covariance block.
 //
 // The Hartlap alpha debiases an inverse covariance estimated from a
 // finite set of simulated realizations: the unbiased estimate is
@@ -1442,7 +1462,8 @@ void init_cmb_cross_correlation (
 //
 // (Hartlap et al. 2007). The caller computes alpha; IP::set_inv_cov
 // applies it by dividing the kkkk covariance block by alpha before the
-// joint inversion, which scales that block of the inverse by alpha.
+// joint inversion, which scales that block of the inverse by exactly
+// alpha when kk has no cross-covariance with the other probes.
 //
 // Cache invalidation:
 // bumps cmb.random so tables keyed on it rebuild.
@@ -1974,7 +1995,8 @@ void init_survey(
 // bumps tomo.random_ggl so the static pair maps
 // (test_zoverlap/ZL/ZS/N_ggl in redshift_spline.c) rebuild on next use.
 //
-// Validation: NaN entries and allocation failure are critical() + exit(1).
+// Validation: an odd input length (pairs required), NaN entries and
+// allocation failure are critical() + exit(1).
 //
 // Parameters:
 //   ggl_exclude - flat (lens0, src0, lens1, src1, ...) pair list
@@ -2272,8 +2294,8 @@ void set_bias_PS(
   // bytes there happened to encode a NaN, the isnan tripwire below
   // killed the process ("NaN found on interpolation table"): a
   // nondeterministic, machine-load-dependent abort, observed in the
-  // lsst_y1 CFASTPT-vs-FASTPT sweep at OMP_NUM_THREADS 1 and 4
-  // (2026-09-22). The garbage rows also made the cache comparison
+  // lsst_y1 CFASTPT-vs-FASTPT sweep at OMP_NUM_THREADS 1 and 4.
+  // The garbage rows also made the cache comparison
   // below report a change on almost every call, so the table was
   // freed and rebuilt every evaluation. Downstream code reads rows
   // 0, 2, and 5 only (GS_BIAS_SRC in cosmo2D.c).
@@ -2376,7 +2398,8 @@ void set_bias_PS(
 //
 // Parameters:
 //   io_z   - redshift grid (>= 5 points)
-//   io_chi - comoving distance at io_z (same length)
+//   io_chi - comoving distance at io_z in Mpc/h (same length); chi(a)
+//            returns it in c/H0 units (cosmo3D.c)
 //
 // Returns:
 //   void
@@ -2547,9 +2570,10 @@ void set_growth(vector io_z, vector io_G)
 // Validation: io_lnP size must equal nk * nz, else critical() + exit(1).
 //
 // Parameters:
-//   io_log10k - log10 k grid
+//   io_log10k - log10 k grid, k in h/Mpc
 //   io_z      - redshift grid
-//   io_lnP    - flattened ln P_lin, io_lnP(i*nz + j) = ln P(k_i, z_j)
+//   io_lnP    - flattened ln P_lin, io_lnP(i*nz + j) = ln P(k_i, z_j),
+//               P in (Mpc/h)^3
 //
 // Returns:
 //   void
@@ -2813,9 +2837,10 @@ void clear_linear_power_spectrum_cb()
 // Validation: io_lnP size must equal nk * nz, else critical() + exit(1).
 //
 // Parameters:
-//   io_log10k - log10 k grid
+//   io_log10k - log10 k grid, k in h/Mpc
 //   io_z      - redshift grid
-//   io_lnP    - flattened ln P_nonlin, io_lnP(i*nz + j) = ln P(k_i, z_j)
+//   io_lnP    - flattened ln P_nonlin, io_lnP(i*nz + j) = ln P(k_i, z_j),
+//               P in (Mpc/h)^3
 //
 // Returns:
 //   void
@@ -3199,10 +3224,11 @@ void set_nuisance_linear_bias(vector B1)
 // ---------------------------------------------------------------------------
 // Set the per-bin quadratic bias b2 = nuisance.gb[1][i] and derive the
 // coevolution tidal bias gb[2][i] = bs2 = -(4/7)(b1 - 1) (zero when b2 is
-// zero). Both writes happen only for bins whose b2 changed (fdiff on B2).
+// zero). Both are written for every bin whose b2 or derived bs2 changed
+// (fdiff on each), so a change of b1 alone still updates bs2.
 //
 // Cache invalidation:
-// bumps nuisance.random_galaxy_bias when any b2
+// bumps nuisance.random_galaxy_bias when any b2 or bs2
 // changed; unchanged input leaves the key alone.
 //
 // Validation: clustering_nbin set, both inputs of that size, no NaN
@@ -3241,7 +3267,7 @@ void set_nuisance_nonlinear_bias(vector B1, vector B2)
     if (std::isnan(B1(i)) || std::isnan(B2(i))) [[unlikely]] {
       critical(errnance2, fname, i, errnance); exit(1);
     }
-    // bs2 depends on BOTH inputs: recompute the candidate first, so a
+    // bs2 depends on both inputs: recompute the candidate first, so a
     // B1-only change with B2 fixed still updates the derived tidal bias
     const double bs2 = almost_equal(B2(i), 0.) ? 0 : (-4./7.)*(B1(i)-1.0);
     if (fdiff(nuisance.gb[1][i], B2(i)) || fdiff(nuisance.gb[2][i], bs2)) {
@@ -3590,19 +3616,20 @@ void set_lens_sample_size(const int Ntomo)
 //
 // When the table changed (size or any entry, fdiff): rebuilds
 // redshift.clustering_zdist_table as (Ntomo + 1) x nzbins with the z grid
-// in row Ntomo, sets clustering_zdist_zmin_all = max(z_0, 1e-5) and
-// clustering_zdist_zmax_all one grid spacing beyond the last z, and scans
-// each column for its support: entries above 0.999e-8 of the column
-// maximum, zmin = z of the first such entry, zmax = z of the last (plain
-// loops on purpose - see the inline comment). A column with no entry above
-// the threshold is critical() + exit(1).
+// in row Ntomo, sets clustering_zdist_zall[RANGE_MIN] = max(z_0, 1e-5)
+// and clustering_zdist_zall[RANGE_MAX] one grid spacing beyond the last
+// z, and scans each column for its support: entries above 0.999e-8 of
+// the column maximum, zmin = z of the first such entry, zmax = z of the
+// last (clustering_zdist_z[RANGE_MIN/RANGE_MAX][k]; plain loops on
+// purpose - see the inline comment). A column with no entry above the
+// threshold is critical() + exit(1).
 //
 // Cache invalidation:
 // bumps redshift.random_clustering first, then calls
 // nz_lens_photoz(0.1, 0) so the static interpolant rebuilds here,
-// single-threaded, and stores clustering_zdist_zmean[k], the mean of
-// bin k with no photo-z shift and no stretch (zmean_all): the fiducial
-// means zmean() returns and the photo-z stretch rescales around.
+// single-threaded, and stores clustering_zdist_z[ZDIST_MEAN][k], the
+// mean of bin k with no photo-z shift and no stretch (zmean_all): the
+// fiducial means zmean() returns and the photo-z stretch rescales around.
 //
 // Validation: redshift.clustering_nbin already set and within
 // MAX_SIZE_ARRAYS, else critical() + exit(1).
@@ -3775,18 +3802,20 @@ void set_source_sample_size(const int Ntomo)
 //
 // When the table changed (size or any entry, fdiff): rebuilds
 // redshift.shear_zdist_table as (Ntomo + 1) x nzbins with the z grid in
-// row Ntomo, sets shear_zdist_zmin_all = max(z_0, 1e-5) and
-// shear_zdist_zmax_all one grid spacing beyond the last z, and scans each
-// column for its support: entries above 0.999e-8 of the column maximum,
-// zmin = z of the first such entry (clamped to at least 1.001e-5), zmax =
-// z of the last (plain loops on purpose - see the inline comment). A
-// column with no entry above the threshold is critical() + exit(1), and so
-// is a per-bin range outside the global [zmin_all, zmax_all].
+// row Ntomo, sets shear_zdist_zall[RANGE_MIN] = max(z_0, 1e-5) and
+// shear_zdist_zall[RANGE_MAX] one grid spacing beyond the last z, and
+// scans each column for its support: entries above 0.999e-8 of the
+// column maximum, zmin = z of the first such entry (clamped to at least
+// 1.001e-5), zmax = z of the last (plain loops on purpose - see the
+// inline comment). A column with no entry above the threshold is
+// critical() + exit(1), and so is a bin-0 zmin below
+// shear_zdist_zall[RANGE_MIN] or a last-bin zmax above
+// shear_zdist_zall[RANGE_MAX].
 //
 // Cache invalidation:
-// warms the static interpolant with
-// nz_source_photoz(0.1, 0), prints zmean_source(k) at debug level, then
-// bumps redshift.random_shear.
+// bumps redshift.random_shear first, then warms the static interpolant
+// with nz_source_photoz(0.1, 0) and prints zmean_source(k) at debug
+// level, so both see the sample just installed.
 //
 // Validation: redshift.shear_nbin already set and within MAX_SIZE_ARRAYS,
 // else critical() + exit(1).
@@ -3890,7 +3919,7 @@ void set_source_sample(arma::Mat<double> input_table)
           redshift.shear_zdist_z[RANGE_MAX][Ntomo-1]);
       exit(1);
     } 
-    // bump the key BEFORE the warm-up, as set_lens_sample does: the
+    // bump the key before the warm-up, as set_lens_sample does: the
     // warm-up and the debug prints must see the sample just installed
     redshift.random_shear = RandomNumber::get_instance().get();
     nz_source_photoz(0.1, 0); // init static variables
@@ -4144,9 +4173,10 @@ void IP::set_data(std::string datavector_filename)
 // nbins_kk rows/columns) is divided by the Hartlap alpha from
 // init_cmb_auto_bandpower before inversion:
 // alpha = (N_sim - N_data - 2)/(N_sim - 1) < 1 is the Hartlap et al.
-// 2007 debias of a simulation-estimated inverse covariance, so
-// inflating the covariance block by 1/alpha here shrinks its inverse
-// by alpha after the joint inversion.
+// 2007 debias of a simulation-estimated inverse covariance. Inflating
+// the covariance block by 1/alpha shrinks the kk block of the joint
+// inverse by exactly alpha only when kk has no cross-covariance with
+// the other probes.
 //
 // Stages after assembly: eigenvalue scan (any negative eigenvalue is
 // critical() + exit(1)), arma::inv, an inverse residual check in
@@ -4254,8 +4284,11 @@ void IP::set_inv_cov(std::string cov_filename)
     }
   }
 
-  // Matrix algebra stays serial; subsequent explicit OpenMP loops keep
-  // their own requested team size. Do not restore a larger BLAS team.
+  // Ask OpenBLAS for one thread before the matrix algebra (a pthreads
+  // build keeps it; an OpenMP build follows omp_get_max_threads() at its
+  // next call, see set_blas_single_threaded). Subsequent explicit OpenMP
+  // loops keep their own requested team size. Do not restore a larger
+  // BLAS team.
   set_blas_single_threaded();
   vector eigvals = arma::eig_sym(this->cov_masked_);
   for(int i=0; i<this->ndata_; i++) {
