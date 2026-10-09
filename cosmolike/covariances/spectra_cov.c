@@ -30,6 +30,7 @@
 #include <stdlib.h>
 
 #include "spectra_cov.h"
+#include "perturbation_cov.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/bias.h"
 #include "cosmolike/cosmo3D.h"
@@ -200,17 +201,27 @@ static inline int piecewise_index(double q,
 // from the stored lnP stays: its latency hides under the next sample's
 // table loads, so removing it buys about one percent.
 //
-// The sum log10k + shift is NOT bitwise the standard reader's
-// log10(k/coverH0): a sum of separately rounded logarithms differs in the
-// last bits, so the interpolation weight dx (and, for a sample within one
-// ulp of a cell edge, the index i) can differ there too. A caller that
-// requires bitwise agreement with p_lin_at_a keeps the standard reader.
+// The z half of the bilinear read is also a call constant: one bracket j
+// and one weight dy serve every sample. Collapsing it once per call into
+// a slice, lnP_a[i] = (1-dy) lnPL[i][j] + dy lnPL[i][j+1], turns each
+// sample's read from six loads spread over two rows of the large lnPL
+// table (four lnP corners plus the two stored axis values) into four
+// loads of 32 contiguous bytes of a small array: the slice interleaves
+// each column's axis value and z-interpolated lnP, holds
+// 2 * lnPL_nk doubles (about 190 KB at the production refinement), and
+// stays cache resident across the millions of samples of one call.
 //
-// From the shifted logarithm on, the body is p_lin_at_a's wavenumber half
-// with the same clamp, the same bilinear read of the lnPL table, the same
-// exp and the same unit factor; the z bracket runs once per call, as
-// there. The linear table is stateless (no lazy first-call build), so the
-// parallel rows only read initialized memory.
+// Two deviations from p_lin_at_a's arithmetic, neither bitwise:
+// 1. the sum log10k + shift is not the single rounded log10(k/coverH0),
+//    so the weight dx (and, within one ulp of a cell edge, the index i)
+//    can differ in the last bits;
+// 2. the slice regroups the bilinear combination,
+//    (1-dx)[(1-dy) t00 + dy t01] + dx[(1-dy) t10 + dy t11] instead of
+//    the four-term sum, which rounds differently in the last bits.
+// A caller that requires bitwise agreement with p_lin_at_a keeps the
+// standard reader. The clamp, the exp and the unit factor are
+// p_lin_at_a's. The linear table is stateless (no lazy first-call
+// build), so the parallel rows only read initialized memory.
 //
 // Parameters:
 //   a      - scale factor shared by every sample
@@ -260,8 +271,24 @@ void linear_power_logk_rows_cov(
   const double zj1 = cosmology.lnPL[cosmology.lnPL_nk][j+1];
   const double dy = (z - zj) / (zj1 - zj);
 
+  // Collapse the z half once per call (the header explains the layout):
+  // slice[2i] is column i's stored log10 k axis value and slice[2i+1] its
+  // z-interpolated lnP, so one sample's bracket occupies one cache line.
+  // The slice is built serially before the team starts and freed after
+  // it ends; the workers only read it.
+  double* slice = malloc(sizeof(double) * 2 * (size_t) cosmology.lnPL_nk);
+  if (slice == NULL) {
+    log_fatal("linear_power_logk_rows_cov: cannot allocate the z slice");
+    exit(1);
+  }
+  for (int i=0; i<cosmology.lnPL_nk; i++) {
+    slice[2*i]   = cosmology.lnPL[i][cosmology.lnPL_nz];
+    slice[2*i+1] = (1.0-dy) * cosmology.lnPL[i][j]
+                 +      dy  * cosmology.lnPL[i][j+1];
+  }
+
   // One iteration fills one complete output row. A row depends on no
-  // other row and the table is read-only here, so no value depends on the
+  // other row and the slice is read-only here, so no value depends on the
   // number of workers; the static schedule gives each worker a contiguous
   // block of rows.
   #pragma omp parallel for schedule(static)
@@ -272,19 +299,155 @@ void linear_power_logk_rows_cov(
                     * cosmology.lnPL_log10k_inv_dx);
       if (i < 0)                       i = 0;
       if (i > cosmology.lnPL_nk - 2)   i = cosmology.lnPL_nk - 2;
-      const double xi  = cosmology.lnPL[i  ][cosmology.lnPL_nz];
-      const double xi1 = cosmology.lnPL[i+1][cosmology.lnPL_nz];
-      const double dx = (lg - xi) / (xi1 - xi);
-      const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnPL[i  ][j  ]
-                             + (1-dx)*   dy  * cosmology.lnPL[i  ][j+1]
-                             +    dx *(1-dy) * cosmology.lnPL[i+1][j  ]
-                             +    dx *   dy  * cosmology.lnPL[i+1][j+1];
+      // node[0], node[2]: the bracketing axis values; node[1], node[3]:
+      // their z-interpolated lnP. The 1D form of the bilinear read.
+      const double* node = slice + 2*i;
+      const double dx = (lg - node[0]) / (node[2] - node[0]);
+      const double out_lnP = (1.0-dx) * node[1]
+                           +      dx  * node[3];
       power[row][m] = exp(out_lnP)
                       / (cosmology.coverH0
                          * cosmology.coverH0
                          * cosmology.coverH0);
     }
   }
+  free(slice);
+}
+
+
+// ---------------------------------------------------------------------------
+// Tree-level averages fed by the log-domain reader, one block at a time.
+//
+// WHY THIS FUNCTION EXISTS - THE MEMORY-TRAFFIC ARGUMENT
+// The cNG angle integrals need P_lin(|K+Q|) at every (pair, angle)
+// sample: npair*nangle values, about 127 MB per radial shell at the
+// production grids (8256 pairs x 1920 angles x 8 bytes). Computed as two
+// separate stages, that table is written once by the power reader and
+// read once by tree_averages_cov, and the reader also reads the equally
+// large log-wavenumber table: three full passes over main memory per
+// shell, roughly 380 MB, repeated for more than a thousand shells.
+// tree_averages_cov itself is limited by that stream, not by arithmetic:
+// adding workers speeds it little, because every worker waits on the
+// same memory bus.
+//
+// The two stages do not need the whole table at once. Each pair's angle
+// integral uses only its own row. So this driver walks the pairs in
+// blocks: it evaluates the power for one block of rows into a small
+// buffer, hands that block straight to the kernel, and reuses the buffer
+// for the next block. A block of 128 pairs is 128 x nangle doubles,
+// about 2 MB at the production angle rule - small enough to still sit in
+// the processor's cache when the kernel reads back what the reader just
+// wrote. The buffer is "hot": its second pass costs almost nothing. The
+// only full pass over main memory that remains is the one unavoidable
+// read of the log-wavenumber table. Three passes become one, and the
+// 127 MB intermediate never exists.
+//
+// WHY THE RESULTS ARE BIT-FOR-BIT UNCHANGED
+// Nothing here computes: both stages run unmodified.
+//
+// 1. The power values are produced by the same linear_power_logk_rows_cov
+//    call as before, just for count rows at a time instead of npair. That
+//    function treats every row independently, so splitting the rows into
+//    calls cannot change any value. (Its small z slice is rebuilt per
+//    block - about 12,000 multiply-adds against ten million per block -
+//    and is identical every time, because it depends only on a.)
+//
+// 2. tree_averages_cov is lane safe under any split of the pair list,
+//    because of how its SIMD lanes work. A v2d register holds two
+//    doubles, called lanes 0 and 1, and the kernel gives each lane one
+//    COMPLETE (K,Q) pair: at every angle node it broadcasts the shared
+//    node values to both lanes (set1_pd), packs the two pairs' own
+//    values side by side (set_pd), and updates two separate running
+//    sums with one fused multiply-add,
+//
+//        lane 0:  sum_A = fma(P_A(node) * weight(node), G_A, sum_A)
+//        lane 1:  sum_B = fma(P_B(node) * weight(node), G_B, sum_B)
+//
+//    No instruction ever adds lane 0 to lane 1, so a pair's angle sum
+//    depends only on its own row - never on which pair happens to ride
+//    in the neighboring lane. Worked example with six pairs, 0..5:
+//
+//        one whole call:        registers carry (0,1) (2,3) (4,5)
+//        blocks of four:        call A carries (0,1) (2,3)
+//                               call B carries (4,5)
+//        blocks of three (odd): call A carries (0,1) (2,2*)
+//                               call B carries (3,4) (5,5*)
+//
+//    The starred lane duplicates the block's last pair so the register
+//    reads stay valid; the kernel computes it and throws it away. In
+//    all three layouts pair 2's sum adds the same numbers in the same
+//    order, so every layout returns identical doubles. The EVEN block
+//    size below is therefore not a correctness requirement but an
+//    efficiency one: with an odd size every block would pay one wasted
+//    duplicate lane, with an even size only an odd npair's final block
+//    can.
+//
+// The kernel also keeps its charter: tree_averages_cov still reads no
+// core table and allocates nothing; every table read stays in this file.
+//
+// Parameters (shapes as in the two functions this driver calls):
+//   npair   - number of (K,Q) pairs, at least 1
+//   nangle  - number of angular nodes, at least 1
+//   k, pk   - [2][npair] magnitudes and their linear power
+//   corner, weight - [nangle] stable 1+cos(theta) and dtheta/pi weights
+//   a       - scale factor of the shell
+//   log10s  - [npair][nangle] base-10 logs of the internal momenta
+//             before the shift (the run-constant magnitude table)
+//   shift   - common addend, -log10(f_K) for this shell
+//   average - [3][npair] caller-owned output rows: AvgP, AvgB, AvgT
+//
+// The block buffer is allocated once per call, outside both stages'
+// OpenMP regions, and freed before returning. Call serially; the two
+// stages parallelize themselves inside each block.
+// ---------------------------------------------------------------------------
+void tree_averages_logk_cov(
+    const int npair,                 // number of K,Q pairs
+    const int nangle,                // number of angular nodes
+    const double* const* k,         // [2][npair] positive K and Q
+    const double* const* pk,        // [2][npair] matching linear power
+    const double* corner,           // stable 1+cos(theta)
+    const double* weight,           // normalized dtheta/pi weights
+    const double a,                  // scale factor of the shell
+    const double* const* log10s,    // base-10 logs before the shift
+    const double shift,              // common addend to every sample
+    double* const* average           // three output averages
+  )
+{
+  if (npair < 1
+      || nangle < 1) {
+    log_fatal("tree_averages_logk_cov needs positive pair and angle counts");
+    exit(1);
+  }
+
+  // 128 pairs x nangle doubles is about 2 MB at the production angle
+  // rule: large enough to occupy the OpenMP team in both stages, small
+  // enough to stay cache resident between them. EVEN, so only an odd
+  // npair's final block pays the kernel's duplicated tail lane (the
+  // header's worked example shows the lanes; results are identical for
+  // any block size).
+  const int pair_block = 128;
+  double** ps_block = (double**) malloc2d(pair_block, nangle);
+
+  for (int start=0; start<npair; start+=pair_block) {
+    const int count = npair-start < pair_block ? npair-start : pair_block;
+
+    // Stage 1: the log-domain reader fills this block's power rows.
+    // log10s+start passes the block's row pointers; values and rounding
+    // are those of a whole-table call, row for row.
+    linear_power_logk_rows_cov(a, count, nangle, log10s+start, shift,
+                               ps_block);
+
+    // Stage 2: the unmodified kernel consumes the block while it is
+    // still cache resident. Column views select the block's pairs; the
+    // angle rule is the full one, revalidated by the kernel per block.
+    const double* k_block[2] = {k[0]+start, k[1]+start};
+    const double* pk_block[2] = {pk[0]+start, pk[1]+start};
+    double* average_block[3] = {average[0]+start, average[1]+start,
+                                average[2]+start};
+    tree_averages_cov(count, nangle, k_block, pk_block, corner, weight,
+                      (const double* const*) ps_block, average_block);
+  }
+  free(ps_block);
 }
 
 

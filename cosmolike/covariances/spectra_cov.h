@@ -64,8 +64,10 @@ void power_rows_cov(
 // wavenumbers are shared by every radial shell up to the per-shell shift
 // -log10(f_K); taking the logarithms once removes the per-sample log10
 // from the standard reader's critical path (it computes the table index,
-// so every load waits on it). The shifted sum is not bitwise log10(k):
-// last-bit differences against power_rows_cov with linear=1 are expected.
+// so every load waits on it), and the call-constant z half of the
+// bilinear read collapses into a small per-call slice. Neither is
+// bitwise the standard reader: the shifted sum and the regrouped
+// bilinear differ from power_rows_cov with linear=1 in the last bits.
 // Shapes, units, ownership and the OpenMP contract match power_rows_cov.
 void linear_power_logk_rows_cov(
     const double a,                  // shared scale factor
@@ -74,6 +76,26 @@ void linear_power_logk_rows_cov(
     const double* const* log10k,     // base-10 logs before the shift
     const double shift,              // common addend to every sample
     double* const* power            // caller-owned output rows
+  );
+
+// tree_averages_cov fed by linear_power_logk_rows_cov one even block of
+// pairs at a time, so the npair x nangle power table never exists in
+// full: its 127 MB write and re-read per shell become one cache-resident
+// 2 MB buffer, and only the log-wavenumber table streams from memory.
+// Results are bit-for-bit those of the two separate stages (the .c
+// header gives the argument). Shapes follow the two stages; log10s is
+// [npair][nangle] and shift is -log10(f_K). Call serially.
+void tree_averages_logk_cov(
+    const int npair,                 // number of K,Q pairs
+    const int nangle,                // number of angular nodes
+    const double* const* k,         // [2][npair] positive K and Q
+    const double* const* pk,        // [2][npair] matching linear power
+    const double* corner,           // stable 1+cos(theta)
+    const double* weight,           // normalized dtheta/pi weights
+    const double a,                  // scale factor of the shell
+    const double* const* log10s,    // base-10 logs before the shift
+    const double shift,              // common addend to every sample
+    double* const* average           // three output averages
   );
 
 // Evaluate every field pair on one common radial rule. This is a Limber

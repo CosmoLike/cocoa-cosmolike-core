@@ -1,6 +1,12 @@
 #include <cmath>
-#include <stdexcept>
 #include <vector>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <pybind11/numpy.h>
 #include "production_interface_cov.hpp"
@@ -82,14 +88,16 @@ static matrix_array_cov gaussian_matrix_cpp(
       || rows.ndim() != 2
       || rows.shape(0) < 1
       || rows.shape(1) != (realspace ? 3 : 2)) {
-    throw std::invalid_argument(
-        "need spectra[ell,field,field], noise[field] and observable rows");
+    critical("{}: need spectra[ell,field,field], "
+      "noise[field] and observable rows", "gaussian_matrix_cpp");
+    exit(1);
   }
   if (ell_min < 0
       || !std::isfinite(area_sr)
       || area_sr <= 0.0
       || area_sr > 4.0*M_PI) {
-    throw std::invalid_argument("need ell_min>=0 and 0<area_sr<=4*pi");
+    critical("{}: need ell_min>=0 and 0<area_sr<=4*pi", "gaussian_matrix_cpp");
+    exit(1);
   }
   if (realspace) {
     if (operators.ndim() != 3
@@ -99,13 +107,16 @@ static matrix_array_cov gaussian_matrix_cpp(
         || pair_area.ndim() != 1
         || pair_area.size() != operators.shape(1)
         || ell_min < 2) {
-      throw std::invalid_argument(
-          "real-space needs operators[4,bin,ell], pair_area[bin], ell_min>=2");
+      critical("{}: real-space needs operators[4,bin,ell], "
+        "pair_area[bin], ell_min>=2", "gaussian_matrix_cpp");
+      exit(1);
     }
   } else if (operators.ndim() != 2
              || operators.shape(0) < 1
              || operators.shape(1) != spectra.shape(0)) {
-    throw std::invalid_argument("Fourier operators must have shape [bin,ell]");
+    critical("{}: Fourier operators must have shape [bin,ell]",
+      "gaussian_matrix_cpp");
+    exit(1);
   }
 
   const int nell = spectra.shape(0); // shared integer-multipole count
@@ -122,13 +133,17 @@ static matrix_array_cov gaussian_matrix_cpp(
   for (const auto* array : {&spectra, &noise, &operators, &pair_area}) {
     for (py::ssize_t index=0; index<array->size(); index++) {
       if (!std::isfinite(array->data()[index])) {
-        throw std::invalid_argument("Gaussian matrix inputs must be finite");
+        critical("{}: Gaussian matrix inputs must be finite",
+          "gaussian_matrix_cpp");
+        exit(1);
       }
     }
   }
   for (int field=0; field<nfield; field++) {
     if (noise.data()[field] < 0.0) {
-      throw std::invalid_argument("white noise powers must be nonnegative");
+      critical("{}: white noise powers must be nonnegative",
+        "gaussian_matrix_cpp");
+      exit(1);
     }
   }
 
@@ -138,20 +153,26 @@ static matrix_array_cov gaussian_matrix_cpp(
     if (realspace
         && (rows.at(observable, 0) < XI_PLUS_COV
             || rows.at(observable, 0) > W_THETA_COV)) {
-      throw std::invalid_argument("real-space probe IDs must lie in 0..3");
+      critical("{}: real-space probe IDs must lie in 0..3",
+        "gaussian_matrix_cpp");
+      exit(1);
     }
     for (int leg=0; leg<2; leg++) {
       const int field = rows.at(observable, offset+leg);
       if (field < 0
           || field >= nfield) {
-        throw std::invalid_argument("observable field ID exceeds spectra");
+        critical("{}: observable field ID exceeds spectra",
+          "gaussian_matrix_cpp");
+        exit(1);
       }
     }
   }
   if (realspace) {
     for (int bin=0; bin<nbin; bin++) {
       if (pair_area.data()[bin] <= 0.0) {
-        throw std::invalid_argument("ordered-pair areas must be positive");
+        critical("{}: ordered-pair areas must be positive",
+          "gaussian_matrix_cpp");
+        exit(1);
       }
     }
   }
@@ -161,11 +182,13 @@ static matrix_array_cov gaussian_matrix_cpp(
         || b_spectra.shape(0) != nell
         || b_spectra.shape(1) != nfield
         || b_spectra.shape(2) != nfield) {
-      throw std::invalid_argument("b_spectra must match spectra");
+      critical("{}: b_spectra must match spectra", "gaussian_matrix_cpp");
+      exit(1);
     }
     for (py::ssize_t index=0; index<b_spectra.size(); index++) {
       if (!std::isfinite(b_spectra.data()[index])) {
-        throw std::invalid_argument("b_spectra must be finite");
+        critical("{}: b_spectra must be finite", "gaussian_matrix_cpp");
+        exit(1);
       }
     }
   }
@@ -287,21 +310,24 @@ static matrix_array_cov connected_matrix_cpp(
       || projected.shape(0)%4 != 0
       || projected.shape(1) != projected.shape(0)
       || projected.shape(2) != measure.size()) {
-    throw std::invalid_argument(
-        "need probes[observable], pair_window[observable,node], "
-        "projected[4*bin,4*bin,node] and measure[node]");
+    critical("{}: need probes[observable], "
+      "pair_window[observable,node], projected[4*bin,4*bin,node] and measure[node]", "connected_matrix_cpp");
+    exit(1);
   }
   for (py::ssize_t row=0; row<probes.size(); row++) {
     if (probes.data()[row] < XI_PLUS_COV
         || probes.data()[row] > W_THETA_COV) {
-      throw std::invalid_argument("connected probe IDs must lie in 0..3");
+      critical("{}: connected probe IDs must lie in 0..3",
+        "connected_matrix_cpp");
+      exit(1);
     }
   }
   for (const auto* array : {&pair_window, &projected, &measure}) {
     for (py::ssize_t index=0; index<array->size(); index++) {
       if (!std::isfinite(array->data()[index])) {
-        throw std::invalid_argument(
-            "connected projection inputs must be finite");
+        critical("{}: connected projection inputs must be finite",
+          "connected_matrix_cpp");
+        exit(1);
       }
     }
   }

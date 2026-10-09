@@ -65,6 +65,9 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
             nwindow=nwindow, include_ia=include_ia, include_rsd=include_rsd,
             linear=linear,
         )
+
+        # The first batch reveals the field count; the full-length tables
+        # [nell,nfield,nfield] are allocated once, from its shapes.
         if snapshot is None:
             nfield = block["spectra"].shape[1]
             # Copy the dictionary so replacing its spectra array does not
@@ -73,6 +76,10 @@ def limber_spectra(interface, ell, a_edges, nquad, nwindow, include_ia=False,
             snapshot["spectra"] = np.empty((len(modes), nfield, nfield))
             if block.get("b_spectra") is not None:
                 snapshot["b_spectra"] = np.empty((len(modes), nfield, nfield))
+
+        # Each batch fills rows first..last-1 (a slice end is exclusive).
+        # block.get gives None both when b_spectra is absent and when its
+        # value is None, as for NLA or disabled IA.
         snapshot["spectra"][first:last] = block["spectra"]
         if block.get("b_spectra") is not None:
             snapshot["b_spectra"][first:last] = block["b_spectra"]
@@ -96,15 +103,24 @@ def observed_spectra(spectra, ell, nlens):
     """
     values = np.asarray(a=spectra, dtype=float)
     modes = np.asarray(a=ell, dtype=float)
+
+    # One square field matrix per multipole, and ell >= 2: the spin factor
+    # below vanishes at ell=1 and divides by zero at ell=0.
     if values.ndim != 3 or values.shape[1] != values.shape[2]:
         raise ValueError("spectra must have shape [nell,nfield,nfield]")
     if modes.shape != (values.shape[0],) or np.any(modes < 2):
         raise ValueError("ell must match the spectrum rows and be >= 2")
     if not np.all(np.isfinite(values)) or not np.all(np.isfinite(modes)):
         raise ValueError("spectra and ell must be finite")
+
+    # nlens may be zero (sources only) or the field count (no sources).
     if not isinstance(nlens, (int, np.integer)) or not 0 <= nlens <= values.shape[1]:
         raise ValueError("nlens must be an integer within the field count")
 
+    # factors is [nell,nfield]: 1 in the scalar columns and the spin factor
+    # in the source columns. The None axes broadcast it along each field
+    # index, so C[l,i,j] is multiplied by f[l,i]*f[l,j]: one factor per
+    # source leg, and its square for a source-source pair.
     factors = np.ones(shape=(len(modes), values.shape[1]), dtype=float)
     spin = np.sqrt((modes-1.0)*(modes+2.0)/(modes*(modes+1.0)))
     factors[:, nlens:] = spin[:, None]
@@ -133,17 +149,27 @@ def gaussian_block(interface, spectra, noise, fields, left, right,
     values = np.asarray(a=spectra, dtype=float)
     white = np.asarray(a=noise, dtype=float)
     identifiers = np.asarray(a=fields)
+
+    # The noise vector fixes the field count; spectra need one
+    # [nfield,nfield] matrix per multipole (shape[1:] drops the ell axis).
     if white.ndim != 1 or not np.all(np.isfinite(white)) or np.any(white < 0):
         raise ValueError("noise must be a finite nonnegative 1D array")
     if values.ndim != 3 or values.shape[1:] != (len(white), len(white)):
         raise ValueError("spectra must have shape [nell,len(noise),len(noise)]")
+
+    # Field IDs index both arrays, so they must be integers inside them.
     if identifiers.shape != (4,) or identifiers.dtype.kind not in "iu":
         raise ValueError("fields must contain four integer IDs: A,B,C,D")
     if np.any(identifiers < 0) or np.any(identifiers >= len(white)):
         raise ValueError("fields contains an index outside the spectrum matrix")
+
+    # The sky fraction fsky=area/(4*pi) used below must lie in (0,1].
     if not np.isfinite(area_sr) or not 0.0 < area_sr <= 4.0*np.pi:
         raise ValueError("area_sr must lie in (0,4*pi]")
 
+    # The four cross spectra of the two Wick pairings of an AB-by-CD
+    # block, (AC)(BD) and (AD)(BC). Unpacking assigns the four IDs to four
+    # names in order.
     field_a, field_b, field_c, field_d = identifiers
     crossings = [
         (field_a, field_c),
@@ -161,6 +187,10 @@ def gaussian_block(interface, spectra, noise, fields, left, right,
         if first == second:
             cross_noise[row] = white[first]
 
+    # harmonic[l] = [(C_AC+N_AC)(C_BD+N_BD)+(C_AD+N_AD)(C_BC+N_BC)]
+    # /((2l+1)*fsky) for l = ell_min, ell_min+1, ..., with the pure N*N
+    # products kept only when include_noise_noise is true. The projection
+    # then forms sum_l left[i,l]*harmonic[l]*right[j,l] for every bin pair.
     harmonic = interface.covariance_gaussian_wick(
         cross_spectra=cross_signal,
         cross_noise=cross_noise,
@@ -196,6 +226,10 @@ def realspace_block(interface, spectra, noise, fields, operators,
     """
     kernels = np.asarray(a=operators, dtype=float)
     areas = np.asarray(a=pair_area_sr2, dtype=float)
+
+    # One operator per probe: 0 xi+, 1 xi-, 2 gamma_t, 3 w(theta). The
+    # pure-noise variance falls as one over the pair area, so every bin
+    # needs a positive area.
     if kernels.ndim != 3 or kernels.shape[0] != 4:
         raise ValueError("operators must have shape [4,nbin,ell_max+1]")
     if (areas.shape != (kernels.shape[1],)
@@ -217,6 +251,9 @@ def realspace_block(interface, spectra, noise, fields, operators,
         area_sr=area_sr,
         include_noise_noise=False,
     )
+
+    # The C pair formula reads int32 field IDs and the noise powers of A and
+    # B only: a noise pairing survives only when C and D repeat A and B.
     identifiers = np.ascontiguousarray(fields, dtype=np.int32)
     noise_ab = np.ascontiguousarray(
         [noise[identifiers[0]], noise[identifiers[1]]], dtype=float
@@ -257,8 +294,14 @@ def shear_gaussian(interface, source, ell_max, area, edges_rad, a_edges,
     neither SSC nor cNG. It never changes data-vector accuracy controls.
     Refine radial, angular, signal-ell and mask-ell choices independently.
     """
+    # --- 1. SPECTRA OF EVERY FIELD PAIR AT EACH ell FROM 2 TO ell_max ---
+
+    # The source index is checked twice: its sign here, before any C call,
+    # and its upper bound once the snapshot reports the source count.
     if not isinstance(source, (int, np.integer)) or source < 0:
         raise ValueError("source must be a nonnegative integer")
+
+    # np.arange excludes its stop value, so stop=ell_max+1 includes ell_max.
     ell = np.arange(start=2, stop=ell_max+1, dtype=float)
     edges = np.ascontiguousarray(edges_rad, dtype=float)
     snapshot = limber_spectra(
@@ -276,6 +319,14 @@ def shear_gaussian(interface, source, ell_max, area, edges_rad, a_edges,
     spectra = observed_spectra(
         spectra=snapshot["spectra"], ell=ell, nlens=snapshot["nlens"]
     )
+
+    # --- 2. ANGULAR OPERATORS AND MASK PAIR AREAS ON THE SAME BINS ---
+
+    # operators is [4,nbin,ell_max+1], starting at ell=0; the [:, :, 2:]
+    # slices below drop ell=0 and 1 to match the spectra. The footprint is
+    # a spherical cap whose own operator runs to the separate cutoff
+    # mask_ell_max; its spin-0 kernel (w, probe 3) gives each bin's
+    # ordered-pair area.
     operators = interface.covariance_realspace_operator(
         edges_rad=edges, ell_max=ell_max, nquad=angle_nquad
     )
@@ -291,6 +342,14 @@ def shear_gaussian(interface, source, ell_max, area, edges_rad, a_edges,
         area_sr=area,
         scalar_kernel=np.ascontiguousarray(mask_operator[3]),
     )
+
+    # --- 3. THE xi+ AND xi- BLOCKS AND THEIR CROSS BLOCK ---
+
+    # Rows and columns: ntheta xi+ bins, then ntheta xi- bins. gaussian is
+    # the full covariance and mixed its signal-signal plus signal-noise
+    # part, so gaussian-mixed is the pure noise. np.empty leaves entries
+    # unset; the loop below writes every one. Source field IDs follow the
+    # lenses, and [field]*4 repeats that ID for all four legs A, B, C, D.
     ntheta = len(edges)-1
     gaussian = np.empty(shape=(2*ntheta, 2*ntheta), dtype=float)
     mixed = np.empty_like(prototype=gaussian)
@@ -301,6 +360,8 @@ def shear_gaussian(interface, source, ell_max, area, edges_rad, a_edges,
     # so the xi+--xi- block must be computed as well as the two auto blocks.
     # Compute each unordered block once and copy its transpose exactly.
     for first in range(2):
+        # slice(a, b) is the index range a..b-1, so gaussian[rows, columns]
+        # is one ntheta-by-ntheta block (first = 0 for xi+, 1 for xi-).
         rows = slice(first*ntheta, (first+1)*ntheta)
         for second in range(first, 2):
             columns = slice(second*ntheta, (second+1)*ntheta)

@@ -52,6 +52,8 @@ def localize_covariance(interface, covariance, indices, operator):
     transforming the full unmasked matrix; do not clip modes or drop input
     angles here.
     """
+    # --- 1. INPUT CHECKS ---
+
     matrix = np.asarray(a=covariance, dtype=float)
     positions = np.asarray(a=indices)
     transform = np.asarray(a=operator, dtype=float)
@@ -59,6 +61,9 @@ def localize_covariance(interface, covariance, indices, operator):
         raise ValueError("covariance must be a nonempty square matrix")
     if matrix.shape[0] != matrix.shape[1]:
         raise ValueError("covariance must be square")
+
+    # indices holds one row per cluster-lensing combination and one column
+    # per angular bin; dtype.kind "iu" admits signed or unsigned integers.
     if positions.ndim != 2 or 0 in positions.shape:
         raise ValueError("indices must be nonempty [nrow,ntheta]")
     if positions.dtype.kind not in "iu":
@@ -67,6 +72,10 @@ def localize_covariance(interface, covariance, indices, operator):
     nrow, ntheta = positions.shape
     if transform.shape != (ntheta, ntheta):
         raise ValueError("operator must match [ntheta,ntheta] from indices")
+
+    # Positions must be in range and distinct: fancy-index assignment keeps
+    # only the last write to a repeated position, so a reused position
+    # would silently lose one transformed row.
     if np.any(positions < 0) or np.any(positions >= ndata):
         raise ValueError("indices must be inside the supplied covariance")
     if np.unique(ar=positions).size != positions.size:
@@ -74,11 +83,16 @@ def localize_covariance(interface, covariance, indices, operator):
     if not np.all(np.isfinite(matrix)) or not np.all(np.isfinite(transform)):
         raise ValueError("covariance and operator must be finite")
 
+    # --- 2. LEFT MULTIPLICATION: A*C CHANGES THE SELECTED ROWS ---
+
     # Only ntheta terms contribute to one transformed value.
     # covariance_project sums along the last axis of both inputs, so put
     # the angular axis last: one C batch then sums it for every
     # (cluster row, other observable) pair. Every C worker owns complete
     # output sums; the result does not depend on the number of workers.
+    # matrix[positions] picks whole rows, [nrow,ntheta,ndata]; the transpose
+    # and reshape give [nrow*ndata,ntheta]. Unit weights leave the plain
+    # sum over the angular index j.
     left = np.ascontiguousarray(transform)
     weight = np.ones(shape=ntheta, dtype=float)
     right = np.ascontiguousarray(matrix[positions].transpose(0, 2, 1))
@@ -90,10 +104,14 @@ def localize_covariance(interface, covariance, indices, operator):
     # reorder it to [row, i, other] to overwrite the selected rows.
     result[positions] = projected.reshape(ntheta, nrow, ndata).transpose(1, 0, 2)
 
+    # --- 3. RIGHT MULTIPLICATION: (A*C)*A^t CHANGES THE SELECTED COLUMNS ---
+
     # The first multiplication changed all selected rows, including their
     # count cross blocks. The second must read that intermediate result:
     # selected-selected blocks need T on both sides. The columns for
     # unselected observables keep their one-sided transformation.
+    # result[:, positions] takes every row and the selected columns,
+    # [ndata,nrow,ntheta]; its angular axis is already last.
     right = np.ascontiguousarray(result[:, positions])
     right = right.reshape(ndata*nrow, ntheta)
     projected = interface.covariance_project(left=left, right=right,

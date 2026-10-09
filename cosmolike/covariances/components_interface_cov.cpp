@@ -1,7 +1,13 @@
 #include <cmath>
-#include <stdexcept>
 #include <string>
 #include <vector>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <pybind11/numpy.h>
 #include "production_interface_cov.hpp"
@@ -58,7 +64,8 @@ static void finite_cov(const cov_array& values, const char* name)
 
   for (py::ssize_t index=0; index<count; index++) {
     if (!std::isfinite(data[index])) {
-      throw std::invalid_argument(std::string(name)+" must be finite");
+      critical("{}: {} must be finite", "finite_cov", name);
+      exit(1);
     }
   }
 }
@@ -68,8 +75,8 @@ static void vector_cov(const cov_array& values, const char* name)
 {
   if (values.ndim() != 1
       || values.size() < 1) {
-    throw std::invalid_argument(
-        std::string(name)+" must be a nonempty 1D array");
+    critical("{}: {} must be a nonempty 1D array", "vector_cov", name);
+    exit(1);
   }
   finite_cov(values, name);
 }
@@ -80,8 +87,8 @@ static void matrix_cov(const cov_array& values, const char* name)
   if (values.ndim() != 2
       || values.shape(0) < 1
       || values.shape(1) < 1) {
-    throw std::invalid_argument(
-        std::string(name)+" must be a nonempty 2D array");
+    critical("{}: {} must be a nonempty 2D array", "matrix_cov", name);
+    exit(1);
   }
   finite_cov(values, name);
 }
@@ -118,7 +125,8 @@ static void quadrature_cov(const int nquad)
       && nquad != 256
       && nquad != 512
       && nquad != 1024) {
-    throw std::invalid_argument("nquad must be 64,96,128,256,512 or 1024");
+    critical("{}: nquad must be 64,96,128,256,512 or 1024", "quadrature_cov");
+    exit(1);
   }
 }
 
@@ -130,11 +138,13 @@ static void angles_cov(const cov_array& edges)
   if (edges.size() < 2
       || edges.data()[0] < 0.0
       || edges.data()[edges.size()-1] > M_PI) {
-    throw std::invalid_argument("need at least two angle edges inside [0,pi]");
+    critical("{}: need at least two angle edges inside [0,pi]", "angles_cov");
+    exit(1);
   }
   for (py::ssize_t edge=1; edge<edges.size(); edge++) {
     if (edges.data()[edge] <= edges.data()[edge-1]) {
-      throw std::invalid_argument("angle edges must increase strictly");
+      critical("{}: angle edges must increase strictly", "angles_cov");
+      exit(1);
     }
   }
 }
@@ -195,15 +205,17 @@ static cov_array covariance_project(
   vector_cov(weight, "weight");
   if (left.shape(1) != weight.size()
       || right.shape(1) != weight.size()) {
-    throw std::invalid_argument("left/right columns must match weight length");
+    critical("{}: left/right columns must match weight length",
+      "covariance_project");
+    exit(1);
   }
 
   cov_array scratch({left.shape(0), weight.size()});
   cov_array output({left.shape(0), right.shape(0)});
-  auto left_rows = input_rows_cov(left);
-  auto right_rows = input_rows_cov(right);
-  auto scratch_rows = output_rows_cov(scratch);
-  auto output_rows = output_rows_cov(output);
+  std::vector<const double*> left_rows = input_rows_cov(left);
+  std::vector<const double*> right_rows = input_rows_cov(right);
+  std::vector<double*> scratch_rows = output_rows_cov(scratch);
+  std::vector<double*> output_rows = output_rows_cov(output);
 
   gaussian_project_cov(left.shape(0), right.shape(0), weight.size(),
       left_rows.data(), right_rows.data(), weight.data(),
@@ -245,10 +257,12 @@ static cov_array covariance_gaussian_wick(
       || !std::isfinite(fsky)
       || fsky <= 0.0
       || fsky > 1.0) {
-    throw std::invalid_argument("need four pairings, ell_min>=0 and 0<fsky<=1");
+    critical("{}: need four pairings, ell_min>=0 and 0<fsky<=1",
+      "covariance_gaussian_wick");
+    exit(1);
   }
 
-  auto rows = input_rows_cov(cross_spectra);
+  std::vector<const double*> rows = input_rows_cov(cross_spectra);
   cov_array output(cross_spectra.shape(1));
   gaussian_wick_cov(ell_min, output.size(), fsky, rows.data(),
       cross_noise.data(), include_noise_noise, output.mutable_data());
@@ -281,11 +295,13 @@ static cov_array covariance_realspace_operator(
   angles_cov(edges_rad);
   quadrature_cov(nquad);
   if (ell_max < 2) {
-    throw std::invalid_argument("ell_max must be at least 2");
+    critical("{}: ell_max must be at least 2",
+      "covariance_realspace_operator");
+    exit(1);
   }
   const py::ssize_t nbin = edges_rad.size()-1;
   cov_array output({4*nbin, (py::ssize_t) ell_max+1});
-  auto rows = output_rows_cov(output);
+  std::vector<double*> rows = output_rows_cov(output);
   realspace_operator_cov(nbin, edges_rad.data(), ell_max, nquad, rows.data());
   output.resize({(py::ssize_t) 4, nbin, (py::ssize_t) ell_max+1});
   return output;
@@ -315,8 +331,9 @@ static cov_array covariance_bandpower_operator(
       || first.size() != last.size()
       || ell_min < 0
       || nell < 1) {
-    throw std::invalid_argument(
-        "need equal 1D band bounds and a valid ell grid");
+    critical("{}: need equal 1D band bounds and a valid ell grid",
+      "covariance_bandpower_operator");
+    exit(1);
   }
 
   // Each band must be nonempty and lie on the supplied grid, whose last
@@ -325,12 +342,14 @@ static cov_array covariance_bandpower_operator(
     if (first.data()[band] < ell_min
         || last.data()[band] < first.data()[band]
         || last.data()[band] >= ell_min+nell) {
-      throw std::invalid_argument("band bounds must lie inside the ell grid");
+      critical("{}: band bounds must lie inside the ell grid",
+        "covariance_bandpower_operator");
+      exit(1);
     }
   }
 
   cov_array output({first.size(), (py::ssize_t) nell});
-  auto rows = output_rows_cov(output);
+  std::vector<double*> rows = output_rows_cov(output);
   bandpower_operator_cov(first.size(), ell_min, nell, first.data(),
       last.data(), rows.data());
   return output;
@@ -369,17 +388,21 @@ static double covariance_noise_pair(
       || probe_right > 3
       || !std::isfinite(pair_area_sr2)
       || pair_area_sr2 <= 0.0) {
-    throw std::invalid_argument(
-        "invalid estimator, catalog or pair-area input");
+    critical("{}: invalid estimator, catalog or pair-area input",
+      "covariance_noise_pair");
+    exit(1);
   }
   for (int index=0; index<4; index++) {
     if (fields.data()[index] < 0) {
-      throw std::invalid_argument("catalog indices must be nonnegative");
+      critical("{}: catalog indices must be nonnegative",
+        "covariance_noise_pair");
+      exit(1);
     }
   }
   if (noise_ab.data()[0] < 0.0
       || noise_ab.data()[1] < 0.0) {
-    throw std::invalid_argument("noise powers must be nonnegative");
+    critical("{}: noise powers must be nonnegative", "covariance_noise_pair");
+    exit(1);
   }
   return gaussian_noise_pair_cov((probe_cov) probe_left,
       (probe_cov) probe_right, fields.data(), noise_ab.data(), pair_area_sr2);
@@ -394,16 +417,20 @@ static void raw_mask_cov(const cov_array& mask, const double area)
   if (!std::isfinite(area)
       || area <= 0.0
       || area > 4.0*M_PI) {
-    throw std::invalid_argument("area_sr must lie in (0,4*pi]");
+    critical("{}: area_sr must lie in (0,4*pi]", "covariance_noise_pair");
+    exit(1);
   }
   for (py::ssize_t ell=0; ell<mask.size(); ell++) {
     if (mask.data()[ell] < 0.0) {
-      throw std::invalid_argument("mask_cl must be nonnegative");
+      critical("{}: mask_cl must be nonnegative", "covariance_noise_pair");
+      exit(1);
     }
   }
   const double monopole = area*area/(4.0*M_PI);
   if (std::fabs(mask.data()[0]/monopole-1.0) > 1.e-8) {
-    throw std::invalid_argument("raw mask C0 must equal area_sr^2/(4*pi)");
+    critical("{}: raw mask C0 must equal area_sr^2/(4*pi)",
+      "covariance_noise_pair");
+    exit(1);
   }
 }
 
@@ -434,11 +461,13 @@ static cov_array covariance_mask_pair_area(
   matrix_cov(scalar_kernel, "scalar_kernel");
   if (scalar_kernel.shape(0) != edges_rad.size()-1
       || scalar_kernel.shape(1) != mask_cl.size()) {
-    throw std::invalid_argument("scalar_kernel must have shape [nbin,nmask]");
+    critical("{}: scalar_kernel must have shape [nbin,nmask]",
+      "covariance_mask_pair_area");
+    exit(1);
   }
 
   cov_array output(edges_rad.size()-1);
-  auto rows = input_rows_cov(scalar_kernel);
+  std::vector<const double*> rows = input_rows_cov(scalar_kernel);
   mask_pair_area_cov(output.size(), mask_cl.size(), area_sr,
       edges_rad.data(), mask_cl.data(), rows.data(), output.mutable_data());
   return output;
@@ -472,16 +501,20 @@ static cov_array covariance_ssc_mask_variance(
   matrix_cov(power, "power");
   if (power.shape(0) != distance.size()
       || power.shape(1) != mask_cl.size()) {
-    throw std::invalid_argument("power must have shape [nnode,nmask]");
+    critical("{}: power must have shape [nnode,nmask]",
+      "covariance_ssc_mask_variance");
+    exit(1);
   }
   for (py::ssize_t node=0; node<distance.size(); node++) {
     if (distance.data()[node] <= 0.0) {
-      throw std::invalid_argument("distance must be positive");
+      critical("{}: distance must be positive",
+        "covariance_ssc_mask_variance");
+      exit(1);
     }
   }
 
   cov_array output(distance.size());
-  auto rows = input_rows_cov(power);
+  std::vector<const double*> rows = input_rows_cov(power);
   ssc_mask_variance_cov(distance.size(), mask_cl.size(), area_sr,
       mask_cl.data(), distance.data(), rows.data(), output.mutable_data());
   return output;
@@ -527,19 +560,23 @@ static cov_array covariance_ssc_shell_response(
       || pair_window.shape(1) != nnode
       || mean_window.shape(1) != nnode
       || power_response.shape(1) != nnode) {
-    throw std::invalid_argument("response inputs must have shape [nrow,nnode]");
+    critical("{}: response inputs must have shape [nrow,nnode]",
+      "covariance_ssc_shell_response");
+    exit(1);
   }
   for (py::ssize_t node=0; node<nnode; node++) {
     if (distance.data()[node] <= 0.0) {
-      throw std::invalid_argument("distance must be positive");
+      critical("{}: distance must be positive",
+        "covariance_ssc_shell_response");
+      exit(1);
     }
   }
 
   cov_array output({nrow, nnode});
-  auto pair_rows = input_rows_cov(pair_window);
-  auto mean_rows = input_rows_cov(mean_window);
-  auto power_rows = input_rows_cov(power_response);
-  auto rows = output_rows_cov(output);
+  std::vector<const double*> pair_rows = input_rows_cov(pair_window);
+  std::vector<const double*> mean_rows = input_rows_cov(mean_window);
+  std::vector<const double*> power_rows = input_rows_cov(power_response);
+  std::vector<double*> rows = output_rows_cov(output);
   ssc_shell_response_cov(nrow, nnode, distance.data(), signal.data(),
       pair_rows.data(), mean_rows.data(), power_rows.data(), rows.data());
   return output;
@@ -586,23 +623,30 @@ static py::tuple covariance_halo_moments(
   quadrature_cov(nquad);
   if (k.shape(0) != a.size()
       || lnm_edges.size() < 2) {
-    throw std::invalid_argument(
-        "k needs na rows and lnm_edges needs two edges");
+    critical("{}: k needs na rows and lnm_edges needs two edges",
+      "covariance_halo_moments");
+    exit(1);
   }
   if (cosmology.lnPL == nullptr
       || cosmology.G == nullptr
       || like.halo_model[3] != HALO_PROFILE_NFW) {
-    throw std::invalid_argument("initialize cosmology and NFW halo profiles");
+    critical("{}: initialize cosmology and NFW halo profiles",
+      "covariance_halo_moments");
+    exit(1);
   }
   for (py::ssize_t row=0; row<a.size(); row++) {
     if (a.data()[row] < limits.a_min
         || a.data()[row] >= 1.0) {
-      throw std::invalid_argument("a must lie in the initialized halo range");
+      critical("{}: a must lie in the initialized halo range",
+        "covariance_halo_moments");
+      exit(1);
     }
   }
   for (py::ssize_t index=0; index<k.size(); index++) {
     if (k.data()[index] < 0.0) {
-      throw std::invalid_argument("halo wavenumbers must be nonnegative");
+      critical("{}: halo wavenumbers must be nonnegative",
+        "covariance_halo_moments");
+      exit(1);
     }
   }
   for (py::ssize_t edge=0; edge<lnm_edges.size(); edge++) {
@@ -610,8 +654,9 @@ static py::tuple covariance_halo_moments(
         || lnm_edges.data()[edge] > std::log(limits.halo_m[RANGE_MAX])
         || (edge > 0
             && lnm_edges.data()[edge] <= lnm_edges.data()[edge-1])) {
-      throw std::invalid_argument(
-          "mass edges must increase inside halo limits");
+      critical("{}: mass edges must increase inside halo limits",
+        "covariance_halo_moments");
+      exit(1);
     }
   }
 
@@ -619,8 +664,8 @@ static py::tuple covariance_halo_moments(
   const py::ssize_t nk = k.shape(1);
   const py::ssize_t npair = nk*(nk+1)/2;
   cov_array i11({na, nk});
-  auto k_rows = input_rows_cov(k);
-  auto i11_rows = output_rows_cov(i11);
+  std::vector<const double*> k_rows = input_rows_cov(k);
+  std::vector<double*> i11_rows = output_rows_cov(i11);
 
   if (!pair_moments) {
     halo_moments_cov(na, a.data(), nk, k_rows.data(), lnm_edges.size()-1,
@@ -678,7 +723,9 @@ static cov_array covariance_power(
       || cosmology.lnPL == nullptr
       || (!linear
           && cosmology.lnP == nullptr)) {
-    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+    critical("{}: initialize power tables and use a_min<=a<1",
+      "covariance_power");
+    exit(1);
   }
   // size() multiplies the array dimensions; do it once before the scan.
   const py::ssize_t count = k.size(); // number of wavenumbers to check
@@ -686,14 +733,15 @@ static cov_array covariance_power(
 
   for (py::ssize_t index=0; index<count; index++) {
     if (data[index] <= 0.0) {
-      throw std::invalid_argument("power wavenumbers must be positive");
+      critical("{}: power wavenumbers must be positive", "covariance_power");
+      exit(1);
     }
   }
 
   cov_array output(k.request().shape);
   if (k.ndim() == 2) {
-    auto k_rows = input_rows_cov(k);
-    auto rows = output_rows_cov(output);
+    std::vector<const double*> k_rows = input_rows_cov(k);
+    std::vector<double*> rows = output_rows_cov(output);
     power_rows_cov(a, k.shape(0), k.shape(1), k_rows.data(), linear,
                     rows.data());
   } else if (linear) {
@@ -729,11 +777,13 @@ static cov_array covariance_power_logk(
       || a >= 1.0
       || !std::isfinite(shift)
       || cosmology.lnPL == nullptr) {
-    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+    critical("{}: initialize power tables and use a_min<=a<1",
+      "covariance_power_logk");
+    exit(1);
   }
   cov_array output(log10k.request().shape);
-  auto logk_rows = input_rows_cov(log10k);
-  auto rows = output_rows_cov(output);
+  std::vector<const double*> logk_rows = input_rows_cov(log10k);
+  std::vector<double*> rows = output_rows_cov(output);
   linear_power_logk_rows_cov(a, log10k.shape(0), log10k.shape(1),
       logk_rows.data(), shift, rows.data());
   return output;
@@ -774,8 +824,9 @@ static cov_array covariance_tree_averages(
       || ps.shape(0) != k.shape(1)
       || ps.shape(1) != corner.size()
       || corner.size() != weight.size()) {
-    throw std::invalid_argument(
-        "tree input pair and angle dimensions disagree");
+    critical("{}: tree input pair and angle dimensions disagree",
+      "covariance_tree_averages");
+    exit(1);
   }
 
   // The stable kernel formulas divide by K and Q. The angular nodes must
@@ -783,7 +834,9 @@ static cov_array covariance_tree_averages(
   // must form a normalized average.
   for (py::ssize_t point=0; point<k.size(); point++) {
     if (k.data()[point] <= 0.0) {
-      throw std::invalid_argument("tree wavenumbers must be positive");
+      critical("{}: tree wavenumbers must be positive",
+        "covariance_tree_averages");
+      exit(1);
     }
   }
   double normalization = 0.0;
@@ -791,22 +844,108 @@ static cov_array covariance_tree_averages(
     if (corner.data()[node] <= 0.0
         || corner.data()[node] > 2.0
         || weight.data()[node] <= 0.0) {
-      throw std::invalid_argument("need 0<corner<=2 and positive weights");
+      critical("{}: need 0<corner<=2 and positive weights",
+        "covariance_tree_averages");
+      exit(1);
     }
     normalization += weight.data()[node];
   }
   if (std::fabs(normalization-1.0) > 1.e-10) {
-    throw std::invalid_argument("angular weights must sum to one");
+    critical("{}: angular weights must sum to one",
+      "covariance_tree_averages");
+    exit(1);
   }
 
   cov_array output({(py::ssize_t) 3, k.shape(1)});
-  auto k_rows = input_rows_cov(k);
-  auto pk_rows = input_rows_cov(pk);
-  auto ps_rows = input_rows_cov(ps);
-  auto rows = output_rows_cov(output);
+  std::vector<const double*> k_rows = input_rows_cov(k);
+  std::vector<const double*> pk_rows = input_rows_cov(pk);
+  std::vector<const double*> ps_rows = input_rows_cov(ps);
+  std::vector<double*> rows = output_rows_cov(output);
   tree_averages_cov(k.shape(1), corner.size(), k_rows.data(),
       pk_rows.data(), corner.data(), weight.data(), ps_rows.data(),
       rows.data());
+  return output;
+}
+
+
+// ---------------------------------------------------------------------------
+// Tree-level averages fed by the log-domain power reader, block by block.
+//
+// Same physics and bit-for-bit the same numbers as covariance_power_logk
+// followed by covariance_tree_averages, but the npair x nangle power
+// table never exists in full: tree_averages_logk_cov evaluates one even
+// block of pairs at a time into a cache-resident buffer (the C header
+// carries the full argument). log10s is the run-constant [npair,nangle]
+// base-10 log of the internal momenta; shift is -log10(f_K) for the
+// shell. Validation covers the shapes, the a and shift ranges, K,Q > 0
+// and the normalized angle rule, as in the two separate entry points.
+// ---------------------------------------------------------------------------
+static cov_array covariance_tree_averages_logk(
+    const cov_array& k,      // [2,npair], positive K and Q
+    const cov_array& pk,     // [2,npair], matching linear power
+    const cov_array& corner, // [nangle], stable 1+cos(theta)
+    const cov_array& weight, // [nangle], normalized dtheta/pi weights
+    const double a,          // scale factor inside the initialized range
+    const cov_array& log10s, // [npair,nangle], base-10 logs before shift
+    const double shift       // common addend; |K+Q| = 10^(log10s+shift)
+  )
+{
+  matrix_cov(k, "k");
+  matrix_cov(pk, "pk");
+  matrix_cov(log10s, "log10s");
+  vector_cov(corner, "corner");
+  vector_cov(weight, "weight");
+  if (k.shape(0) != 2
+      || pk.shape(0) != 2
+      || pk.shape(1) != k.shape(1)
+      || log10s.shape(0) != k.shape(1)
+      || log10s.shape(1) != corner.size()
+      || corner.size() != weight.size()) {
+    critical("{}: tree input pair and angle dimensions disagree",
+      "covariance_tree_averages_logk");
+    exit(1);
+  }
+  if (!std::isfinite(a)
+      || a < limits.a_min
+      || a >= 1.0
+      || !std::isfinite(shift)
+      || cosmology.lnPL == nullptr) {
+    critical("{}: initialize power tables and use a_min<=a<1",
+      "covariance_tree_averages_logk");
+    exit(1);
+  }
+  for (py::ssize_t point=0; point<k.size(); point++) {
+    if (k.data()[point] <= 0.0) {
+      critical("{}: tree wavenumbers must be positive",
+        "covariance_tree_averages_logk");
+      exit(1);
+    }
+  }
+  double normalization = 0.0;
+  for (py::ssize_t node=0; node<corner.size(); node++) {
+    if (corner.data()[node] <= 0.0
+        || corner.data()[node] > 2.0
+        || weight.data()[node] <= 0.0) {
+      critical("{}: need 0<corner<=2 and positive weights",
+        "covariance_tree_averages_logk");
+      exit(1);
+    }
+    normalization += weight.data()[node];
+  }
+  if (std::fabs(normalization-1.0) > 1.e-10) {
+    critical("{}: angular weights must sum to one",
+      "covariance_tree_averages_logk");
+    exit(1);
+  }
+
+  cov_array output({(py::ssize_t) 3, k.shape(1)});
+  std::vector<const double*> k_rows = input_rows_cov(k);
+  std::vector<const double*> pk_rows = input_rows_cov(pk);
+  std::vector<const double*> logs_rows = input_rows_cov(log10s);
+  std::vector<double*> rows = output_rows_cov(output);
+  tree_averages_logk_cov(k.shape(1), corner.size(), k_rows.data(),
+      pk_rows.data(), corner.data(), weight.data(), a, logs_rows.data(),
+      shift, rows.data());
   return output;
 }
 
@@ -843,16 +982,17 @@ static cov_array covariance_halo_trispectrum(
       || i11.shape(1) != npoint
       || moments.shape(1) != npoint
       || tree.shape(1) != npoint) {
-    throw std::invalid_argument(
-        "trispectrum inputs need 2,2,5,3 matching rows");
+    critical("{}: trispectrum inputs need 2,2,5,3 matching rows",
+      "covariance_halo_trispectrum");
+    exit(1);
   }
 
   cov_array output({(py::ssize_t) 5, npoint});
-  auto pk_rows = input_rows_cov(pk);
-  auto i11_rows = input_rows_cov(i11);
-  auto moment_rows = input_rows_cov(moments);
-  auto tree_rows = input_rows_cov(tree);
-  auto rows = output_rows_cov(output);
+  std::vector<const double*> pk_rows = input_rows_cov(pk);
+  std::vector<const double*> i11_rows = input_rows_cov(i11);
+  std::vector<const double*> moment_rows = input_rows_cov(moments);
+  std::vector<const double*> tree_rows = input_rows_cov(tree);
+  std::vector<double*> rows = output_rows_cov(output);
   halo_trispectrum_cov(npoint, pk_rows.data(), i11_rows.data(),
       moment_rows.data(), tree_rows.data(), rows.data());
   return output;
@@ -887,8 +1027,9 @@ static cov_array covariance_halo_response(
   if (inputs.shape(0) != 6
       || !std::isfinite(growth_coefficient)
       || !std::isfinite(dilation_coefficient)) {
-    throw std::invalid_argument(
-        "need six response rows and finite coefficients");
+    critical("{}: need six response rows and finite coefficients",
+      "covariance_halo_response");
+    exit(1);
   }
 
   // The fractional response divides by P_halo, and C stops the process
@@ -900,13 +1041,15 @@ static cov_array covariance_halo_response(
                          +*inputs.data(3, point);
     if (!std::isfinite(phalo)
         || phalo <= 0.0) {
-      throw std::invalid_argument("supplied moments must give positive halo P");
+      critical("{}: supplied moments must give positive halo P",
+        "covariance_halo_response");
+      exit(1);
     }
   }
 
   cov_array output({(py::ssize_t) 2, inputs.shape(1)});
-  auto input_rows = input_rows_cov(inputs);
-  auto rows = output_rows_cov(output);
+  std::vector<const double*> input_rows = input_rows_cov(inputs);
+  std::vector<double*> rows = output_rows_cov(output);
   halo_response_cov(inputs.shape(1), growth_coefficient,
       dilation_coefficient, fractional, input_rows.data(), rows.data());
   return output;
@@ -963,6 +1106,14 @@ void bind_production_components_cov(py::module_& module)
       py::arg("k").noconvert(), py::arg("pk").noconvert(),
       py::arg("corner").noconvert(), py::arg("weight").noconvert(),
       py::arg("ps").noconvert());
+
+  module.def("covariance_tree_averages_logk", &covariance_tree_averages_logk,
+      "Planar P/B/T averages [3,npair] with P(|K+Q|) evaluated block by "
+      "block from [npair,nangle] base-10 logs plus a scalar shift; "
+      "bit-for-bit covariance_power_logk + covariance_tree_averages.",
+      py::arg("k").noconvert(), py::arg("pk").noconvert(),
+      py::arg("corner").noconvert(), py::arg("weight").noconvert(),
+      py::arg("a"), py::arg("log10s").noconvert(), py::arg("shift"));
 
   module.def("covariance_halo_trispectrum", &covariance_halo_trispectrum,
       "Return five halo terms [5,npoint]: 1h,2h(13),2h(22),3h,4h.",

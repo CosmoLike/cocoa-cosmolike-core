@@ -42,20 +42,30 @@ def observable_rows(nlens, nsource, excluded_gammat=()):
     """
     if nlens < 1 or nsource < 1:
         raise ValueError("the 3x2pt layout requires lens and source bins")
+
+    # An out-of-range pair would match no row and be ignored silently, so
+    # it is rejected instead.
     excluded = set()
     for lens, source in excluded_gammat:
         if not 0 <= lens < nlens or not 0 <= source < nsource:
             raise ValueError("excluded gamma_t pair is outside the bin range")
         excluded.add((lens, source))
+
+    # Cosmic shear, xi+ then xi-: each unordered source pair once, with
+    # first <= second. Source field IDs follow the nlens lens IDs.
     rows = []
     for probe in (0, 1):
         for first in range(nsource):
             for second in range(first, nsource):
                 rows.append((probe, nlens+first, nlens+second))
+
+    # Galaxy-galaxy lensing: every measured (lens, source) pair.
     for lens in range(nlens):
         for source in range(nsource):
             if (lens, source) not in excluded:
                 rows.append((2, lens, nlens+source))
+
+    # Clustering: the auto-correlation of each lens bin only.
     for lens in range(nlens):
         rows.append((3, lens, lens))
     return np.array(rows, dtype=np.int32)
@@ -91,6 +101,8 @@ def compress_operators(operators, ell, coarse_ell, source_factor=None):
         float [4,ntheta,ncoarse] compressed operators. Multipoles, kernels
         and these operators are dimensionless.
     """
+    # Work in x=ln(ell+1/2) for both grids. coarse_ell is uniform there, so
+    # one division by step locates any integer multipole among its nodes.
     grid = np.log(np.asarray(coarse_ell)+0.5)
     query = np.log(np.asarray(ell)+0.5)
     step = (grid[-1]-grid[0])/(len(grid)-1)
@@ -104,6 +116,9 @@ def compress_operators(operators, ell, coarse_ell, source_factor=None):
     position = (query-grid[0])/step
     left = np.minimum(position.astype(np.intp), len(grid)-2)
     fraction = position-left
+
+    # The real-space source-leg transfer is the default; Fourier callers
+    # replace it with their own per-leg factor.
     spin = (ell-1.0)*(ell+2.0)/(ell+0.5)**2
     if source_factor is not None:
         spin = np.asarray(source_factor, dtype=float)
@@ -195,10 +210,15 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
         raise ValueError("matter covariance tables require mnu=0")
     if not np.isfinite(settings["response_step"]) or settings["response_step"] <= 0:
         raise ValueError("response_step must be finite and positive")
+
+    # Output tables, filled one radial shell (node) at a time below.
     nnode = geometry.shape[1]
     projected = np.empty((len(transform), len(transform), nnode))
     response = np.empty((len(transform), nnode))
     long_power = np.empty((nnode, mask_nell))
+
+    # The tree terms depend on the angle only through 1+cos(theta), which
+    # angular_rule returns as corner; the angles themselves go unused.
     unused, angle_weight, corner = angular_rule(
         nquad=settings["tree_nquad"], npanel=settings["tree_npanel"],
         interface=interface,
@@ -221,12 +241,18 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
     # differs from log10(magnitude/f_K) in the last bits; the reader's
     # documentation (spectra_cov.h) records this rounding change.
     log_magnitude = np.log10(magnitude)
+    # covariance_project(left, right, weight) returns left*diag(weight)*right^T;
+    # unit weights reduce it to the plain contraction left*right^T.
     unit_weight = np.ones(len(coarse_ell))
     # Keep the factors exp(-step) and exp(+step) of the centered slope
     # below; [[0, 2]] selects the first and last of the three samples.
     shift = np.exp(np.array([-settings["response_step"], 0.0,
                              settings["response_step"]]))
     shift = shift[[0, 2]]
+
+    # diagonal holds the positions of the K=Q pairs in (first, second); the
+    # response reads the halo moments there. mask_modes is L+1/2 for each
+    # footprint multipole L, giving the Limber wavenumber (L+1/2)/f_K.
     diagonal = np.flatnonzero(first == second)
     mask_modes = np.arange(mask_nell)+0.5
 
@@ -239,6 +265,8 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
     for begin in range(0, nnode, batch_size):
         end = min(begin+batch_size, nnode)
         scale_factor = geometry[0, begin:end].copy()
+        # wave[row, i] = (ell_i+1/2)/f_K for shell begin+row: the None axes
+        # broadcast the [nk] modes against the batch's distances, [nbatch,nk].
         wave = modes[None, :]/geometry[2, begin:end, None]
         single, moments = interface.covariance_halo_moments(
             a=scale_factor, k=wave, lnm_edges=settings["lnm_edges"],
@@ -249,6 +277,9 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
         # Keep all of them on their parent shell's row so the mass function,
         # bias and concentration are evaluated once per shell. Pair moments
         # belong to the central k grid above; they are not used here.
+        # shifted_k is [nbatch,nk,2]: k*exp(-step) and k*exp(+step) on the
+        # last axis. reshape(end-begin, -1) lays each shell's 2*nk values in
+        # one row for the C call; the result is folded back to that shape.
         shifted_k = wave[:, :, None]*shift
         shifted_single, unused = interface.covariance_halo_moments(
             a=scale_factor, k=shifted_k.reshape(end-begin, -1),
@@ -269,13 +300,16 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
             # P(|K+Q|). Reuse the common relative-angle geometry from above,
             # changing only its physical length scale at this distance.
             linear = interface.covariance_power(a=a, k=k, linear=True)
+            # pk is [2,npair]: P(K) and P(Q) for every upper-triangle pair.
             pk = np.array([linear[first], linear[second]])
-            internal = interface.covariance_power_logk(
-                a=a, log10k=log_magnitude, shift=-np.log10(distance)
-            )
-            angular = interface.covariance_tree_averages(
+            # The fused call evaluates P(|K+Q|) block by block inside C,
+            # so the npair-by-nangle power table never exists in full;
+            # its values and the three averages are bit-for-bit those of
+            # covariance_power_logk followed by covariance_tree_averages.
+            angular = interface.covariance_tree_averages_logk(
                 k=np.array([k[first], k[second]]), pk=pk, corner=corner,
-                weight=angle_weight, ps=internal,
+                weight=angle_weight, a=a, log10s=log_magnitude,
+                shift=-np.log10(distance),
             )
             terms = interface.covariance_halo_trispectrum(
                 pk=pk, i11=np.array([single[row, first], single[row, second]]),
@@ -448,16 +482,25 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         nonzero lens magnification, or noise or field IDs that do not
         match the initialized fields.
     """
+    # The halo matter model is defined only for mnu=0, and the centered
+    # response derivative needs a positive step.
     if settings["mnu"] != 0.0:
         raise ValueError("the full halo matter model currently requires mnu=0")
     if not np.isfinite(settings["response_step"]) or settings["response_step"] <= 0:
         raise ValueError("response_step must be finite and positive")
+
+    # Rows are integer (probe,A,B) triplets. Fourier space has no xi- row:
+    # one E-mode spectrum already supplies both real-space shear correlations.
     if rows.ndim != 2 or rows.shape[1] != 3 or rows.dtype.kind not in "iu":
         raise ValueError("rows must contain integer (probe,A,B) triplets")
     if space == "fourier" and np.any(rows[:, 0] == 1):
         raise ValueError("Fourier rows must omit xi-: retain E-E only once")
     if np.any(rows < 0) or np.any(rows[:, 0] > 3):
         raise ValueError("field IDs must be nonnegative and probe IDs in 0..3")
+
+    # Stage timing. checkpoint is a closure: it reads started, stages and
+    # progress from this function, stores one stage's own duration, and
+    # reports the time elapsed since assembly began.
     started = time.perf_counter()
     stages = {}
 
@@ -468,6 +511,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             progress(name, time.perf_counter()-started)
 
     # --- 1. Common radial windows and all crossed angular spectra ---
+
     # Gaussian Wick products need field pairs that never appear as measured
     # observables. Building one complete snapshot keeps these correlations
     # consistent across every covariance block.
@@ -485,8 +529,16 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
                 or np.any(last_band < first_band)):
             raise ValueError("need matching integer bands with 2<=first<=last")
         ell_max = int(np.max(last_band))
+
+    # Two multipole grids: the coarse non-Gaussian nodes through the first
+    # one at or above ell_max, and every integer multipole 2..ell_max for
+    # the Gaussian and mean-signal sums.
     coarse_ell = non_gaussian_multipoles(samples=settings["ng_ell"], ell_max=ell_max)
     ell = np.arange(2, ell_max+1, dtype=float)
+
+    # Zero-IA Limber spectra of every field pair, with the radial geometry
+    # [4,nradial] and the base windows [3,nfield,nradial]: density, lensing
+    # (magnification for lens fields) and signed NLA.
     snapshot = limber_spectra(
         interface=interface,
         ell=ell, a_edges=settings["a_edges"],
@@ -496,17 +548,23 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     geometry = snapshot["geometry"]
     base = snapshot["windows"]
     nlens = snapshot["nlens"]
+
+    # SSC and cNG below give each lens field its density window only, so a
+    # nonzero lens magnification window is rejected. Noise and row field
+    # IDs must address the fields the interface was initialized with.
     if np.any(base[1, :nlens] != 0.0):
         raise ValueError("this separable survey assembly needs zero magnification")
     if len(noise) != base.shape[1]:
         raise ValueError("noise count must match the initialized field count")
     if np.any(rows[:, 1:] >= base.shape[1]):
         raise ValueError("an observable field ID exceeds the initialized count")
+
     # SSC/cNG use this zero-IA Limber snapshot: its windows and, for the
     # SSC survey-mean subtraction, its spectra. Gaussian spectra below are
     # a separate snapshot; changing their IA or radial-mode treatment must
     # not alter the SSC mean-subtraction signal.
     lensing_spectra = snapshot["spectra"]
+
     # Settings without a gaussian entry use zero-IA Limber Gaussian spectra.
     model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
     if model["ia"] != "none":
@@ -531,6 +589,10 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         # in-place update so the SSC mean signal stays Limber.
         snapshot["spectra"] = snapshot["spectra"].copy()
         snapshot["spectra"][selected] = low["spectra"]
+
+    # b_spectra holds TATT B-mode spectra and is None otherwise. In real
+    # space source_factor stays None, so compress_operators applies its
+    # default real-space transfer.
     b_signal = snapshot.get("b_spectra")
     source_factor = None
     if space == "real":
@@ -550,18 +612,25 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     checkpoint("all_pairs_gaussian_spectra", started)
 
     # --- 2. Measurement operators and the common survey footprint ---
+
     # Real-space white noise extends above any finite ell cutoff, so its
     # pair-count term is analytic. A Fourier band instead includes exactly
     # the modes between its endpoints; its noise uses that finite sum.
     tick = time.perf_counter()
     mask = cap_mask(area_sr=settings["area_sr"],
                     ell_max=settings["mask_ell_max"])
+    # Fourier space keeps this empty array: it has no pair-area term.
     pair_area = np.empty(0)
     if space == "real":
+        # Bin-averaged spin kernels [4,nbin,ell_max+1] for xi+, xi-, gamma_t
+        # and w, with columns ell = 0..ell_max.
         operators = interface.covariance_realspace_operator(
             edges_rad=settings["edges_rad"], ell_max=ell_max,
             nquad=settings["angle_nquad"],
         )
+
+        # The same kernels up to the footprint cutoff. The scalar w kernel,
+        # slot 3, weights the mask spectrum in the noise pair-area integral.
         mask_operator = interface.covariance_realspace_operator(
             edges_rad=settings["edges_rad"], ell_max=settings["mask_ell_max"],
             nquad=settings["angle_nquad"],
@@ -571,6 +640,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             area_sr=settings["area_sr"],
             scalar_kernel=np.ascontiguousarray(mask_operator[3]),
         )
+
+        # Dropping columns ell=0 and 1 aligns the kernels with ell = 2..ell_max.
         kernels = np.ascontiguousarray(operators[:, :, 2:])
     else:
         bands = interface.covariance_bandpower_operator(
@@ -582,16 +653,24 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
         # slots so the common SSC/cNG projection can attach two, one or no
         # shear transfer factors to E-E, galaxy-E and galaxy density. Slot 1,
         # the real-space xi- position, stays unused in Fourier space.
+        # bands[None, :, :] adds a leading axis; np.repeat copies the band
+        # operator into each slot, giving [4,nband,nell].
         kernels = np.repeat(bands[None, :, :], repeats=4, axis=0)
+
+    # nbin counts angular bins or bands per observable row; the data vector
+    # holds nbin consecutive entries for each row.
     nbin = kernels.shape[1]
     ndata = len(rows)*nbin
     checkpoint("angular_and_mask_geometry", tick)
 
     # --- 3. Gaussian covariance and the observable mean signals ---
+
     # A block covariance needs crossed spectra, including lens cross bins
     # absent from the data vector. The snapshot retains that full matrix.
     tick = time.perf_counter()
     if space == "real":
+        # **b_options passes b_spectra=... only when TATT B modes exist; an
+        # empty dict adds no keyword, so the call then omits b_spectra.
         b_options = {}
         if b_signal is not None:
             b_options["b_spectra"] = np.ascontiguousarray(b_signal)
@@ -602,6 +681,8 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             **b_options,
         )
     else:
+        # Every Fourier observable uses the same band operator, so each row
+        # contributes only its field pair (A,B).
         gaussian = interface.covariance_gaussian_fourier(
             spectra=signal, noise=np.ascontiguousarray(noise),
             pairs=np.ascontiguousarray(rows[:, 1:], dtype=np.int32),
@@ -615,6 +696,10 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     tick = time.perf_counter()
     observable_signal = np.empty((len(rows), nbin))
     gaussian_signal = np.empty_like(observable_signal)
+
+    # Rows of one probe share one angular kernel, so each probe takes one
+    # projection call. selected holds the positions of that probe's rows,
+    # and fields their (A,B) pairs as [nrow,2].
     for probe in range(4):
         selected = np.flatnonzero(rows[:, 0] == probe)
         if len(selected) == 0:
@@ -640,6 +725,7 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     checkpoint("observable_signal", tick)
 
     # --- 4. Shared matter trispectrum and response at each radial shell ---
+
     # The matter calculation is independent of the observed catalog pair.
     # Project its angular dependence once per shell; catalog windows enter
     # only in the final radial sums. This avoids repeating expensive halo
@@ -652,6 +738,9 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # Rows are probe-major with angular bins inside: the 4*nbin axis order
     # that project_connected expects.
     transform = compressed.reshape(4*nbin, -1)
+
+    # A closure over progress and started: each completed shell count is
+    # reported as a stage with the survey's total elapsed time.
     def report_matter(completed, total):
         """Translate shared-table progress into the survey's elapsed time."""
         if progress is not None:
@@ -669,23 +758,32 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     checkpoint("shared_halo_response_and_trispectrum", tick)
 
     # --- 5. Catalog weights, survey-mean response, and all radial blocks ---
+
     # Lenses contribute b*n and sources contribute lensing efficiency.
     # Normalizing galaxy density by its observed survey mean subtracts
     # (U_A+U_B)*C_AB from its response to a background density fluctuation.
     # A lens U equals its window b*n, the radial weight of its mean count.
     # Shear has no galaxy-count normalization, so its U is zero.
     tick = time.perf_counter()
+    # windows [nfield,nradial]: density rows for lenses, lensing rows for
+    # sources. Indexing it with rows[:, 1] and rows[:, 2] gives each row's
+    # W_A and W_B, so pair_window and pair_mean are [nobservable,nradial].
     windows = np.concatenate((base[0, :nlens], base[1, nlens:]))
     pair_window = windows[rows[:, 1]]*windows[rows[:, 2]]
     mean = np.zeros_like(windows)
     mean[:nlens] = base[0, :nlens]
     pair_mean = mean[rows[:, 1]]+mean[rows[:, 2]]
+
     # shell [ndata,nnode], bins inside observables, at each radial node:
     # Phi_AB = W_A W_B (dP/d delta_b)/f_K^2 - (U_A+U_B) C_AB.
     response = response.reshape(4, nbin, nnode)
+    # response[rows[:, 0]] picks each row's probe, [nobservable,nbin,nnode];
+    # the None axes spread one radial weight over all nbin bins, and one
+    # bin's mean signal over all radial nodes.
     shell = pair_window[:, None, :]*response[rows[:, 0]]/geometry[2]**2
     shell -= pair_mean[:, None, :]*observable_signal[:, :, None]
     shell = shell.reshape(ndata, nnode)
+
     # sigma_b^2 at each node: the cap's long-mode background variance from
     # linear power. Its unit is length, because it multiplies a radial delta.
     variance = interface.covariance_ssc_mask_variance(

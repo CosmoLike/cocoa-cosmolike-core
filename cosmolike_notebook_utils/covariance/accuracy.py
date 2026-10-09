@@ -81,10 +81,20 @@ def covariance_accuracy(
     need not retain their old positions. High resolution alone is not proof
     of covariance/Fisher convergence.
     """
+    # --- 1. THE PUBLIC BOOST: ONE OF THE FOUR SUPPORTED LEVELS ---
+
+    # A bool passes isinstance(int), so booleans are rejected explicitly:
+    # accuracy_boost=True silently meaning 1 would hide a user mistake.
     if isinstance(accuracy_boost, (bool, np.bool_)) or not isinstance(
         accuracy_boost, (int, float, np.integer, np.floating)
     ) or accuracy_boost not in (1, 2, 4, 8):
         raise ValueError("accuracy_boost must be one of the integers 1, 2, 4, 8")
+
+    # --- 2. INTERNAL TABLE BOOSTS: POSITIVE INTEGERS ---
+
+    # These multiply the public boost for one table family each. They are
+    # validated together because they share one rule, and stored back as
+    # plain int so later arithmetic cannot carry a numpy scalar type.
     internal = {
         "non_gaussian_accuracyboost": non_gaussian_accuracyboost,
         "window_accuracyboost": window_accuracyboost,
@@ -98,16 +108,26 @@ def covariance_accuracy(
         ) or not np.isfinite(value) or value < 1 or value != int(value):
             raise ValueError(f"{name} must be a positive integer")
         internal[name] = int(value)
+
+    # The non-Limber boost is stricter than the shared rule above: its
+    # dyadic grid refinement only nests for the four power-of-two levels.
     if nonlimber_accuracyboost not in (1, 2, 4, 8):
         raise ValueError("nonlimber_accuracyboost must be 1, 2, 4 or 8")
+
+    # --- 3. MULTIPOLE CUTOFFS AND INTERVAL COUNTS: INTEGERS ONLY ---
+
+    # Cutoffs and interval counts define grids, so a float here would
+    # silently truncate; they must arrive as integers.
     if (isinstance(nonlimber_lmax, (bool, np.bool_))
             or not isinstance(nonlimber_lmax, (int, np.integer))
             or nonlimber_lmax < 2):
         raise ValueError("nonlimber_lmax must be an integer >= 2")
+
     if isinstance(integration_accuracy, (bool, np.bool_)) or not isinstance(
         integration_accuracy, (int, np.integer)
     ) or integration_accuracy not in (0, 1, 2, 3, 4):
         raise ValueError("integration_accuracy must be an integer from 0 to 4")
+
     for name, value in (
         ("ell_max", ell_max), ("mask_ell_max", mask_ell_max),
         ("ng_ell_intervals", ng_ell_intervals),
@@ -116,8 +136,14 @@ def covariance_accuracy(
             value, (int, np.integer)
         ) or value < 1:
             raise ValueError(f"{name} must be a positive integer")
+
+    # ell_max must leave room for the grid anchors at ell=2 and ell_max,
+    # and the centered log-derivative needs a positive half-width.
     if ell_max < 3 or not np.isfinite(response_step) or response_step <= 0:
         raise ValueError("ell_max must exceed two and response_step must be positive")
+
+    # --- 4. RESOLVED SCALARS USED BY THE GRID CONSTRUCTION BELOW ---
+
     boost = int(accuracy_boost)
     intervals = int(ng_ell_intervals*non_gaussian_accuracyboost)
 
@@ -210,14 +236,29 @@ def non_gaussian_multipoles(samples, ell_max):
         ValueError unless samples are finite, increasing, uniform in
         ln(ell+1/2), start at ell=2 and reach ell_max, with ell_max >= 2.
     """
+    # --- 1. THE SUPPLIED GRID: FINITE, INCREASING, ANCHORED AT ELL=2 ---
+
     grid = np.asarray(samples, dtype=float)
     if (grid.ndim != 1 or len(grid) < 2 or not np.all(np.isfinite(grid))
             or grid[0] != 2.0 or np.any(np.diff(grid) <= 0.0)):
         raise ValueError("ng_ell needs increasing finite samples starting at ell=2")
+
+    # The grid must reach the signal cutoff, or the bracketing node below
+    # could not exist.
     if not np.isfinite(ell_max) or ell_max < 2 or grid[-1] < ell_max:
         raise ValueError("ng_ell must cover the signal range 2 <= ell <= ell_max")
+
+    # --- 2. UNIFORMITY IN ln(ell+1/2), THE GRID'S DEFINING PROPERTY ---
+
+    # covariance_accuracy builds nested grids only in this coordinate; a
+    # grid from any other recipe would break the nesting guarantee.
     steps = np.diff(np.log(grid+0.5))
     if not np.allclose(steps, steps[0], rtol=1.e-12, atol=0.0):
         raise ValueError("ng_ell samples must be uniform in ln(ell+1/2)")
+
+    # --- 3. KEEP THE NODES THROUGH THE FIRST ONE AT OR ABOVE ell_max ---
+
+    # count_nonzero counts the nodes strictly below ell_max; one more node
+    # brackets the cutoff from above. At least two nodes always remain.
     count = max(2, np.count_nonzero(grid < ell_max)+1)
     return grid[:count].copy()

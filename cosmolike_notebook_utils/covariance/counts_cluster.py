@@ -59,6 +59,10 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
         ValueError for incompatible shapes, nonpositive distance or dchi,
         negative linear power or nonfinite inputs.
     """
+    # --- 1. INPUTS AS FLOAT ARRAYS ---
+
+    # moments is the covariance_cluster_moments mapping; only its J11 and
+    # J02 tables enter this cross term.
     distance = np.asarray(a=distance, dtype=float)
     dchi = np.asarray(a=dchi, dtype=float)
     window = np.asarray(a=pair_window, dtype=float)
@@ -67,6 +71,10 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
     full_i11 = np.asarray(a=i11, dtype=float)
     j11 = np.asarray(a=moments['J11'], dtype=float)
     j02 = np.asarray(a=moments['J02'], dtype=float)
+
+    # --- 2. SHAPE AND VALUE CHECKS ---
+
+    # distance fixes the radial state axis and linear_power the k axis.
     if distance.ndim != 1 or distance.size == 0:
         raise ValueError("distance must be nonempty [state]")
     if (dchi.shape != distance.shape or np.any(distance <= 0.0)
@@ -78,37 +86,61 @@ def count_matter_cross(interface, distance, dchi, pair_window, transfer,
     nk = power.shape[1]
     if full_i11.shape != power.shape or np.any(power < 0.0):
         raise ValueError("i11 must match nonnegative linear_power[state,k]")
+
+    # pair_window fixes the observable axis; transfer needs one row of
+    # spin factors per observable, sampled on the same k columns.
     if (window.ndim != 2 or window.shape[0] == 0 or window.shape[1] != nstate
             or transfer.shape != (window.shape[0], nk)):
         raise ValueError("need pair_window[observable,state], transfer[observable,k]")
+
+    # J11 fixes the count axis. J02 stores one value per unordered (K,Q)
+    # pair, nk*(nk+1)/2 of them, in the np.triu_indices order used below.
     if (j11.ndim != 3 or j11.shape[0] != nstate
             or j11.shape[1] == 0 or j11.shape[2] != nk):
         raise ValueError("moments['J11'] must have shape [state,count,k]")
     ncount = j11.shape[1]
     if j02.shape != (nstate, ncount, nk*(nk+1)//2):
         raise ValueError("moments['J02'] must match [state,count,k*(k+1)/2]")
+
+    # Signed windows, transfers and moments are allowed; only nonfinite
+    # entries are rejected here.
     for values in (distance, dchi, window, transfer, power, full_i11, j11, j02):
         if not np.all(np.isfinite(values)):
             raise ValueError("count-spectrum inputs and selected moments must be finite")
 
+    # --- 3. ONE-HALO AND TWO-HALO KERNELS AT EACH RADIAL STATE ---
+
     # The moment table keeps the triangular (K,Q) pairs. A single power
     # spectrum uses opposite vectors of the same magnitude, hence K=Q.
+    # flatnonzero gives the positions of the nk diagonal pairs (K,K) on the
+    # pair axis; np.take keeps only those, so one_halo is [state,count,k].
     first, second = np.triu_indices(n=nk)
     diagonal = np.flatnonzero(first == second)
     one_halo = np.take(a=j02, indices=diagonal, axis=-1)
+    # power[:, None, :] inserts a length-one count axis, [state,1,k], which
+    # broadcasts against j11 [state,count,k]; two_halo has the same shape.
     two_halo = 2.0*power[:, None, :]*full_i11[:, None, :]*j11
+    # Limber radial measure dchi/f_K^2, shared by both terms.
     measure = np.ascontiguousarray(dchi/distance**2)
     right = np.ascontiguousarray(window)
     result = {}
+
+    # --- 4. RADIAL PROJECTION, ONE C CALL PER TERM ---
 
     # All angular samples use the same radial rule. Arrange count/mode as
     # independent C output rows, so the existing SIMDe/OpenMP contraction
     # integrates them together rather than starting a Python loop per pair.
     for name, kernel in (('one_halo', one_halo), ('two_halo', two_halo)):
+        # transpose(1, 2, 0) moves the state axis last, [count,k,state];
+        # the reshape makes each (count, k) pair one left row of the C call.
         left = np.ascontiguousarray(kernel.transpose(1, 2, 0))
         left = left.reshape(ncount*nk, nstate)
+        # projected[row, observable] = sum over states of left*right*measure.
         projected = interface.covariance_project(left=left, right=right,
                                                  weight=measure)
+        # Split the rows back into [count,k,observable], then swap the last
+        # two axes to [count,observable,k]; transfer [observable,k]
+        # broadcasts over the count axis.
         projected = projected.reshape(ncount, nk, len(window))
         result[name] = np.ascontiguousarray(projected.transpose(0, 2, 1)*transfer)
     result['total'] = result['one_halo']+result['two_halo']
@@ -150,11 +182,18 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
         Shared-object or weighted count catalogs require a different Poisson
         model and are outside this function's exclusive-bin contract.
     """
+    # --- 1. RADIAL INPUTS ---
+
+    # The production bindings accept only C-contiguous float64 arrays and
+    # never convert them, so every radial input takes that layout first.
     distance = np.ascontiguousarray(distance, dtype=float)
     dchi = np.ascontiguousarray(dchi, dtype=float)
     variance = np.ascontiguousarray(background_variance, dtype=float)
     density = np.ascontiguousarray(density, dtype=float)
     derivative = np.ascontiguousarray(derivative, dtype=float)
+
+    # distance fixes the radial node axis. covariance_counts_shell checks
+    # the [ncount,nnode] density and derivative shapes itself.
     if distance.ndim != 1 or distance.size == 0:
         raise ValueError("distance must be a nonempty 1D array")
     for name, values in (("dchi", dchi), ("background_variance", variance)):
@@ -162,6 +201,8 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
             raise ValueError(f"{name} must be finite and match distance.shape")
     if np.any(dchi <= 0.0) or np.any(variance < 0.0):
         raise ValueError("dchi must be positive and background_variance nonnegative")
+
+    # --- 2. OPTIONAL COUNT-TWO-POINT RESPONSES ---
 
     # Check the optional cross responses before requesting any integration.
     # Signed responses are physical: an observed-mean subtraction can make
@@ -174,6 +215,10 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
                 or not np.all(np.isfinite(other))):
             raise ValueError("two_point_response must be finite [ndata,nnode]")
 
+    # --- 3. SHELL QUANTITIES, MEAN COUNTS AND POISSON NOISE ---
+
+    # S_i = Omega f_K^2 n_i and Phi_i = Omega f_K^2 dn_i/d(delta_b), both
+    # [ncount,nnode] in L^-1 and not yet multiplied by dchi.
     shells = interface.covariance_counts_shell(
         distance=distance, density=density, derivative=derivative,
         area_sr=area_sr,
@@ -190,13 +235,20 @@ def count_statistics(interface, distance, dchi, density, derivative, area_sr,
     mean = mean[:, 0]
     poisson = np.diag(mean)
 
+    # --- 4. SUPER-SAMPLE COVARIANCE OF THE COUNTS ---
+
     # Each shell adds its nonnegative weight dchi*sigma_b^2 times the outer
     # product of one response vector with itself, so count SSC is positive
     # semidefinite. Every cross-bin term is retained, including bins whose
     # true-redshift distributions overlap despite distinct labels.
     weight = np.ascontiguousarray(dchi*variance)
     ssc = interface.covariance_project(left=response, right=response, weight=weight)
+    # np.triu(ssc) keeps the diagonal and upper triangle; adding the
+    # transpose of the strict upper triangle (k=1) copies it below the
+    # diagonal, so ssc is exactly symmetric.
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T
+
+    # --- 5. COUNT-TWO-POINT SSC CROSS BLOCK ---
 
     # Counts occupy the left index. Copy its transpose when inserting this
     # block on the opposite side of a joint matrix; do not recompute it

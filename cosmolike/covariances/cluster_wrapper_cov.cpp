@@ -1,5 +1,12 @@
 #include <cmath>
 #include <stdexcept>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <carma.h>
 #include <armadillo>
@@ -31,8 +38,9 @@ namespace cosmolike_interface {
 // results return to Armadillo by physical indices and leave as a Python
 // dict of NumPy arrays that own their memory through CARMA.
 //
-// Checks throw std::invalid_argument, which Python sees as a ValueError;
-// the C routines would instead stop the process or trust malformed sizes.
+// Checks print through the shared logger and end the process (critical
+// and exit, the data-vector layer's pattern); the C routines trust the
+// sizes these checks establish.
 // L denotes one consistent length unit, c/H0 in the survey workflow.
 // ---------------------------------------------------------------------------
 
@@ -72,14 +80,16 @@ py::dict covariance_counts_shell_cpp(
       || density.n_cols != distance.n_elem
       || derivative.n_rows != density.n_rows
       || derivative.n_cols != density.n_cols) {
-    throw std::invalid_argument(
-        "distance must be nonempty [nnode]; density and derivative "
-        "must both have shape [ncount,nnode], with ncount > 0");
+    critical("{}: distance must be nonempty [nnode]; "
+      "density and derivative must both have shape [ncount,nnode], with ncount > 0", "covariance_counts_shell_cpp");
+    exit(1);
   }
   if (!std::isfinite(area_sr)
       || area_sr <= 0.0
       || area_sr > 4.0*M_PI) {
-    throw std::invalid_argument("area_sr must be finite and in (0,4*pi]");
+    critical("{}: area_sr must be finite and in (0,4*pi]",
+      "covariance_counts_shell_cpp");
+    exit(1);
   }
 
   // A positive distance gives a physical shell volume. Zero abundances
@@ -88,16 +98,18 @@ py::dict covariance_counts_shell_cpp(
   for (arma::uword node=0; node<distance.n_elem; node++) {
     if (!std::isfinite(distance(node))
         || distance(node) <= 0.0) {
-      throw std::invalid_argument("distance must be finite and positive");
+      critical("{}: distance must be finite and positive",
+        "covariance_counts_shell_cpp");
+      exit(1);
     }
   }
   for (arma::uword entry=0; entry<density.n_elem; entry++) {
     if (!std::isfinite(density(entry))
         || density(entry) < 0.0
         || !std::isfinite(derivative(entry))) {
-      throw std::invalid_argument(
-          "density must be finite and nonnegative; derivative must "
-          "be finite and may have either sign");
+      critical("{}: density must be finite and nonnegative; "
+        "derivative must be finite and may have either sign", "covariance_counts_shell_cpp");
+      exit(1);
     }
   }
 
@@ -179,9 +191,9 @@ py::dict covariance_cluster_spectra_cpp(
   if (ell.n_elem < 1
       || distance.n_elem < 1
       || dchi.n_elem != distance.n_elem) {
-    throw std::invalid_argument(
-        "ell/distance/dchi/richness must be vectors; base/window/bias/"
-        "power matrices; profile a 3D array; ell/distance nonempty");
+    critical("{}: ell/distance/dchi/richness must be "
+      "vectors; base/window/bias/power matrices; profile a 3D array; ell/distance nonempty", "covariance_cluster_spectra_cpp");
+    exit(1);
   }
   const arma::uword nell = ell.n_elem;
   const arma::uword nnode = distance.n_elem;
@@ -202,10 +214,9 @@ py::dict covariance_cluster_spectra_cpp(
       || profile.n_cols != nell
       || profile.n_slices != nnode
       || richness.n_elem != ncluster) {
-    throw std::invalid_argument(
-        "need base[nbase,nnode], window/bias[ncluster,nnode], "
-        "power[nell,nnode], profile[nrichness,nell,nnode], "
-        "richness[ncluster], positive field counts and 0<=nlens<=nbase");
+    critical("{}: need base[nbase,nnode], "
+      "window/bias[ncluster,nnode], power[nell,nnode], profile[nrichness,nell,nnode], richness[ncluster], positive field counts and 0<=nlens<=nbase", "covariance_cluster_spectra_cpp");
+    exit(1);
   }
 
   // Reject nonfinite values before any output allocation or C operation.
@@ -218,23 +229,31 @@ py::dict covariance_cluster_spectra_cpp(
       || !bias.is_finite()
       || !power.is_finite()
       || !profile.is_finite()) {
-    throw std::invalid_argument("covariance inputs must be finite");
+    critical("{}: covariance inputs must be finite",
+      "covariance_cluster_spectra_cpp");
+    exit(1);
   }
   for (arma::uword index=0; index<nell; index++) {
     if (ell(index) < 2.0) {
-      throw std::invalid_argument("cluster spectrum ell must be >= 2");
+      critical("{}: cluster spectrum ell must be >= 2",
+        "covariance_cluster_spectra_cpp");
+      exit(1);
     }
   }
   for (arma::uword node=0; node<nnode; node++) {
     if (distance(node) <= 0.0
         || dchi(node) <= 0.0) {
-      throw std::invalid_argument("distance and dchi must be positive");
+      critical("{}: distance and dchi must be positive",
+        "covariance_cluster_spectra_cpp");
+      exit(1);
     }
   }
   for (arma::uword field=0; field<ncluster; field++) {
     if (richness(field) < 0
         || richness(field) >= nrichness) {
-      throw std::invalid_argument("richness indices must be in [0,nrichness)");
+      critical("{}: richness indices must be in [0,nrichness)",
+        "covariance_cluster_spectra_cpp");
+      exit(1);
     }
   }
 
@@ -348,18 +367,22 @@ py::dict covariance_cluster_moments_cpp(
       || bias.n_cols != nmass
       || profile.n_rows != na
       || profile.n_slices != nmass) {
-    throw std::invalid_argument(
-        "all counts must be positive; weight, bias and profile must "
-        "share their state and mass dimensions");
+    critical("{}: all counts must be positive; weight, "
+      "bias and profile must share their state and mass dimensions", "covariance_cluster_moments_cpp");
+    exit(1);
   }
   if (!weight.is_finite()
       || !bias.is_finite()
       || !profile.is_finite()) {
-    throw std::invalid_argument("covariance inputs must be finite");
+    critical("{}: covariance inputs must be finite",
+      "covariance_cluster_moments_cpp");
+    exit(1);
   }
   for (arma::uword entry=0; entry<weight.n_elem; entry++) {
     if (weight(entry) < 0.0) {
-      throw std::invalid_argument("selected mass weights must be nonnegative");
+      critical("{}: selected mass weights must be nonnegative",
+        "covariance_cluster_moments_cpp");
+      exit(1);
     }
   }
 
@@ -467,8 +490,9 @@ py::dict covariance_cluster_halo_samples_cpp(
       || k.n_cols < 1
       || lnm.n_elem < 1
       || dlnm.n_elem != lnm.n_elem) {
-    throw std::invalid_argument(
-        "need nonempty a[state], k[state,k], lnm[mass], dlnm[mass]");
+    critical("{}: need nonempty a[state], k[state,k], lnm[mass], dlnm[mass]",
+      "covariance_cluster_halo_samples_cpp");
+    exit(1);
   }
 
   // The C routine supports only this initialized model: massless
@@ -484,37 +508,46 @@ py::dict covariance_cluster_halo_samples_cpp(
       || cluster.mor[2] <= 0.0
       || cluster.mor_pivot_mass <= 0.0
       || cluster.mor_pivot_1pz <= 0.0) {
-    throw std::invalid_argument(
-        "initialize massless cosmology, NFW halos, richness bins and a "
-        "lognormal MOR with positive scatter and selection_model=0");
+    critical("{}: initialize massless cosmology, NFW "
+      "halos, richness bins and a lognormal MOR with positive scatter and selection_model=0", "covariance_cluster_halo_samples_cpp");
+    exit(1);
   }
   if (cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_FIXED
       && cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_NORMALIZED) {
-    throw std::invalid_argument("cluster hmf_alpha_mode must be 0 or 1");
+    critical("{}: cluster hmf_alpha_mode must be 0 or 1",
+      "covariance_cluster_halo_samples_cpp");
+    exit(1);
   }
   if (!a.is_finite()
       || !k.is_finite()
       || !lnm.is_finite()
       || !dlnm.is_finite()) {
-    throw std::invalid_argument("covariance inputs must be finite");
+    critical("{}: covariance inputs must be finite",
+      "covariance_cluster_halo_samples_cpp");
+    exit(1);
   }
   for (arma::uword state=0; state<a.n_elem; state++) {
     if (a(state) < limits.a_min
         || a(state) >= 1.0) {
-      throw std::invalid_argument("a must lie in [limits.a_min,1)");
+      critical("{}: a must lie in [limits.a_min,1)",
+        "covariance_cluster_halo_samples_cpp");
+      exit(1);
     }
   }
   for (arma::uword entry=0; entry<k.n_elem; entry++) {
     if (k(entry) < 0.0) {
-      throw std::invalid_argument("k must be nonnegative in core units");
+      critical("{}: k must be nonnegative in core units",
+        "covariance_cluster_halo_samples_cpp");
+      exit(1);
     }
   }
   for (arma::uword node=0; node<lnm.n_elem; node++) {
     if (lnm(node) < std::log(limits.halo_m[RANGE_MIN])
         || lnm(node) > std::log(limits.halo_m[RANGE_MAX])
         || dlnm(node) <= 0.0) {
-      throw std::invalid_argument(
-          "lnm must lie in the core sigma mass range; dlnm must be > 0");
+      critical("{}: lnm must lie in the core sigma mass "
+        "range; dlnm must be > 0", "covariance_cluster_halo_samples_cpp");
+      exit(1);
     }
   }
 

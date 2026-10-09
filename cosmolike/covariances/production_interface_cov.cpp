@@ -1,7 +1,13 @@
 #include <cmath>
 #include <memory>
-#include <stdexcept>
 #include <vector>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <pybind11/numpy.h>
 #include "production_interface_cov.hpp"
@@ -98,12 +104,13 @@ static py::dict covariance_limber_spectra(
       || ell.size() < 1
       || a_edges.ndim() != 1
       || a_edges.size() < 2) {
-    throw std::invalid_argument(
-        "covariance_limber_spectra needs 1D ell and a_edges arrays, "
-        "with at least one multipole and two scale-factor edges");
+    critical("{}: covariance_limber_spectra needs 1D ell "
+      "and a_edges arrays, with at least one multipole and two scale-factor edges", "covariance_limber_spectra");
+    exit(1);
   }
   if (nwindow < 2) {
-    throw std::invalid_argument("nwindow must be at least 2");
+    critical("{}: nwindow must be at least 2", "covariance_limber_spectra");
+    exit(1);
   }
   if (cosmology.chi == nullptr
       || cosmology.G == nullptr
@@ -112,14 +119,16 @@ static py::dict covariance_limber_spectra(
           && cosmology.lnP == nullptr)
       || redshift.clustering_nbin < 1
       || redshift.shear_nbin < 1) {
-    throw std::invalid_argument(
-        "initialize lens/source samples and set_cosmology before spectra");
+    critical("{}: initialize lens/source samples and "
+      "set_cosmology before spectra", "covariance_limber_spectra");
+    exit(1);
   }
   if (include_ia
       && nuisance.IA_MODEL != IA_MODEL_NLA
       && nuisance.IA_MODEL != IA_MODEL_TATT) {
-    throw std::invalid_argument(
-        "covariance_spectra supports NLA or TATT; initialize IA model 0 or 1");
+    critical("{}: covariance_spectra supports NLA or "
+      "TATT; initialize IA model 0 or 1", "covariance_limber_spectra");
+    exit(1);
   }
 
   // C accepts only finite ell >= 1, where the shear spin factor
@@ -127,7 +136,9 @@ static py::dict covariance_limber_spectra(
   for (py::ssize_t index=0; index<ell.size(); index++) {
     if (!std::isfinite(ell.data()[index])
         || ell.data()[index] < 1.0) {
-      throw std::invalid_argument("ell must contain finite values >= 1");
+      critical("{}: ell must contain finite values >= 1",
+        "covariance_limber_spectra");
+      exit(1);
     }
   }
 
@@ -140,8 +151,9 @@ static py::dict covariance_limber_spectra(
         || a_edges.data()[edge] >= 1.0
         || (edge > 0
             && a_edges.data()[edge] <= a_edges.data()[edge-1])) {
-      throw std::invalid_argument(
-          "a_edges must increase strictly inside (0,1)");
+      critical("{}: a_edges must increase strictly inside (0,1)",
+        "covariance_limber_spectra");
+      exit(1);
     }
   }
   if (nquad != 64
@@ -150,8 +162,9 @@ static py::dict covariance_limber_spectra(
       && nquad != 256
       && nquad != 512
       && nquad != 1024) {
-    throw std::invalid_argument(
-        "nquad must be a tabulated rule: 64,96,128,256,512,1024");
+    critical("{}: nquad must be a tabulated rule: 64,96,128,256,512,1024",
+      "covariance_limber_spectra");
+    exit(1);
   }
 
   // The hybrid non-Limber correction starts at ell=2, so lmax is either 0
@@ -164,14 +177,16 @@ static py::dict covariance_limber_spectra(
       || ((nonlimber_nchi-1) & (nonlimber_nchi-2)) != 0
       || !std::isfinite(nonlimber_chi_min)
       || nonlimber_chi_min <= 0.0) {
-    throw std::invalid_argument(
-        "non-Limber requires lmax=0 or >=2, nchi=2^n+1 >=65, chi_min>0");
+    critical("{}: non-Limber requires lmax=0 or >=2, "
+      "nchi=2^n+1 >=65, chi_min>0", "covariance_limber_spectra");
+    exit(1);
   }
   if (nonlimber_lmax > 0) {
     if (include_rsd
         || cosmology.Omega_nu != 0.0) {
-      throw std::invalid_argument(
-          "non-Limber covariance currently requires no RSD and mnu=0");
+      critical("{}: non-Limber covariance currently requires no RSD and mnu=0",
+        "covariance_limber_spectra");
+      exit(1);
     }
 
     // The correction is tabulated at integer multipoles 2..lmax and C
@@ -182,8 +197,9 @@ static py::dict covariance_limber_spectra(
       if (value <= nonlimber_lmax
           && value >= 2.0
           && value != std::floor(value)) {
-        throw std::invalid_argument(
-            "non-Limber correction requires integer ell below its cutoff");
+        critical("{}: non-Limber correction requires integer "
+          "ell below its cutoff", "covariance_limber_spectra");
+        exit(1);
       }
     }
   }
@@ -191,7 +207,9 @@ static py::dict covariance_limber_spectra(
   if (include_ia
       && nuisance.IA_MODEL == IA_MODEL_TATT
       && include_rsd) {
-    throw std::invalid_argument("Gaussian TATT currently requires no RSD");
+    critical("{}: Gaussian TATT currently requires no RSD",
+      "covariance_limber_spectra");
+    exit(1);
   }
 
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
