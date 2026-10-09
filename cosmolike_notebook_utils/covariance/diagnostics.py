@@ -114,6 +114,10 @@ def compare_covariances(matrix, reference):
     baseline = _symmetric_matrix(matrix=reference)
     if values.shape != baseline.shape:
         raise ValueError("matrix and reference must have the same dimensions")
+
+    # With b given, scipy's eigh solves matrix v = lambda reference v. It
+    # first takes a Cholesky factor of reference, which is where a
+    # reference that is not positive definite raises LinAlgError.
     eigenvalues = eigh(a=values, b=baseline, eigvals_only=True)
     return {
         "generalized_eigenvalues": eigenvalues,

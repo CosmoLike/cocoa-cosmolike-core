@@ -46,6 +46,10 @@ class DenseLogTable:
             raise ValueError("k must be finite and positive")
         if np.any(np.diff(wave) <= 0):
             raise ValueError("k must increase strictly")
+
+        # values may carry any leading axes, [...,ncoarse]; only the last
+        # must match k. A logarithmic table stores ln(values), so it needs
+        # every sample positive.
         if samples.ndim < 1 or samples.shape[-1] != len(wave):
             raise ValueError("the final values axis must match k")
         if not np.all(np.isfinite(samples)):
@@ -55,6 +59,8 @@ class DenseLogTable:
         if logarithmic and np.any(samples <= 0):
             raise ValueError("logarithmic interpolation needs positive values")
 
+        # Dense node i sits at ln(k) = minimum + i*step, i = 0..ndense-1,
+        # so __call__ finds the node below a query with one division.
         coordinate = np.log(wave)
         self.minimum_k = float(wave[0])
         self.maximum_k = float(wave[-1])

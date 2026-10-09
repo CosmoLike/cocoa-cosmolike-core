@@ -43,24 +43,49 @@ def gaussian_model(gaussian, nsource):
         model, nonfinite amplitudes or a wrong amplitude count, nonzero
         amplitudes with ia=none, or nonzero A2/B_TA with NLA.
     """
+    # --- 1. THE SUPPLIED MAPPING: ONLY THE FIVE KNOWN KEYS ---
+
+    # dict(gaussian) copies the caller's mapping, so nothing below writes
+    # into it; gaussian=None selects every default. set(choices)-allowed is
+    # the set of supplied keys outside the five allowed ones, so a misspelled
+    # key such as nonLimber or a1 raises instead of being ignored.
     choices = {} if gaussian is None else dict(gaussian)
     allowed = {"nonlimber", "ia", "A1", "A2", "B_TA"}
     unknown = set(choices)-allowed
     if unknown:
         raise ValueError(f"unknown Gaussian model choices: {sorted(unknown)}")
+
+    # --- 2. THE TWO SWITCHES: NON-LIMBER SPECTRA AND THE IA MODEL ---
+
+    # choices.get(key, default) returns the default when the key is absent:
+    # non-Limber spectra on, no IA. isinstance(nonlimber, bool) accepts only
+    # True and False, so an integer such as nonlimber: 1 in a YAML file raises.
     nonlimber = choices.get("nonlimber", True)
     model = choices.get("ia", "none")
     if not isinstance(nonlimber, bool):
         raise ValueError("gaussian.nonlimber must be true or false")
     if model not in ("none", "NLA", "TATT"):
         raise ValueError("gaussian.ia must be none, NLA or TATT")
+
+    # --- 3. IA AMPLITUDES: ONE FINITE CONSTANT PER SOURCE BIN ---
+
+    # The loop adds A1, A2 and B_TA as plain lists of nsource floats, zeros
+    # included, so set_gaussian_model always passes three explicit lists.
     result = {"nonlimber": nonlimber, "ia": model}
     for name in ("A1", "A2", "B_TA"):
+        # A scalar arrives as a 0-d array (ndim 0), and np.full copies it into
+        # every source bin. An array must already hold one value per bin; a
+        # two-element list is never read as a redshift power law.
         values = np.asarray(choices.get(name, 0.0), dtype=float)
         if values.ndim == 0:
             values = np.full(nsource, float(values))
         if values.shape != (nsource,) or not np.all(np.isfinite(values)):
             raise ValueError(f"gaussian.{name} needs a finite scalar or {nsource} values")
+
+        # Each model reads only some amplitudes. ia=none is installed as NLA
+        # with zero amplitudes (set_gaussian_model), so a nonzero value would
+        # switch IA on. NLA has no A2 or B_TA term, so a nonzero value there
+        # would be dropped without notice.
         if model == "none" and np.any(values != 0):
             raise ValueError("nonzero IA amplitudes require gaussian.ia=NLA or TATT")
         if model == "NLA" and name != "A1" and np.any(values != 0):
@@ -126,12 +151,20 @@ def initialize_forecast(interface, settings, project):
         nonzero mnu, or invalid densities or dispersions. These checks run
         before the interface state changes.
     """
+    # --- 1. INPUT CHECKS: THE INTERFACE IS NOT TOUCHED UNTIL ALL PASS ---
+
+    # getattr with a default reads False when the build does not define the
+    # flag at all. Without covariance support the C entry points used by
+    # compute_forecast are missing, so fail here and name the remedy.
     if not getattr(interface, "has_covariance", False):
         raise RuntimeError(
             "Covariance generation is not enabled in this interface. "
             "Follow the project's README covariance build steps, then "
             "restart the notebook kernel."
         )
+
+    # Redshift file names are relative to the project directory; the Path
+    # "/" operator joins the two pieces into one path.
     project = Path(project)
     lens_file = project/settings["lens_file"]
     source_file = project/settings["source_file"]
@@ -139,6 +172,10 @@ def initialize_forecast(interface, settings, project):
         raise FileNotFoundError(
             f"forecast needs redshift files {lens_file} and {source_file}"
         )
+
+    # One density per tomographic bin fixes the bin counts, and the linear
+    # bias list must match the lens count. The halo-model terms assume
+    # massless neutrinos.
     nlens = len(settings["lens_density_arcmin2"])
     nsource = len(settings["source_density_arcmin2"])
     if nlens < 1 or nsource < 1 or len(settings["bias"]) != nlens:
@@ -157,6 +194,8 @@ def initialize_forecast(interface, settings, project):
         sigma_component=settings["sigma_e_component"],
     )
 
+    # --- 2. CAMB TABLES, REFINED IN log k FOR THE CORE READERS ---
+
     # The ordered tuple is the documented CAMB/set_cosmology interchange.
     # Keep the tables so a notebook can archive the inputs of its forecast.
     arrays = get_camb_cosmology(**cosmology)
@@ -172,11 +211,20 @@ def initialize_forecast(interface, settings, project):
         "omegan2",
         "lnP_linear_cb",
     )
+    # zip pairs each name with the array in the same position, and dict
+    # turns those pairs into a mapping. A cubic spline in log10(k) splits
+    # each CAMB k interval into power_refinement intervals; z nodes stay.
     tables = refine_power_tables(
         tables=dict(zip(names, arrays)),
         refinement=settings["power_refinement"],
     )
 
+    # --- 3. INSTALL THE FORECAST IN THE INTERFACE ---
+
+    # initial_setup resets every core struct, so it precedes all other init_
+    # and set_ calls. IA starts as NLA with zero amplitudes and is replaced
+    # by set_gaussian_model below. Bias model code 0 in each of the five
+    # slots (b1, b2, bs2, b3, bmag) keeps one constant amplitude per lens bin.
     interface.initial_setup()
     interface.init_accuracy_boost(
         accuracy_boost=settings["core_accuracyboost"],
@@ -185,6 +233,10 @@ def initialize_forecast(interface, settings, project):
     interface.init_probes(possible_probes="3x2pt")
     interface.init_IA(ia_model=0, ia_redshift_evolution=2, ia_code=0)
     interface.init_bias(bias_model=[0, 0, 0, 0, 0])
+
+    # The project's n(z) file convention: the interpolant of the histogram,
+    # and whether the file's z column holds left bin edges or sample points.
+    # is_linear=False selects the nonlinear matter power.
     interface.init_photoz_conventions(
         interpolation_type=settings["photoz_interpolation"],
         zmid_convention=settings["photoz_zmid"],
@@ -194,10 +246,17 @@ def initialize_forecast(interface, settings, project):
         lens_multihisto_file=str(lens_file), lens_ntomo=nlens,
         source_multihisto_file=str(source_file), source_ntomo=nsource,
     )
+
+    # **tables passes every refined table as a keyword argument named by
+    # its key (log10k_2D=..., z_2D=..., and so on).
     interface.set_cosmology(
         omegam=cosmology["omegam"], omegab=cosmology["omegab"],
         H0=cosmology["H0"], **tables,
     )
+
+    # Nuisance state of the forecast: linear bias B1 per lens bin, and zero
+    # for every other bias term, photo-z shift and shear calibration.
+    # [0.0]*n is a list of n zeros.
     lens_zero = [0.0]*nlens
     source_zero = [0.0]*nsource
     interface.set_nuisance_bias(
@@ -206,6 +265,9 @@ def initialize_forecast(interface, settings, project):
     )
     set_gaussian_model(interface=interface, settings=settings)
     interface.set_nuisance_shear_photoz(bias=source_zero)
+
+    # The DESxPlanck and DES cluster setters require a stretch argument;
+    # the other projects' setters accept only the photo-z shift.
     if "lens_photoz_stretch" in settings:
         interface.set_nuisance_clustering_photoz(
             bias=lens_zero, stretch=settings["lens_photoz_stretch"],
@@ -242,8 +304,12 @@ def compute_forecast(interface, settings, space="real", rows=None,
         Reapplies the core accuracy boost and the Gaussian IA model to
         interface before the calculation.
     """
+    # --- 1. THE CORE STATE, REAPPLIED ON EVERY CALL ---
+
+    # The space is checked first, so a misspelled space leaves the core alone.
     if space not in ("real", "fourier"):
         raise ValueError("space must be 'real' or 'fourier'")
+
     # Reapply the core accuracy boost (the resolution of the C table
     # readers) and the Gaussian IA model on every calculation. The caller
     # must reinitialize when changing power_refinement; those input tables
@@ -254,10 +320,16 @@ def compute_forecast(interface, settings, space="real", rows=None,
         integration_accuracy=settings["integration_accuracy"],
     )
     set_gaussian_model(interface=interface, settings=settings)
+
     # The production bindings belong to the same compiled module, so they
     # read the core state configured above.
     if backend is not None:
         interface = backend
+
+    # --- 2. MEASURED ROWS AS ONE CONTIGUOUS int32 [nrow,3] TABLE ---
+
+    # Each row is (probe, field A, field B). Without a caller subset the
+    # project's full galaxy/shear layout is measured.
     nlens = len(settings["lens_density_arcmin2"])
     nsource = len(settings["source_density_arcmin2"])
     if rows is None:
@@ -269,26 +341,43 @@ def compute_forecast(interface, settings, space="real", rows=None,
         # space, so the xi- rows (probe 1) are dropped.
         if space == "fourier":
             rows = rows[rows[:, 0] != 1]
+
+    # Caller rows may be a list or an int64 array. dtype.kind is "i" for
+    # signed and "u" for unsigned integers; anything else, floats included,
+    # raises, because the int32 cast below would truncate it without notice.
     rows = np.asarray(rows)
     if rows.dtype.kind not in "iu":
         raise ValueError("observable rows must contain integer probe and field IDs")
     rows = np.ascontiguousarray(rows, dtype=np.int32)
+
+    # --- 3. WHITE NOISE AND SETTINGS IN THE UNITS THE C CODE READS ---
+
+    # One white-noise power per field, lenses first (see noise_powers).
     noise = noise_powers(
         lens_density=settings["lens_density_arcmin2"],
         source_density=settings["source_density_arcmin2"],
         sigma_component=settings["sigma_e_component"],
     )
+
+    # resolved is a shallow copy of settings plus derived values: (pi/180)^2
+    # converts deg^2 to sr and pi/(180*60) converts arcmin to rad. It is
+    # returned with the result, so a saved forecast records its inputs.
     resolved = dict(settings)
     resolved["space"] = space
     resolved["mnu"] = settings["cosmology"]["mnu"]
     resolved["area_sr"] = settings["area_deg2"]*(np.pi/180.0)**2
     resolved["edges_rad"] = settings["theta_edges_arcmin"]*np.pi/(180.0*60.0)
 
+    # --- 4. G, SSC AND cNG IN THE REQUESTED SPACE ---
+
     if space == "real":
         result = realspace_covariance(
             interface=interface, settings=resolved, rows=rows, noise=noise,
             progress=progress,
         )
+        # The plotted coordinate is each bin's geometric center
+        # sqrt(lower*upper) in arcmin: edges[:-1] holds the lower edges and
+        # edges[1:] the upper ones.
         edges = settings["theta_edges_arcmin"]
         result["coordinate"] = np.sqrt(edges[:-1]*edges[1:])
         result["coordinate_label"] = r"$\theta\;[\mathrm{arcmin}]$"

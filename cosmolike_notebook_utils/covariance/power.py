@@ -37,18 +37,31 @@ def refine_power_tables(tables, refinement=8):
     Original samples are assigned explicitly to retain their exact values
     when the global boost divides each interval again.
     """
+    # --- 1. THE REFINEMENT FACTOR: A POSITIVE INTEGER ---
+
+    # A bool passes isinstance(int), so it is rejected explicitly:
+    # refinement=True silently meaning one would hide a user mistake.
     if (isinstance(refinement, (bool, np.bool_))
             or not isinstance(refinement, (int, np.integer))
             or refinement < 1):
         raise ValueError("power refinement must be a positive integer")
+
+    # dict(tables) copies the mapping only; the arrays inside stay shared.
+    # Entries are replaced below, never written into, so the caller's
+    # dictionary and arrays keep their values.
     result = dict(tables)
     if refinement == 1:
         return result
+
+    # --- 2. THE INPUT k GRID: FINITE, INCREASING AND UNIFORM ---
 
     log10k = np.asarray(tables["log10k_2D"], dtype=float)
     if (log10k.ndim != 1 or log10k.size < 2
             or not np.all(np.isfinite(log10k))):
         raise ValueError("log10k_2D needs at least two finite samples")
+
+    # Equal steps in log10(k) let every interval split into the same number
+    # of equal parts, so each original node is also a dense node.
     steps = np.diff(log10k)
     if steps[0] <= 0 or not np.allclose(steps, steps[0],
                                            rtol=1.e-10, atol=0.0):
@@ -56,11 +69,17 @@ def refine_power_tables(tables, refinement=8):
     nz = len(tables["z_2D"])
     nk = len(log10k)
 
+    # --- 3. THE DENSE log10(k) GRID ---
+
     # Subdivide intervals, not the number of points: both endpoints count
     # only once. Copy the original anchors to avoid rounding them anew.
+    # dense[::refinement] addresses every refinement-th entry, starting at
+    # the first: exactly the positions of the original nodes.
     dense = np.linspace(log10k[0], log10k[-1], refinement*(nk-1)+1)
     dense[::refinement] = log10k
     result["log10k_2D"] = dense
+
+    # --- 4. ONE SPLINE ALONG k PER REDSHIFT, FOR EACH POWER TABLE ---
 
     # Each redshift row describes P(k) at one time. Splining along k only
     # leaves the original time sampling and the growth inputs unchanged.
@@ -68,9 +87,22 @@ def refine_power_tables(tables, refinement=8):
         values = np.asarray(tables[name], dtype=float)
         if values.shape != (nz*nk,) or not np.all(np.isfinite(values)):
             raise ValueError(f"{name} must contain nz*nk finite log powers")
+
+        # The flat array has redshift varying fastest. order="F" fills the
+        # [nz,nk] table column by column, so values[iz,ik] = flat[iz+nz*ik]:
+        # one row per redshift, one column per wavenumber.
         values = values.reshape((nz, nk), order="F")
+
+        # axis=1 fits every redshift row against log10(k) in one call; the
+        # result is [nz,len(dense)].
         spline = CubicSpline(x=log10k, y=values, axis=1, bc_type="natural")
         refined = spline(dense)
+
+        # Write the input back on the original-node columns so those values
+        # stay exact instead of carrying the spline's evaluation rounding.
         refined[:, ::refinement] = values
+
+        # ravel(order="F") flattens column by column: redshift fastest again,
+        # the same layout as the input arrays.
         result[name] = refined.ravel(order="F")
     return result

@@ -70,11 +70,23 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     node, measure = interface.covariance_integration_rule(
         nquad=settings['halo_mass_nquad'],
     )
+
+    # The rule's nodes x lie on [-1,1]. A panel of center c and half-width h
+    # maps x to c+h*x and a weight w to h*w; each panel spans half the
+    # interval, so h is a quarter of upper-lower. centers[:, None] is a [2,1]
+    # column and node a [nquad] row, so their sum is a [2,nquad] table, and
+    # ravel lists the first panel's nodes, then the second's. np.tile repeats
+    # the scaled weights twice, in the same order.
     midpoint = 0.5*(lower+upper)
     half_width = 0.25*(upper-lower)
     centers = np.array([0.5*(lower+midpoint), 0.5*(midpoint+upper)])
     lnm = (centers[:, None]+half_width*node).ravel()
     dlnm = np.tile(half_width*measure, reps=2)
+
+    # response is [richness,state,k]. active holds the indices of the radial
+    # states where some catalog has positive density: np.any over axis 0,
+    # the catalog axis of density [ncount,nstate], leaves one flag per
+    # state, and np.flatnonzero returns the positions of the True flags.
     nstate = geometry.shape[1]
     nrichness = catalogs['nrichness']
     response = np.zeros((nrichness, nstate, len(coarse_ell)))
@@ -87,17 +99,26 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     # Batch size affects storage, not quadrature or floating-point sum order.
     for start in range(0, len(active), 16):
         states = active[start:start+16]
+        # Limber wavenumber k=(ell+1/2)/f_K for every coarse ell on each shell
+        # of the batch: [1,nk] divided by [nbatch,1] (f_K is geometry row 2)
+        # broadcasts to a [nbatch,nk] table.
         wave = (coarse_ell[None, :]+0.5)/geometry[2, states, None]
         samples = interface.covariance_cluster_halo_samples(
             a=np.ascontiguousarray(geometry[0, states]),
             k=np.ascontiguousarray(wave), lnm=lnm, dlnm=dlnm,
         )
+        # **samples passes the weight, bias and profile arrays of that dict
+        # as keyword arguments of the same names.
         moments = interface.covariance_cluster_moments(**samples)
         number = moments['density']
         if np.any(number <= 0.0):
             raise ValueError(
                 "selected mass rule has an empty bin; check cluster_lnm_bounds"
             )
+
+        # J11 is [state,richness,k] and number [state,richness]; the added
+        # None axis divides every k of a profile by its own abundance n.
+        # transpose(1, 0, 2) reorders to [richness,state,k], as in response.
         own = moments['J11']/number[:, :, None]
         response[:, states] = own.transpose(1, 0, 2)
 
@@ -107,6 +128,8 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     projected = interface.covariance_project(
         left=transform, right=right, weight=np.ones(len(coarse_ell)),
     )
+    # projected is [nbin,nrichness*nstate]; reshape splits its columns back
+    # into [nbin,nrichness,nstate], and transpose puts richness first.
     return projected.reshape(len(transform), nrichness, nstate).transpose(1, 0, 2)
 
 
@@ -152,12 +175,20 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     writes no file and corrects no eigenvalue. Cosmology and catalog
     initialization stay with the caller.
     """
+    # --- 0. Resolved settings, model limits and input checks ---
+
+    # resolved is a shallow copy of settings plus derived values in the
+    # units the C code reads (sr, rad); it is returned and saved with the
+    # result. (pi/180)^2 converts deg^2 to sr.
     resolved = dict(settings)
     resolved['mnu'] = settings['cosmology']['mnu']
     resolved['area_sr'] = settings['area_deg2']*(np.pi/180.0)**2
     # pi radians = 180 degrees = 10800 arcminutes.
     resolved['edges_rad'] = np.asarray(settings['theta_edges_arcmin'])*np.pi/10800.0
     resolved['space'] = 'real'
+
+    # The approximation's limits travel with the result, so every saved
+    # forecast states which terms it omits (see the module docstring).
     resolved['cluster_cng_model'] = 'linear tracer biases times matter trispectrum'
     resolved['count_cross_model'] = 'SSC only'
     resolved['omitted_terms'] = [
@@ -166,8 +197,12 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         'all-pairs non-Limber corrections',
         'tidal, nonlinear-bias and environmental-selection responses',
     ]
+
+    # The halo-model tables are built for massless neutrinos, where the
+    # CDM-plus-baryon density rho_cb equals the total matter density rho_m.
     if resolved['mnu'] != 0.0:
         raise ValueError("cluster halo forecast requires mnu=0")
+
     # Counts and selected profiles also read shared core tables. Refine
     # those tables with the global boost, retaining the independent core
     # quadrature level selected by integration_accuracy.
@@ -175,12 +210,21 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         accuracy_boost=settings['core_accuracyboost'],
         integration_accuracy=settings['integration_accuracy'],
     )
+
+    # Selected mass interval in ln(M/[Msun/h]): two finite values, lower first.
     mass_bounds = np.asarray(settings['cluster_lnm_bounds'], dtype=float)
     if (mass_bounds.shape != (2,) or not np.all(np.isfinite(mass_bounds))
             or mass_bounds[1] <= mass_bounds[0]):
         raise ValueError("cluster_lnm_bounds needs two increasing finite log masses")
+
+    # The halo tables use only the table nodes through the first one at or
+    # above ell_max (non_gaussian_multipoles), not the whole boosted grid.
     coarse_ell = non_gaussian_multipoles(samples=settings['ng_ell'],
                                         ell_max=settings['ell_max'])
+
+    # The Y operator localizes the cluster-lensing rows, so it must act on
+    # the same angular bins as this forecast. np.bool_ is listed because a
+    # numpy boolean is not an instance of Python's bool.
     if not isinstance(settings['cluster_ytransform'], (bool, np.bool_)):
         raise ValueError("cluster_ytransform must be True or False")
     operator = None
@@ -191,11 +235,17 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             raise ValueError(
                 "Y operator shape differs from bins; initialize matching binning"
             )
+
+    # Everything above used the notebook interface. The direct bindings
+    # share its compiled core state, so the calculation may switch to them.
     if backend is not None:
         interface = backend
     started = time.perf_counter()
     stages = {}
 
+    # checkpoint is a closure: it reads started and progress and writes into
+    # stages, all variables of this call, so each stage passes only its name
+    # and its own start time.
     def checkpoint(name, since):
         """Record a completed stage and report time since the forecast began.
 
@@ -215,12 +265,22 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         nwindow=settings['nwindow'], include_ia=False, include_rsd=False,
         linear=False,
     )
+
+    # snapshot holds geometry [4,nstate] (a, chi, f_K and dchi, lengths in
+    # c/H0) and base windows [3,nfield,nstate] whose rows are density,
+    # lensing and NLA; the galaxy fields come first, then the sources.
     geometry = snapshot['geometry']
     base = snapshot['windows']
     nlens = snapshot['nlens']
     nsource = base.shape[1]-nlens
+    # For galaxy fields, base row 1 holds the magnification window. The SSC
+    # and cNG windows below use only the density row of a galaxy field, so a
+    # nonzero magnification would be dropped there without notice.
     if np.any(base[1, :nlens] != 0.0):
         raise ValueError("cluster forecast requires zero galaxy magnification")
+
+    # Selected cluster catalogs on the same radial states. Their ncount
+    # fields sit between the galaxies and the sources in the joint order.
     catalogs = selected_windows(interface=interface, geometry=geometry)
     ncount = len(catalogs['number_per_sr'])
     layout = observable_layout(
@@ -230,6 +290,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         excluded_gammat=settings['excluded_gammat'],
     )
     rows = layout['rows']
+
+    # Spectra of every field pair, clusters included. observed_spectra treats
+    # the first nlens+ncount fields as scalars and applies the spin-2 shear
+    # factor to the source legs only.
     spectra = all_pairs_spectra(interface=interface, ell=ell, snapshot=snapshot,
                                 catalogs=catalogs)
     signal = observed_spectra(spectra=spectra, ell=ell, nlens=nlens+ncount)
@@ -254,8 +318,13 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         edges_rad=resolved['edges_rad'], ell_max=settings['ell_max'],
         nquad=settings['angle_nquad'],
     )[:, :, 2:]
+    # The [:, :, 2:] slice is a strided view into the full operator; the C
+    # bindings read a dense copy in C order.
     kernels = np.ascontiguousarray(kernels)
     nbin = kernels.shape[1]
+
+    # The footprint is modeled as a spherical cap of area area_sr. Its own
+    # operator runs to mask_ell_max, a cutoff separate from the signal's.
     mask = cap_mask(area_sr=resolved['area_sr'], ell_max=settings['mask_ell_max'])
     mask_operator = interface.covariance_realspace_operator(
         edges_rad=resolved['edges_rad'], ell_max=settings['mask_ell_max'],
@@ -266,6 +335,9 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         mask_cl=mask, area_sr=resolved['area_sr'], edges_rad=resolved['edges_rad'],
         scalar_kernel=np.ascontiguousarray(mask_operator[3]),
     )
+
+    # Gaussian blocks of all two-point rows in one C call; the pair areas
+    # supply the pure-noise term on each bin, as in gaussian.realspace_block.
     gaussian = interface.covariance_gaussian_real(
         spectra=signal, noise=noise, rows=rows, operators=kernels,
         ell_min=2, area_sr=resolved['area_sr'], pair_area_sr2=pair_area,
@@ -276,6 +348,9 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     for probe in range(4):
         selected = np.flatnonzero(rows[:, 0] == probe)
         fields = rows[selected, 1:]
+        # fields is [nselected,2], the (A,B) IDs of each selected row. Indexing
+        # signal[:, A, B] with the two ID arrays picks one spectrum per row,
+        # [nell,nselected]; .T makes it [nselected,nell], one row per mean.
         data = np.ascontiguousarray(signal[:, fields[:, 0], fields[:, 1]].T)
         means[selected] = interface.covariance_project(
             left=data, right=kernels[probe], weight=np.ones(len(ell)),
@@ -296,11 +371,15 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         if progress is not None:
             progress(f'Matter shell {completed}/{total}', time.perf_counter()-started)
 
+    # compressed is [4,nbin,ncoarse]; the reshape stacks the four probes into
+    # one [4*nbin,ncoarse] operator, so all probes share one matter pass.
     matter = _matter_covariance_tables(
         interface=interface, settings=resolved, geometry=geometry,
         coarse_ell=coarse_ell, transform=compressed.reshape(4*nbin, -1),
         mask_nell=len(mask), progress=report_matter,
     )
+    # Only cluster-lensing rows carry the own-profile term, so it needs the
+    # gamma_t operators (probe 2) alone.
     own = _own_profile_response(
         interface=interface, settings=resolved, geometry=geometry, catalogs=catalogs,
         coarse_ell=coarse_ell, transform=np.ascontiguousarray(compressed[2]),
@@ -315,13 +394,23 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     # a shear leg. Counts are absolute numbers and receive no such
     # subtraction.
     tick = time.perf_counter()
+    # Geometry rows 2 and 3: f_K and the radial quadrature weight dchi, in c/H0.
     distance = geometry[2]
     dchi = geometry[3]
     nstate = len(distance)
+
+    # Joint windows [nfield,nstate] in field order galaxies, clusters,
+    # sources: galaxy density, cluster window times its bias, source lensing.
+    # mean_window is a copy with the source legs zeroed, since U=0 for shear.
     windows = np.concatenate((base[0, :nlens], catalogs['window']*catalogs['bias'],
                                base[1, nlens:]))
     mean_window = windows.copy()
     mean_window[nlens+ncount:] = 0.0
+
+    # pair[r] = W_A*W_B on every shell for row r, [nrow,nstate]. Indexing the
+    # [probe,nbin,nstate] responses with rows[:, 0] gives each row the
+    # response of its own probe, [nrow,nbin,nstate]. The Limber measure is
+    # dchi*W_A*W_B/f_K^2; dchi enters later as the projection weight.
     pair = windows[rows[:, 1]]*windows[rows[:, 2]]
     projected_response = matter['response'].reshape(4, nbin, nstate)
     shell = pair[:, None, :]*projected_response[rows[:, 0]]/distance**2
@@ -337,9 +426,19 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             source = second-ncount
             local_window = catalogs['window'][category]*base[1, source]/distance**2
             shell[row] += local_window*own[category % catalogs['nrichness']]
+
+    # The observed-number subtraction (U_A+U_B)*C_AB described above. The
+    # window sum is [nrow,nstate] and means [nrow,nbin]; the None axes
+    # broadcast their product to [nrow,nbin,nstate], the shape of shell.
     shell -= ((mean_window[rows[:, 1]]+mean_window[rows[:, 2]])[:, None, :]
               *means[:, :, None])
+    # One row per two-point entry, bins fastest within each measured row:
+    # the order of two_point_positions.
     shell = np.ascontiguousarray(shell.reshape(len(rows)*nbin, nstate))
+
+    # Long-mode variance per radial shell seen through the cap mask,
+    # sigma_b^2(chi) in c/H0. Counts use the same shells and variance, so
+    # counts and two-point functions respond to one set of long modes.
     variance = interface.covariance_ssc_mask_variance(
         mask_cl=mask, area_sr=resolved['area_sr'],
         distance=np.ascontiguousarray(distance), power=matter['long_power'],
@@ -349,6 +448,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         density=catalogs['density'], derivative=catalogs['derivative'],
         area_sr=resolved['area_sr'], background_variance=variance,
     )
+
+    # Two-point and count responses stacked into one [ndata,nstate] table in
+    # data-vector order. SSC is then one projection: entry (i,j) is the sum
+    # over shells of R_i*dchi*sigma_b^2*R_j.
     two_point = layout['two_point_positions']
     count_positions = layout['count_positions']
     ndata = len(two_point)+len(count_positions)
@@ -358,6 +461,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     ssc = interface.covariance_project(
         left=response, right=response, weight=dchi*variance,
     )
+    # Entries (i,j) and (j,i) multiply in different orders and can differ by
+    # roundoff. np.triu keeps the upper triangle with the diagonal; adding
+    # the transpose of the strict upper triangle (k=1) fills the lower one,
+    # so the matrix is exactly symmetric.
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T
 
     # In the biased-tracer cNG approximation the matter trispectrum has
@@ -369,6 +476,11 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         interface=interface, rows=rows, pair_window=pair,
         projected=matter['projected'], measure=dchi/(resolved['area_sr']*distance**6),
     )
+
+    # np.ix_(p, p) addresses the sub-block at rows p and columns p, so each
+    # piece lands at its data-vector positions. Under the stated
+    # approximation G has no count/two-point block and cNG no count rows;
+    # those entries stay zero.
     joint_gaussian = np.zeros((ndata, ndata))
     joint_gaussian[np.ix_(two_point, two_point)] = gaussian
     joint_gaussian[np.ix_(count_positions, count_positions)] = counts['poisson']
@@ -379,6 +491,9 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         'ssc': ssc,
         'cng': joint_cng,
     }
+
+    # Means in the same data-vector order; means.ravel() lists bins fastest
+    # within each row, matching two_point_positions.
     joint_signal = np.empty(ndata)
     joint_signal[two_point] = means.ravel()
     joint_signal[count_positions] = counts['mean']
@@ -391,6 +506,8 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     tick = time.perf_counter()
     valid = np.arange(ndata)
     if settings['cluster_ytransform']:
+        # positions is [ncluster_lensing_row,nbin]: the data-vector indices
+        # of every cluster-lensing row, one bin per column.
         positions = layout['cluster_lensing_positions']
         for name, matrix in components.items():
             transformed = localize_covariance(
@@ -409,11 +526,20 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             weight=np.ones(nbin),
         )
         joint_signal[positions] = localized_mean
+        # The per-row means are read back from the localized vector, so the
+        # returned signal matches the matrices. positions[:, -1] is the last
+        # Y bin of each cluster-lensing row, the exact null, removed only
+        # from valid_indices.
         means = joint_signal[two_point].reshape(len(rows), nbin)
         valid = np.delete(arr=valid, obj=positions[:, -1])
     components['total'] = components['gaussian']+components['ssc']+components['cng']
     checkpoint('localization', tick)
     checkpoint('total', started)
+
+    # The returned mapping: the components plus the layout entries, means,
+    # geometry and resolved settings. coordinate is each bin's geometric
+    # center sqrt(lower*upper) in arcmin, from the lower edges edges[:-1]
+    # and the upper edges edges[1:].
     edges = settings['theta_edges_arcmin']
     components.update(layout)
     components.update({
@@ -447,6 +573,9 @@ def save_forecast(result, filename):
         ValueError if a result array holds Python objects, which would need
         pickle to load.
     """
+    # Arrays and strings are archived under their result names. The other
+    # entries, the settings and stage-time dicts, are written as JSON text
+    # below. Object arrays are refused: numpy.load would need pickle.
     arrays = {}
     for name, value in result.items():
         if isinstance(value, np.ndarray):
@@ -455,6 +584,11 @@ def save_forecast(result, filename):
             arrays[name] = value
         elif isinstance(value, str):
             arrays[name] = value
+
+    # default=_json_array converts numpy values json cannot encode itself;
+    # allow_nan=False makes a NaN or infinity raise instead of writing
+    # nonstandard JSON. **arrays passes each entry as a keyword argument,
+    # so its key becomes the array name inside the .npz file.
     arrays['settings_json'] = json.dumps(
         result['settings'], default=_json_array, allow_nan=False,
     )

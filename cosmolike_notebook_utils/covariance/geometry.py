@@ -36,6 +36,9 @@ def noise_powers(lens_density, source_density, sigma_component):
     lens = np.asarray(a=lens_density, dtype=float)
     source = np.asarray(a=source_density, dtype=float)
     dispersion = np.asarray(a=sigma_component, dtype=float)
+
+    # Each source bin pairs its density with its own dispersion. A zero or
+    # negative input would give an infinite or negative noise power.
     if lens.ndim != 1 or source.ndim != 1 or dispersion.shape != source.shape:
         raise ValueError("supply 1D densities and one dispersion per source bin")
     if len(lens) == 0 or len(source) == 0:
@@ -43,6 +46,10 @@ def noise_powers(lens_density, source_density, sigma_component):
     for values in (lens, source, dispersion):
         if not np.all(np.isfinite(values)) or np.any(values <= 0):
             raise ValueError("densities and component dispersions must be positive")
+
+    # One steradian holds (180*60/pi)^2 square arcminutes, so a density per
+    # arcmin^2 times this factor is the density per steradian the C code uses.
+    # Lens noise fills the first nlens entries and source noise the rest.
     arcmin2_per_sr = (180.0*60.0/np.pi)**2
     result = np.empty(shape=len(lens)+len(source), dtype=float)
     result[:len(lens)] = 1.0/(lens*arcmin2_per_sr)
@@ -78,6 +85,10 @@ def cap_mask(area_sr, ell_max):
         raise ValueError("area_sr must be finite and inside (0,4*pi]")
     if not isinstance(ell_max, (int, np.integer)) or ell_max < 0:
         raise ValueError("ell_max must be a nonnegative integer")
+
+    # boundary is x_c, the cosine of the cap radius. P_0=1 and P_1(x)=x
+    # start the recurrence; degrees run to ell_max+1 because the integral
+    # for L=ell_max needs P_{L+1}.
     boundary = 1.0-area_sr/(2.0*np.pi)
     polynomial = np.empty(shape=ell_max+2, dtype=float)
     polynomial[0] = 1.0
@@ -129,7 +140,12 @@ def angular_rule(nquad, npanel, interface):
         raise ValueError("nquad must be a precomputed GSL rule of at least 64 nodes")
     if not isinstance(npanel, (int, np.integer)) or not 1 <= npanel <= 40:
         raise ValueError("npanel must be an integer between 1 and 40")
+
+    # The GSL rule lives on [-1,1], with weights summing to two.
     nodes, weights = interface.covariance_integration_rule(nquad=nquad)
+
+    # gaps[j] = pi/2^j for j=0..npanel-1, so pi-gaps gives the lower edges
+    # 0, pi/2, 3pi/4, ...; np.append closes the last panel at theta=pi.
     gaps = np.pi*2.0**(-np.arange(npanel))
     edges = np.append(arr=np.pi-gaps, values=np.pi)
     theta = np.empty(shape=nquad*npanel, dtype=float)
@@ -141,10 +157,21 @@ def angular_rule(nquad, npanel, interface):
     for panel in range(npanel):
         lower = edges[panel]
         width = edges[panel+1]-lower
+        # rows addresses this panel's nquad consecutive output entries.
         rows = slice(panel*nquad, (panel+1)*nquad)
+
+        # Affine map from [-1,1] onto [lower, lower+width]. The weights
+        # scale by width/2, and the extra 1/pi turns dtheta into dtheta/pi.
         theta[rows] = lower+width*(nodes+1.0)/2.0
         measure[rows] = weights*width/(2.0*np.pi)
+
+        # 1+cos(theta) = 2 sin^2((pi-theta)/2). Near theta=pi, adding 1 to a
+        # cosine close to -1 would cancel most digits; the sine form carries
+        # only the rounding error of the small angle pi-theta.
         corner[rows] = 2.0*np.sin((np.pi-theta[rows])/2.0)**2
+
+    # A node that rounds to pi gives corner=0, so |K+Q| would vanish for
+    # K=Q and P(|K+Q|) would be read at k=0, outside every power table.
     if np.any(corner <= 0.0):
         raise ValueError("angular nodes round to pi; reduce npanel or nquad")
     return theta, measure, corner
