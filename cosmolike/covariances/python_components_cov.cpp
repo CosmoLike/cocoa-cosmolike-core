@@ -184,6 +184,26 @@ void bind_covariance_components(py::module_& module)
       "Linear power for a base-10 log-wavenumber matrix plus one shift.",
       py::arg("a"), py::arg("log10k"), py::arg("shift"));
 
+  // Fused form: P(|K+Q|) evaluated block by block from the log table;
+  // bit-for-bit covariance_power_logk + covariance_tree_averages.
+  module.def("covariance_tree_averages_logk",
+      [](const py::object& k, const py::object& pk,
+         const py::object& corner, const py::object& weight,
+         const double a, const py::object& log10s,
+         const double shift) -> py::object {
+        return py::cast(covariance_tree_averages_logk_cpp(
+            notebook_input_cov<arma::Mat<double>>(k, 2),
+            notebook_input_cov<arma::Mat<double>>(pk, 2),
+            notebook_input_cov<arma::Col<double>>(corner, 1),
+            notebook_input_cov<arma::Col<double>>(weight, 1),
+            a,
+            notebook_input_cov<arma::Mat<double>>(log10s, 2),
+            shift));
+      },
+      "Planar P/B/T averages [3,npair] from the log table plus one shift.",
+      py::arg("k"), py::arg("pk"), py::arg("corner"), py::arg("weight"),
+      py::arg("a"), py::arg("log10s"), py::arg("shift"));
+
   // k and pk [2,npair], corner and weight [nangle], ps [npair,nangle]
   // -> averages [3,npair]: <P>, <B_tree>, <T_tree>.
   module.def("covariance_tree_averages", [](

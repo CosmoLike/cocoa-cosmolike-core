@@ -270,12 +270,14 @@ def _matter_covariance_tables(interface, settings, geometry, coarse_ell,
             # changing only its physical length scale at this distance.
             linear = interface.covariance_power(a=a, k=k, linear=True)
             pk = np.array([linear[first], linear[second]])
-            internal = interface.covariance_power_logk(
-                a=a, log10k=log_magnitude, shift=-np.log10(distance)
-            )
-            angular = interface.covariance_tree_averages(
+            # The fused call evaluates P(|K+Q|) block by block inside C,
+            # so the npair-by-nangle power table never exists in full;
+            # its values and the three averages are bit-for-bit those of
+            # covariance_power_logk followed by covariance_tree_averages.
+            angular = interface.covariance_tree_averages_logk(
                 k=np.array([k[first], k[second]]), pk=pk, corner=corner,
-                weight=angle_weight, ps=internal,
+                weight=angle_weight, a=a, log10s=log_magnitude,
+                shift=-np.log10(distance),
             )
             terms = interface.covariance_halo_trispectrum(
                 pk=pk, i11=np.array([single[row, first], single[row, second]]),

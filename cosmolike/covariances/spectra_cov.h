@@ -78,6 +78,26 @@ void linear_power_logk_rows_cov(
     double* const* power            // caller-owned output rows
   );
 
+// tree_averages_cov fed by linear_power_logk_rows_cov one even block of
+// pairs at a time, so the npair x nangle power table never exists in
+// full: its 127 MB write and re-read per shell become one cache-resident
+// 2 MB buffer, and only the log-wavenumber table streams from memory.
+// Results are bit-for-bit those of the two separate stages (the .c
+// header gives the argument). Shapes follow the two stages; log10s is
+// [npair][nangle] and shift is -log10(f_K). Call serially.
+void tree_averages_logk_cov(
+    const int npair,                 // number of K,Q pairs
+    const int nangle,                // number of angular nodes
+    const double* const* k,         // [2][npair] positive K and Q
+    const double* const* pk,        // [2][npair] matching linear power
+    const double* corner,           // stable 1+cos(theta)
+    const double* weight,           // normalized dtheta/pi weights
+    const double a,                  // scale factor of the shell
+    const double* const* log10s,    // base-10 logs before the shift
+    const double shift,              // common addend to every sample
+    double* const* average           // three output averages
+  );
+
 // Evaluate every field pair on one common radial rule. This is a Limber
 // spectrum builder, not a non-Limber approximation at small multipoles.
 // Output rows use i-major triangular order: (0,0),(0,1),...,(1,1),...

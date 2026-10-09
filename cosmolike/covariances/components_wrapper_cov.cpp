@@ -1089,6 +1089,102 @@ arma::Mat<double> covariance_power_logk_cpp(
   return output;
 }
 
+
+// ---------------------------------------------------------------------------
+// Tree-level averages fed by the log-domain reader, block by block.
+//
+// Bit-for-bit covariance_power_logk_cpp followed by
+// covariance_tree_averages_cpp, but the npair x nangle power table never
+// exists in full: tree_averages_logk_cov (spectra_cov.c, whose header
+// carries the full argument) evaluates one even block of pairs at a time
+// into a cache-resident buffer. log10s is the run-constant [npair,nangle]
+// base-10 log of the internal momenta and shift is -log10(f_K); the
+// result is an arma::Mat [3,npair] with rows AvgP, AvgB, AvgT.
+// ---------------------------------------------------------------------------
+arma::Mat<double> covariance_tree_averages_logk_cpp(
+    const arma::Mat<double>& k,      // [2,npair], positive K and Q
+    const arma::Mat<double>& pk,     // [2,npair], matching linear power
+    const arma::Col<double>& corner, // [nangle], stable 1+cos(theta)
+    const arma::Col<double>& weight, // [nangle], normalized dtheta/pi weights
+    const double a,                   // scale factor of the shell
+    const arma::Mat<double>& log10s, // [npair,nangle], logs before shift
+    const double shift               // common addend to every sample
+  )
+{
+  matrix_cov(k, "k");
+  matrix_cov(pk, "pk");
+  matrix_cov(log10s, "log10s");
+  vector_cov(corner, "corner");
+  vector_cov(weight, "weight");
+  if (k.n_rows != 2
+      || pk.n_rows != 2
+      || pk.n_cols != k.n_cols
+      || log10s.n_rows != k.n_cols
+      || log10s.n_cols != corner.n_elem
+      || corner.n_elem != weight.n_elem) {
+    throw std::invalid_argument(
+        "tree input pair and angle dimensions disagree");
+  }
+  if (!std::isfinite(a)
+      || a < limits.a_min
+      || a >= 1.0
+      || !std::isfinite(shift)
+      || cosmology.lnPL == nullptr) {
+    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+  }
+  for (arma::uword point=0; point<k.n_elem; point++) {
+    if (k(point) <= 0.0) {
+      throw std::invalid_argument("tree wavenumbers must be positive");
+    }
+  }
+  double normalization = 0.0;
+  for (arma::uword node=0; node<corner.n_elem; node++) {
+    if (corner(node) <= 0.0
+        || corner(node) > 2.0
+        || weight(node) <= 0.0) {
+      throw std::invalid_argument("need 0<corner<=2 and positive weights");
+    }
+    normalization += weight(node);
+  }
+  if (std::fabs(normalization-1.0) > 1.e-10) {
+    throw std::invalid_argument("angular weights must sum to one");
+  }
+
+  // Contiguous copies for the C driver: pair inputs, the log table and
+  // the three output rows. The copies are the notebook wrapper's known
+  // exploration overhead; the production binding borrows instead.
+  const arma::uword npair = k.n_cols;
+  const arma::uword nangle = corner.n_elem;
+  double** pair_inputs = (double**) malloc2d(4, npair);
+  double** logs = (double**) malloc2d(npair, nangle);
+  double** averages = (double**) malloc2d(3, npair);
+  for (arma::uword pair=0; pair<npair; pair++) {
+    pair_inputs[0][pair] = k(0, pair);
+    pair_inputs[1][pair] = k(1, pair);
+    pair_inputs[2][pair] = pk(0, pair);
+    pair_inputs[3][pair] = pk(1, pair);
+    for (arma::uword node=0; node<nangle; node++) {
+      logs[pair][node] = log10s(pair, node);
+    }
+  }
+  const double* k_rows[2] = {pair_inputs[0], pair_inputs[1]};
+  const double* pk_rows[2] = {pair_inputs[2], pair_inputs[3]};
+  tree_averages_logk_cov(npair, nangle, k_rows, pk_rows,
+      corner.memptr(), weight.memptr(), a,
+      (const double* const*) logs, shift, averages);
+
+  arma::Mat<double> output(3, npair);
+  for (int role=0; role<3; role++) {
+    for (arma::uword pair=0; pair<npair; pair++) {
+      output(role, pair) = averages[role][pair];
+    }
+  }
+  free(pair_inputs);
+  free(logs);
+  free(averages);
+  return output;
+}
+
 // ---------------------------------------------------------------------------
 // Planar tree-level averages used by the halo trispectrum.
 //

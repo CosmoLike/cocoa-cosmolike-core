@@ -810,6 +810,79 @@ static cov_array covariance_tree_averages(
   return output;
 }
 
+
+// ---------------------------------------------------------------------------
+// Tree-level averages fed by the log-domain power reader, block by block.
+//
+// Same physics and bit-for-bit the same numbers as covariance_power_logk
+// followed by covariance_tree_averages, but the npair x nangle power
+// table never exists in full: tree_averages_logk_cov evaluates one even
+// block of pairs at a time into a cache-resident buffer (the C header
+// carries the full argument). log10s is the run-constant [npair,nangle]
+// base-10 log of the internal momenta; shift is -log10(f_K) for the
+// shell. Validation covers the shapes, the a and shift ranges, K,Q > 0
+// and the normalized angle rule, as in the two separate entry points.
+// ---------------------------------------------------------------------------
+static cov_array covariance_tree_averages_logk(
+    const cov_array& k,      // [2,npair], positive K and Q
+    const cov_array& pk,     // [2,npair], matching linear power
+    const cov_array& corner, // [nangle], stable 1+cos(theta)
+    const cov_array& weight, // [nangle], normalized dtheta/pi weights
+    const double a,          // scale factor inside the initialized range
+    const cov_array& log10s, // [npair,nangle], base-10 logs before shift
+    const double shift       // common addend; |K+Q| = 10^(log10s+shift)
+  )
+{
+  matrix_cov(k, "k");
+  matrix_cov(pk, "pk");
+  matrix_cov(log10s, "log10s");
+  vector_cov(corner, "corner");
+  vector_cov(weight, "weight");
+  if (k.shape(0) != 2
+      || pk.shape(0) != 2
+      || pk.shape(1) != k.shape(1)
+      || log10s.shape(0) != k.shape(1)
+      || log10s.shape(1) != corner.size()
+      || corner.size() != weight.size()) {
+    throw std::invalid_argument(
+        "tree input pair and angle dimensions disagree");
+  }
+  if (!std::isfinite(a)
+      || a < limits.a_min
+      || a >= 1.0
+      || !std::isfinite(shift)
+      || cosmology.lnPL == nullptr) {
+    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+  }
+  for (py::ssize_t point=0; point<k.size(); point++) {
+    if (k.data()[point] <= 0.0) {
+      throw std::invalid_argument("tree wavenumbers must be positive");
+    }
+  }
+  double normalization = 0.0;
+  for (py::ssize_t node=0; node<corner.size(); node++) {
+    if (corner.data()[node] <= 0.0
+        || corner.data()[node] > 2.0
+        || weight.data()[node] <= 0.0) {
+      throw std::invalid_argument("need 0<corner<=2 and positive weights");
+    }
+    normalization += weight.data()[node];
+  }
+  if (std::fabs(normalization-1.0) > 1.e-10) {
+    throw std::invalid_argument("angular weights must sum to one");
+  }
+
+  cov_array output({(py::ssize_t) 3, k.shape(1)});
+  auto k_rows = input_rows_cov(k);
+  auto pk_rows = input_rows_cov(pk);
+  auto logs_rows = input_rows_cov(log10s);
+  auto rows = output_rows_cov(output);
+  tree_averages_logk_cov(k.shape(1), corner.size(), k_rows.data(),
+      pk_rows.data(), corner.data(), weight.data(), a, logs_rows.data(),
+      shift, rows.data());
+  return output;
+}
+
 // ---------------------------------------------------------------------------
 // Angle-averaged halo-model trispectrum T(K,Q) of the connected covariance.
 //
@@ -963,6 +1036,14 @@ void bind_production_components_cov(py::module_& module)
       py::arg("k").noconvert(), py::arg("pk").noconvert(),
       py::arg("corner").noconvert(), py::arg("weight").noconvert(),
       py::arg("ps").noconvert());
+
+  module.def("covariance_tree_averages_logk", &covariance_tree_averages_logk,
+      "Planar P/B/T averages [3,npair] with P(|K+Q|) evaluated block by "
+      "block from [npair,nangle] base-10 logs plus a scalar shift; "
+      "bit-for-bit covariance_power_logk + covariance_tree_averages.",
+      py::arg("k").noconvert(), py::arg("pk").noconvert(),
+      py::arg("corner").noconvert(), py::arg("weight").noconvert(),
+      py::arg("a"), py::arg("log10s").noconvert(), py::arg("shift"));
 
   module.def("covariance_halo_trispectrum", &covariance_halo_trispectrum,
       "Return five halo terms [5,npoint]: 1h,2h(13),2h(22),3h,4h.",

@@ -164,6 +164,19 @@ arma::Mat<double> covariance_power_logk_cpp(
     const double shift               // common addend to every sample
   );
 
+// Tree-level averages with P(|K+Q|) evaluated block by block from the
+// log table (tree_averages_logk_cov): arma::Mat [3,npair]; bit-for-bit
+// the power_logk read followed by covariance_tree_averages_cpp.
+arma::Mat<double> covariance_tree_averages_logk_cpp(
+    const arma::Mat<double>& k,      // [2,npair], positive K and Q
+    const arma::Mat<double>& pk,     // [2,npair], matching linear power
+    const arma::Col<double>& corner, // [nangle], stable 1+cos(theta)
+    const arma::Col<double>& weight, // [nangle], normalized weights
+    const double a,                   // scale factor of the shell
+    const arma::Mat<double>& log10s, // [npair,nangle], logs before shift
+    const double shift               // common addend to every sample
+  );
+
 // Planar tree-level averages <P>, <B_tree>, <T_tree> (tree_averages_cov):
 // arma::Mat [3,npair] in (c/H0)^3, ^6, ^9.
 arma::Mat<double> covariance_tree_averages_cpp(

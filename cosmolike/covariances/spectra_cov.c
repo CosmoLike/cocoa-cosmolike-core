@@ -30,6 +30,7 @@
 #include <stdlib.h>
 
 #include "spectra_cov.h"
+#include "perturbation_cov.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/bias.h"
 #include "cosmolike/cosmo3D.h"
@@ -311,6 +312,114 @@ void linear_power_logk_rows_cov(
     }
   }
   free(slice);
+}
+
+
+// ---------------------------------------------------------------------------
+// Tree-level averages fed by the log-domain reader, one block at a time.
+//
+// WHY THIS FUNCTION EXISTS - THE MEMORY-TRAFFIC ARGUMENT
+// The cNG angle integrals need P_lin(|K+Q|) at every (pair, angle)
+// sample: npair*nangle values, about 127 MB per radial shell at the
+// production grids (8256 pairs x 1920 angles x 8 bytes). Computed as two
+// separate stages, that table is written once by the power reader and
+// read once by tree_averages_cov, and the reader also reads the equally
+// large log-wavenumber table: three full passes over main memory per
+// shell, roughly 380 MB, repeated for more than a thousand shells.
+// tree_averages_cov itself is limited by that stream, not by arithmetic:
+// adding workers speeds it little, because every worker waits on the
+// same memory bus.
+//
+// The two stages do not need the whole table at once. Each pair's angle
+// integral uses only its own row. So this driver walks the pairs in
+// blocks: it evaluates the power for one block of rows into a small
+// buffer, hands that block straight to the kernel, and reuses the buffer
+// for the next block. A block of 128 pairs is 128 x nangle doubles,
+// about 2 MB at the production angle rule - small enough to still sit in
+// the processor's cache when the kernel reads back what the reader just
+// wrote. The buffer is "hot": its second pass costs almost nothing. The
+// only full pass over main memory that remains is the one unavoidable
+// read of the log-wavenumber table. Three passes become one, and the
+// 127 MB intermediate never exists.
+//
+// WHY THE RESULTS ARE BIT-FOR-BIT UNCHANGED
+// Nothing here computes: both stages run unmodified.
+// 1. The power values are produced by the same linear_power_logk_rows_cov
+//    call as before, just for count rows at a time instead of npair. That
+//    function treats every row independently, so splitting the rows into
+//    calls cannot change any value. (Its small z slice is rebuilt per
+//    block - about 12,000 multiply-adds against ten million per block -
+//    and is identical every time, because it depends only on a.)
+// 2. tree_averages_cov pairs its SIMD lanes as (0,1), (2,3), ... within
+//    each call. With an EVEN block size, block boundaries always fall
+//    between those lane pairs, so every lane still owns exactly the same
+//    (K,Q) pair as in one whole-table call, and each pair's angle sum
+//    runs over the same values in the same order. An odd block size
+//    would re-align the lanes and is therefore not allowed here.
+// The kernel also keeps its charter: tree_averages_cov still reads no
+// core table and allocates nothing; every table read stays in this file.
+//
+// Parameters (shapes as in the two functions this driver calls):
+//   npair   - number of (K,Q) pairs, at least 1
+//   nangle  - number of angular nodes, at least 1
+//   k, pk   - [2][npair] magnitudes and their linear power
+//   corner, weight - [nangle] stable 1+cos(theta) and dtheta/pi weights
+//   a       - scale factor of the shell
+//   log10s  - [npair][nangle] base-10 logs of the internal momenta
+//             before the shift (the run-constant magnitude table)
+//   shift   - common addend, -log10(f_K) for this shell
+//   average - [3][npair] caller-owned output rows: AvgP, AvgB, AvgT
+//
+// The block buffer is allocated once per call, outside both stages'
+// OpenMP regions, and freed before returning. Call serially; the two
+// stages parallelize themselves inside each block.
+// ---------------------------------------------------------------------------
+void tree_averages_logk_cov(
+    const int npair,                 // number of K,Q pairs
+    const int nangle,                // number of angular nodes
+    const double* const* k,         // [2][npair] positive K and Q
+    const double* const* pk,        // [2][npair] matching linear power
+    const double* corner,           // stable 1+cos(theta)
+    const double* weight,           // normalized dtheta/pi weights
+    const double a,                  // scale factor of the shell
+    const double* const* log10s,    // base-10 logs before the shift
+    const double shift,              // common addend to every sample
+    double* const* average           // three output averages
+  )
+{
+  if (npair < 1
+      || nangle < 1) {
+    log_fatal("tree_averages_logk_cov needs positive pair and angle counts");
+    exit(1);
+  }
+
+  // 128 pairs x nangle doubles is about 2 MB at the production angle
+  // rule: large enough to occupy the OpenMP team in both stages, small
+  // enough to stay cache resident between them. Must be EVEN, so block
+  // boundaries never split a SIMD lane pair of the kernel (header).
+  const int pair_block = 128;
+  double** ps_block = (double**) malloc2d(pair_block, nangle);
+
+  for (int start=0; start<npair; start+=pair_block) {
+    const int count = npair-start < pair_block ? npair-start : pair_block;
+
+    // Stage 1: the log-domain reader fills this block's power rows.
+    // log10s+start passes the block's row pointers; values and rounding
+    // are those of a whole-table call, row for row.
+    linear_power_logk_rows_cov(a, count, nangle, log10s+start, shift,
+                               ps_block);
+
+    // Stage 2: the unmodified kernel consumes the block while it is
+    // still cache resident. Column views select the block's pairs; the
+    // angle rule is the full one, revalidated by the kernel per block.
+    const double* k_block[2] = {k[0]+start, k[1]+start};
+    const double* pk_block[2] = {pk[0]+start, pk[1]+start};
+    double* average_block[3] = {average[0]+start, average[1]+start,
+                                average[2]+start};
+    tree_averages_cov(count, nangle, k_block, pk_block, corner, weight,
+                      (const double* const*) ps_block, average_block);
+  }
+  free(ps_block);
 }
 
 
