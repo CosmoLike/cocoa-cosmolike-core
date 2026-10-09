@@ -344,18 +344,44 @@ void linear_power_logk_rows_cov(
 //
 // WHY THE RESULTS ARE BIT-FOR-BIT UNCHANGED
 // Nothing here computes: both stages run unmodified.
+//
 // 1. The power values are produced by the same linear_power_logk_rows_cov
 //    call as before, just for count rows at a time instead of npair. That
 //    function treats every row independently, so splitting the rows into
 //    calls cannot change any value. (Its small z slice is rebuilt per
 //    block - about 12,000 multiply-adds against ten million per block -
 //    and is identical every time, because it depends only on a.)
-// 2. tree_averages_cov pairs its SIMD lanes as (0,1), (2,3), ... within
-//    each call. With an EVEN block size, block boundaries always fall
-//    between those lane pairs, so every lane still owns exactly the same
-//    (K,Q) pair as in one whole-table call, and each pair's angle sum
-//    runs over the same values in the same order. An odd block size
-//    would re-align the lanes and is therefore not allowed here.
+//
+// 2. tree_averages_cov is lane safe under any split of the pair list,
+//    because of how its SIMD lanes work. A v2d register holds two
+//    doubles, called lanes 0 and 1, and the kernel gives each lane one
+//    COMPLETE (K,Q) pair: at every angle node it broadcasts the shared
+//    node values to both lanes (set1_pd), packs the two pairs' own
+//    values side by side (set_pd), and updates two separate running
+//    sums with one fused multiply-add,
+//
+//        lane 0:  sum_A = fma(P_A(node) * weight(node), G_A, sum_A)
+//        lane 1:  sum_B = fma(P_B(node) * weight(node), G_B, sum_B)
+//
+//    No instruction ever adds lane 0 to lane 1, so a pair's angle sum
+//    depends only on its own row - never on which pair happens to ride
+//    in the neighboring lane. Worked example with six pairs, 0..5:
+//
+//        one whole call:        registers carry (0,1) (2,3) (4,5)
+//        blocks of four:        call A carries (0,1) (2,3)
+//                               call B carries (4,5)
+//        blocks of three (odd): call A carries (0,1) (2,2*)
+//                               call B carries (3,4) (5,5*)
+//
+//    The starred lane duplicates the block's last pair so the register
+//    reads stay valid; the kernel computes it and throws it away. In
+//    all three layouts pair 2's sum adds the same numbers in the same
+//    order, so every layout returns identical doubles. The EVEN block
+//    size below is therefore not a correctness requirement but an
+//    efficiency one: with an odd size every block would pay one wasted
+//    duplicate lane, with an even size only an odd npair's final block
+//    can.
+//
 // The kernel also keeps its charter: tree_averages_cov still reads no
 // core table and allocates nothing; every table read stays in this file.
 //
@@ -395,8 +421,10 @@ void tree_averages_logk_cov(
 
   // 128 pairs x nangle doubles is about 2 MB at the production angle
   // rule: large enough to occupy the OpenMP team in both stages, small
-  // enough to stay cache resident between them. Must be EVEN, so block
-  // boundaries never split a SIMD lane pair of the kernel (header).
+  // enough to stay cache resident between them. EVEN, so only an odd
+  // npair's final block pays the kernel's duplicated tail lane (the
+  // header's worked example shows the lanes; results are identical for
+  // any block size).
   const int pair_block = 128;
   double** ps_block = (double**) malloc2d(pair_block, nangle);
 
