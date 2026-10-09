@@ -64,8 +64,10 @@ void power_rows_cov(
 // wavenumbers are shared by every radial shell up to the per-shell shift
 // -log10(f_K); taking the logarithms once removes the per-sample log10
 // from the standard reader's critical path (it computes the table index,
-// so every load waits on it). The shifted sum is not bitwise log10(k):
-// last-bit differences against power_rows_cov with linear=1 are expected.
+// so every load waits on it), and the call-constant z half of the
+// bilinear read collapses into a small per-call slice. Neither is
+// bitwise the standard reader: the shifted sum and the regrouped
+// bilinear differ from power_rows_cov with linear=1 in the last bits.
 // Shapes, units, ownership and the OpenMP contract match power_rows_cov.
 void linear_power_logk_rows_cov(
     const double a,                  // shared scale factor

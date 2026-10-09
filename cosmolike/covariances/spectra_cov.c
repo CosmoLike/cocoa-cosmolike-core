@@ -200,17 +200,27 @@ static inline int piecewise_index(double q,
 // from the stored lnP stays: its latency hides under the next sample's
 // table loads, so removing it buys about one percent.
 //
-// The sum log10k + shift is NOT bitwise the standard reader's
-// log10(k/coverH0): a sum of separately rounded logarithms differs in the
-// last bits, so the interpolation weight dx (and, for a sample within one
-// ulp of a cell edge, the index i) can differ there too. A caller that
-// requires bitwise agreement with p_lin_at_a keeps the standard reader.
+// The z half of the bilinear read is also a call constant: one bracket j
+// and one weight dy serve every sample. Collapsing it once per call into
+// a slice, lnP_a[i] = (1-dy) lnPL[i][j] + dy lnPL[i][j+1], turns each
+// sample's read from six loads spread over two rows of the large lnPL
+// table (four lnP corners plus the two stored axis values) into four
+// loads of 32 contiguous bytes of a small array: the slice interleaves
+// each column's axis value and z-interpolated lnP, holds
+// 2 * lnPL_nk doubles (about 190 KB at the production refinement), and
+// stays cache resident across the millions of samples of one call.
 //
-// From the shifted logarithm on, the body is p_lin_at_a's wavenumber half
-// with the same clamp, the same bilinear read of the lnPL table, the same
-// exp and the same unit factor; the z bracket runs once per call, as
-// there. The linear table is stateless (no lazy first-call build), so the
-// parallel rows only read initialized memory.
+// Two deviations from p_lin_at_a's arithmetic, neither bitwise:
+// 1. the sum log10k + shift is not the single rounded log10(k/coverH0),
+//    so the weight dx (and, within one ulp of a cell edge, the index i)
+//    can differ in the last bits;
+// 2. the slice regroups the bilinear combination,
+//    (1-dx)[(1-dy) t00 + dy t01] + dx[(1-dy) t10 + dy t11] instead of
+//    the four-term sum, which rounds differently in the last bits.
+// A caller that requires bitwise agreement with p_lin_at_a keeps the
+// standard reader. The clamp, the exp and the unit factor are
+// p_lin_at_a's. The linear table is stateless (no lazy first-call
+// build), so the parallel rows only read initialized memory.
 //
 // Parameters:
 //   a      - scale factor shared by every sample
@@ -260,8 +270,24 @@ void linear_power_logk_rows_cov(
   const double zj1 = cosmology.lnPL[cosmology.lnPL_nk][j+1];
   const double dy = (z - zj) / (zj1 - zj);
 
+  // Collapse the z half once per call (the header explains the layout):
+  // slice[2i] is column i's stored log10 k axis value and slice[2i+1] its
+  // z-interpolated lnP, so one sample's bracket occupies one cache line.
+  // The slice is built serially before the team starts and freed after
+  // it ends; the workers only read it.
+  double* slice = malloc(sizeof(double) * 2 * (size_t) cosmology.lnPL_nk);
+  if (slice == NULL) {
+    log_fatal("linear_power_logk_rows_cov: cannot allocate the z slice");
+    exit(1);
+  }
+  for (int i=0; i<cosmology.lnPL_nk; i++) {
+    slice[2*i]   = cosmology.lnPL[i][cosmology.lnPL_nz];
+    slice[2*i+1] = (1.0-dy) * cosmology.lnPL[i][j]
+                 +      dy  * cosmology.lnPL[i][j+1];
+  }
+
   // One iteration fills one complete output row. A row depends on no
-  // other row and the table is read-only here, so no value depends on the
+  // other row and the slice is read-only here, so no value depends on the
   // number of workers; the static schedule gives each worker a contiguous
   // block of rows.
   #pragma omp parallel for schedule(static)
@@ -272,19 +298,19 @@ void linear_power_logk_rows_cov(
                     * cosmology.lnPL_log10k_inv_dx);
       if (i < 0)                       i = 0;
       if (i > cosmology.lnPL_nk - 2)   i = cosmology.lnPL_nk - 2;
-      const double xi  = cosmology.lnPL[i  ][cosmology.lnPL_nz];
-      const double xi1 = cosmology.lnPL[i+1][cosmology.lnPL_nz];
-      const double dx = (lg - xi) / (xi1 - xi);
-      const double out_lnP =   (1-dx)*(1-dy) * cosmology.lnPL[i  ][j  ]
-                             + (1-dx)*   dy  * cosmology.lnPL[i  ][j+1]
-                             +    dx *(1-dy) * cosmology.lnPL[i+1][j  ]
-                             +    dx *   dy  * cosmology.lnPL[i+1][j+1];
+      // node[0], node[2]: the bracketing axis values; node[1], node[3]:
+      // their z-interpolated lnP. The 1D form of the bilinear read.
+      const double* node = slice + 2*i;
+      const double dx = (lg - node[0]) / (node[2] - node[0]);
+      const double out_lnP = (1.0-dx) * node[1]
+                           +      dx  * node[3];
       power[row][m] = exp(out_lnP)
                       / (cosmology.coverH0
                          * cosmology.coverH0
                          * cosmology.coverH0);
     }
   }
+  free(slice);
 }
 
 
