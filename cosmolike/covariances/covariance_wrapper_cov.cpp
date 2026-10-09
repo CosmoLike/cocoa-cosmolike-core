@@ -1,5 +1,12 @@
 #include <cmath>
 #include <stdexcept>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <carma.h>
 #include <armadillo>
@@ -67,9 +74,9 @@ static arma::Mat<double> gaussian_matrix_cpp(
   // --- 1. CHECK THE PHYSICAL AXES BEFORE ENTERING C ---
 
   // The C assembler trusts its sizes and row pointers: a wrong field ID
-  // would read outside the spectra, and a nonpositive size stops the whole
-  // process. These checks throw std::invalid_argument instead, which
-  // pybind11 raises in Python as a ValueError.
+  // would read outside the spectra. These checks catch that first, print
+  // through the shared logger and end the process, like every validation
+  // in this module.
   if (spectra.is_empty()
       || spectra.n_cols != spectra.n_slices
       || noise.n_elem != spectra.n_cols
@@ -78,25 +85,32 @@ static arma::Mat<double> gaussian_matrix_cpp(
       || operators.n_rows != (realspace ? 4 : 1)
       || operators.n_cols < 1
       || operators.n_slices != spectra.n_rows) {
-    throw std::invalid_argument("inconsistent spectra, fields or bin axes");
+    critical("{}: inconsistent spectra, fields or bin axes",
+      "gaussian_matrix_cpp");
+    exit(1);
   }
   if (ell_min < (realspace ? 2 : 0)
       || !std::isfinite(area_sr)
       || area_sr <= 0.0
       || area_sr > 4.0*M_PI) {
-    throw std::invalid_argument("invalid ell_min or survey area");
+    critical("{}: invalid ell_min or survey area", "gaussian_matrix_cpp");
+    exit(1);
   }
   if (!spectra.is_finite()
       || !noise.is_finite()
       || !operators.is_finite()
       || !pair_area.is_finite()
       || arma::any(noise < 0.0)) {
-    throw std::invalid_argument("need finite inputs and nonnegative noise");
+    critical("{}: need finite inputs and nonnegative noise",
+      "gaussian_matrix_cpp");
+    exit(1);
   }
   if (realspace
       && (pair_area.n_elem != operators.n_cols
           || arma::any(pair_area <= 0.0))) {
-    throw std::invalid_argument("need one positive pair area per angular bin");
+    critical("{}: need one positive pair area per angular bin",
+      "gaussian_matrix_cpp");
+    exit(1);
   }
 
   const int nell = spectra.n_rows;   // integer multipoles
@@ -111,13 +125,17 @@ static arma::Mat<double> gaussian_matrix_cpp(
     if (realspace
         && (rows(observable, 0) < XI_PLUS_COV
             || rows(observable, 0) > W_THETA_COV)) {
-      throw std::invalid_argument("real-space probe IDs must lie in 0..3");
+      critical("{}: real-space probe IDs must lie in 0..3",
+        "gaussian_matrix_cpp");
+      exit(1);
     }
     for (int leg=0; leg<2; leg++) {
       const int field = rows(observable, offset+leg);
       if (field < 0
           || field >= (int) noise.n_elem) {
-        throw std::invalid_argument("observable field ID exceeds spectra");
+        critical("{}: observable field ID exceeds spectra",
+          "gaussian_matrix_cpp");
+        exit(1);
       }
     }
   }
@@ -127,7 +145,9 @@ static arma::Mat<double> gaussian_matrix_cpp(
           || b_spectra.n_cols != spectra.n_cols
           || b_spectra.n_slices != spectra.n_slices
           || !b_spectra.is_finite())) {
-    throw std::invalid_argument("b_spectra must be finite and match spectra");
+    critical("{}: b_spectra must be finite and match spectra",
+      "gaussian_matrix_cpp");
+    exit(1);
   }
 
   // --- 2. COPY NOTEBOOK AXES TO THE SHARED C ROW LAYOUT ---
@@ -285,11 +305,15 @@ arma::Mat<double> covariance_project_connected_cpp(
       || !pair_window.is_finite()
       || !projected.is_finite()
       || !measure.is_finite()) {
-    throw std::invalid_argument("inconsistent connected projection axes");
+    critical("{}: inconsistent connected projection axes",
+      "covariance_project_connected_cpp");
+    exit(1);
   }
   if (arma::any(probes < XI_PLUS_COV)
       || arma::any(probes > W_THETA_COV)) {
-    throw std::invalid_argument("connected probe IDs must lie in 0..3");
+    critical("{}: connected probe IDs must lie in 0..3",
+      "covariance_project_connected_cpp");
+    exit(1);
   }
 
   const int nobs = probes.n_elem;   // measured catalog pairs

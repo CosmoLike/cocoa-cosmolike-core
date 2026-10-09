@@ -2,6 +2,13 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <carma.h>
 #include <armadillo>
@@ -42,10 +49,11 @@ namespace cosmolike_interface {
 //     -> copy back into Armadillo; CARMA exports the result to NumPy,
 //        where it owns its memory independently of later calls.
 //
-// Checks throw std::invalid_argument, which pybind11 raises as a Python
-// ValueError. The C routines stop the whole Python process (log_fatal and
-// exit) on the inputs they check and trust the rest, so the wrappers test
-// shapes, physical domains and initialization first. Core units: distances
+// Checks print through the shared logger and end the process (critical
+// and exit), exactly as the C routines do on the inputs they check
+// themselves; the wrappers test shapes, physical domains and
+// initialization first, so the C routines can trust the rest. Core
+// units: distances
 // in c/H0, wavenumbers in (c/H0)^-1, matter power in (c/H0)^3 and white
 // noise in steradians.
 // ---------------------------------------------------------------------------
@@ -112,12 +120,14 @@ py::dict covariance_limber_spectra_cpp(
   // radial_inputs_cov itself stops the process for a curved cosmology.
   if (ell.n_elem < 1
       || a_edges.n_elem < 2) {
-    throw std::invalid_argument(
-        "covariance_limber_spectra needs 1D ell and a_edges arrays, "
-        "with at least one multipole and two scale-factor edges");
+    critical("{}: covariance_limber_spectra needs 1D ell "
+      "and a_edges arrays, with at least one multipole and two scale-factor edges", "covariance_limber_spectra_cpp");
+    exit(1);
   }
   if (nwindow < 2) {
-    throw std::invalid_argument("nwindow must be at least 2");
+    critical("{}: nwindow must be at least 2",
+      "covariance_limber_spectra_cpp");
+    exit(1);
   }
   if (cosmology.chi == nullptr
       || cosmology.G == nullptr
@@ -126,14 +136,16 @@ py::dict covariance_limber_spectra_cpp(
           && cosmology.lnP == nullptr)
       || redshift.clustering_nbin < 1
       || redshift.shear_nbin < 1) {
-    throw std::invalid_argument(
-        "initialize lens/source samples and set_cosmology before spectra");
+    critical("{}: initialize lens/source samples and "
+      "set_cosmology before spectra", "covariance_limber_spectra_cpp");
+    exit(1);
   }
   if (include_ia
       && nuisance.IA_MODEL != IA_MODEL_NLA
       && nuisance.IA_MODEL != IA_MODEL_TATT) {
-    throw std::invalid_argument(
-        "covariance_spectra supports NLA or TATT; initialize IA model 0 or 1");
+    critical("{}: covariance_spectra supports NLA or "
+      "TATT; initialize IA model 0 or 1", "covariance_limber_spectra_cpp");
+    exit(1);
   }
 
   // Limber reads P at k=(ell+1/2)/f_K, and the shear spin factor
@@ -141,7 +153,9 @@ py::dict covariance_limber_spectra_cpp(
   for (arma::uword index=0; index<ell.n_elem; index++) {
     if (!std::isfinite(ell(index))
         || ell(index) < 1.0) {
-      throw std::invalid_argument("ell must contain finite values >= 1");
+      critical("{}: ell must contain finite values >= 1",
+        "covariance_limber_spectra_cpp");
+      exit(1);
     }
   }
 
@@ -154,8 +168,9 @@ py::dict covariance_limber_spectra_cpp(
         || a_edges(edge) >= 1.0
         || (edge > 0
             && a_edges(edge) <= a_edges(edge-1))) {
-      throw std::invalid_argument(
-          "a_edges must increase strictly inside (0,1)");
+      critical("{}: a_edges must increase strictly inside (0,1)",
+        "covariance_limber_spectra_cpp");
+      exit(1);
     }
   }
 
@@ -166,8 +181,9 @@ py::dict covariance_limber_spectra_cpp(
       && nquad != 256
       && nquad != 512
       && nquad != 1024) {
-    throw std::invalid_argument(
-        "nquad must be a tabulated rule: 64,96,128,256,512,1024");
+    critical("{}: nquad must be a tabulated rule: 64,96,128,256,512,1024",
+      "covariance_limber_spectra_cpp");
+    exit(1);
   }
 
   // The hybrid non-Limber correction starts at ell=2, so lmax is either 0
@@ -181,8 +197,9 @@ py::dict covariance_limber_spectra_cpp(
       || ((nonlimber_nchi-1) & (nonlimber_nchi-2)) != 0
       || !std::isfinite(nonlimber_chi_min)
       || nonlimber_chi_min <= 0.0) {
-    throw std::invalid_argument(
-        "non-Limber requires lmax=0 or >=2, nchi=2^n+1 >=65, chi_min>0");
+    critical("{}: non-Limber requires lmax=0 or >=2, "
+      "nchi=2^n+1 >=65, chi_min>0", "covariance_limber_spectra_cpp");
+    exit(1);
   }
   if (nonlimber_lmax > 0) {
     // The non-Limber transfers have no RSD term, and the separable field
@@ -190,8 +207,9 @@ py::dict covariance_limber_spectra_cpp(
     // massive neutrinos introduce.
     if (include_rsd
         || cosmology.Omega_nu != 0.0) {
-      throw std::invalid_argument(
-          "non-Limber covariance currently requires no RSD and mnu=0");
+      critical("{}: non-Limber covariance currently requires no RSD and mnu=0",
+        "covariance_limber_spectra_cpp");
+      exit(1);
     }
 
     // The correction is tabulated at integer multipoles 2..lmax and C
@@ -202,8 +220,9 @@ py::dict covariance_limber_spectra_cpp(
       if (value <= nonlimber_lmax
           && value >= 2.0
           && value != std::floor(value)) {
-        throw std::invalid_argument(
-            "non-Limber correction requires integer ell below its cutoff");
+        critical("{}: non-Limber correction requires integer "
+          "ell below its cutoff", "covariance_limber_spectra_cpp");
+        exit(1);
       }
     }
   }
@@ -213,7 +232,9 @@ py::dict covariance_limber_spectra_cpp(
   if (include_ia
       && nuisance.IA_MODEL == IA_MODEL_TATT
       && include_rsd) {
-    throw std::invalid_argument("Gaussian TATT currently requires no RSD");
+    critical("{}: Gaussian TATT currently requires no RSD",
+      "covariance_limber_spectra_cpp");
+    exit(1);
   }
 
   // --- 1. ALLOCATE ONE SPECTRUM PER UNORDERED FIELD PAIR ---
@@ -344,8 +365,9 @@ static void vector_cov(const arma::Col<double>& values, const char* name)
 {
   if (values.is_empty()
       || !values.is_finite()) {
-    throw std::invalid_argument(
-        std::string(name)+" must be a nonempty finite vector");
+    critical("{}: {} must be a nonempty finite vector",
+      "covariance_limber_spectra_cpp", name);
+    exit(1);
   }
 }
 
@@ -353,8 +375,9 @@ static void matrix_cov(const arma::Mat<double>& values, const char* name)
 {
   if (values.is_empty()
       || !values.is_finite()) {
-    throw std::invalid_argument(
-        std::string(name)+" must be a nonempty finite matrix");
+    critical("{}: {} must be a nonempty finite matrix",
+      "covariance_limber_spectra_cpp", name);
+    exit(1);
   }
 }
 
@@ -368,7 +391,9 @@ static void quadrature_cov(const int nquad)
       && nquad != 256
       && nquad != 512
       && nquad != 1024) {
-    throw std::invalid_argument("nquad must be 64,96,128,256,512 or 1024");
+    critical("{}: nquad must be 64,96,128,256,512 or 1024",
+      "covariance_limber_spectra_cpp");
+    exit(1);
   }
 }
 
@@ -380,11 +405,15 @@ static void angles_cov(const arma::Col<double>& edges)
   if (edges.n_elem < 2
       || edges(0) < 0.0
       || edges(edges.n_elem-1) > M_PI) {
-    throw std::invalid_argument("need at least two angle edges inside [0,pi]");
+    critical("{}: need at least two angle edges inside [0,pi]",
+      "covariance_limber_spectra_cpp");
+    exit(1);
   }
   for (arma::uword edge=1; edge<edges.n_elem; edge++) {
     if (edges(edge) <= edges(edge-1)) {
-      throw std::invalid_argument("angle edges must increase strictly");
+      critical("{}: angle edges must increase strictly",
+        "covariance_limber_spectra_cpp");
+      exit(1);
     }
   }
 }
@@ -442,7 +471,9 @@ arma::Mat<double> covariance_project_cpp(
   vector_cov(weight, "weight");
   if (left.n_cols != weight.n_elem
       || right.n_cols != weight.n_elem) {
-    throw std::invalid_argument("left/right columns must match weight length");
+    critical("{}: left/right columns must match weight length",
+      "covariance_project_cpp");
+    exit(1);
   }
 
   arma::Mat<double> output(left.n_rows, right.n_rows);
@@ -513,7 +544,9 @@ arma::Col<double> covariance_gaussian_wick_cpp(
       || !std::isfinite(fsky)
       || fsky <= 0.0
       || fsky > 1.0) {
-    throw std::invalid_argument("need four pairings, ell_min>=0 and 0<fsky<=1");
+    critical("{}: need four pairings, ell_min>=0 and 0<fsky<=1",
+      "covariance_gaussian_wick_cpp");
+    exit(1);
   }
 
   arma::Col<double> output(cross_spectra.n_cols);
@@ -554,7 +587,9 @@ arma::Cube<double> covariance_realspace_operator_cpp(
   angles_cov(edges_rad);
   quadrature_cov(nquad);
   if (ell_max < 2) {
-    throw std::invalid_argument("ell_max must be at least 2");
+    critical("{}: ell_max must be at least 2",
+      "covariance_realspace_operator_cpp");
+    exit(1);
   }
   const arma::uword nbin = edges_rad.n_elem-1;
   arma::Cube<double> output(4, nbin, ell_max+1);
@@ -595,14 +630,17 @@ arma::Mat<double> covariance_bandpower_operator_cpp(
       || first.n_elem != last.n_elem
       || ell_min < 0
       || nell < 1) {
-    throw std::invalid_argument(
-        "need equal 1D band bounds and a valid ell grid");
+    critical("{}: need equal 1D band bounds and a valid ell grid",
+      "covariance_bandpower_operator_cpp");
+    exit(1);
   }
   for (arma::uword band=0; band<first.n_elem; band++) {
     if (first(band) < ell_min
         || last(band) < first(band)
         || last(band) >= ell_min+nell) {
-      throw std::invalid_argument("band bounds must lie inside the ell grid");
+      critical("{}: band bounds must lie inside the ell grid",
+        "covariance_bandpower_operator_cpp");
+      exit(1);
     }
   }
 
@@ -652,17 +690,22 @@ double covariance_noise_pair_cpp(
       || probe_right > 3
       || !std::isfinite(pair_area_sr2)
       || pair_area_sr2 <= 0.0) {
-    throw std::invalid_argument(
-        "invalid estimator, catalog or pair-area input");
+    critical("{}: invalid estimator, catalog or pair-area input",
+      "covariance_noise_pair_cpp");
+    exit(1);
   }
   for (int index=0; index<4; index++) {
     if (fields(index) < 0) {
-      throw std::invalid_argument("catalog indices must be nonnegative");
+      critical("{}: catalog indices must be nonnegative",
+        "covariance_noise_pair_cpp");
+      exit(1);
     }
   }
   if (noise_ab(0) < 0.0
       || noise_ab(1) < 0.0) {
-    throw std::invalid_argument("noise powers must be nonnegative");
+    critical("{}: noise powers must be nonnegative",
+      "covariance_noise_pair_cpp");
+    exit(1);
   }
   return gaussian_noise_pair_cov((probe_cov) probe_left,
       (probe_cov) probe_right, fields.memptr(), noise_ab.memptr(),
@@ -679,16 +722,20 @@ static void raw_mask_cov(const arma::Col<double>& mask, const double area)
   if (!std::isfinite(area)
       || area <= 0.0
       || area > 4.0*M_PI) {
-    throw std::invalid_argument("area_sr must lie in (0,4*pi]");
+    critical("{}: area_sr must lie in (0,4*pi]", "covariance_noise_pair_cpp");
+    exit(1);
   }
   for (arma::uword ell=0; ell<mask.n_elem; ell++) {
     if (mask(ell) < 0.0) {
-      throw std::invalid_argument("mask_cl must be nonnegative");
+      critical("{}: mask_cl must be nonnegative", "covariance_noise_pair_cpp");
+      exit(1);
     }
   }
   const double monopole = area*area/(4.0*M_PI);
   if (std::fabs(mask(0)/monopole-1.0) > 1.e-8) {
-    throw std::invalid_argument("raw mask C0 must equal area_sr^2/(4*pi)");
+    critical("{}: raw mask C0 must equal area_sr^2/(4*pi)",
+      "covariance_noise_pair_cpp");
+    exit(1);
   }
 }
 
@@ -719,7 +766,9 @@ arma::Col<double> covariance_mask_pair_area_cpp(
   matrix_cov(scalar_kernel, "scalar_kernel");
   if (scalar_kernel.n_rows != edges_rad.n_elem-1
       || scalar_kernel.n_cols != mask_cl.n_elem) {
-    throw std::invalid_argument("scalar_kernel must have shape [nbin,nmask]");
+    critical("{}: scalar_kernel must have shape [nbin,nmask]",
+      "covariance_mask_pair_area_cpp");
+    exit(1);
   }
 
   // C reads one contiguous row of mask multipoles per angular bin.
@@ -764,11 +813,15 @@ arma::Col<double> covariance_ssc_mask_variance_cpp(
   matrix_cov(power, "power");
   if (power.n_rows != distance.n_elem
       || power.n_cols != mask_cl.n_elem) {
-    throw std::invalid_argument("power must have shape [nnode,nmask]");
+    critical("{}: power must have shape [nnode,nmask]",
+      "covariance_ssc_mask_variance_cpp");
+    exit(1);
   }
   for (arma::uword node=0; node<distance.n_elem; node++) {
     if (distance(node) <= 0.0) {
-      throw std::invalid_argument("distance must be positive");
+      critical("{}: distance must be positive",
+        "covariance_ssc_mask_variance_cpp");
+      exit(1);
     }
   }
 
@@ -826,11 +879,15 @@ arma::Mat<double> covariance_ssc_shell_response_cpp(
       || pair_window.n_cols != nnode
       || mean_window.n_cols != nnode
       || power_response.n_cols != nnode) {
-    throw std::invalid_argument("response inputs must have shape [nrow,nnode]");
+    critical("{}: response inputs must have shape [nrow,nnode]",
+      "covariance_ssc_shell_response_cpp");
+    exit(1);
   }
   for (arma::uword node=0; node<nnode; node++) {
     if (distance(node) <= 0.0) {
-      throw std::invalid_argument("distance must be positive");
+      critical("{}: distance must be positive",
+        "covariance_ssc_shell_response_cpp");
+      exit(1);
     }
   }
 
@@ -893,8 +950,9 @@ py::tuple covariance_halo_moments_cpp(
   quadrature_cov(nquad);
   if (k.n_rows != a.n_elem
       || lnm_edges.n_elem < 2) {
-    throw std::invalid_argument(
-        "k needs na rows and lnm_edges needs two edges");
+    critical("{}: k needs na rows and lnm_edges needs two edges",
+      "covariance_halo_moments_cpp");
+    exit(1);
   }
 
   // The C routine reads the linear power, growth, sigma(M) and NFW
@@ -904,17 +962,23 @@ py::tuple covariance_halo_moments_cpp(
   if (cosmology.lnPL == nullptr
       || cosmology.G == nullptr
       || like.halo_model[3] != HALO_PROFILE_NFW) {
-    throw std::invalid_argument("initialize cosmology and NFW halo profiles");
+    critical("{}: initialize cosmology and NFW halo profiles",
+      "covariance_halo_moments_cpp");
+    exit(1);
   }
   for (arma::uword row=0; row<a.n_elem; row++) {
     if (a(row) < limits.a_min
         || a(row) >= 1.0) {
-      throw std::invalid_argument("a must lie in the initialized halo range");
+      critical("{}: a must lie in the initialized halo range",
+        "covariance_halo_moments_cpp");
+      exit(1);
     }
   }
   for (arma::uword index=0; index<k.n_elem; index++) {
     if (k(index) < 0.0) {
-      throw std::invalid_argument("halo wavenumbers must be nonnegative");
+      critical("{}: halo wavenumbers must be nonnegative",
+        "covariance_halo_moments_cpp");
+      exit(1);
     }
   }
   for (arma::uword edge=0; edge<lnm_edges.n_elem; edge++) {
@@ -922,8 +986,9 @@ py::tuple covariance_halo_moments_cpp(
         || lnm_edges(edge) > std::log(limits.halo_m[RANGE_MAX])
         || (edge > 0
             && lnm_edges(edge) <= lnm_edges(edge-1))) {
-      throw std::invalid_argument(
-          "mass edges must increase inside halo limits");
+      critical("{}: mass edges must increase inside halo limits",
+        "covariance_halo_moments_cpp");
+      exit(1);
     }
   }
 
@@ -999,11 +1064,15 @@ arma::Mat<double> covariance_power_cpp(
       || cosmology.lnPL == nullptr
       || (!linear
           && cosmology.lnP == nullptr)) {
-    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+    critical("{}: initialize power tables and use a_min<=a<1",
+      "covariance_power_cpp");
+    exit(1);
   }
   for (arma::uword index=0; index<k.n_elem; index++) {
     if (k(index) <= 0.0) {
-      throw std::invalid_argument("power wavenumbers must be positive");
+      critical("{}: power wavenumbers must be positive",
+        "covariance_power_cpp");
+      exit(1);
     }
   }
 
@@ -1066,7 +1135,9 @@ arma::Mat<double> covariance_power_logk_cpp(
       || a >= 1.0
       || !std::isfinite(shift)
       || cosmology.lnPL == nullptr) {
-    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+    critical("{}: initialize power tables and use a_min<=a<1",
+      "covariance_power_logk_cpp");
+    exit(1);
   }
 
   // Workspace role 0 holds the log wavenumbers and role 1 receives the
@@ -1122,19 +1193,24 @@ arma::Mat<double> covariance_tree_averages_logk_cpp(
       || log10s.n_rows != k.n_cols
       || log10s.n_cols != corner.n_elem
       || corner.n_elem != weight.n_elem) {
-    throw std::invalid_argument(
-        "tree input pair and angle dimensions disagree");
+    critical("{}: tree input pair and angle dimensions disagree",
+      "covariance_tree_averages_logk_cpp");
+    exit(1);
   }
   if (!std::isfinite(a)
       || a < limits.a_min
       || a >= 1.0
       || !std::isfinite(shift)
       || cosmology.lnPL == nullptr) {
-    throw std::invalid_argument("initialize power tables and use a_min<=a<1");
+    critical("{}: initialize power tables and use a_min<=a<1",
+      "covariance_tree_averages_logk_cpp");
+    exit(1);
   }
   for (arma::uword point=0; point<k.n_elem; point++) {
     if (k(point) <= 0.0) {
-      throw std::invalid_argument("tree wavenumbers must be positive");
+      critical("{}: tree wavenumbers must be positive",
+        "covariance_tree_averages_logk_cpp");
+      exit(1);
     }
   }
   double normalization = 0.0;
@@ -1142,12 +1218,16 @@ arma::Mat<double> covariance_tree_averages_logk_cpp(
     if (corner(node) <= 0.0
         || corner(node) > 2.0
         || weight(node) <= 0.0) {
-      throw std::invalid_argument("need 0<corner<=2 and positive weights");
+      critical("{}: need 0<corner<=2 and positive weights",
+        "covariance_tree_averages_logk_cpp");
+      exit(1);
     }
     normalization += weight(node);
   }
   if (std::fabs(normalization-1.0) > 1.e-10) {
-    throw std::invalid_argument("angular weights must sum to one");
+    critical("{}: angular weights must sum to one",
+      "covariance_tree_averages_logk_cpp");
+    exit(1);
   }
 
   // Contiguous copies for the C driver: pair inputs, the log table and
@@ -1221,12 +1301,15 @@ arma::Mat<double> covariance_tree_averages_cpp(
       || ps.n_rows != k.n_cols
       || ps.n_cols != corner.n_elem
       || corner.n_elem != weight.n_elem) {
-    throw std::invalid_argument(
-        "tree input pair and angle dimensions disagree");
+    critical("{}: tree input pair and angle dimensions disagree",
+      "covariance_tree_averages_cpp");
+    exit(1);
   }
   for (arma::uword point=0; point<k.n_elem; point++) {
     if (k(point) <= 0.0) {
-      throw std::invalid_argument("tree wavenumbers must be positive");
+      critical("{}: tree wavenumbers must be positive",
+        "covariance_tree_averages_cpp");
+      exit(1);
     }
   }
 
@@ -1238,12 +1321,16 @@ arma::Mat<double> covariance_tree_averages_cpp(
     if (corner(node) <= 0.0
         || corner(node) > 2.0
         || weight(node) <= 0.0) {
-      throw std::invalid_argument("need 0<corner<=2 and positive weights");
+      critical("{}: need 0<corner<=2 and positive weights",
+        "covariance_tree_averages_cpp");
+      exit(1);
     }
     normalization += weight(node);
   }
   if (std::fabs(normalization-1.0) > 1.e-10) {
-    throw std::invalid_argument("angular weights must sum to one");
+    critical("{}: angular weights must sum to one",
+      "covariance_tree_averages_cpp");
+    exit(1);
   }
 
   arma::Mat<double> output(3, k.n_cols);
@@ -1316,8 +1403,9 @@ arma::Mat<double> covariance_halo_trispectrum_cpp(
       || i11.n_cols != npoint
       || moments.n_cols != npoint
       || tree.n_cols != npoint) {
-    throw std::invalid_argument(
-        "trispectrum inputs need 2,2,5,3 matching rows");
+    critical("{}: trispectrum inputs need 2,2,5,3 matching rows",
+      "covariance_halo_trispectrum_cpp");
+    exit(1);
   }
 
   arma::Mat<double> output(5, npoint);
@@ -1378,8 +1466,9 @@ arma::Mat<double> covariance_halo_response_cpp(
   if (inputs.n_rows != 6
       || !std::isfinite(growth_coefficient)
       || !std::isfinite(dilation_coefficient)) {
-    throw std::invalid_argument(
-        "need six response rows and finite coefficients");
+    critical("{}: need six response rows and finite coefficients",
+      "covariance_halo_response_cpp");
+    exit(1);
   }
 
   // halo_response_cov requires a positive P_halo = I11^2 P_lin + I02 (the
@@ -1390,7 +1479,9 @@ arma::Mat<double> covariance_halo_response_cpp(
                          +inputs(3, point);
     if (!std::isfinite(phalo)
         || phalo <= 0.0) {
-      throw std::invalid_argument("supplied moments must give positive halo P");
+      critical("{}: supplied moments must give positive halo P",
+        "covariance_halo_response_cpp");
+      exit(1);
     }
   }
 

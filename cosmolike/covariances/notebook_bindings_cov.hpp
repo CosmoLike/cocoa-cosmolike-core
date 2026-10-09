@@ -5,6 +5,13 @@
 #include <carma.h>
 #include <armadillo>
 #include <pybind11/numpy.h>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 namespace cosmolike_interface {
 // ---------------------------------------------------------------------------
@@ -46,7 +53,9 @@ template <typename Array>
 Array notebook_input_cov(const pybind11::object& input, const int rank)
 {
   if (pybind11::cast<int>(input.attr("ndim")) != rank) {
-    throw pybind11::value_error("covariance input has the wrong array rank");
+    spdlog::critical("{}: covariance input has the wrong array rank",
+      "notebook_input_cov");
+    std::exit(1);
   }
   const pybind11::object owned = input.attr("astype")(
       pybind11::dtype::of<typename Array::elem_type>(),

@@ -1,6 +1,12 @@
 #include <cmath>
-#include <stdexcept>
 #include <vector>
+#include <cstdlib>
+#include <spdlog/spdlog.h>
+
+// Abort on invalid input like the data-vector layer: print through
+// the shared logger, then end the process. No C++ exceptions.
+using spdlog::critical;
+using std::exit;
 
 #include <pybind11/numpy.h>
 #include "production_interface_cov.hpp"
@@ -73,14 +79,16 @@ static py::dict covariance_counts_shell(
       || density.shape(1) != distance.size()
       || derivative.shape(0) != density.shape(0)
       || derivative.shape(1) != density.shape(1)) {
-    throw std::invalid_argument(
-        "distance must be nonempty [nnode]; density and derivative "
-        "must both have shape [ncount,nnode], with ncount > 0");
+    critical("{}: distance must be nonempty [nnode]; "
+      "density and derivative must both have shape [ncount,nnode], with ncount > 0", "covariance_counts_shell");
+    exit(1);
   }
   if (!std::isfinite(area_sr)
       || area_sr <= 0.0
       || area_sr > 4.0*M_PI) {
-    throw std::invalid_argument("area_sr must be finite and in (0,4*pi]");
+    critical("{}: area_sr must be finite and in (0,4*pi]",
+      "covariance_counts_shell");
+    exit(1);
   }
 
   // A positive distance gives a physical shell volume. Zero abundances
@@ -89,16 +97,18 @@ static py::dict covariance_counts_shell(
   for (py::ssize_t node=0; node<distance.size(); node++) {
     if (!std::isfinite(distance.data()[node])
         || distance.data()[node] <= 0.0) {
-      throw std::invalid_argument("distance must be finite and positive");
+      critical("{}: distance must be finite and positive",
+        "covariance_counts_shell");
+      exit(1);
     }
   }
   for (py::ssize_t entry=0; entry<density.size(); entry++) {
     if (!std::isfinite(density.data()[entry])
         || density.data()[entry] < 0.0
         || !std::isfinite(derivative.data()[entry])) {
-      throw std::invalid_argument(
-          "density must be finite and nonnegative; derivative must "
-          "be finite and may have either sign");
+      critical("{}: density must be finite and nonnegative; "
+        "derivative must be finite and may have either sign", "covariance_counts_shell");
+      exit(1);
     }
   }
 
@@ -186,9 +196,9 @@ static py::dict covariance_cluster_spectra(
       || power.ndim() != 2
       || profile.ndim() != 3
       || richness.ndim() != 1) {
-    throw std::invalid_argument(
-        "ell/distance/dchi/richness must be vectors; base/window/bias/"
-        "power matrices; profile a 3D array; ell/distance nonempty");
+    critical("{}: ell/distance/dchi/richness must be "
+      "vectors; base/window/bias/power matrices; profile a 3D array; ell/distance nonempty", "covariance_cluster_spectra");
+    exit(1);
   }
   const py::ssize_t nell = ell.size();
   const py::ssize_t nnode = distance.size();
@@ -209,10 +219,9 @@ static py::dict covariance_cluster_spectra(
       || profile.shape(1) != nell
       || profile.shape(2) != nnode
       || richness.size() != ncluster) {
-    throw std::invalid_argument(
-        "need base[nbase,nnode], window/bias[ncluster,nnode], "
-        "power[nell,nnode], profile[nrichness,nell,nnode], "
-        "richness[ncluster], positive field counts and 0<=nlens<=nbase");
+    critical("{}: need base[nbase,nnode], "
+      "window/bias[ncluster,nnode], power[nell,nnode], profile[nrichness,nell,nnode], richness[ncluster], positive field counts and 0<=nlens<=nbase", "covariance_cluster_spectra");
+    exit(1);
   }
 
   // Reject nonfinite values before any output allocation or C operation.
@@ -221,25 +230,33 @@ static py::dict covariance_cluster_spectra(
                             &bias, &power, &profile}) {
     for (py::ssize_t entry=0; entry<input->size(); entry++) {
       if (!std::isfinite(input->data()[entry])) {
-        throw std::invalid_argument("cluster spectrum inputs must be finite");
+        critical("{}: cluster spectrum inputs must be finite",
+          "covariance_cluster_spectra");
+        exit(1);
       }
     }
   }
   for (py::ssize_t index=0; index<nell; index++) {
     if (ell.data()[index] < 2.0) {
-      throw std::invalid_argument("cluster spectrum ell must be >= 2");
+      critical("{}: cluster spectrum ell must be >= 2",
+        "covariance_cluster_spectra");
+      exit(1);
     }
   }
   for (py::ssize_t node=0; node<nnode; node++) {
     if (distance.data()[node] <= 0.0
         || dchi.data()[node] <= 0.0) {
-      throw std::invalid_argument("distance and dchi must be positive");
+      critical("{}: distance and dchi must be positive",
+        "covariance_cluster_spectra");
+      exit(1);
     }
   }
   for (py::ssize_t field=0; field<ncluster; field++) {
     if (richness.data()[field] < 0
         || richness.data()[field] >= nrichness) {
-      throw std::invalid_argument("richness indices must be in [0,nrichness)");
+      critical("{}: richness indices must be in [0,nrichness)",
+        "covariance_cluster_spectra");
+      exit(1);
     }
   }
 
@@ -352,9 +369,9 @@ static py::dict covariance_cluster_moments(
   if (weight.ndim() != 3
       || bias.ndim() != 2
       || profile.ndim() != 3) {
-    throw std::invalid_argument(
-        "need weight[state,selection,mass], bias[state,mass] and "
-        "profile[state,k,mass]");
+    critical("{}: need weight[state,selection,mass], "
+      "bias[state,mass] and profile[state,k,mass]", "covariance_cluster_moments");
+    exit(1);
   }
   const py::ssize_t na = weight.shape(0); // independent radial states
   const py::ssize_t nselection = weight.shape(1); // observed categories
@@ -369,20 +386,24 @@ static py::dict covariance_cluster_moments(
       || bias.shape(1) != nmass
       || profile.shape(0) != na
       || profile.shape(2) != nmass) {
-    throw std::invalid_argument(
-        "all counts must be positive; weight, bias and profile must "
-        "share their state and mass dimensions");
+    critical("{}: all counts must be positive; weight, "
+      "bias and profile must share their state and mass dimensions", "covariance_cluster_moments");
+    exit(1);
   }
   for (const auto* input : {&weight, &bias, &profile}) {
     for (py::ssize_t entry=0; entry<input->size(); entry++) {
       if (!std::isfinite(input->data()[entry])) {
-        throw std::invalid_argument("cluster moment inputs must be finite");
+        critical("{}: cluster moment inputs must be finite",
+          "covariance_cluster_moments");
+        exit(1);
       }
     }
   }
   for (py::ssize_t entry=0; entry<weight.size(); entry++) {
     if (weight.data()[entry] < 0.0) {
-      throw std::invalid_argument("selected mass weights must be nonnegative");
+      critical("{}: selected mass weights must be nonnegative",
+        "covariance_cluster_moments");
+      exit(1);
     }
   }
 
@@ -507,8 +528,9 @@ static py::dict covariance_cluster_halo_samples(
       || lnm.size() < 1
       || dlnm.ndim() != 1
       || dlnm.size() != lnm.size()) {
-    throw std::invalid_argument(
-        "need nonempty a[state], k[state,k], lnm[mass], dlnm[mass]");
+    critical("{}: need nonempty a[state], k[state,k], lnm[mass], dlnm[mass]",
+      "covariance_cluster_halo_samples");
+    exit(1);
   }
   if (cosmology.Omega_nu != 0.0
       || cosmology.Omega_m <= 0.0
@@ -520,38 +542,47 @@ static py::dict covariance_cluster_halo_samples(
       || cluster.mor[2] <= 0.0
       || cluster.mor_pivot_mass <= 0.0
       || cluster.mor_pivot_1pz <= 0.0) {
-    throw std::invalid_argument(
-        "initialize massless cosmology, NFW halos, richness bins and a "
-        "lognormal MOR with positive scatter and selection_model=0");
+    critical("{}: initialize massless cosmology, NFW "
+      "halos, richness bins and a lognormal MOR with positive scatter and selection_model=0", "covariance_cluster_halo_samples");
+    exit(1);
   }
   if (cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_FIXED
       && cluster.hmf_alpha_mode != CLUSTER_HMF_ALPHA_NORMALIZED) {
-    throw std::invalid_argument("cluster hmf_alpha_mode must be 0 or 1");
+    critical("{}: cluster hmf_alpha_mode must be 0 or 1",
+      "covariance_cluster_halo_samples");
+    exit(1);
   }
   for (const auto* input : {&a, &k, &lnm, &dlnm}) {
     for (py::ssize_t entry=0; entry<input->size(); entry++) {
       if (!std::isfinite(input->data()[entry])) {
-        throw std::invalid_argument("halo sample inputs must be finite");
+        critical("{}: halo sample inputs must be finite",
+          "covariance_cluster_halo_samples");
+        exit(1);
       }
     }
   }
   for (py::ssize_t state=0; state<a.size(); state++) {
     if (a.data()[state] < limits.a_min
         || a.data()[state] >= 1.0) {
-      throw std::invalid_argument("a must lie in [limits.a_min,1)");
+      critical("{}: a must lie in [limits.a_min,1)",
+        "covariance_cluster_halo_samples");
+      exit(1);
     }
   }
   for (py::ssize_t entry=0; entry<k.size(); entry++) {
     if (k.data()[entry] < 0.0) {
-      throw std::invalid_argument("k must be nonnegative in core units");
+      critical("{}: k must be nonnegative in core units",
+        "covariance_cluster_halo_samples");
+      exit(1);
     }
   }
   for (py::ssize_t node=0; node<lnm.size(); node++) {
     if (lnm.data()[node] < std::log(limits.halo_m[RANGE_MIN])
         || lnm.data()[node] > std::log(limits.halo_m[RANGE_MAX])
         || dlnm.data()[node] <= 0.0) {
-      throw std::invalid_argument(
-          "lnm must lie in the core sigma mass range; dlnm must be > 0");
+      critical("{}: lnm must lie in the core sigma mass "
+        "range; dlnm must be > 0", "covariance_cluster_halo_samples");
+      exit(1);
     }
   }
 
@@ -621,13 +652,17 @@ static void bind_production_catalog_cov(py::module_& module)
     if (z.ndim() != 1
         || z.size() < 1
         || cluster.zdist_nbin < 1) {
-      throw std::invalid_argument("initialize cluster bins and supply z[node]");
+      critical("{}: initialize cluster bins and supply z[node]",
+        "covariance_cluster_halo_samples");
+      exit(1);
     }
     cluster_cov_array result({z.size(), py::ssize_t(cluster.zdist_nbin)});
     for (py::ssize_t node=0; node<z.size(); node++) {
       if (!std::isfinite(z.data()[node])
           || z.data()[node] < 0.0) {
-        throw std::invalid_argument("cluster redshifts must be finite and >=0");
+        critical("{}: cluster redshifts must be finite and >=0",
+          "covariance_cluster_halo_samples");
+        exit(1);
       }
     }
     for (py::ssize_t node=0; node<z.size(); node++) {
@@ -651,13 +686,17 @@ static void bind_production_catalog_cov(py::module_& module)
       if (a.ndim() != 1
           || a.size() < 1
           || cluster.richness_nbin < 1) {
-        throw std::invalid_argument("initialize richness bins and supply a[node]");
+        critical("{}: initialize richness bins and supply a[node]",
+          "covariance_cluster_halo_samples");
+        exit(1);
       }
       for (py::ssize_t node=0; node<a.size(); node++) {
         if (!std::isfinite(a.data()[node])
             || a.data()[node] <= 0.0
             || a.data()[node] >= 1.0) {
-          throw std::invalid_argument("cluster scale factors must lie in (0,1)");
+          critical("{}: cluster scale factors must lie in (0,1)",
+            "covariance_cluster_halo_samples");
+          exit(1);
         }
       }
       cluster_cov_array result({a.size(), py::ssize_t(cluster.richness_nbin)});
@@ -685,19 +724,25 @@ static void bind_production_catalog_cov(py::module_& module)
         || k.size() < 1
         || a.size() < 1
         || cluster.richness_nbin < 1) {
-      throw std::invalid_argument("initialize richness bins and supply k,a vectors");
+      critical("{}: initialize richness bins and supply k,a vectors",
+        "covariance_cluster_halo_samples");
+      exit(1);
     }
     for (py::ssize_t mode=0; mode<k.size(); mode++) {
       if (!std::isfinite(k.data()[mode])
           || k.data()[mode] <= 0.0) {
-        throw std::invalid_argument("cluster profile wavenumbers must be >0");
+        critical("{}: cluster profile wavenumbers must be >0",
+          "covariance_cluster_halo_samples");
+        exit(1);
       }
     }
     for (py::ssize_t node=0; node<a.size(); node++) {
       if (!std::isfinite(a.data()[node])
           || a.data()[node] <= 0.0
           || a.data()[node] >= 1.0) {
-        throw std::invalid_argument("cluster scale factors must lie in (0,1)");
+        critical("{}: cluster scale factors must lie in (0,1)",
+          "covariance_cluster_halo_samples");
+        exit(1);
       }
     }
     cluster_cov_array result({k.size(), a.size(),
