@@ -318,7 +318,8 @@ int test_kmax(double l, int ni)
   }
 
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   }
   
   const double R_min = like.Rmin_bias; // set minimum scale to which
@@ -1247,7 +1248,13 @@ static double nz_histogram_akima(
 //   where Δz_i = nuisance.photoz[0][0][nj] is the per-bin shift.
 //   Unlike nz_lens_photoz, there is no stretch factor — only a shift.
 //
-// NUMERICAL SCHEME:
+// RECONSTRUCTION CHOICE:
+//   photoz_histogram_akima = 0 follows the midpoint path described below.
+//   Value 1 delegates to nz_histogram_akima: fixed 3x histogram preparation,
+//   then Akima with exact subdivision for the uniform lookup. That helper
+//   explains its support, probability changes and independent caches.
+//
+// NUMERICAL SCHEME (DEFAULT MIDPOINT PATH):
 //   Two-stage interpolation for speed on the hot path:
 //
 //   raw histogram -> normalize per bin -> GSL spline on the node grid
@@ -1255,17 +1262,19 @@ static double nz_histogram_akima(
 //     -> tridiagonal solve for the cubic coefficients
 //     -> hot path: direct-index lookup + Horner cubic
 //
-//   Stage 1 (cache rebuild, runs once when redshift.random_shear
-//   changes) covers the first four links. The GSL spline type is set
-//   by Ntable.photoz_interpolation_type (cspline default, linear, or
-//   Steffen monotone). The node positions follow
-//   Ntable.photoz_zmid_convention: the file z column is read as Z_LOW
-//   left bin edges (default, values at centers z + dz/2) or as Z_MID
-//   sample points (values at z). The fine grid holds
-//   Ntable.nz_fine_sampling_factor x the original resolution, with
-//   cubic coefficients from spline_coeffs_uniform. Defining
-//   DONT_NZ_FAST_SUMBSAMPLE skips the fine grid and sends the hot
-//   path back to GSL evaluation.
+//   Stage 1: prepare the default midpoint reconstruction on a cache rebuild.
+//     - Place the samples. photoz_zmid_convention selects left edges
+//       (Z_LOW: density at z + dz/2) or centres (Z_MID: density at z).
+//     - Fit the normalized samples. photoz_interpolation_type selects
+//       natural cubic (default), linear or Steffen interpolation.
+//     - Sample that curve on the uniform fine grid, with
+//       nz_fine_sampling_factor * nzbins + 1 nodes. Compute its natural
+//       cubic coefficients with spline_coeffs_uniform.
+//
+//   The histogram is normalized before these fits. Neither fit explicitly
+//   conserves individual cell probabilities or renormalizes its own area.
+//   DONT_NZ_FAST_SUMBSAMPLE bypasses the final grid and evaluates the
+//   first GSL interpolant directly.
 //
 //   Stage 2 (hot path, called millions of times per likelihood): one
 //   multiply computes the fine-grid index (no binary search, no GSL
@@ -1338,18 +1347,24 @@ double nz_source_photoz(double zz, const int nj)
   // with. It is keyed on its value, not on Ntable.random: Ntable.random
   // is redrawn by every Ntable setter (init_binning, ...), and the n(z)
   // tables must not rebuild for changes that do not touch them.
-  if (table == NULL || fdiff2(cache[0], redshift.random_shear) ||
+  if (table == NULL ||
+      fdiff2(cache[0], redshift.random_shear) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
                                 + 8*Ntable.photoz_zmid_convention) ||
       cache[2] != (uint64_t) Ntable.nz_fine_sampling_factor) {
     if (table == NULL) {
-      for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++)
+      for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++) {
         photoz_splines[i] = NULL;
+      }
     }
+
     const int ntomo  = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
 
-    if (table != NULL) free(table);
+    if (table != NULL) {
+      free(table);
+    }
+
     table = (double**) malloc2d(ntomo + 2, nzbins);
     const double zmin = redshift.shear_zdist_zall[RANGE_MIN];
     const double zmax = redshift.shear_zdist_zall[RANGE_MAX];
@@ -1415,7 +1430,10 @@ double nz_source_photoz(double zz, const int nj)
     }
 
     for (int i = 0; i < ntomo+1; i++) {
-      if (photoz_splines[i] != NULL) gsl_interp_free(photoz_splines[i]);
+      if (photoz_splines[i] != NULL) {
+        gsl_interp_free(photoz_splines[i]);
+      }
+
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
 #ifndef DONT_NZ_FAST_SUMBSAMPLE
@@ -1435,7 +1453,10 @@ double nz_source_photoz(double zz, const int nj)
     const double dz_fine = (zmax_fine - zmin_fine) / ((double) nzbins_fine - 1);
     inv_dz_fine = 1.0 / dz_fine;
 
-    if (fine != NULL) free(fine);
+    if (fine != NULL) {
+      free(fine);
+    }
+
     fine = (double***) malloc3d(2, ntomo + 1, nzbins_fine);
 
     #pragma omp parallel for schedule(static)
@@ -1574,7 +1595,8 @@ double int_for_zmean_source(double z, void* params)
   const int ni = (int) ar[0];
   
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   } 
   return z * nz_source_photoz(z, ni);
 }
@@ -1613,12 +1635,18 @@ double zmean_source(int ni)
       fdiff2(cache[0], Ntable.random) ||
       fdiff2(cache[1], redshift.random_shear))
   {    
-    if (table != NULL) free(table);
+    if (table != NULL) {
+      free(table);
+    }
+
     table = (double*) malloc1d(redshift.shear_nbin);
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 256 : 
                          (1 == hdi) ? 512 : 1024; // predefined GSL tables
-    if (w != NULL) gsl_integration_glfixed_table_free(w);
+    if (w != NULL) {
+      gsl_integration_glfixed_table_free(w);
+    }
+
     w = malloc_gslint_glfixed(szint);
 
     (void) nz_source_photoz(0., 0); // init static variables
@@ -1635,7 +1663,8 @@ double zmean_source(int ni)
     cache[1] = redshift.random_shear;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   }
   return table[ni];
 }
@@ -1723,7 +1752,13 @@ double pf_histo_n(double z, const int ni)
 //   The returned value is divided by σ_i to preserve normalization
 //   under the stretch (∫ n(z) dz = 1).
 //
-// NUMERICAL SCHEME:
+// RECONSTRUCTION CHOICE:
+//   photoz_histogram_akima = 0 follows the midpoint path described below.
+//   Value 1 delegates to nz_histogram_akima: fixed 3x histogram preparation,
+//   then Akima with exact subdivision for the uniform lookup. That helper
+//   explains its support, probability changes and independent caches.
+//
+// NUMERICAL SCHEME (DEFAULT MIDPOINT PATH):
 //   Two-stage interpolation for speed on the hot path:
 //
 //   raw histogram -> normalize per bin -> GSL spline on the node grid
@@ -1731,17 +1766,19 @@ double pf_histo_n(double z, const int ni)
 //     -> tridiagonal solve for the cubic coefficients
 //     -> hot path: direct-index lookup + Horner cubic
 //
-//   Stage 1 (cache rebuild, runs once when redshift.random_clustering
-//   changes) covers the first four links. The GSL spline type is set
-//   by Ntable.photoz_interpolation_type (cspline default, linear, or
-//   Steffen monotone). The node positions follow
-//   Ntable.photoz_zmid_convention: the file z column is read as Z_LOW
-//   left bin edges (default, values at centers z + dz/2) or as Z_MID
-//   sample points (values at z). The fine grid holds
-//   Ntable.nz_fine_sampling_factor x the original resolution, with
-//   cubic coefficients from spline_coeffs_uniform. Defining
-//   DONT_NZ_FAST_SUMBSAMPLE skips the fine grid and sends the hot
-//   path back to GSL evaluation.
+//   Stage 1: prepare the default midpoint reconstruction on a cache rebuild.
+//     - Place the samples. photoz_zmid_convention selects left edges
+//       (Z_LOW: density at z + dz/2) or centres (Z_MID: density at z).
+//     - Fit the normalized samples. photoz_interpolation_type selects
+//       natural cubic (default), linear or Steffen interpolation.
+//     - Sample that curve on the uniform fine grid, with
+//       nz_fine_sampling_factor * nzbins + 1 nodes. Compute its natural
+//       cubic coefficients with spline_coeffs_uniform.
+//
+//   The histogram is normalized before these fits. Neither fit explicitly
+//   conserves individual cell probabilities or renormalizes its own area.
+//   DONT_NZ_FAST_SUMBSAMPLE bypasses the final grid and evaluates the
+//   first GSL interpolant directly.
 //
 //   Stage 2 (hot path, called millions of times per likelihood): one
 //   multiply computes the fine-grid index (no binary search, no GSL
@@ -1808,7 +1845,8 @@ double nz_lens_photoz(double zz, int nj)
   //
   // cache[2]: the fine-sampling factor of the fine grid, keyed on its
   // value (see nz_source_photoz).
-  if (NULL == table || fdiff2(cache[0], redshift.random_clustering) ||
+  if (NULL == table ||
+      fdiff2(cache[0], redshift.random_clustering) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
                                 + 8*Ntable.photoz_zmid_convention) ||
       cache[2] != (uint64_t) Ntable.nz_fine_sampling_factor)
@@ -1818,10 +1856,14 @@ double nz_lens_photoz(double zz, int nj)
         photoz_splines[i] = NULL;
       }
     }
+
     const int ntomo  = redshift.clustering_nbin;
     const int nzbins = redshift.clustering_nzbins;
 
-    if (table != NULL) free(table);
+    if (table != NULL) {
+      free(table);
+    }
+
     table = (double**) malloc2d(ntomo + 2, nzbins);
     const double zmin = redshift.clustering_zdist_zall[RANGE_MIN];
     const double zmax = redshift.clustering_zdist_zall[RANGE_MAX];
@@ -1873,7 +1915,8 @@ double nz_lens_photoz(double zz, int nj)
     }
 
     if (!(norm > 0.0)) {
-      log_fatal("zero/negative total n(z) normalization"); exit(1);
+      log_fatal("zero/negative total n(z) normalization");
+      exit(1);
     }
 
     #pragma omp parallel for schedule(static)
@@ -1890,6 +1933,7 @@ double nz_lens_photoz(double zz, int nj)
       if (photoz_splines[i] != NULL) {
         gsl_interp_free(photoz_splines[i]);
       }
+
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
 
@@ -1900,7 +1944,8 @@ double nz_lens_photoz(double zz, int nj)
                                    table[i],
                                    nzbins);
       if (status) {
-        log_fatal(gsl_strerror(status)); exit(1);
+        log_fatal(gsl_strerror(status));
+        exit(1);
       }
     }
 #ifndef DONT_NZ_FAST_SUMBSAMPLE
@@ -1924,6 +1969,7 @@ double nz_lens_photoz(double zz, int nj)
     if (fine != NULL) {
       free(fine);
     }
+
     fine = (double***) malloc3d(2, ntomo + 1, nzbins_fine);
 
     #pragma omp parallel for schedule(static)
@@ -1935,7 +1981,8 @@ double nz_lens_photoz(double zz, int nj)
                           table[ntomo+1], table[i],
                           z, NULL, &fine[0][i][k]);
         if (status) {
-          log_fatal(gsl_strerror(status)); exit(1);
+          log_fatal(gsl_strerror(status));
+          exit(1);
         }
       }
       spline_coeffs_uniform(fine[0][i], nzbins_fine, dz_fine, fine[1][i]);
@@ -2157,7 +2204,8 @@ void zmean_all(double* out)
 double zmean(const int ni)
 {
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   }
   // a mean redshift is positive once a lens n(z) is loaded; the stored
   // value is zero before set_lens_sample runs
@@ -2246,11 +2294,20 @@ double g_tomo(double ainput, const int ni) {
   const double amax = 0.999999;
   
   if (NULL == table || fdiff2(cache[0], Ntable.random))  { 
-    if (table != NULL) free(table);
+    if (table != NULL) {
+      free(table);
+    }
+
     table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_a);
-    if (Pint != NULL) free(Pint);
+    if (Pint != NULL) {
+      free(Pint);
+    }
+
     Pint = (double**) malloc2d(redshift.shear_nbin, Na);
-    if (Qint != NULL) free(Qint);
+    if (Qint != NULL) {
+      free(Qint);
+    }
+
     Qint = (double**) malloc2d(redshift.shear_nbin, Na);
   }
   if (fdiff2(cache[0], Ntable.random) ||
@@ -2268,7 +2325,8 @@ double g_tomo(double ainput, const int ni) {
         Pint[j][i] = nz_source_photoz(1./a-1., j) / (a * a);
         const double c = chi(amin + i*da);
         if (!(c > 0.0)) {
-          log_fatal("division by zero (chi = 0)"); exit(1);
+          log_fatal("division by zero (chi = 0)");
+          exit(1);
         }
         Qint[j][i] = Pint[j][i] / c;
       }
@@ -2296,7 +2354,8 @@ double g_tomo(double ainput, const int ni) {
     cache[3] = redshift.random_shear;
   }
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   } 
   const double dac = (amax - amin) / ((double) Ntable.N_a - 1.0); //coarse
   return (ainput <= amin || ainput > 1.0 - dac) ? 0.0 :
@@ -2385,10 +2444,21 @@ double g2_tomo(double a, int ni)
   const double amax = 0.999999;
 
   if (NULL == table || fdiff2(cache[0], Ntable.random)) {
-    if (table != NULL) free(table);
-    if (Pint  != NULL) free(Pint);
-    if (Qint  != NULL) free(Qint);
-    if (Rint  != NULL) free(Rint);
+    if (table != NULL) {
+      free(table);
+    }
+
+    if (Pint  != NULL) {
+      free(Pint);
+    }
+
+    if (Qint  != NULL) {
+      free(Qint);
+    }
+
+    if (Rint  != NULL) {
+      free(Rint);
+    }
     table = (double**) malloc2d(redshift.shear_nbin, Ntable.N_a);
     Pint  = (double**) malloc2d(redshift.shear_nbin, Na);
     Qint  = (double**) malloc2d(redshift.shear_nbin, Na);
@@ -2408,7 +2478,8 @@ double g2_tomo(double a, int ni)
     for (int i = 0; i < Na; i++) {
       const double c = chi(amin + i * da);
       if (!(c > 0.0)) {
-        log_fatal("division by zero (chi = 0)"); exit(1);
+        log_fatal("division by zero (chi = 0)");
+        exit(1);
       }
       chia[i] = c;
     }
@@ -2446,7 +2517,8 @@ double g2_tomo(double a, int ni)
   }
 
   if (ni < 0 || ni > redshift.shear_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   }
   const double dac = (amax - amin) / ((double) Ntable.N_a - 1.0); // coarse
   return (a <= amin || a > 1.0 - dac) ? 0.0 :
@@ -2537,9 +2609,17 @@ double g_lens(double a, int ni)
   const double amax = 0.999999;
 
   if (table == NULL || fdiff2(cache[0], Ntable.random)) {
-    if (table != NULL) free(table);
-    if (Pint  != NULL) free(Pint);
-    if (Qint  != NULL) free(Qint);
+    if (table != NULL) {
+      free(table);
+    }
+
+    if (Pint  != NULL) {
+      free(Pint);
+    }
+
+    if (Qint  != NULL) {
+      free(Qint);
+    }
     table = (double**) malloc2d(redshift.clustering_nbin, Ntable.N_a);
     Pint  = (double**) malloc2d(redshift.clustering_nbin, Na);
     Qint  = (double**) malloc2d(redshift.clustering_nbin, Na);
@@ -2583,7 +2663,8 @@ double g_lens(double a, int ni)
     cache[3] = redshift.random_clustering;
   }
   if (ni < 0 || ni > redshift.clustering_nbin - 1) {
-    log_fatal("invalid bin input ni = %d", ni); exit(1);
+    log_fatal("invalid bin input ni = %d", ni);
+    exit(1);
   }
   const double dac = (amax - amin) / ((double) Ntable.N_a - 1.0); // coarse
   return (a < amin || a > 1.0 - dac) ? 0.0 :
