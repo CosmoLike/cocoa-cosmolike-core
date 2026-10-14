@@ -680,6 +680,59 @@ double compute_sigma2(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Select the histogram reconstruction without changing the default curve.
+//
+// 0 keeps the original midpoint interpolant. 1 prepares three constant
+// cells per input cell, then uses Akima polynomials for the final lookup.
+// The factor three defines the model and is never scaled by accuracy boosts.
+//
+// A live switch must reload existing histograms: the two reconstructions
+// have different endpoint support, per-bin integration bounds and lens
+// means. The sample loaders restore those quantities and invalidate all
+// dependent kernels through the redshift stamps, including on 1 -> 0.
+// Called before loading any samples, this only records the selection.
+// ---------------------------------------------------------------------------
+void init_photoz_histogram_akima(const int enabled)
+{
+  if (enabled != 0 && enabled != 1) {
+    critical("photoz_histogram_akima = {}: expected 0 (midpoint) or 1 (3x + Akima)", enabled);
+    exit(1);
+  }
+
+  if (Ntable.photoz_histogram_akima == enabled) {
+    return;
+  }
+
+  Ntable.photoz_histogram_akima = enabled;
+  Ntable.random = RandomNumber::get_instance().get();
+
+  // Copy before invoking a loader: it releases its previous input table.
+  // Source and lens have the same file layout, z followed by density columns.
+  for (int sample = 0; sample < 2; sample++) {
+    const int ntomo = (sample == 0) ? redshift.shear_nbin : redshift.clustering_nbin;
+    const int nzbins = (sample == 0) ? redshift.shear_nzbins : redshift.clustering_nzbins;
+    double** hist = (sample == 0) ? redshift.shear_zdist_table : redshift.clustering_zdist_table;
+    if (hist == NULL || ntomo == 0) {
+      continue;
+    }
+
+    arma::Mat<double> input(nzbins, ntomo + 1);
+    for (int k = 0; k < nzbins; k++) {
+      input(k, 0) = hist[ntomo][k];
+      for (int i = 0; i < ntomo; i++) {
+        input(k, i + 1) = hist[i][k];
+      }
+    }
+
+    if (sample == 0) {
+      set_source_sample(input);
+    } else {
+      set_lens_sample(input);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Select the n(z) ingestion conventions.
 //
 // Writes Ntable.photoz_interpolation_type, the n(z) stage-1 interpolant
@@ -3654,7 +3707,10 @@ void set_lens_sample(arma::Mat<double> input_table)
     critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   }
 
-  int cache_update = 0;
+  // Equal input values still need reloading after a reconstruction switch:
+  // bounds and fiducial means belong to the selected curve, not just the file.
+  static int reconstruction_cache = -1;
+  int cache_update = (reconstruction_cache != Ntable.photoz_histogram_akima);
   if (redshift.clustering_nzbins != static_cast<int>(input_table.n_rows) ||
       NULL == redshift.clustering_zdist_table) {
     cache_update = 1;
@@ -3758,6 +3814,7 @@ void set_lens_sample(arma::Mat<double> input_table)
       debug("{}: bin {} - {} = {}.", fname, k, "<z_l>", zm[k]);
     }
   }
+  reconstruction_cache = Ntable.photoz_histogram_akima;
   debug("{}: {}", fname, errends);
 }
 
@@ -3840,7 +3897,10 @@ void set_source_sample(arma::Mat<double> input_table)
     critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   } 
 
-  int cache_update = 0;
+  // Equal input values still need reloading after a reconstruction switch:
+  // bounds and fiducial means belong to the selected curve, not just the file.
+  static int reconstruction_cache = -1;
+  int cache_update = (reconstruction_cache != Ntable.photoz_histogram_akima);
   if (redshift.shear_nzbins != static_cast<int>(input_table.n_rows) ||
       NULL == redshift.shear_zdist_table) {
     cache_update = 1;
@@ -3930,6 +3990,7 @@ void set_source_sample(arma::Mat<double> input_table)
       debug("{}: bin {} - {} = {}.", fname, k, "<z_s>", zmean_source(k));
     }
   }
+  reconstruction_cache = Ntable.photoz_histogram_akima;
   debug("{}: {}", fname, errends);
 }
 

@@ -1171,6 +1171,14 @@ the named knobs change.
   N_a = 256: 3.9 ms.
 - `tinker_alpha` build, 4 threads: 0.9 ms, once per process.
 
+## Optional histogram n(z) reconstruction
+
+Before changing the source/lens histogram readers or their YAML selector,
+read `references/nz_histogram_akima_option.md`. The default remains the
+original midpoint curve. `photoz_histogram_akima: 1` selects the alternative;
+its first factor three is fixed, and final lookup refinement preserves the
+same Akima polynomials. Preserve the exact default round-trip tests.
+
 ## Python code
 
 The full contract is `references/python.md`; read it before touching

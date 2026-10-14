@@ -645,6 +645,9 @@ void init_ntable_nm_internal(const int nm_internal);
 
 void init_ntable_halo_ia_lmax(const int halo_ia_lmax);
 
+// Optional fixed threefold histogram preparation and Akima lookup (0 or 1).
+void init_photoz_histogram_akima(const int enabled);
+
 void init_photoz_conventions(
     const int interpolation_type,
     const int zmid_convention

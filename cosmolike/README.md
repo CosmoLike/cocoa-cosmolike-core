@@ -131,6 +131,31 @@ a quantity, then read its function comment for assumptions and units.
 | [radial_weights.c](radial_weights.c), [header](radial_weights.h) | Form the density, source, lensing, magnification and redshift-space-distortion weights used in angular projections. |
 | [cosmo2D.c](cosmo2D.c), [header](cosmo2D.h) | Integrate angular spectra, implement galaxy non-Limber corrections and transform spectra into real-space bin averages. It also contains the CMB-lensing spectra and beam/pixel factors. |
 
+Each likelihood YAML can select the source/lens histogram reconstruction
+with `photoz_histogram_akima`:
+
+- **0 (default):** preserve the original curve through bin centres, using
+  `photoz_interpolation_type` for its preparation.
+- **1:** overlap-average the histogram onto a uniform grid with three times
+  as many cells, then fit Akima through their centres. For uniform inputs,
+  each original bin supplies three repeated densities. This first factor
+  is fixed and never scales with an accuracy boost.
+
+The alternative's final table stores algebraically subdivided Akima cubics;
+lookup uses a uniform-grid index and Horner evaluation, without a search or
+a second spline fit. Source and lens caches are separate. A live selector
+change reloads their integration bounds and lens means as well as n(z), so
+returning to mode 0 restores the original prediction.
+
+Smoothing redistributes probability among original bins. The threefold
+construction preserves total area for uniform inputs with its endpoint
+padding, but this does not extend to arbitrary irregular grids or imply
+physical superiority. No extra normalization or negative-value clipping is
+introduced. Each project's `tests/data_vector/README.md` documents its
+refined model-distance comparison, compiled-reader plots and area audit.
+These tests use a fixed covariance; selecting Akima also affects shared
+covariance kernels, whose integration settings need their own checks.
+
 Photometric-redshift, or **photo-z**, parameters change the inferred
 redshift distribution of a sample. Magnification changes observed galaxy
 counts because lensing changes apparent flux and area. Redshift-space

@@ -872,6 +872,322 @@ double zdistr_histo_n(double z, const int ni)
 }
 
 // ---------------------------------------------------------------------------
+// Optional histogram/Akima density for a source (sample=0) or lens (sample=1).
+//
+// INPUT HISTOGRAM:
+//   Each input value is a density: multiplying it by the bin width gives
+//   the probability in that bin before normalization. The z column means:
+//     - Z_LOW (0): left bin edges. The last bin repeats the previous width.
+//     - Z_MID (1): bin centres. Edges lie halfway between adjacent centres;
+//       the outer edges extend by half the nearest centre spacing.
+//
+// 1. FIXED THREEFOLD PREPARATION:
+//   Replace the input by 3 * nzbins equal-width cells over the same range.
+//   For uniform input, each bin becomes three cells with the same density.
+//   For irregular input, a new cell may overlap several old bins: add their
+//   overlap probabilities and divide by the new cell width. Normalize these
+//   densities by the input histogram's total probability.
+//
+//   The factor three is fixed. Raising it would narrow the transitions
+//   between bins and change the reconstructed n(z), not improve the
+//   numerical accuracy of the same reconstruction.
+//
+// 2. SMOOTH CURVE AND FAST LOOKUP:
+//   Fit Akima through the prepared cell centres, joining their densities
+//   with cubic polynomials. Extra endpoint samples let the curve reach
+//   both histogram edges; their placement is explained beside the fit.
+//
+//   Split each polynomial into smaller intervals for the final table.
+//   This stores the SAME curve: there is no second spline fit. The number
+//   of subdivisions is ceil(max(4, nz_fine_sampling_factor) / 3), so the
+//   default factor five gives 3x preparation followed by 2x subdivision.
+//   Uniform spacing locates the required interval without a binary search.
+//
+// PROBABILITY:
+//   For uniform input, three repeated densities per bin and the endpoint
+//   padding preserve total probability to rounding. Smoothing transfers
+//   probability between neighbouring bins, so individual bin areas change.
+//   For irregular input, the overlap step preserves the total, but the
+//   Akima fit need not. General Akima curves can also dip below zero.
+//   This reader applies no extra normalization, clipping or area correction.
+//
+// CACHE INVALIDATION:
+//   Rebuild when the histogram, edge convention or final grid factor changes.
+//   Reuse allocated storage whenever its dimensions still match.
+//   photoz_interpolation_type has no effect: this reader always uses Akima.
+//   Cosmology does not enter this reconstruction. Photo-z shifts and lens
+//   stretch change the query coordinates, without rebuilding the table.
+//
+// PHOTO-Z MODEL:
+//   Evaluate the stored curve at z - delta_z. A positive shift moves the
+//   distribution to higher redshift. Lens queries also apply the usual
+//   stretch and its density Jacobian.
+// ---------------------------------------------------------------------------
+static double nz_histogram_akima(
+    double zz,        // query redshift, before photo-z shifts/stretch
+    const int nj,     // tomographic bin
+    const int sample  // 0: source, 1: lens
+  )
+{
+  // Source and lens samples are rebuilt independently. Each record owns
+  // its arrays and GSL workspaces; only serial cache preparation writes it.
+  struct nz_akima_cache {
+    uint64_t cache[3];
+    double** table;
+    double* edges;
+    double*** coeff;
+    double** prepared;
+    double* knots;
+    gsl_spline** splines;
+    int ntomo_cache;
+    int nzbins_cache;
+    int nfine_cache;
+    double inv_dz;
+  };
+  static struct nz_akima_cache storage[2];
+  struct nz_akima_cache* t = &storage[sample];
+
+  const int ntomo = (sample == 0) ? redshift.shear_nbin : redshift.clustering_nbin;
+  const int nzbins = (sample == 0) ? redshift.shear_nzbins : redshift.clustering_nzbins;
+  double** input = (sample == 0) ? redshift.shear_zdist_table : redshift.clustering_zdist_table;
+  double* bounds = (sample == 0) ? redshift.shear_zdist_zall : redshift.clustering_zdist_zall;
+  double (*ranges)[MAX_SIZE_ARRAYS] = (sample == 0) ? redshift.shear_zdist_z : redshift.clustering_zdist_z;
+  const uint64_t stamp = (sample == 0) ? redshift.random_shear : redshift.random_clustering;
+  const int factor = (Ntable.nz_fine_sampling_factor < 4) ? 4 : Ntable.nz_fine_sampling_factor;
+  const double prep_factor = 3.0; // fixed reconstruction, independent of accuracy boosts
+  const int nprep = (int) ceil(prep_factor * nzbins);
+
+  // Akima uses one cubic between each pair of prepared sample positions.
+  // Keep every such position in the final grid, so each lookup interval
+  // uses just one cubic. Including two endpoint samples gives nprep + 1
+  // intervals; subdividing them needs (nprep + 1) * refine + 1 grid points.
+  const int refine = (int) ceil(factor / prep_factor);
+  const int nfine = (nprep + 1) * refine + 1;
+
+  if (t->table == NULL || fdiff2(t->cache[0], stamp) ||
+      t->cache[1] != (uint64_t) (1 + Ntable.photoz_zmid_convention) ||
+      t->cache[2] != (uint64_t) factor) {
+    if (nzbins < 2 || input == NULL) {
+      log_fatal("n(z) needs at least two histogram cells");
+      exit(1);
+    }
+
+    // Preparation storage depends on the number of tomographic bins
+    // and input redshift cells. Replace it only if those sizes change;
+    // new density values with the same sizes reuse the existing storage.
+    // Refining the final lookup grid does not enlarge this first stage.
+    if (t->prepared == NULL || t->ntomo_cache != ntomo || t->nzbins_cache != nzbins) {
+      // These arrays have the old dimensions. Release them before
+      // allocating the preparation rows and sample positions below.
+      if (t->prepared != NULL) {
+        free(t->prepared);
+      }
+
+      if (t->knots != NULL) {
+        free(t->knots);
+      }
+
+      // Each pointer owns a GSL spline with its own internal storage.
+      // Free those objects using the OLD bin count, then free the pointer
+      // array itself. Freeing only that array would leak the GSL storage.
+      if (t->splines != NULL) {
+        for (int i = 0; i < t->ntomo_cache; i++) {
+          gsl_spline_free(t->splines[i]);
+        }
+        free(t->splines);
+      }
+
+      // Each distribution needs its own preparation row and GSL
+      // workspace. The two extra slots hold the endpoint copies;
+      // the extra row holds preparation-cell edges shared by all bins.
+      t->prepared = (double**) malloc2d(ntomo + 1, nprep + 2);
+      t->knots = malloc1d(nprep + 2);
+      t->splines = malloc(ntomo * sizeof(gsl_spline*));
+
+      if (t->splines == NULL) {
+        log_fatal("Akima workspace allocation failed");
+        exit(1);
+      }
+
+      // Equal spacing lets GSL fit in cell units, 0, 1, 2, ... .
+      // The query below converts physical redshift back to grid units.
+      for (int k = 0; k < nprep + 2; k++) {
+        t->knots[k] = k;
+      }
+
+      // Give each bin a separate Akima workspace: the fits below
+      // run in parallel and must not share GSL's mutable working arrays.
+      // Allocate them here, before entering the parallel region.
+      for (int i = 0; i < ntomo; i++) {
+        t->splines[i] = gsl_spline_alloc(gsl_interp_akima, nprep + 2);
+        if (t->splines[i] == NULL) {
+          log_fatal("Akima allocation failed");
+          exit(1);
+        }
+      }
+    }
+
+    // The final lookup may be refined without changing the Akima
+    // preparation. Resize its values and coefficients separately, keeping
+    // the same fitted curve on a denser grid.
+    if (t->table == NULL || t->ntomo_cache != ntomo || t->nfine_cache != nfine) {
+      if (t->table != NULL) {
+        free(t->table);
+      }
+
+      if (t->coeff != NULL) {
+        free(t->coeff);
+      }
+
+      // Store each density row and its linear/quadratic/cubic
+      // coefficients. The final table row holds the shared redshift grid.
+      t->table = (double**) malloc2d(ntomo + 1, nfine);
+      t->coeff = (double***) malloc3d(ntomo, 3, nfine);
+
+      t->ntomo_cache = ntomo;
+      t->nfine_cache = nfine;
+    }
+
+    // Original edges are needed for the overlap calculation and the
+    // runtime range check. Their array size depends only on the input
+    // histogram, not on either uniform grid.
+    if (t->edges == NULL || t->nzbins_cache != nzbins) {
+      if (t->edges != NULL) {
+        free(t->edges);
+      }
+
+      t->edges = malloc1d(nzbins + 1);
+      t->nzbins_cache = nzbins;
+    }
+
+    // Density rows come first in the input table; its final row is
+    // the z column. Convert that column to bin edges using the selected
+    // left-edge or centre convention before calculating overlap areas.
+    const double* const* histogram = (const double* const*) input;
+    const double* z = histogram[ntomo];
+
+    for (int k = 0; k <= nzbins; k++) {
+      t->edges[k] = histogram_bin_edge(z, nzbins, k, Ntable.photoz_zmid_convention);
+    }
+
+    // A prepared cell receives the probability from every original
+    // bin it overlaps, divided by its own width and the histogram total.
+    // This defines its constant density before Akima smooths the jumps.
+    histogram_upsample_uniform(t->edges, histogram, ntomo, nzbins, nprep, t->prepared);
+
+    // dx is the preparation-cell width. The lookup grid starts at
+    // the extra sample half a cell before the first histogram edge and
+    // ends half a cell beyond the last edge. Its spacing is dx/refine.
+    const double dx = (t->edges[nzbins] - t->edges[0]) / nprep;
+    t->inv_dz = (nfine - 1) / ((nprep + 1) * dx);
+
+    for (int k = 0; k < nfine; k++) {
+      t->table[ntomo][k] = t->edges[0] - 0.5 * dx + k / t->inv_dz;
+    }
+
+    // The extra row of prepared holds cell edges, not densities.
+    // Use the full input range for the common projection bounds. Each
+    // tomographic bin below also gets its own bounds after omitting tails
+    // below about 1e-8 of its peak. This only sets integration limits;
+    // it does not remove those tail values from the stored n(z).
+    const double* fine = t->prepared[ntomo];
+    bounds[RANGE_MIN] = fmax(fine[0], 1.e-5);
+    bounds[RANGE_MAX] = fine[nprep];
+
+    // Each tomographic bin owns its spline and output rows, so parallel
+    // fits never modify another bin's workspace.
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < ntomo; i++) {
+      // Measure the largest density in this tomographic bin. The tail
+      // cutoff is relative to this peak, so rescaling the whole n(z)
+      // would not change which cells define its integration bounds.
+      double peak = 0.0;
+      for (int k = 0; k < nprep; k++) {
+        peak = fmax(peak, t->prepared[i][k]);
+      }
+
+      // Start with every cell included. Only trim the two outer tails;
+      // low-density gaps between peaks must remain inside the range.
+      int first = 0;
+      int last = nprep - 1;
+
+      // From low redshift, skip cells below about 1e-8 of the peak.
+      // first < last prevents the selected range from becoming empty.
+      while (first < last && t->prepared[i][first] <= 0.999e-8 * peak) {
+        first++;
+      }
+
+      // Apply the same relative-density cutoff from high redshift.
+      // This threshold does not bound the total probability in the tails.
+      while (last > first && t->prepared[i][last] <= 0.999e-8 * peak) {
+        last--;
+      }
+
+      // Use the retained cell edges: a centre would discard half a cell.
+      ranges[RANGE_MIN][i] = (sample == 0) ? fmax(fine[first], 1.001e-5) : fine[first];
+      ranges[RANGE_MAX][i] = fine[last + 1];
+
+      // Akima interpolates only between its first and last sample.
+      // Our samples sit at cell centres, half a cell inside either edge.
+      // Add a sample half a cell OUTSIDE each edge, repeating the nearest
+      // cell's density. Both histogram edges then lie inside the fitted
+      // range, so their remaining half-cells can be evaluated normally.
+      // Queries outside the histogram still return zero below.
+      //
+      // Move the existing samples right to make room for the left copy.
+      // Work backwards so each value is read before its slot is overwritten.
+      for (int k = nprep; k > 0; k--) {
+        t->prepared[i][k] = t->prepared[i][k - 1];
+      }
+
+      t->prepared[i][0] = t->prepared[i][1];
+      t->prepared[i][nprep + 1] = t->prepared[i][nprep];
+      akima_upsample_uniform(t->knots, t->prepared[i], nprep + 2, refine,
+                             t->splines[i], t->table[i], t->coeff[i]);
+    }
+
+    t->cache[0] = stamp;
+    t->cache[1] = (uint64_t) (1 + Ntable.photoz_zmid_convention);
+    t->cache[2] = (uint64_t) factor;
+  }
+
+  if (nj < 0 || nj >= ntomo) {
+    log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
+    exit(1);
+  }
+
+  zz -= nuisance.photoz[sample][0][nj];
+
+  // Only lenses have a stretch. Skipping the identity transform avoids
+  // rounding a point across an endpoint by subtracting/restoring its mean.
+  const double stretch = (sample == 0) ? 1.0 : nuisance.photoz[1][1][nj];
+  if (stretch != 1.0) {
+    const double mean = redshift.clustering_zdist_z[ZDIST_MEAN][nj];
+    zz = (zz - mean) / stretch + mean;
+  }
+  const double* fine = t->table[ntomo];
+
+  if (zz < t->edges[0] || zz >= t->edges[nzbins]) {
+    return 0.0;
+  }
+
+  // r counts final-grid intervals from the first stored redshift.
+  // Its integer part selects an interval; del gives the position within
+  // that interval, from zero to one. The stored coefficients already
+  // include its width: n(z) = y + b*del + c*del^2 + d*del^3.
+  const double r = (zz - fine[0]) * t->inv_dz;
+  const int index = (int) fmin(r, nfine - 2);
+  const double del = r - index;
+  const double* y = t->table[nj];
+  const double* b = t->coeff[nj][0];
+  const double* c = t->coeff[nj][1];
+  const double* d = t->coeff[nj][2];
+  const double value = y[index] + del * (b[index] + del * (c[index] + del * d[index]));
+  return value / stretch;
+}
+
+
+// ---------------------------------------------------------------------------
 // Photometric redshift distribution n(z) for source tomographic bin nj.
 //
 // PHYSICS:
@@ -939,6 +1255,11 @@ double zdistr_histo_n(double z, const int ni)
 // ---------------------------------------------------------------------------
 double nz_source_photoz(double zz, const int nj)
 {
+  // The default path below retains the original midpoint reconstruction.
+  if (Ntable.photoz_histogram_akima == 1) {
+    return nz_histogram_akima(zz, nj, 0);
+  }
+
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
@@ -1409,6 +1730,11 @@ double pf_histo_n(double z, const int ni)
 // ---------------------------------------------------------------------------
 double nz_lens_photoz(double zz, int nj)
 {
+  // The default path below retains the original midpoint reconstruction.
+  if (Ntable.photoz_histogram_akima == 1) {
+    return nz_histogram_akima(zz, nj, 1);
+  }
+
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
