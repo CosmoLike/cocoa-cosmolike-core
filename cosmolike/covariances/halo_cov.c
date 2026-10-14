@@ -247,8 +247,10 @@ void halo_moments_cov(
       && nquad != 128
       && nquad != 256
       && nquad != 512
-      && nquad != 1024) {
-    log_fatal("halo_moments_cov: unsupported tabulated mass rule %d", nquad);
+      && nquad != 1024
+      && nquad != 2048
+      && nquad != 4096) {
+    log_fatal("halo_moments_cov: unsupported mass rule %d", nquad);
     exit(1);
   }
   // Check each scale factor and its k grid before any shared tables are
@@ -326,7 +328,7 @@ void halo_moments_cov(
     pairs = (int**) malloc2d_int(2, npair);
   }
 
-  // Two precomputed GSL Gauss-Legendre rules: nquad nodes for each ordinary
+  // Two fixed Gauss-Legendre rules: nquad nodes for each ordinary
   // panel and tail_nquad nodes for each tail panel. Each rule is mapped
   // onto every logarithmic interval of its kind.
   gsl_integration_glfixed_table* rule = malloc_gslint_glfixed(nquad);

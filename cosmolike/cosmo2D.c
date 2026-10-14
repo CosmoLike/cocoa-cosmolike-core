@@ -2135,7 +2135,7 @@ enum {
 //
 // The quadrature points and weights come from the GSL fixed-order table w,
 // which is shared with the Limber integration routines. The number of points
-// (96-1024 for ss, 128-1024 for gg, 64-1024 for gs/gk/ks, keyed on
+// (96-4096 for ss, 128-4096 for gg, 64-4096 for gs/gk/ks, keyed on
 // Ntable.high_def_integration) controls the
 // accuracy of the numerical integration.
 //
@@ -2852,7 +2852,7 @@ static void C_ss_tomo_limber_work(
 //
 // Cache invalidation:
 // the static Gauss-Legendre table w (96/128/256/512/
-// 1024 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// 1024/2048/4096 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
 // Ntable.random changes; the cosmo_nodes are rebuilt on every call (they
 // depend on the current cosmology).
 //
@@ -2887,7 +2887,9 @@ void C_ss_tomo_limber_nointerp_ells(
     const size_t szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -3099,7 +3101,9 @@ void dC_ss_dlnk_tomo_limber_work(
     const size_t szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     w = malloc_gslint_glfixed(szint);
     cn = create_cosmo_nodes(amin, amax, w);
     WCq = (double***) malloc3d(5, redshift.shear_nbin, cn.npts);
@@ -3467,7 +3471,9 @@ double C_ss_tomo_limber(
     const size_t szint = (0 == hdi) ? 96 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -4519,7 +4525,7 @@ static void C_gs_tomo_limber_work(
 //
 // Cache invalidation:
 // the static Gauss-Legendre table w (64/128/256/512/
-// 1024 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// 1024/2048/4096 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
 // Ntable.random changes; the per-lens-bin cosmo_nodes are rebuilt on
 // every call (they depend on the current cosmology).
 //
@@ -4549,7 +4555,9 @@ void C_gs_tomo_limber_nl_lin_nointerp_ells(
     const size_t szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -4831,7 +4839,9 @@ double C_gs_tomo_limber(
     const size_t szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -5708,8 +5718,8 @@ static void C_gg_tomo_limber_work(
 // multipole values: the entry point of C_gg_tomo_limber_work.
 //
 // Builds the Gauss-Legendre nodes of each lens bin on [amin_lens,
-// amax_lens] (128 nodes at the default accuracy; 256, 512, 1024 for
-// Ntable.high_def_integration = 1, 2, 3+; a bin whose range magnification
+// amax_lens] (128 nodes at default; 256/512/1024 at levels 1/2/3-4,
+// 2048/4096 at levels 5/6+); a bin whose range magnification
 // widens gets one such rule on its n(z) support and one on the
 // foreground, see create_cosmo_nodes_lens) and the magnification prefactor
 // l (l+1)/(l + 1/2)^2, then calls C_gg_tomo_limber_work.
@@ -5726,7 +5736,7 @@ static void C_gg_tomo_limber_work(
 // Limber terms of the non-Limber split for every lens bin at once.
 //
 // Cache invalidation:
-// the static Gauss-Legendre table w (128/256/512/1024
+// the static Gauss-Legendre table w (128/256/512/1024/2048/4096
 // nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
 // Ntable.random changes; the per-lens-bin cosmo_nodes are rebuilt on
 // every call (they depend on the current cosmology).
@@ -5757,7 +5767,9 @@ void C_gg_tomo_limber_nl_lin_nointerp_ells(
     const int hdi = abs(Ntable.high_def_integration);
     const size_t szint = (0 == hdi) ? 128 :
                          (1 == hdi) ? 256 :
-                         (2 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (2 == hdi) ? 512 :
+                         (hdi <= 4) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -6377,8 +6389,8 @@ static void C_gk_tomo_limber_work(
 // values: the entry point of C_gk_tomo_limber_work.
 //
 // Builds the Gauss-Legendre nodes of each lens bin on [amin_lens,
-// amax_lens] (64 nodes at the default accuracy; 128, 256, 512, 1024 for
-// Ntable.high_def_integration = 1, 2, 3, 4+; a bin whose range
+// amax_lens] (64 nodes at default; 128/256/512/1024/2048/4096 for
+// Ntable.high_def_integration = 1/2/3/4/5/6+); a bin whose range
 // magnification widens gets one such rule on its n(z) support and one on
 // the foreground, see create_cosmo_nodes_lens) and the spin-0 prefactor
 // l*(l+1)/(l + 1/2)^2 per multipole, then calls C_gk_tomo_limber_work.
@@ -6413,7 +6425,9 @@ void C_gk_tomo_limber_nointerp_ells(
     const size_t szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -7091,7 +7105,7 @@ static void C_ks_tomo_limber_work(
 //
 // Cache invalidation:
 // the static Gauss-Legendre table w (64/128/256/512/
-// 1024 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// 1024/2048/4096 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
 // Ntable.random changes; the per-bin cosmo_nodes are rebuilt on every
 // call (they depend on the current cosmology).
 //
@@ -7119,7 +7133,9 @@ void C_ks_tomo_limber_nointerp_ells(
     const size_t szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -7337,7 +7353,9 @@ void dC_ks_dlnk_tomo_limber_work(
     const size_t szint = (0 == hdi) ? 64 :
                          (1 == hdi) ? 128 :
                          (2 == hdi) ? 256 :
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     w = malloc_gslint_glfixed(szint);
     for (int b = 0; b < redshift.shear_nbin; b++) {
       cn_all[b] = create_cosmo_nodes(aminb[b], amaxb[b], w);
@@ -7903,7 +7921,7 @@ double int_for_C_kk_limber(double a, void* params)
 // does this before its parallel table fill).
 //
 // Cache invalidation:
-// the static GSL table w (64/128/256/512/1024 nodes,
+// the static GSL table w (64/128/256/512/1024/2048/4096 nodes,
 // keyed on abs(Ntable.high_def_integration)) rebuilds when Ntable.random
 // changes.
 //
@@ -7925,7 +7943,9 @@ double C_kk_limber_nointerp(const double l, const int init)
     const size_t szint = (0 == hdi) ? 64 : 
                          (1 == hdi) ? 128 : 
                          (2 == hdi) ? 256 : 
-                         (3 == hdi) ? 512 : 1024; // predefined GSL tables
+                         (3 == hdi) ? 512 :
+                         (4 == hdi) ? 1024 :
+                         (5 == hdi) ? 2048 : 4096; // composite above 1024
     if (w != NULL) {
       gsl_integration_glfixed_table_free(w);
     }

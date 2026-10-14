@@ -178,7 +178,9 @@ void realspace_operator_cov(
       && nquad != 128
       && nquad != 256
       && nquad != 512
-      && nquad != 1024) {
+      && nquad != 1024
+      && nquad != 2048
+      && nquad != 4096) {
     log_fatal("realspace_operator_cov: unsupported GL size %d", nquad);
     exit(1);
   }

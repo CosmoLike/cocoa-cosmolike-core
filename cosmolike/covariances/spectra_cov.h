@@ -26,7 +26,7 @@ struct radial_cov {
 struct radial_cov* radial_inputs_cov(
     const int npanel,       // number of integration intervals
     const double* a_edges,  // npanel+1 increasing scale factors
-    const int nquad,        // nodes per panel: 64, 96, 128, 256, 512, 1024
+    const int nquad,        // nodes per panel: 64, 96, 128, 256, 512, 1024, 2048, 4096
     const int nwindow,      // uniform-a nodes for cumulative efficiencies
     const int include_ia    // 0 ignores IA; 1 includes the core NLA amplitude
   );

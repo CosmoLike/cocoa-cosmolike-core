@@ -124,8 +124,10 @@ static void quadrature_cov(const int nquad)
       && nquad != 128
       && nquad != 256
       && nquad != 512
-      && nquad != 1024) {
-    critical("{}: nquad must be 64,96,128,256,512 or 1024", "quadrature_cov");
+      && nquad != 1024
+      && nquad != 2048
+      && nquad != 4096) {
+    critical("{}: nquad must be 64,96,128,256,512,1024,2048 or 4096", "quadrature_cov");
     exit(1);
   }
 }
@@ -159,7 +161,7 @@ static void angles_cov(const cov_array& edges)
 // invalidate the returned data. Only nquad is validated; the GSL calls
 // are serial and read no cosmology state.
 static cov_array covariance_integration_rule(
-    const int nquad // precomputed rule size: 64,96,128,256,512,1024
+    const int nquad // precomputed rule size: 64,96,128,256,512,1024,2048,4096
   )
 {
   quadrature_cov(nquad);
@@ -1063,7 +1065,7 @@ void bind_production_components_cov(py::module_& module)
 
   module.def("covariance_integration_rule", &covariance_integration_rule,
       "Precomputed GSL nodes and weights [2,nquad] on [-1,1]. "
-      "Allowed sizes: 64,96,128,256,512,1024; smaller rules are rejected.",
+      "Allowed sizes: 64,96,128,256,512,1024,2048,4096; smaller rules are rejected.",
       py::arg("nquad"));
 
   module.def("covariance_mask_pair_area", &covariance_mask_pair_area,

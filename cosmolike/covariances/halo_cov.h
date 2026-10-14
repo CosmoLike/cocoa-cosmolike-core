@@ -23,8 +23,8 @@ extern "C" {
 // Eleven initial four-decade panels from 10^-40 to 10^4 M_sun/h activate
 // Wynn extrapolation of I11 with a residual zero-k completion:
 // I11(k) = E(k) + [1-E(0)] u(k|M_min), E the extrapolated integral. Other
-// layouts use ordinary finite quadrature. The tail uses 32/64/128/256/512
-// nodes for main rules 96/128/256/512/1024; the test-only 64 rule uses 32.
+// layouts use ordinary finite quadrature. The tail uses 32/64/128/256/512/1024/2048
+// nodes for main rules 96/128/256/512/1024/2048/4096; the test-only 64 rule uses 32.
 void halo_moments_cov(
     const int na,                  // number of scale factors
     const double* a,              // [na] scale factors

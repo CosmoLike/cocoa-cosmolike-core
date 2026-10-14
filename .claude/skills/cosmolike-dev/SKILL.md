@@ -370,16 +370,18 @@ Do not multiply radial, mass or angular rule orders by the global boost.
 Do not expose arbitrary rule sizes in project defaults. Covariance rules
 must use GSL's precomputed nodes, normally with 64 as the minimum. The
 explicitly adopted Wynn low-mass tail above is the sole 32-node exception.
-The notebook ladder is 96/128/256/512/1024
-for levels 0/1/2/3/4; low-level testing also accepts 64. Python-prepared
+The notebook ladder is 96/128/256/512/1024/2048/4096
+for levels 0/1/2/3/4/5/6; low-level testing also accepts 64. Python-prepared
 production integrals obtain the same GSL rules through the C++ binding;
-independent references may generate their own rules. Split oscillatory
-angular integrals into physical panels rather than requesting generated
-2048-node rules. Level zero must be useful: test every consuming sector,
+independent references may generate their own rules. The 2048/4096-point rules are composite copies of the stored 1024-point
+rule on two/four equal subintervals, not generated higher-order rules.
+Physical angular panels remain in place; refinement subdivides each one. Level zero must be useful: test every consuming sector,
 including cluster selection and count responses, against higher levels.
 Check levels 2, 3 and 4 as well as 1, comparing the default directly with
 the highest level and verifying stability of the last refinement.
-Current implementation and evidence: `references/covariance_defaults.md`.
+Current implementation and evidence: `references/covariance_defaults.md`;
+the 2048/4096 composite extension and its checks are recorded in
+`references/integration_accuracy_4096.md`.
 Keep this level unchanged under global table refinements. Multiply interval
 counts in likelihoods too: `nonlimber_accuracyboost: 2` and
 `pk_z_refinement: 3` mean effective factors 4 and 6 at `accuracyboost: 2`.
@@ -940,7 +942,9 @@ Rules:
   `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.
   `malloc_gslint_glfixed` (basics.c) accepts any n and silently computes
   a non-tabulated rule on the fly, with weights good to only ~5e-7: it
-  does not enforce the rule, the caller does.
+  does not enforce the rule, the caller does. The supported 2048/4096
+  exceptions are composite copies of the tabulated 1024-node rule; their
+  descriptor owns positive-half arrays and is freed by the usual GSL call.
 
 Worked example: `sigma2` (cosmo3D.c) — the lobe-node cache is built in
 its Ntable rebuild block, and one threaded lobe-sum loop refills the

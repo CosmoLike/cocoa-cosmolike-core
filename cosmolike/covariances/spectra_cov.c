@@ -890,7 +890,7 @@ static void fill_radial_cov(
 // Parameters and ownership:
 //   npanel, a_edges - common integration intervals, strictly inside (0,1)
 //   nquad - Gauss-Legendre nodes per interval, one of the tabulated sizes
-//           64, 96, 128, 256, 512, 1024
+//           64, 96, 128, 256, 512, 1024, 2048, 4096
 //   nwindow - number of uniform-a samples for cumulative efficiencies
 //   include_ia - include the core's NLA amplitude when 1; otherwise omit IA
 // Returns a heap-owned snapshot; release it with free_radial_cov.
@@ -934,9 +934,11 @@ struct radial_cov* radial_inputs_cov(
       && nquad != 128
       && nquad != 256
       && nquad != 512
-      && nquad != 1024) {
+      && nquad != 1024
+      && nquad != 2048
+      && nquad != 4096) {
     log_fatal("radial_inputs_cov: nquad=%d is not a supported "
-              "tabulated rule (64,96,128,256,512,1024)", nquad);
+              "fixed rule (64,96,128,256,512,1024,2048,4096)", nquad);
     exit(1);
   }
   if (include_ia

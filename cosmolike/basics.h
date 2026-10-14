@@ -140,6 +140,8 @@ gsl_spline* malloc_gsl_spline(const int n);
 //
 // Wraps gsl_integration_glfixed_table_alloc() with a fatal-on-failure
 // guarantee, consistent with the other allocation helpers in this module.
+// Sizes 2048/4096 use two/four equal subintervals of the stored 1024-point
+// rule. The returned descriptor owns its arrays; the usual GSL free applies.
 //
 // @param n  Number of quadrature points (order of the integration rule).
 //           Higher values increase accuracy at the cost of more function

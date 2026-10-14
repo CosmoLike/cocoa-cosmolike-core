@@ -2,8 +2,9 @@
 
 A project YAML defines its base accuracy. The public boost refines that
 baseline's interpolation and cutoffs. An independent integration level
-selects precomputed GSL rules: Gauss-Legendre nodes and weights that GSL
-stores for fixed sizes. These controls change only numerical accuracy.
+selects stored GSL rules and their composite refinements: high-precision
+Gauss-Legendre nodes and weights mapped onto equal subintervals. These
+controls change only numerical accuracy.
 They do not change CAMB inputs, the survey footprint or the measured bins.
 """
 
@@ -39,11 +40,13 @@ def covariance_accuracy(
             multiplies the 4096 log-distance intervals. Padding scales with
             the interval count, preserving every old radial sample and
             Fourier period.
-        integration_accuracy = independent quadrature level, 0 through 4.
-            Selects 96, 128, 256, 512 or 1024 precomputed GSL nodes per
+        integration_accuracy = independent quadrature level, 0 through 6.
+            Selects 96, 128, 256, 512, 1024, 2048 or 4096 nodes per
             radial, mass or angular panel, and adds one tree-angle panel
             per level to the base 20. It is also passed unchanged to the
-            shared core. accuracy_boost never changes these rules.
+            shared core. The last two levels apply the stored 1024-node
+            rule on two/four equal subintervals of each physical panel.
+            accuracy_boost never changes these rules.
         response_step = base half-width of the centered ln(k) derivative.
             The overall boost divides this width. Input-power interpolation
             can limit derivative convergence even with a very small step.
@@ -52,7 +55,7 @@ def covariance_accuracy(
     integration_accuracy=0 must already resolve the integrals. Angular
     kernels split wide bins into panels to resolve their fastest oscillations.
     Low-level tests may also use the precomputed 64-node rule. The internal
-    Wynn mass tail alone uses 32/64/128/256/512 nodes at these levels;
+    Wynn mass tail alone uses 32/64/128/256/512/1024/2048 nodes;
     arbitrary smaller or generated rules are unsupported. Refinement never
     changes measured bins.
 
@@ -70,7 +73,7 @@ def covariance_accuracy(
     Raises:
         ValueError for accuracy_boost or nonlimber_accuracyboost outside
         1, 2, 4, 8, another factor or count that is not a positive integer,
-        nonlimber_lmax < 2, an integration level outside 0..4, ell_max < 3
+        nonlimber_lmax < 2, an integration level outside 0..6, ell_max < 3
         or a nonpositive response_step.
 
     Interpolation refinement divides intervals, retaining every old sample.
@@ -125,8 +128,8 @@ def covariance_accuracy(
 
     if isinstance(integration_accuracy, (bool, np.bool_)) or not isinstance(
         integration_accuracy, (int, np.integer)
-    ) or integration_accuracy not in (0, 1, 2, 3, 4):
-        raise ValueError("integration_accuracy must be an integer from 0 to 4")
+    ) or integration_accuracy not in (0, 1, 2, 3, 4, 5, 6):
+        raise ValueError("integration_accuracy must be an integer from 0 to 6")
 
     for name, value in (
         ("ell_max", ell_max), ("mask_ell_max", mask_ell_max),
@@ -188,10 +191,10 @@ def covariance_accuracy(
         "integration_accuracy": int(integration_accuracy),
     }
     # Resolve the integration ladder once, before calling any C kernel.
-    # Each size is a precomputed GSL rule, not an arbitrary requested count;
+    # Sizes above 1024 are composite copies of the stored 1024-node rule;
     # from level 1 on, each level doubles the nodes of the level below.
     # Keep this independent of every interpolation-table refinement.
-    nodes = (96, 128, 256, 512, 1024)[integration_accuracy]
+    nodes = (96, 128, 256, 512, 1024, 2048, 4096)[integration_accuracy]
     for name in ("radial_nquad", "angle_nquad", "halo_mass_nquad", "tree_nquad"):
         result[name] = nodes
     return result

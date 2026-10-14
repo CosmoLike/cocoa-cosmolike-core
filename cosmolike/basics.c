@@ -289,6 +289,9 @@ gsl_spline* malloc_gsl_spline(const int n)
 //
 // Wraps gsl_integration_glfixed_table_alloc() with a fatal-on-failure
 // guarantee, consistent with the other allocation helpers in this module.
+// Sizes 2048 and 4096 use two or four equal subintervals of the stored
+// 1024-point rule. They refine resolution without generating less precise
+// high-order weights. Existing sizes keep exactly their original tables.
 //
 // @param n  Number of quadrature points (order of the integration rule).
 //           Higher values increase accuracy at the cost of more function
@@ -298,6 +301,33 @@ gsl_spline* malloc_gsl_spline(const int n)
 // ---------------------------------------------------------------------------
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
 {
+  if (n == 2048 || n == 4096) {
+    gsl_integration_glfixed_table* w = malloc(sizeof(*w));
+    if (w == NULL) { log_fatal("array allocation failed"); exit(1); }
+    w->n = n;
+    w->x = malloc1d(n/2);
+    w->w = malloc1d(n/2);
+    w->precomputed = 0; // GSL free releases these caller-owned arrays
+    gsl_integration_glfixed_table* base = gsl_integration_glfixed_table_alloc(1024);
+    if (base == NULL) { log_fatal("array allocation failed"); exit(1); }
+
+    // GSL stores the positive half in ascending order and obtains the
+    // negative half by reflection. On [-1,1], panel width is 2/npanel;
+    // its affine map multiplies each weight by 1/npanel. Filling only
+    // the positive panels gives the symmetric composite rule, usable
+    // by both gsl_integration_glfixed and glfixed_point unchanged.
+    const int npanel = n/1024;
+    for (int panel = 0; panel < npanel/2; panel++) {
+      const double lo = 2.0*panel/npanel;
+      const double hi = 2.0*(panel + 1)/npanel;
+      for (int j = 0; j < 1024; j++) {
+        const int k = panel*1024 + j;
+        gsl_integration_glfixed_point(lo, hi, j, &w->x[k], &w->w[k], base);
+      }
+    }
+    gsl_integration_glfixed_table_free(base);
+    return w;
+  }
   gsl_integration_glfixed_table* w = gsl_integration_glfixed_table_alloc(n);
   if (w == NULL) {
     log_fatal("array allocation failed"); exit(1);

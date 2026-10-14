@@ -70,7 +70,7 @@ Arguments:
     ell: float64 1D multipoles >= 1; integer below a non-Limber cutoff.
     a_edges: float64 increasing panel edges inside (0,1). Include the
         full source/lens support and the foreground to a close to 1.
-    nquad: nodes per panel from 64,96,128,256,512,1024.
+    nquad: nodes per panel from 64,96,128,256,512,1024,2048,4096.
     nwindow: uniform-a nodes for covariance-owned lensing efficiencies.
     include_ia: include the configured NLA or TATT Gaussian spectra.
     include_rsd: use the same lens RSD window in every spectrum.
