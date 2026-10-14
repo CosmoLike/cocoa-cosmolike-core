@@ -695,7 +695,9 @@ double compute_sigma2(
 void init_photoz_histogram_akima(const int enabled)
 {
   if (enabled != 0 && enabled != 1) {
-    critical("photoz_histogram_akima = {}: expected 0 (midpoint) or 1 (3x + Akima)", enabled);
+    critical(
+        "photoz_histogram_akima = {}: expected 0 (midpoint) or 1 (3x + Akima)",
+        enabled);
     exit(1);
   }
 
@@ -709,9 +711,13 @@ void init_photoz_histogram_akima(const int enabled)
   // Copy before invoking a loader: it releases its previous input table.
   // Source and lens have the same file layout, z followed by density columns.
   for (int sample = 0; sample < 2; sample++) {
-    const int ntomo = (sample == 0) ? redshift.shear_nbin : redshift.clustering_nbin;
-    const int nzbins = (sample == 0) ? redshift.shear_nzbins : redshift.clustering_nzbins;
-    double** hist = (sample == 0) ? redshift.shear_zdist_table : redshift.clustering_zdist_table;
+    const int ntomo = (sample == 0) ? redshift.shear_nbin
+                                  : redshift.clustering_nbin;
+    const int nzbins = (sample == 0) ? redshift.shear_nzbins
+                                   : redshift.clustering_nzbins;
+    double** hist = (sample == 0) ? redshift.shear_zdist_table
+                                : redshift.clustering_zdist_table;
+
     if (hist == NULL || ntomo == 0) {
       continue;
     }
@@ -719,11 +725,14 @@ void init_photoz_histogram_akima(const int enabled)
     arma::Mat<double> input(nzbins, ntomo + 1);
     for (int k = 0; k < nzbins; k++) {
       input(k, 0) = hist[ntomo][k];
+
       for (int i = 0; i < ntomo; i++) {
         input(k, i + 1) = hist[i][k];
       }
     }
 
+    // Reload through the usual sample setter so bounds, means and kernel
+    // invalidation follow the same path as a newly supplied histogram.
     if (sample == 0) {
       set_source_sample(input);
     } else {

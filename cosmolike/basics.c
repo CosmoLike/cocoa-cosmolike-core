@@ -980,18 +980,21 @@ double histogram_bin_edge(
     const double* z,    // input left edges or centres
     const int nbins,    // number of input cells
     const int k,        // requested edge, 0 .. nbins
-    const int convention
+    const int convention // 0: left edges, 1: centres
   )
 {
   if (1 == convention) {
     if (0 == k) {
       return z[0] - 0.5 * (z[1] - z[0]);
     }
+
     if (nbins == k) {
       return z[k - 1] + 0.5 * (z[k - 1] - z[k - 2]);
     }
+
     return z[k - 1] + 0.5 * (z[k] - z[k - 1]);
   }
+
   return (k < nbins) ? z[k] : z[k - 1] + (z[k - 1] - z[k - 2]);
 }
 
@@ -1019,40 +1022,50 @@ void histogram_upsample_uniform(
     const int nhist,              // independent tomographic histograms
     const int nbins,              // original redshift cells
     const int nfine,              // uniform output cells
-    double** table                // caller-owned [nhist+1][nfine+1]
+    double** table               // caller-owned [nhist+1][nfine+1]
   )
 {
   for (int k = 0; k < nbins; k++) {
     if (!isfinite(edges[k]) || !(edges[k + 1] > edges[k])) {
-      log_fatal("n(z) edges must be finite and strictly increasing (cell %d)", k);
+      log_fatal("n(z) edges must be finite and strictly increasing (cell %d)",
+                k);
       exit(1);
     }
   }
+
   if (!isfinite(edges[nbins])) {
     log_fatal("n(z) final edge must be finite");
     exit(1);
   }
+
   const double dx = (edges[nbins] - edges[0]) / nfine;
   double* fine = table[nhist];
+
   for (int j = 0; j < nfine; j++) {
     fine[j] = edges[0] + j * dx;
   }
+
+  // Copy the last edge exactly: rounding in edges[0] + nfine * dx must
+  // not make the overlap walk extend beyond the original histogram.
   fine[nfine] = edges[nbins];
 
   #pragma omp parallel for schedule(static)
   for (int i = 0; i < nhist; i++) {
     const double* restrict h = hist[i];
     double* restrict y = table[i];
+
     // Normalize using the original cell widths. Interpolated sample
     // sums would give the wrong total for irregularly spaced input bins.
     double norm = 0.0;
     for (int k = 0; k < nbins; k++) {
       norm += h[k] * (edges[k + 1] - edges[k]);
     }
+
     if (!(norm > 0.0) || !isfinite(norm)) {
       log_fatal("zero/negative/nonfinite n(z) normalization for bin %d", i);
       exit(1);
     }
+
     // Walk both ordered grids together. Keep k between output cells:
     // a narrow output cell can stay in the same original bin, while a
     // wide one collects several partial-bin areas without searching.
@@ -1060,16 +1073,19 @@ void histogram_upsample_uniform(
     for (int j = 0; j < nfine; j++) {
       double left = fine[j];
       double area = 0.0;
+
       while (left < fine[j + 1]) {
         while (k + 1 < nbins && edges[k + 1] <= left) {
           k++;
         }
+
         // Stop at whichever boundary comes first. The next iteration
         // either advances the original bin or finishes this output cell.
         const double right = fmin(edges[k + 1], fine[j + 1]);
         area += h[k] * (right - left);
         left = right;
       }
+
       // Store a density, not a probability: dividing by this cell
       // width makes its integral recover the collected normalized area.
       y[j] = area / ((fine[j + 1] - fine[j]) * norm);
@@ -1191,8 +1207,10 @@ void akima_upsample_uniform(
     log_fatal("Akima preparation failed (n=%d, refinement=%d)", n, refine);
     exit(1);
   }
+
   gsl_interp_accel accel = {0};
   const double inv = 1.0 / refine;
+
   // Endpoint derivatives determine each Hermite cubic. Reuse the right
   // derivative as the next interval's left derivative, avoiding a repeat
   // GSL evaluation at their shared knot.
@@ -1202,20 +1220,27 @@ void akima_upsample_uniform(
     const double delta = y[k + 1] - y[k];
     const double c = 3.0 * delta - 2.0 * left - right;
     const double d = left + right - 2.0 * delta;
+
     // Translate and rescale the same polynomial onto each fine cell.
     // These are exact coefficient transformations, not another fit.
     for (int q = 0; q < refine; q++) {
       const int j = k * refine + q;
       const double u = q * inv;
+
       out[j] = y[k] + u * (left + u * (c + u * d));
       coeff[0][j] = (left + u * (2.0 * c + 3.0 * u * d)) * inv;
       coeff[1][j] = (c + 3.0 * u * d) * inv * inv;
       coeff[2][j] = d * inv * inv * inv;
     }
+
     left = right;
   }
+
+  // The last node supplies the final endpoint value, but starts no
+  // interval. Zero its unused coefficient slots to keep storage defined.
   const int last = (n - 1) * refine;
   out[last] = y[n - 1];
+
   for (int p = 0; p < 3; p++) {
     coeff[p][last] = 0.0;
   }

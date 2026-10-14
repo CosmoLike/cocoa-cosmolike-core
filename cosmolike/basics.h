@@ -538,7 +538,7 @@ double histogram_bin_edge(
     const double* z,    // monotonically increasing coordinates
     const int nbins,    // at least two input cells
     const int k,        // requested edge, 0 .. nbins
-    const int convention
+    const int convention // 0: left edges, 1: centres
   );
 
 // Conservative, piecewise-constant remapping onto nfine uniform cells.
@@ -551,7 +551,7 @@ void histogram_upsample_uniform(
     const int nhist,              // independent tomographic histograms
     const int nbins,              // original redshift cells
     const int nfine,              // uniform output cells
-    double** table                // caller-owned [nhist+1][nfine+1]
+    double** table               // caller-owned [nhist+1][nfine+1]
   );
 
 // ---------------------------------------------------------------------------
