@@ -1,0 +1,282 @@
+{
+  "branch": "experimental/nz-akima-3-5-7",
+  "scope": "Fixed-input NLA data vectors; covariance generation not validated by these tests.",
+  "criterion": "Each preparation factor compared with its own level-6 (4096-point) vector using the fixed survey inverse covariance.",
+  "practical_budget_delta_chi2": 0.1,
+  "accuracy_audit": {
+    "lsst_y1": {
+      "5": {
+        "selected_level": 2,
+        "delta_chi2_by_level": [
+          0.7381469157987689,
+          0.34922354537608535,
+          0.05026436139839817,
+          0.0008263087345174438,
+          0.00010038363491803978,
+          8.929488681564919e-07
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0502643613984,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 2,
+        "delta_chi2_by_level": [
+          1.1833872765624864,
+          0.5249936474205221,
+          0.0687624407228535,
+          0.0027871433494553836,
+          0.0002762512996919196,
+          3.2175188040158485e-06
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0687624407229,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "roman_real": {
+      "5": {
+        "selected_level": 4,
+        "delta_chi2_by_level": [
+          5.79648319890994,
+          3.9648298363850984,
+          1.3043025527551224,
+          0.15243312242944881,
+          0.009012853505200728,
+          5.4348374114938514e-05
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0090128535052,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 4,
+        "delta_chi2_by_level": [
+          7.02665183126474,
+          4.588623007081428,
+          1.4421380337297238,
+          0.274459987170958,
+          0.022976598193858232,
+          0.00023134508966483815
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0229765981939,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "roman_fourier": {
+      "5": {
+        "selected_level": 4,
+        "delta_chi2_by_level": [
+          162.3999357243322,
+          86.91320112676055,
+          3.879116141345084,
+          0.19677684587125974,
+          0.02286216728108571,
+          0.00017614355278620345
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0228621672811,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 4,
+        "delta_chi2_by_level": [
+          183.2462414547881,
+          99.39101220111834,
+          6.418318648442637,
+          0.5254976271632982,
+          0.09697054269720247,
+          0.00026733707190719936
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0969705426972,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "roman_kl": {
+      "5": {
+        "selected_level": 2,
+        "delta_chi2_by_level": [
+          4.41057200195614,
+          1.4897602506669263,
+          0.014041811785950245,
+          0.0011247501639875994,
+          0.0010338230293430025,
+          3.0109593412456724e-06
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.014041811786,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 2,
+        "delta_chi2_by_level": [
+          5.552317322104756,
+          2.18472702116533,
+          0.08460179251682833,
+          0.0008387689918169098,
+          0.0006709353819991475,
+          0.0001278934144126649
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0846017925168,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "des_y3": {
+      "5": {
+        "selected_level": 3,
+        "delta_chi2_by_level": [
+          0.48362200564309793,
+          1.1861694228617308,
+          0.2606353199724706,
+          0.007651920922248024,
+          2.2700798515585773e-05,
+          2.0366216270840133e-06
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.00765192092225,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 3,
+        "delta_chi2_by_level": [
+          0.5147006194297656,
+          1.2796861303336904,
+          0.35846527292110825,
+          0.012837830300868323,
+          0.00042048407075753025,
+          1.3453782433969203e-05
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0128378303009,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "desy1xplanck": {
+      "5": {
+        "selected_level": 3,
+        "delta_chi2_by_level": [
+          3.9202256888627973,
+          6.195074036624212,
+          0.9297500176166894,
+          0.05111814515355167,
+          0.017971791182682717,
+          6.349344963739173e-06
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0511181451536,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 3,
+        "delta_chi2_by_level": [
+          4.228879588301506,
+          6.435065699053742,
+          0.9816438076153454,
+          0.08812405059168502,
+          0.05018371806102179,
+          0.00010829870901315465
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0881240505917,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "des_cluster": {
+      "5": {
+        "selected_level": 3,
+        "delta_chi2_by_level": [
+          4.228735779030099,
+          1.8541995419336437,
+          0.875483064664164,
+          0.055894735818329926,
+          0.03956066682063237,
+          0.00037909843696344744
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0558947358183,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": 3,
+        "delta_chi2_by_level": [
+          5.356220950948271,
+          1.8193066968224425,
+          1.023565232035029,
+          0.08376859918607661,
+          0.05655064559556936,
+          0.0028042441770633284
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 0.0837685991861,
+        "fresh_test_matches_scan": true
+      }
+    },
+    "des_y6": {
+      "5": {
+        "selected_level": null,
+        "delta_chi2_by_level": [
+          4.4811492609805176e-05,
+          9.440920135471835e-06,
+          3.429099214794637e-06,
+          1.0639411898163772e-06,
+          1.063914631811415e-06,
+          5.909491755637068e-09
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 4.48114926098e-05,
+        "fresh_test_matches_scan": true
+      },
+      "7": {
+        "selected_level": null,
+        "delta_chi2_by_level": [
+          5.253563910127016e-05,
+          1.653722588783451e-05,
+          4.3621241587445164e-06,
+          1.885347918958085e-06,
+          1.8853012836689609e-06,
+          3.218141001178142e-08
+        ],
+        "raw_vectors_match_record": true,
+        "fresh_test_delta_chi2": 5.25356391013e-05,
+        "fresh_test_matches_scan": true
+      }
+    }
+  },
+  "test_summary": {
+    "factor_tests": {
+      "tests": 24,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": 8
+    },
+    "frozen_defaults": {
+      "tests": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": 8
+    },
+    "strict_reader": {
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": 1
+    },
+    "debug_reader": {
+      "tests": 6,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": 1
+    }
+  },
+  "validation_ledger_sha256": "c7b67acaa973d7c6dd49e985e8915e42435b3287c2db2065259e3b0f33cd81ea",
+  "figure_script_reproduces_published_png_and_checks_bitwise": true,
+  "frozen_references_changed": false,
+  "des_y6": "Only identity-metric software checks; no physical Delta chi2 or accuracy recommendation."
+}

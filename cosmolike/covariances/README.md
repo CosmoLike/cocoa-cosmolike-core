@@ -1037,14 +1037,17 @@ changing the measured bins. Evaluating a bin at its center does not
 perform this integral.
 
 In the notebook workflow `integration_accuracy` selects the
-96/128/256/512/1024-node rule at levels 0/1/2/3/4. These choices control
+96/128/256/512/1024/2048/4096/8192-point rule at levels 0/1/2/3/4/5/6/7.
+These choices control
 radial, mass and angular integrals, including the Python-prepared tree
-and selected-cluster integrals. The C++ binding supplies GSL's precomputed
-nodes to Python.
+and selected-cluster integrals. GSL supplies one Gauss-Legendre rule over
+each physical panel, generating its nodes when no stored rule is available.
+The C++ binding supplies the same nodes to Python.
+Defaults and levels 0 through 4 are unchanged.
 
 Low-level calls also accept the precomputed 64-node rule. The sole smaller
 internal rule is the smooth low-mass Wynn tail, whose level ladder is
-32/64/128/256/512. Arbitrary smaller or generated rules are rejected.
+32/64/128/256/512/1024/2048/4096. Other rule sizes are rejected.
 
 The independent `accuracy_boost`
 refines interpolation tables and multipole cutoffs, leaving these rule

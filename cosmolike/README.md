@@ -131,6 +131,106 @@ a quantity, then read its function comment for assumptions and units.
 | [radial_weights.c](radial_weights.c), [header](radial_weights.h) | Form the density, source, lensing, magnification and redshift-space-distortion weights used in angular projections. |
 | [cosmo2D.c](cosmo2D.c), [header](cosmo2D.h) | Integrate angular spectra, implement galaxy non-Limber corrections and transform spectra into real-space bin averages. It also contains the CMB-lensing spectra and beam/pixel factors. |
 
+Each likelihood YAML can select the source/lens histogram reconstruction
+with `photoz_histogram_akima`:
+
+- **0 (default):** preserve the original curve through bin centres, using
+  `photoz_interpolation_type` for its preparation.
+- **1:** overlap-average the histogram onto a uniform grid, then fit Akima
+  through its cell centres. `photoz_histogram_akima_factor` selects **3**
+  (default), **5** or **7** cells per original uniform bin. All retain its
+  centre.
+  This is a reconstruction choice and never scales with an accuracy boost.
+
+The alternative's final table stores algebraically subdivided Akima cubics;
+lookup uses a uniform-grid index and Horner evaluation, without a search or
+a second spline fit. Source and lens caches are separate. A live selector
+or preparation-factor change reloads their integration bounds and lens means as well as n(z), so
+returning to mode 0 restores the original prediction.
+
+Smoothing redistributes probability among original bins. All three odd-factor
+constructions preserve total area for uniform inputs with its endpoint
+padding, but this does not extend to arbitrary irregular grids or imply
+physical superiority. No extra normalization or negative-value clipping is
+introduced. Each project's `tests/studies/README.md` documents its
+refined model-distance comparison, compiled-reader plots and area audit.
+These tests use a fixed covariance; selecting Akima also affects shared
+covariance kernels, whose integration settings need their own checks.
+
+
+**Manual reconstruction study.** The following distances use `accuracyboost: 5`
+and `integration_accuracy: 7` (8,192 nodes per Limber panel). Source/lens
+mean-redshift quadrature also refines with the level and is capped at 8,192.
+Each row keeps the stored NLA fiducial, histogram, mask and covariance fixed.
+The distance between two predicted data vectors is
+
+```math
+\Delta\chi^2 = (d_b-d_a)^{\mathsf T} C^{-1} (d_b-d_a).
+```
+
+Here $`C`$ is the supplied survey covariance. This measures the change in
+predictions; it is not the change in goodness of fit to observed data.
+
+![Original cubic and three Akima preparation choices](figures/histogram_original_cubic_vs_three_five_seven_akima.png)
+
+The illustration uses one uniform histogram and matching axes across columns.
+Preparation points lie at these fractions of each bin width, from its left edge:
+
+| Preparation factor | Point positions within each bin |
+|---|---|
+| 3 | 1/6, 1/2, 5/6 |
+| 5 | 1/10, 3/10, 1/2, 7/10, 9/10 |
+| 7 | 1/14, 3/14, 5/14, 1/2, 9/14, 11/14, 13/14 |
+
+All three factors retain the original bin centre. More points narrow the
+smoothed edge; all three Akima curves still redistribute probability between bins.
+
+| Project | Original → 3 | 3 → 5 | 3 → 7 | 5 → 7 |
+|---|---:|---:|---:|---:|
+| LSST Y1 | 0.02145265 | 0.009772072 | 0.01650432 | 0.005330874 |
+| Roman real | 0.04098763 | 0.003217879 | 0.004495904 | 0.0002784492 |
+| Roman Fourier | 0.3884214 | 0.03066017 | 0.06344008 | 0.006038686 |
+| Roman KL | 0.3654277 | 0.0671849 | 0.1395857 | 0.01358566 |
+| DES Y3 | 0.07438433 | 0.001364246 | 0.003688686 | 0.0006181514 |
+| DES × Planck | 0.1304652 | 0.002228624 | 0.002972851 | 0.0001359452 |
+| DES cluster | 0.3804323 | 0.00781692 | 0.01416825 | 0.002362326 |
+
+The 5→7 distances are smaller than 3→5 for all seven projects at these
+settings. We use practical stability relative to Δχ² = 0.2, rather than an
+exact continuum requirement. This does not identify the true sub-bin density
+or guarantee accuracy at other cosmologies. Earlier boost refinements still
+show measurable changes; the [earlier scan](../dev_scripts/nz_akima_prior_native_refinement.json)
+is retained separately from the final capped rerun. The current [study record](../dev_scripts/nz_akima_manual_study.json)
+includes the effect of refining the previously capped redshift moments.
+
+**Numerical check with the reconstruction held fixed.** Only the two accuracy
+settings change, from each current likelihood YAML's defaults to boost 5 and
+level 7. The original n(z) interpretation and all physical inputs stay fixed.
+
+| Project | Default boost / integration level | Original default → refined Δχ² |
+|---|---:|---:|
+| LSST Y1 | 1 / 0 | 0.002165317 |
+| Roman real | 1 / 0 | 0.01362654 |
+| Roman Fourier | 2 / 0 | 0.009719738 |
+| Roman KL | 1 / 0 | 0.006599444 |
+| DES Y3 | 1 / 0 | 0.005614897 |
+| DES × Planck | 1 / 0 | 0.02212658 |
+| DES cluster | 1 / 1 | 0.0249203 |
+
+These studies are **not collected by ordinary pytest**. Run each project's
+`tests/studies/run_nz_reconstruction.py` explicitly; its `tests/studies/README.md`
+provides commands, two-panel compiled-reader plots, area accounting and raw
+records. The first preparation factor stays fixed under numerical refinement.
+Lightweight synthetic reader checks and frozen likelihood regressions remain
+in the usual tests. DES Y6 is excluded from statistical distances because it
+has no supplied physical covariance. Covariance generation with Akima kernels
+requires its own line-of-sight integration checks.
+
+The illustration is reproducible with `dev_scripts/plot_nz_akima_preparation.py`;
+it uses uniform toy bins and is separate from the actual survey-reader figures.
+Uniform-grid preparation is mandatory in both reconstruction modes; the
+compile-time direct-GSL bypass has been retired.
+
 Photometric-redshift, or **photo-z**, parameters change the inferred
 redshift distribution of a sample. Magnification changes observed galaxy
 counts because lensing changes apparent flux and area. Redshift-space

@@ -135,9 +135,9 @@ def angular_rule(nquad, npanel, interface):
     universal production setting.
     """
     if not isinstance(nquad, (int, np.integer)) or nquad not in (
-        64, 96, 128, 256, 512, 1024
+        64, 96, 128, 256, 512, 1024, 2048, 4096, 8192
     ):
-        raise ValueError("nquad must be a precomputed GSL rule of at least 64 nodes")
+        raise ValueError("nquad must be a supported stored/generated rule of at least 64 nodes")
     if not isinstance(npanel, (int, np.integer)) or not 1 <= npanel <= 40:
         raise ValueError("npanel must be an integer between 1 and 40")
 

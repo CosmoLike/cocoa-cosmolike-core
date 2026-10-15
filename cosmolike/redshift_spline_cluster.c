@@ -17,6 +17,19 @@
 //     -> radial weights W_cluster, W_mag_cluster (radial_weights_cluster.c)
 //     -> Limber integrals                       (cosmo2D_cluster.c)
 //
+// These inputs are selection probabilities at specified true-redshift
+// points, not histogram densities. Their integral over z need not be one.
+// The galaxy-histogram option photoz_histogram_akima therefore belongs to
+// redshift_spline.c, including the source/lens samples of a cluster analysis.
+// Here the normalized cluster n(z) is constructed AFTER multiplying the
+// selection by the volume element and, optionally, the predicted abundance.
+//
+// In a DES cluster run, both files therefore matter, for different reasons:
+//   - galaxy source/lens histograms use the chosen cubic or Akima reader;
+//   - cluster selection probabilities keep their linear interpolation here.
+// Applying histogram normalization or 3/5/7 repetition to a selection
+// probability would change the meaning of the supplied cluster model.
+//
 // Units (the library's): z dimensionless, comoving distance chi in c/H0,
 // dV/dz per steradian in (c/H0)^3, n(z) per unit z (integrates to 1).
 //
@@ -164,10 +177,9 @@ double zmid_cluster(const int ni)
 // dz/4 at each edge. A top-hat tabulated with 1 on its edge nodes and a
 // support starting there instead gets a sharp edge at the node.
 //
-// The nz_lens_photoz design: the table is resampled once per input change
-// onto a uniform fine grid per bin whose end nodes are the support edges;
-// the hot path is one multiply for the index (no search) and a linear
-// read.
+// As in the galaxy readers, a cached uniform grid avoids a search at each
+// query. The interpolation differs: this selection model stays linear.
+// Each cluster bin has its own grid ending exactly on its support edges.
 
 
 // ---------------------------------------------------------------------------
@@ -282,6 +294,8 @@ static void selection_kernel_table(void)
       fdiff2(phi_.cache[1], cluster.random_zdist))
   {
     // --- 1. INPUT CHECKS ---
+    // Resampling needs ordered z coordinates and nonempty support inside
+    // the supplied table. Establish those ranges before allocating grids.
     const int nbin     = cluster.zdist_nbin;
     const int nz_input = cluster.zdist_nz;
 
@@ -289,14 +303,17 @@ static void selection_kernel_table(void)
       log_fatal("cluster selection kernels <phi_i|z> not loaded");
       exit(1);
     }
+
     if (nbin < 1 || nbin > MAX_SIZE_ARRAYS) {
       log_fatal("invalid number of cluster redshift bins = %d", nbin);
       exit(1);
     }
+
     if (nz_input < 2) {
       log_fatal("cluster kernel table needs >= 2 z rows (got %d)", nz_input);
       exit(1);
     }
+
     if (Ntable.nz_fine_sampling_factor < 1) {
       log_fatal("invalid Ntable.nz_fine_sampling_factor = %d",
         Ntable.nz_fine_sampling_factor);
@@ -308,22 +325,26 @@ static void selection_kernel_table(void)
     double dz_input = z_input[1] - z_input[0];
     for (int j=0; j<nz_input-1; j++) {
       const double step = z_input[j+1] - z_input[j];
+
       if (!(step > 0.0)) {
         log_fatal("cluster kernel z column not strictly increasing at "
           "row %d", j);
         exit(1);
       }
+
       dz_input = fmin(dz_input, step);
     }
 
     for (int ni=0; ni<nbin; ni++) {
       const double zmin = cluster.zdist_z[RANGE_MIN][ni];
       const double zmax = cluster.zdist_z[RANGE_MAX][ni];
+
       if (!(zmin > 0.0) || !(zmax > zmin)) {
         log_fatal("invalid support of cluster bin %d: [%e, %e] (need "
           "0 < zmin < zmax)", ni, zmin, zmax);
         exit(1);
       }
+
       if (zmin < z_input[0] || zmax > z_input[nz_input-1]) {
         log_fatal("support of cluster bin %d, [%e, %e], leaves the kernel "
           "table [%e, %e]", ni, zmin, zmax, z_input[0], z_input[nz_input-1]);
@@ -332,6 +353,9 @@ static void selection_kernel_table(void)
     }
 
     // --- 2. FINE STEP: AN INTEGER SUBDIVISION OF THE INPUT STEP ---
+    // Resolve the kernel's narrow edges while retaining the original knots
+    // for uniform inputs. Integer subdivision avoids shifting every kink
+    // relative to the lookup grid when the accuracy setting changes.
     const double dz_bound =
       DZ_FINE_REFERENCE/((double) Ntable.nz_fine_sampling_factor);
 
@@ -339,12 +363,17 @@ static void selection_kernel_table(void)
     if (refinement < 1) {
       refinement = 1;
     }
+
     const double dz_target = dz_input/((double) refinement);
 
     // --- 3. ONE UNIFORM GRID PER BIN, ENDS ON THE SUPPORT EDGES ---
+    // Fix both endpoints and adjust the step within this bin. This keeps
+    // the boundary ramps inside the integration range and gives a direct
+    // arithmetic index for subsequent queries.
     int n_max = 0;
     for (int ni=0; ni<nbin; ni++) {
-      const double width = cluster.zdist_z[RANGE_MAX][ni] - cluster.zdist_z[RANGE_MIN][ni];
+      const double width =
+          cluster.zdist_z[RANGE_MAX][ni] - cluster.zdist_z[RANGE_MIN][ni];
 
       int n_steps = (int) ceil(width/dz_target - ALIGNMENT_SLACK);
       if (n_steps < 1) {
@@ -363,13 +392,20 @@ static void selection_kernel_table(void)
     }
 
     // --- 4. ALLOCATION ---
+    // A common row capacity accommodates the largest grid; phi_.n records
+    // how many entries are valid in each bin. Discard the previous table
+    // only after the new grid dimensions have been determined.
     if (phi_.phi != NULL) {
       free(phi_.phi);
     }
+
     phi_.nbin = nbin;
     phi_.phi  = (double**) malloc2d(nbin, n_max);
 
     // --- 5. LINEAR RESAMPLING OF THE INPUT ONTO THE FINE NODES ---
+    // This step preserves straight segments when the fine grid contains
+    // their original endpoints. It does not infer a smooth galaxy n(z):
+    // phi is a selection probability, before volume/abundance weighting.
     // Fine and input nodes are both sorted, so the input cell holding
     // node k is found by walking one index forward (no search).
     for (int ni=0; ni<nbin; ni++) {
@@ -391,6 +427,7 @@ static void selection_kernel_table(void)
             "and >= 0", ni, z, phi);
           exit(1);
         }
+
         phi_.phi[ni][k] = phi;
       }
     }
@@ -597,6 +634,8 @@ static void cluster_kernel_tables(void)
   }
 
   // --- 1. REBUILD: SIZES, ALLOCATIONS, a GRIDS ---
+  // Kernel or accuracy changes can alter grid sizes and richness rows.
+  // A cosmology change alone only requires refilling these allocations.
   int rebuilt = 0; // a rebuild leaves the new tables empty: refill below
   if (NULL == kernel_.nz ||
       fdiff2(kernel_.cache[0], Ntable.random) ||
@@ -687,6 +726,9 @@ static void cluster_kernel_tables(void)
       const int n_fine = phi_.n[ni];
 
       // --- 2. GEOMETRY AT THE FINE z NODES ---
+      // The selection is a probability for an individual cluster. Multiply
+      // by the comoving volume per redshift to obtain a population weight;
+      // richness-dependent abundance is added separately for each row.
       for (int k=0; k<n_fine; k++) {
         const double z = fine_z_node(ni, k);
         const double a = 1.0/(1.0 + z);
@@ -713,16 +755,24 @@ static void cluster_kernel_tables(void)
         double* n_z = kernel_.nz[ni][row];
 
         // --- 3. UNNORMALIZED WEIGHTS u_k ---
+        // Volume mode uses the selected volume alone. Abundance mode also
+        // weights it by the predicted number density in this richness bin.
+        // Neither weight is a probability density until normalized below.
         for (int k=0; k<n_fine; k++) {
           double weight = volume_node[k];
+
           if (abundance) {
             const double a = 1.0/(1.0 + fine_z_node(ni, k));
             weight *= ncl_richness(a, row);
           }
+
           n_z[k] = weight;
         }
 
         // --- 4. NORMALIZATION: TRAPEZOID OVER THE FINE NODES ---
+        // The runtime reader joins adjacent values by straight lines.
+        // Each trapezoid is therefore the exact area of one stored segment;
+        // dividing by their sum normalizes the curve actually being read.
         double norm = 0.0;
         for (int k=0; k<n_fine-1; k++) {
           const double dz = fine_z_node(ni, k+1) - fine_z_node(ni, k);
@@ -749,6 +799,9 @@ static void cluster_kernel_tables(void)
 
         // --- 5. RUNNING SUMS P, Q FROM THE FAR EDGE ---
         // P_k = int_{z_k}^{zmax} n dz,  Q_k = int_{z_k}^{zmax} n/chi dz
+        // Start with zero probability beyond the far edge and accumulate
+        // towards the observer. Later efficiency queries reuse these sums
+        // instead of integrating the whole distribution at every a node.
         cumulative_P[n_fine - 1] = 0.0;
         cumulative_Q[n_fine - 1] = 0.0;
         for (int k=n_fine-2; k>=0; k--) {
@@ -761,6 +814,9 @@ static void cluster_kernel_tables(void)
         }
 
         // --- 6. g = P - chi Q ON THE a GRID ---
+        // Only clusters behind the queried distance contribute to lensing.
+        // Outside the sample use zero or the complete sums; inside it add
+        // the remaining partial cell to the sums at the next fine node.
         for (int j=0; j<kernel_.n_a; j++) {
           double a = kernel_.amin[ni] + j*kernel_.da[ni];
           if (j == kernel_.n_a - 1) {

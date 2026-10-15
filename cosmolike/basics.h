@@ -140,6 +140,8 @@ gsl_spline* malloc_gsl_spline(const int n);
 //
 // Wraps gsl_integration_glfixed_table_alloc() with a fatal-on-failure
 // guarantee, consistent with the other allocation helpers in this module.
+// GSL owns node generation and table storage at every supported size.
+// Release the result with gsl_integration_glfixed_table_free.
 //
 // @param n  Number of quadrature points (order of the integration rule).
 //           Higher values increase accuracy at the cost of more function
@@ -528,6 +530,31 @@ int line_count(
 
 
 // ---------------------------------------------------------------------------
+// Histogram edges from left edges (convention 0) or sample centres (1).
+// Centre inputs use neighbouring midpoints and half-spacing end caps.
+// Left-edge inputs extend the last cell by the last supplied spacing.
+// The file has no separate final edge; these are explicit conventions.
+double histogram_bin_edge(
+    const double* z,    // monotonically increasing coordinates
+    const int nbins,    // at least two input cells
+    const int k,        // requested edge, 0 .. nbins
+    const int convention // 0: left edges, 1: centres
+  );
+
+// Conservative, piecewise-constant remapping onto nfine uniform cells.
+// Output rows 0 .. nhist-1 are normalized densities; row nhist contains
+// the nfine+1 edges. Input edges need not be uniform. See basics.c for
+// the overlap integral and its limits at unaligned input edges.
+void histogram_upsample_uniform(
+    const double* edges,          // original cell edges, nbins+1
+    const double* const* hist,    // original densities, nhist x nbins
+    const int nhist,              // independent tomographic histograms
+    const int nbins,              // original redshift cells
+    const int nfine,              // uniform output cells
+    double** table               // caller-owned [nhist+1][nfine+1]
+  );
+
+// ---------------------------------------------------------------------------
 // Natural cubic spline coefficients on a uniform grid.
 //
 // DERIVATION:
@@ -576,6 +603,22 @@ void spline_coeffs_uniform(
     const int n,
     const double dx,
     double* RESTRICT c
+  );
+
+// ---------------------------------------------------------------------------
+// Preserve an Akima curve through polynomial subdivision onto a nested
+// uniform grid. Coefficients multiply powers of the fractional fine-cell
+// coordinate, so runtime evaluation needs no GSL search or physical dx.
+// The caller owns/reuses all storage and threads independent rows.
+// ---------------------------------------------------------------------------
+void akima_upsample_uniform(
+    const double* RESTRICT x, // coarse knots 0, 1, ..., n-1
+    const double* RESTRICT y, // coarse values
+    const int n,             // coarse node count
+    const int refine,        // integer subdivisions per coarse interval
+    gsl_spline* spline,      // caller-owned Akima workspace of size n
+    double* RESTRICT out,    // fine values, (n-1)*refine+1 entries
+    double** coeff           // three rows: linear, quadratic and cubic
   );
 
 // ---------------------------------------------------------------------------

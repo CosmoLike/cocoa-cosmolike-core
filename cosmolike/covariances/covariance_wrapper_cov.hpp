@@ -54,7 +54,7 @@ pybind11::dict covariance_limber_spectra_cpp(
 // GSL Gauss-Legendre rule on [-1,1]: arma::Mat [2,nquad], nodes in row 0
 // and positive weights, summing to 2, in row 1.
 arma::Mat<double> covariance_integration_rule_cpp(
-    const int nquad // precomputed rule size: 64,96,128,256,512,1024
+    const int nquad // supported GSL rule size
   );
 
 // out(i,j) = sum_node left(i,node) weight(node) right(j,node), computed by

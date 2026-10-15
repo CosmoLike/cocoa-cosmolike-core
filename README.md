@@ -351,8 +351,9 @@ interpolation tables from the baseline in each project's
 `covariance/default.yaml`.
 
 A separate `integration_accuracy` selects
-precomputed GSL quadrature rules: levels 0/1/2/3/4 use
-96/128/256/512/1024 nodes per panel. The global boost leaves this rule
+fixed quadrature rules: levels 0/1/2/3/4/5/6 use
+96/128/256/512/1024/2048/4096 nodes per panel. Levels 5 and 6
+apply the stored 1024-point GSL rule on two and four equal subintervals. The global boost leaves this rule
 unchanged. Wide angular bins use several panels to resolve oscillations.
 Neither setting reruns CAMB or changes the likelihood's YAML files.
 
@@ -665,7 +666,7 @@ defines field ordering, shapes, mask normalization and noise conventions.
 
 The project YAML files and notebooks expose data-vector accuracy settings.
 Covariance has its own `accuracy_boost` for tables/cutoffs and
-`integration_accuracy` for precomputed quadrature rules. Its default
+`integration_accuracy` for stored/composite quadrature rules. Its default
 `power_accuracyboost=8` prepares 11,993 wavenumber samples from 1,500 CAMB
 samples for all covariance components. A natural cubic spline fills those
 tables once; the C readers continue to use linear interpolation.

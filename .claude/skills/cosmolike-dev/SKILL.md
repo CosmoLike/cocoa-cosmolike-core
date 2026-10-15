@@ -153,7 +153,8 @@ those omissions with the matrix and retain the defined Y null-row map.
 Its Makefile omits `_cov` sources and objects and defines
 `COSMOLIKE_NO_COVARIANCE` so the project interface omits covariance bindings.
 Keep ordinary data-vector evaluation and supplied-covariance inversion usable
-in that build. Document activation/recompilation in each project README;
+in that build. Document activation/recompilation in each project's
+`covariance/README.md`, linked from its main README;
 test both build modes and do not add covariance dependencies to data-vector
 C files. The module's `has_covariance` attribute reports the compiled mode.
 
@@ -169,7 +170,7 @@ or maintain a second optimized implementation in either C++ layer.
 Keep the shared Python survey workflow common too; select its numerical
 backend explicitly. Test agreement of both paths, array ownership and
 one/eight-thread determinism. Explain this division clearly in human
-READMEs, with separate production and notebook subsections.
+covariance guides, with separate production and notebook subsections.
 
 **Notebook C++ wrappers.** Follow `halo_wrapper_cluster.cpp` and
 `cosmo2D_wrapper.cpp`: numeric inputs, results and working arrays use
@@ -210,6 +211,18 @@ from the repository; do not present a developer's external harness as a
 public test interface. State implemented capabilities and remaining limits
 without turning the README into a development log.
 
+Cocoa's maintenance skill governs shared README layout. Project main
+READMEs summarize tests and covariance capabilities and link to the
+respective guides; commands and numerical details stay in those guides.
+Introduce optional studies as a bullet at the top of `tests/README.md`.
+Keep their instructions in `tests/studies/README.md`, generators beside
+that guide and outputs in `tests/studies/results/`; ordinary data-vector
+figures and generators belong in `tests/data_vector/`.
+Split accuracy explanations by control, with short paragraphs, code
+blocks and tables. Define mathematical factors and summation indices
+explicitly for students. Apply common layout changes across projects
+without copying project-specific limitations into unrelated pages.
+
 Published covariance timings use the **production CLI** and each project's
 shipped evaluate YAML. Measure complete G + SSC + cNG construction, including
 first-use tables, on a quiet machine with sequential runs. Distinguish that
@@ -219,10 +232,12 @@ timings are a different baseline; quantify conversion overhead with matched
 inputs and identical output checks. Current seven-project measurements and
 the matched interface comparison are in
 `references/covariance_cli_timing.md`.
-Make the production/exploration distinction prominent in each project's
-opening README and beside Cocoa's code-comparison timing notes. Explain
-that the notebook array-conversion overhead is separate from the shared
-C kernels; scope any quoted overhead factor to its matched measurement.
+Published runtime tables and matched CLI/wrapper speedup factors live in
+Cocoa's main README; project guides link there. Routine timing checks do
+not automatically replace the published values. Put the CLI/exploration
+warning in the covariance guide, not at the top of the project README.
+Explain that notebook array-conversion overhead is separate from the
+shared C kernels without duplicating timing numbers across projects.
 
 Write skill instructions as impersonal project guidance for all
 contributors. State the requirement and its rationale directly, without
@@ -370,16 +385,18 @@ Do not multiply radial, mass or angular rule orders by the global boost.
 Do not expose arbitrary rule sizes in project defaults. Covariance rules
 must use GSL's precomputed nodes, normally with 64 as the minimum. The
 explicitly adopted Wynn low-mass tail above is the sole 32-node exception.
-The notebook ladder is 96/128/256/512/1024
-for levels 0/1/2/3/4; low-level testing also accepts 64. Python-prepared
+The notebook ladder is 96/128/256/512/1024/2048/4096
+for levels 0/1/2/3/4/5/6; low-level testing also accepts 64. Python-prepared
 production integrals obtain the same GSL rules through the C++ binding;
-independent references may generate their own rules. Split oscillatory
-angular integrals into physical panels rather than requesting generated
-2048-node rules. Level zero must be useful: test every consuming sector,
+independent references may generate their own rules. The 2048/4096-point rules are composite copies of the stored 1024-point
+rule on two/four equal subintervals, not generated higher-order rules.
+Physical angular panels remain in place; refinement subdivides each one. Level zero must be useful: test every consuming sector,
 including cluster selection and count responses, against higher levels.
 Check levels 2, 3 and 4 as well as 1, comparing the default directly with
 the highest level and verifying stability of the last refinement.
-Current implementation and evidence: `references/covariance_defaults.md`.
+Current implementation and evidence: `references/covariance_defaults.md`;
+the 2048/4096 composite extension and its checks are recorded in
+`references/integration_accuracy_4096.md`.
 Keep this level unchanged under global table refinements. Multiply interval
 counts in likelihoods too: `nonlimber_accuracyboost: 2` and
 `pk_z_refinement: 3` mean effective factors 4 and 6 at `accuracyboost: 2`.
@@ -940,7 +957,9 @@ Rules:
   `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.
   `malloc_gslint_glfixed` (basics.c) accepts any n and silently computes
   a non-tabulated rule on the fly, with weights good to only ~5e-7: it
-  does not enforce the rule, the caller does.
+  does not enforce the rule, the caller does. The supported 2048/4096
+  exceptions are composite copies of the tabulated 1024-node rule; their
+  descriptor owns positive-half arrays and is freed by the usual GSL call.
 
 Worked example: `sigma2` (cosmo3D.c) — the lobe-node cache is built in
 its Ntable rebuild block, and one threaded lobe-sum loop refills the
@@ -1166,6 +1185,15 @@ the named knobs change.
 - `hod_tables` refill, 2026-09-29, 4 threads, 10 lens bins x
   N_a = 256: 3.9 ms.
 - `tinker_alpha` build, 4 threads: 0.9 ms, once per process.
+
+## Optional histogram n(z) reconstruction
+
+Before changing the source/lens histogram readers or their YAML selector,
+read `references/nz_histogram_akima_option.md`. The default remains the
+original midpoint curve. `photoz_histogram_akima: 1` selects the alternative;
+its preparation factor is chosen explicitly (3, 5 or 7 on the experimental
+branch) and never scaled by accuracy. Final lookup refinement preserves the
+same Akima polynomials. Preserve exact default and factor round trips.
 
 ## Python code
 

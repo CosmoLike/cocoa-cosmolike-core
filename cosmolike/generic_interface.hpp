@@ -645,6 +645,13 @@ void init_ntable_nm_internal(const int nm_internal);
 
 void init_ntable_halo_ia_lmax(const int halo_ia_lmax);
 
+// Optional histogram/Akima curve. Preparation stays fixed at 3x, 5x or 7x
+// when numerical accuracy changes; omitted factor retains the 3x model.
+void init_photoz_histogram_akima(
+    const int enabled,               // 0: midpoint, 1: histogram + Akima
+    const int preparation_factor = 3 // uniform cells per original cell
+  );
+
 void init_photoz_conventions(
     const int interpolation_type,
     const int zmid_convention

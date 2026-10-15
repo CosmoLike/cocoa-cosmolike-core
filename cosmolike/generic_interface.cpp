@@ -680,6 +680,81 @@ double compute_sigma2(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Select the histogram reconstruction without changing the default curve.
+//
+// 0 keeps the original midpoint interpolant. 1 prepares three, five or seven
+// constant cells per input cell, then uses Akima for the final lookup.
+// The preparation factor defines the model; accuracy boosts never scale it.
+//
+// A live switch must reload existing histograms: the two reconstructions
+// have different endpoint support, per-bin integration bounds and lens
+// means. The sample loaders restore those quantities and invalidate all
+// dependent kernels through the redshift stamps, including on 1 -> 0
+// and on a factor change with Akima still enabled.
+// Called before loading any samples, this only records the selection.
+// ---------------------------------------------------------------------------
+void init_photoz_histogram_akima(
+    const int enabled,            // 0: midpoint, 1: histogram + Akima
+    const int preparation_factor // 3, 5 or 7, independent of accuracy boosts
+  )
+{
+  if (enabled != 0 && enabled != 1) {
+    critical(
+        "photoz_histogram_akima = {}: expected 0 (midpoint) or 1 (Akima)",
+        enabled);
+    exit(1);
+  }
+
+  if (preparation_factor != 3 && preparation_factor != 5 &&
+      preparation_factor != 7) {
+    critical("photoz_histogram_akima_factor = {}: expected 3, 5 or 7",
+             preparation_factor);
+    exit(1);
+  }
+
+  if (Ntable.photoz_histogram_akima == enabled &&
+      Ntable.photoz_histogram_akima_factor == preparation_factor) {
+    return;
+  }
+
+  Ntable.photoz_histogram_akima = enabled;
+  Ntable.photoz_histogram_akima_factor = preparation_factor;
+  Ntable.random = RandomNumber::get_instance().get();
+
+  // Copy before invoking a loader: it releases its previous input table.
+  // Source and lens have the same file layout, z followed by density columns.
+  for (int sample = 0; sample < 2; sample++) {
+    const int ntomo = (sample == 0) ? redshift.shear_nbin
+                                  : redshift.clustering_nbin;
+    const int nzbins = (sample == 0) ? redshift.shear_nzbins
+                                   : redshift.clustering_nzbins;
+    double** hist = (sample == 0) ? redshift.shear_zdist_table
+                                : redshift.clustering_zdist_table;
+
+    if (hist == NULL || ntomo == 0) {
+      continue;
+    }
+
+    arma::Mat<double> input(nzbins, ntomo + 1);
+    for (int k = 0; k < nzbins; k++) {
+      input(k, 0) = hist[ntomo][k];
+
+      for (int i = 0; i < ntomo; i++) {
+        input(k, i + 1) = hist[i][k];
+      }
+    }
+
+    // Reload through the usual sample setter so bounds, means and kernel
+    // invalidation follow the same path as a newly supplied histogram.
+    if (sample == 0) {
+      set_source_sample(input);
+    } else {
+      set_lens_sample(input);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Select the n(z) ingestion conventions.
 //
 // Writes Ntable.photoz_interpolation_type, the n(z) stage-1 interpolant
@@ -3654,7 +3729,14 @@ void set_lens_sample(arma::Mat<double> input_table)
     critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   }
 
-  int cache_update = 0;
+  // Equal input values still need reloading after a reconstruction switch:
+  // bounds and fiducial means belong to the selected curve, not just the file.
+  // Changing 3x to 5x narrows its edges even when Akima remains enabled.
+  static int reconstruction_cache = -1;
+  static int preparation_factor_cache = -1;
+  int cache_update =
+      (reconstruction_cache != Ntable.photoz_histogram_akima) ||
+      (preparation_factor_cache != Ntable.photoz_histogram_akima_factor);
   if (redshift.clustering_nzbins != static_cast<int>(input_table.n_rows) ||
       NULL == redshift.clustering_zdist_table) {
     cache_update = 1;
@@ -3758,6 +3840,8 @@ void set_lens_sample(arma::Mat<double> input_table)
       debug("{}: bin {} - {} = {}.", fname, k, "<z_l>", zm[k]);
     }
   }
+  reconstruction_cache = Ntable.photoz_histogram_akima;
+  preparation_factor_cache = Ntable.photoz_histogram_akima_factor;
   debug("{}: {}", fname, errends);
 }
 
@@ -3840,7 +3924,14 @@ void set_source_sample(arma::Mat<double> input_table)
     critical(errorns, fname, "Ntomo", Ntomo, MAX_SIZE_ARRAYS); exit(1);
   } 
 
-  int cache_update = 0;
+  // Equal input values still need reloading after a reconstruction switch:
+  // bounds and fiducial means belong to the selected curve, not just the file.
+  // Changing 3x to 5x narrows its edges even when Akima remains enabled.
+  static int reconstruction_cache = -1;
+  static int preparation_factor_cache = -1;
+  int cache_update =
+      (reconstruction_cache != Ntable.photoz_histogram_akima) ||
+      (preparation_factor_cache != Ntable.photoz_histogram_akima_factor);
   if (redshift.shear_nzbins != static_cast<int>(input_table.n_rows) ||
       NULL == redshift.shear_zdist_table) {
     cache_update = 1;
@@ -3930,6 +4021,8 @@ void set_source_sample(arma::Mat<double> input_table)
       debug("{}: bin {} - {} = {}.", fname, k, "<z_s>", zmean_source(k));
     }
   }
+  reconstruction_cache = Ntable.photoz_histogram_akima;
+  preparation_factor_cache = Ntable.photoz_histogram_akima_factor;
   debug("{}: {}", fname, errends);
 }
 

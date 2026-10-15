@@ -245,7 +245,7 @@ gsl_interp* malloc_gsl_interp(const int n)
   else {
     result = gsl_interp_alloc(gsl_interp_steffen, n);
   }
-  if (result == NULL) {
+  if (NULL == result) {
     log_fatal("array allocation failed"); exit(1);
   }
   return result;
@@ -278,30 +278,31 @@ gsl_spline* malloc_gsl_spline(const int n)
   else {
     result = gsl_spline_alloc(gsl_interp_steffen, n);
   }
-  if (result == NULL) {
+  if (NULL == result) {
     log_fatal("array allocation failed"); exit(1);
   }
   return result;
 }
 
 // ---------------------------------------------------------------------------
-// Allocate a Gauss-Legendre fixed-point integration table.
+// Allocate a Gauss-Legendre integration table using GSL.
 //
-// Wraps gsl_integration_glfixed_table_alloc() with a fatal-on-failure
-// guarantee, consistent with the other allocation helpers in this module.
+// Keep node generation and table ownership inside GSL. Callers cache this
+// table, so allocation is preparation work rather than part of each integral.
+// The wrapper only turns allocation failure into the same fatal error used
+// by the other allocation helpers in this file.
 //
-// @param n  Number of quadrature points (order of the integration rule).
-//           Higher values increase accuracy at the cost of more function
-//           evaluations per integration call.
-// @return   Pointer to the newly allocated table. Never returns NULL;
-//           terminates the program on allocation failure.
+// @param n  Number of quadrature points over the integration interval.
+// @return   A GSL table; release with gsl_integration_glfixed_table_free.
 // ---------------------------------------------------------------------------
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
 {
   gsl_integration_glfixed_table* w = gsl_integration_glfixed_table_alloc(n);
-  if (w == NULL) {
-    log_fatal("array allocation failed"); exit(1);
+  if (NULL == w) {
+    log_fatal("array allocation failed");
+    exit(1);
   }
+
   return w;
 }
 
@@ -846,12 +847,12 @@ bin_avg set_bin_average(
   if (Ntable.Ntheta == 0) {
     log_fatal("Ntable.Ntheta not initialized"); exit(EXIT_FAILURE);
   }
-  if (P == NULL || (ntheta != Ntable.Ntheta) || fdiff2(cache[0], Ntable.random))
+  if (NULL == P || (ntheta != Ntable.Ntheta) || fdiff2(cache[0], Ntable.random))
   {
-    if (P != NULL) {
+    if (NULL != P) {
       free(P);
     }
-    if (xminmax != NULL) {
+    if (NULL != xminmax) {
       free(xminmax);
     }
 
@@ -943,6 +944,126 @@ double interpol1d(
   return ans;
 }
 
+// The input has one coordinate per cell, not an explicit final edge.
+// Infer the missing outer edge from its nearest spacing; midpoint inputs
+// also need half-spacing caps at both ends.
+double histogram_bin_edge(
+    const double* z,    // input left edges or centres
+    const int nbins,    // number of input cells
+    const int k,        // requested edge, 0 .. nbins
+    const int convention // 0: left edges, 1: centres
+  )
+{
+  if (1 == convention) {
+    if (0 == k) {
+      return z[0] - 0.5 * (z[1] - z[0]);
+    }
+
+    if (nbins == k) {
+      return z[k - 1] + 0.5 * (z[k - 1] - z[k - 2]);
+    }
+
+    return z[k - 1] + 0.5 * (z[k] - z[k - 1]);
+  }
+
+  return (k < nbins) ? z[k] : z[k - 1] + (z[k - 1] - z[k - 2]);
+}
+
+// ---------------------------------------------------------------------------
+// A constant input density h_k contributes h_k times its overlap width
+// to each uniform output cell J. Thus its new constant density is
+//
+//   y_J = sum_k h_k * length(J intersect bin_k) / (width(J) * norm),
+//   norm = sum_k h_k * width(bin_k).
+//
+// Summing y_J * width(J) gives one: the output cells partition exactly
+// the same support. Nonnegative inputs stay nonnegative. Inside an input
+// cell this just repeats its density; a crossing cell averages its pieces.
+// That crossing can redistribute mass across an original edge, so only
+// the total probability is exactly conserved for arbitrary input edges.
+// Refinement reduces the width over which that redistribution occurs.
+//
+// Each thread walks one histogram from left to right; no binary search
+// or temporary allocation is needed. The serial sums within each row
+// keep results independent of the number of threads.
+// ---------------------------------------------------------------------------
+void histogram_upsample_uniform(
+    const double* edges,          // original cell edges, nbins+1
+    const double* const* hist,    // original densities, nhist x nbins
+    const int nhist,              // independent tomographic histograms
+    const int nbins,              // original redshift cells
+    const int nfine,              // uniform output cells
+    double** table               // caller-owned [nhist+1][nfine+1]
+  )
+{
+  for (int k = 0; k < nbins; k++) {
+    if (!isfinite(edges[k]) || !(edges[k + 1] > edges[k])) {
+      log_fatal("n(z) edges must be finite and strictly increasing (cell %d)",
+                k);
+      exit(1);
+    }
+  }
+
+  if (!isfinite(edges[nbins])) {
+    log_fatal("n(z) final edge must be finite");
+    exit(1);
+  }
+
+  const double dx = (edges[nbins] - edges[0]) / nfine;
+  double* fine = table[nhist];
+
+  for (int j = 0; j < nfine; j++) {
+    fine[j] = edges[0] + j * dx;
+  }
+
+  // Copy the last edge exactly: rounding in edges[0] + nfine * dx must
+  // not make the overlap walk extend beyond the original histogram.
+  fine[nfine] = edges[nbins];
+
+  #pragma omp parallel for schedule(static)
+  for (int i = 0; i < nhist; i++) {
+    const double* restrict h = hist[i];
+    double* restrict y = table[i];
+
+    // Normalize using the original cell widths. Interpolated sample
+    // sums would give the wrong total for irregularly spaced input bins.
+    double norm = 0.0;
+    for (int k = 0; k < nbins; k++) {
+      norm += h[k] * (edges[k + 1] - edges[k]);
+    }
+
+    if (!(norm > 0.0) || !isfinite(norm)) {
+      log_fatal("zero/negative/nonfinite n(z) normalization for bin %d", i);
+      exit(1);
+    }
+
+    // Walk both ordered grids together. Keep k between output cells:
+    // a narrow output cell can stay in the same original bin, while a
+    // wide one collects several partial-bin areas without searching.
+    int k = 0;
+    for (int j = 0; j < nfine; j++) {
+      double left = fine[j];
+      double area = 0.0;
+
+      while (left < fine[j + 1]) {
+        while (k + 1 < nbins && edges[k + 1] <= left) {
+          k++;
+        }
+
+        // Stop at whichever boundary comes first. The next iteration
+        // either advances the original bin or finishes this output cell.
+        const double right = fmin(edges[k + 1], fine[j + 1]);
+        area += h[k] * (right - left);
+        left = right;
+      }
+
+      // Store a density, not a probability: dividing by this cell
+      // width makes its integral recover the collected normalized area.
+      y[j] = area / ((fine[j + 1] - fine[j]) * norm);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Natural cubic spline coefficients on a uniform grid.
 //
@@ -1024,6 +1145,76 @@ void spline_coeffs_uniform(
   }
 
   free(scratch);
+}
+
+// ---------------------------------------------------------------------------
+// Preserve an Akima curve on a nested uniform lookup grid. GSL prepares
+// the slopes on knots x[k] = k. On coarse interval k, with u in [0,1],
+//
+//   S(u) = y[k] + B*u + C*u^2 + D*u^3,
+//   B = S'(k), C = 3*(y[k+1]-y[k]) - 2*B - S'(k+1),
+//   D = B + S'(k+1) - 2*(y[k+1]-y[k]).
+//
+// Substitute u = u0 + t/refine for each fine interval. Its coefficients
+// are S(u0), S'(u0)/refine, S''(u0)/(2*refine^2), D/refine^3.
+// This is the same polynomial, not a second fit: a natural-cubic refit
+// would impose C2 continuity that Akima need not satisfy and can ring.
+// The hot reader uses fractional fine-grid t and three Horner steps.
+//
+// The caller caches the GSL object and arrays, and threads independent
+// rows. Only this preparation touches GSL; runtime lookup uses no search.
+// ---------------------------------------------------------------------------
+void akima_upsample_uniform(
+    const double* restrict x, // coarse knots 0, 1, ..., n-1
+    const double* restrict y, // coarse values
+    const int n,             // coarse node count
+    const int refine,        // integer subdivisions per coarse interval
+    gsl_spline* spline,      // caller-owned Akima workspace of size n
+    double* restrict out,    // fine values, (n-1)*refine+1 entries
+    double** coeff           // three rows: linear, quadratic and cubic
+  )
+{
+  if (refine < 1 || gsl_spline_init(spline, x, y, n) != GSL_SUCCESS) {
+    log_fatal("Akima preparation failed (n=%d, refinement=%d)", n, refine);
+    exit(1);
+  }
+
+  gsl_interp_accel accel = {0};
+  const double inv = 1.0 / refine;
+
+  // Endpoint derivatives determine each Hermite cubic. Reuse the right
+  // derivative as the next interval's left derivative, avoiding a repeat
+  // GSL evaluation at their shared knot.
+  double left = gsl_spline_eval_deriv(spline, x[0], &accel);
+  for (int k = 0; k < n - 1; k++) {
+    const double right = gsl_spline_eval_deriv(spline, x[k + 1], &accel);
+    const double delta = y[k + 1] - y[k];
+    const double c = 3.0 * delta - 2.0 * left - right;
+    const double d = left + right - 2.0 * delta;
+
+    // Translate and rescale the same polynomial onto each fine cell.
+    // These are exact coefficient transformations, not another fit.
+    for (int q = 0; q < refine; q++) {
+      const int j = k * refine + q;
+      const double u = q * inv;
+
+      out[j] = y[k] + u * (left + u * (c + u * d));
+      coeff[0][j] = (left + u * (2.0 * c + 3.0 * u * d)) * inv;
+      coeff[1][j] = (c + 3.0 * u * d) * inv * inv;
+      coeff[2][j] = d * inv * inv * inv;
+    }
+
+    left = right;
+  }
+
+  // The last node supplies the final endpoint value, but starts no
+  // interval. Zero its unused coefficient slots to keep storage defined.
+  const int last = (n - 1) * refine;
+  out[last] = y[n - 1];
+
+  for (int p = 0; p < 3; p++) {
+    coeff[p][last] = 0.0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,7 +1547,7 @@ int line_count(
   )
 {  
   FILE* ein = fopen(filename, "r");
-  if (ein == NULL) 
+  if (NULL == ein)
   {
     log_fatal("File not open (%s)", filename);
     exit(1);
