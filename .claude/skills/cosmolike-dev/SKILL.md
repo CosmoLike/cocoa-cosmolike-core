@@ -13,11 +13,16 @@ description: >-
 
 # CosmoLike Development
 
-This skill encodes how the CosmoLike C core was optimized 6x (v4.07: 670.6s →
-~111s per 1000 likelihood evaluations, 92% fewer instructions) without a single
-physics regression, between late 2025 and mid 2026. Follow the same discipline:
-the speedups came from measurement and algorithmic restructuring, validated at
-every step — not from cleverness applied blindly.
+CosmoLike development connects physical equations to accurate, efficient
+numerical calculations. Establish the model, units and approximations before
+changing an algorithm. Explain why the discretization, interpolation and
+parallel layout are appropriate for the quantities being computed.
+
+Optimize measured bottlenecks by reusing shared calculations, organizing
+memory access and assigning independent outputs to workers. Validate numerical
+accuracy separately from performance: agreement with a stored result checks
+regression, refinement checks numerical stability, and an independent physical
+reference checks the model. A speedup is useful only within those constraints.
 
 Before writing any optimization, read `references/patterns.md`.
 
@@ -49,8 +54,8 @@ neutrinos (no paper says; recommended: the cb growth at halo scales in both
 the prefactor and nu): `references/fable_review_concentration_growth.md`.
 
 **Neutrino halo model.**
-Plan and decisions: `references/neutrino_growth_plan.md`. Implementation
-and measured checks: `references/sigma_fftlog_implementation.md`.
+Physical and numerical design: `references/neutrino_growth_plan.md`.
+Implementation and measured checks: `references/sigma_fftlog_implementation.md`.
 The C FFTLog tables expose both matter and cb variances and mass slopes
 at (M,a). Halo statistics always use cb; `halo_matter_field` is retired.
 Concentration uses D_cb(M,a) = sigma_cb(M,a)/sigma_cb(M,1). The M200m
@@ -70,7 +75,7 @@ read `references/covariance_rewrite.md` and the external study at
 outside that directory for the port. Every new covariance C filename ends
 in `_cov.c`, including future cluster extensions (`*_cluster_cov.c`).
 Data-vector and covariance numerical choices remain separately owned.
-The authorized covariance tail extends to 1e-40 Msun/h with Wynn epsilon
+The covariance tail extends to 1e-40 Msun/h with Wynn epsilon
 extrapolation of I11. Keep the data-vector HOD integration floor at 1e4;
 the separate halo_sigma_min extends shared variance-table coverage while
 preserving its lnM spacing. halo_mass_edges() retains the upper panels.
@@ -86,16 +91,13 @@ MCMC. Reuse explicit shared inputs across its blocks; do not add persistent
 cosmology caches just to imitate the data-vector lifetime. Shared core
 readers can still have caches and require serial initialization before
 parallel reads. Explain this distinction in `cosmolike/README.md`.
-The non-Limber and NLA follow-up is detailed in
-`references/covariance_nonlimber_ia_plan.md`. Gaussian gg/gs non-Limber
-and NLA/TATT work is authorized in small tested commits. Covariance-owned
-FFTLog, all-pairs gg/gs, Gaussian NLA/TATT E/B and survey wiring are
-implemented. Project defaults follow full Gaussian non-Limber refinement
-checks, recorded in that reference; these do not establish Fisher or all
-integration convergence. The selected-cluster joint extension remains open. SSC/cNG changes are excluded from this
-implementation block. Never describe Gaussian non-Limber or IA support as
-a corresponding extension of SSC/cNG. Keep stopped overnight validation
-stopped. Do not enable survey defaults before their independent checks.
+Gaussian non-Limber and alignment-model scope is detailed in
+`references/covariance_nonlimber_ia_plan.md`. Covariance-owned FFTLog,
+all-pairs gg/gs, Gaussian NLA/TATT E/B and survey wiring are implemented.
+Project defaults require independent full-Gaussian refinement checks;
+these do not establish Fisher or all-integral convergence. Selected-cluster
+non-Limber/IA extensions need separate validation. Gaussian support must
+not be described as a corresponding physical extension of SSC/cNG.
 Study the actual `cosmo2D.c`, `cosmo3D.c`, and `halo.c` implementations;
 some older study and pattern descriptions predate their current behavior.
 Carry over serial FFTW planning/reuse, precomputed node tables, direct grid
@@ -105,7 +107,7 @@ pragma vectorizes strict floating-point arithmetic. Measure loop layouts,
 thread counts, precision, and generated instructions before choosing them.
 Covariance production code always uses SIMDe for its bulk arithmetic.
 Keep scalar comparisons in the external test harness, with no covariance
-preprocessor fallback. The same rule now applies to existing data-vector
+preprocessor fallback. The same rule applies to existing data-vector
 SIMDe paths; see `references/simd_retirement.md`.
 
 **Rejected power-reader optimization.** Do not promote or repeat the
@@ -191,12 +193,13 @@ normal interface and C kernels; never obscure the notebook API to avoid
 an array copy. Preserve axis order, ownership and input immutability, and
 test C-order, Fortran-order and sliced NumPy inputs through CARMA.
 
-**Integration validation limits.** The maximum covariance integration
-level to test is 4. On the M2 Pro laptop, Roman tests stop at level 3;
-reserve Roman level 4 for a server. Do not escalate above these limits
-when assessing default settings. Keep completed matrices and compare
-against the highest completed permitted level, stating which reference
-was actually used.
+**Integration validation.** Refine quadrature independently of interpolation
+until the measured numerical differences are small enough for the study's
+scientific purpose. Higher supported levels are available on laptops as
+well as servers; choose the workload using measured runtime and memory.
+The fixed-rule ladders cap at 8,192 nodes. Retain completed results and
+identify the settings of each comparison reference. The highest tested
+level is not automatically a converged result.
 
 **Public documentation.** READMEs are
 for human readers, including advanced undergraduate physics students.
@@ -205,7 +208,8 @@ source file and how its calculation fits into the module. Cite the papers
 directly. Never send readers to Claude/bot skills or untracked study
 directories for an explanation. Port the necessary physics into the
 README itself. Keep machine-local library paths, build commands, internal
-benchmark recipes and development history in the skill references.
+benchmark recipes and technical rationale in the skill references. Keep
+execution history in separate logs, not in maintained explanatory references.
 Document test suites in public documentation when they are reproducible
 from the repository; do not present a developer's external harness as a
 public test interface. State implemented capabilities and remaining limits
@@ -239,10 +243,14 @@ warning in the covariance guide, not at the top of the project README.
 Explain that notebook array-conversion overhead is separate from the
 shared C kernels without duplicating timing numbers across projects.
 
-Write skill instructions as impersonal project guidance for all
-contributors. State the requirement and its rationale directly, without
-personal names, quotations or conversational attributions. Retain
-scientific citations and dates that identify measurements or sources.
+Write every skill Markdown file, including supporting references, as
+impersonal technical exposition. Organize it around the problem, assumptions,
+method, evidence, limitations and reusable conclusions. State requirements
+and their rationale directly; do not narrate requests, approvals, sessions,
+commits or the sequence of work. Preserve scientific citations and dated
+measurement provenance. Describe rejected approaches only when their failure
+explains a useful design constraint, with detailed records linked separately.
+Replace superseded status and results rather than appending a new diary entry.
 
 **Survey accuracy and Roman.** The
 old study's 1e-6 per-entry reference-refinement target is not a universal
@@ -328,8 +336,7 @@ three skipped project rebuilds. Check the actual compile flag and build
 log: most projects use upper-case `IGNORE_COSMOLIKE_*_CODE` names, while
 DES cluster uses lower-case `des_cluster`. A zero shell exit alone does
 not establish that a skip-guarded build script compiled anything.
-Shared matter preparation now
-groups eight radial shells and requests only I11 at displaced derivative
+Shared matter preparation groups eight radial shells and requests only I11 at displaced derivative
 endpoints; see `references/covariance_halo_scaling.md` for measurements,
 bitwise checks and the bounded-memory choice. The final connected
 projection also assigns complete angular blocks to one worker team;
@@ -379,23 +386,19 @@ The global boost multiplies every internal refinement, rather than replacing
 or bypassing it: base factors 2 and 3 become effective factors 4 and 6 when
 the global boost changes from 1 to 2. This applies to internally tuned
 non-Gaussian and window tables and shared core reader refinements.
-**Quadrature is separate.** `integration_accuracy` selects precomputed GSL
-rules through an explicit level ladder, independently of `accuracy_boost`.
-Do not multiply radial, mass or angular rule orders by the global boost.
-Do not expose arbitrary rule sizes in project defaults. Covariance rules
-must use GSL's precomputed nodes, normally with 64 as the minimum. The
-explicitly adopted Wynn low-mass tail above is the sole 32-node exception.
-The notebook ladder is 96/128/256/512/1024/2048/4096
-for levels 0/1/2/3/4/5/6; low-level testing also accepts 64. Python-prepared
-production integrals obtain the same GSL rules through the C++ binding;
-independent references may generate their own rules. The 2048/4096-point rules are composite copies of the stored 1024-point
-rule on two/four equal subintervals, not generated higher-order rules.
-Physical angular panels remain in place; refinement subdivides each one. Level zero must be useful: test every consuming sector,
-including cluster selection and count responses, against higher levels.
-Check levels 2, 3 and 4 as well as 1, comparing the default directly with
-the highest level and verifying stability of the last refinement.
-Current implementation and evidence: `references/covariance_defaults.md`;
-the 2048/4096 composite extension and its checks are recorded in
+**Quadrature is separate.** `integration_accuracy` selects GSL rules
+through an explicit level ladder, independently of `accuracy_boost`.
+Do not multiply rule orders by the global boost or expose arbitrary rule
+sizes in project defaults. The native GSL allocator supplies the rules;
+there is no custom composite replacement. All fixed-rule ladders cap at
+8192 nodes. Ordinary covariance panels retain their minimum order; the
+Wynn low-mass tail has its documented lower-order exception.
+Python-prepared production integrals obtain the same rules through the
+C++ binding; independent references may generate their own rules.
+Physical angular panels remain part of the integral definition.
+Level zero must be useful: compare every consuming sector with higher
+levels and verify stability of the final refinement. Current controls and
+evidence are in `references/covariance_defaults.md` and
 `references/integration_accuracy_4096.md`.
 Keep this level unchanged under global table refinements. Multiply interval
 counts in likelihoods too: `nonlimber_accuracyboost: 2` and
@@ -949,17 +952,13 @@ Rules:
   interpolation into a gather with weights 0/1 (e.g. a halo-model mass
   integral quadratured on the sigma2 ln M nodes reads sigma2 exactly).
 - Code duplication across consumers is acceptable when it buys speed.
-- Gauss-Legendre sizes: always a size GSL has precomputed (tabulated).
-  The minimum accepted size is 64, except for the explicitly adopted
-  covariance Wynn tail's 32-node rule described above.
-  The hdi ladders use 64, 96, 128, 256, 512, 1024, written inline at
-  each site, e.g. redshift_spline.c:
-  `(0 == hdi) ? 256 : (1 == hdi) ? 512 : 1024; // predefined GSL tables`.
-  `malloc_gslint_glfixed` (basics.c) accepts any n and silently computes
-  a non-tabulated rule on the fly, with weights good to only ~5e-7: it
-  does not enforce the rule, the caller does. The supported 2048/4096
-  exceptions are composite copies of the tabulated 1024-node rule; their
-  descriptor owns positive-half arrays and is freed by the usual GSL call.
+- Gauss-Legendre rules come from the native GSL allocator, using the
+  consuming integral's explicit accuracy ladder. Cache each table while
+  its order remains unchanged. Stored and generated rules require their
+  own analytic checks; neither guarantees resolution of the physical
+  integrand. Rules cap at 8192 nodes, with a normal minimum of 64 and
+  the covariance Wynn tail's documented 32-node exception. See
+  `references/integration_accuracy_4096.md` for measured rule accuracy.
 
 Worked example: `sigma2` (cosmo3D.c) — the lobe-node cache is built in
 its Ntable rebuild block, and one threaded lobe-sum loop refills the
@@ -975,9 +974,9 @@ re-measure before relying on them.
 
 ### Quadrature
 
-Every Gauss-Legendre rule in halo.c is a size GSL has precomputed (the
-rule above). `Ntable.high_def_integration` (hdi) selects the size per
-integral family:
+`Ntable.high_def_integration` (hdi) selects the rule per integral family.
+The following measurements explain the lower-order choices; the native-GSL
+extension above supplies higher orders for refinement:
 
 - `u_KS` gas integrals: 96 / 128 / 256 / 512 / 1024; 96 nodes converge
   F0 to 2e-14, so the ladder buys nothing.
@@ -1038,14 +1037,13 @@ Trapezoid rules, uniform in a log variable:
 ### Halo-model IA (ia_tables; Fortuna et al. 2021)
 
 - Kernel: closed-form l = 2, 4, 6 satellite-alignment profile (the
-  derivation: scratchpad ia_kernel/KERNEL.md of 2026-09-29, to be moved
-  into the halo.c header by a Fable pass), series branch below a
-  per-edge switch. The l sum does NOT converge for the de-projected
+  derivation: scratchpad ia_kernel/KERNEL.md of 2026-09-29), with a series
+  branch below a per-edge switch. The l sum does NOT converge for the de-projected
   sin^-2 theta profile (prefactors -1.875, -1.875, -2.13, -2.39, ...):
   l <= 6 is F21's model choice, knob Ntable.halo_ia_lmax.
 - f, g read: cubic Hermite on the nfw_ table with the exact slopes
-  df/dln t = -t g, dG/dln t = t f (approved 2026-09-29 for the IA kernel
-  only): f to 1e-14, g to 1e-11, against 5e-9 / 2e-8 for the linear read,
+  df/dln t = -t g, dG/dln t = t f (specific to the IA kernel): f to 1e-14,
+  g to 1e-11, against 5e-9 / 2e-8 for the linear read,
   which the l = 4, 6 closed forms amplify by up to 1e6. nfw_um keeps the
   linear read.
 - gamma_hat vs mpmath: 2e-11 (l = 2), ~1e-9 worst (l <= 6, at the c = 20
@@ -1191,9 +1189,9 @@ the named knobs change.
 Before changing the source/lens histogram readers or their YAML selector,
 read `references/nz_histogram_akima_option.md`. The default remains the
 original midpoint curve. `photoz_histogram_akima: 1` selects the alternative;
-its preparation factor is chosen explicitly (3, 5 or 7 on the experimental
-branch) and never scaled by accuracy. Final lookup refinement preserves the
-same Akima polynomials. Preserve exact default and factor round trips.
+its preparation factor is chosen explicitly (3, 5 or 7) and never scaled
+by accuracy. Final lookup refinement preserves the same Akima polynomials.
+Preserve exact default and factor round trips.
 
 ## Python code
 

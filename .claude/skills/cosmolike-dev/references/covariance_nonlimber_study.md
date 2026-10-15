@@ -94,8 +94,8 @@ recurrence gives M_l(s-2)=M_l(s)/[(l+s-2)(l+3-s)]. This is algebraically
 the same physical projection but avoids amplifying the radial input by
 chi^-2 near the observer. The paper explicitly motivates its numerical
 stability. Compare both formulations and analytic Gaussian transforms
-before choosing the covariance implementation; no data-vector change is
-authorized by this study.
+when validating the covariance implementation. Its grids and transforms
+remain separate from ordinary data-vector choices.
 
 ## Logarithmic grid and phase bookkeeping
 

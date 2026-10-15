@@ -1,75 +1,53 @@
-# Covariance defaults and independent integration levels
+# Covariance defaults and independent integration controls
 
-Status (2026-10-04): candidate defaults, with full-matrix convergence still
-in progress. Do not publish the retired ell_max=10000 pilot timings as
-usable covariance timings. The 128-node non-Gaussian table at ell_max=100000
-also fails the proposed 1e-3 full-mode refinement diagnostic.
+Each project owns `covariance/default.yaml`. Its resolved settings must
+identify the physical model, the base controls and the effective numerical
+grids. A numerical comparison is meaningful only when the physical model
+and estimator remain fixed.
 
-The integration results below retain their original Limber, zero-IA model.
-The 2026-10-05 Gaussian non-Limber/NLA/TATT implementation and its separate
-cutoff/grid checks are recorded in `covariance_nonlimber_ia_plan.md`.
-Do not compare a new Gaussian model to these archives and label the change
-integration error. The stopped level-4 validation remains stopped.
+## Independent controls
 
-## Control contract
+The global `accuracy_boost` refines interpolation intervals, multipole
+cutoffs and shared reader tables. Internal factors multiply this boost;
+old interpolation nodes survive doubling. Notebook refinement cells pass
+saved `accuracy_parameters` back to the resolver rather than silently
+reverting to generic defaults.
 
-Each project owns `covariance/default.yaml`. Its loader resolves and saves
-the base parameters and effective settings. The global `accuracy_boost`
-refines interpolation intervals, multipole cutoffs and shared reader tables.
-Internal factors multiply it; old interpolation nodes survive doubling.
-Notebook refinement cells must pass the saved `accuracy_parameters` back
-to the resolver, rather than silently reverting to generic defaults.
+`integration_accuracy` selects quadrature independently. Native GSL rules
+extend through 8,192 points; the supported levels and allocation contract
+are in [the integration reference](integration_accuracy_4096.md). The
+initializer also passes the level to shared halo/cluster readers, which
+retain their own lower-level ladders. The low-mass Wynn tail has a dedicated
+lower baseline, justified by its smooth integrand and separate checks in
+[covariance_mass_cutoff.md](covariance_mass_cutoff.md).
 
-Quadrature is independent: `integration_accuracy` levels 0/1/2/3/4 select
-the precomputed GSL 96/128/256/512/1024-node rules. The global boost does not
-change these orders. The high-level initializer also passes the level to
-the shared core for the halo/cluster readers. Existing core cluster readers
-retain their own precomputed ladders, including the 64-node mass baseline.
-Covariance C files outside `covariances/` were not changed.
+Low-level bindings expose supported rule sizes for component checks.
+`covariance_integration_rule` exports GSL nodes and weights for the
+Python tree-angle and selected-cluster response calculations, keeping
+both sides on the same quadrature convention. A small isolated integral
+passing at fewer nodes is not sufficient to lower a shared production floor.
 
-The public component bindings retain explicit rule sizes for low-level
-checks, accepting only 64, 96, 128, 256, 512 and 1024. The 64-node floor
-applies even when a smaller rule happens to pass an isolated experiment.
-`covariance_integration_rule` copies GSL's precomputed nodes and weights
-to NumPy. The tree-angle helper and selected-cluster profile response use
-that binding instead of generating SciPy rules. The latter uses two mass
-panels, each with the selected rule, instead of one generated double-size rule.
+## Resolving angular oscillations
 
-The later 2026-10-06 Wynn-tail adoption is the single internal exception:
-the smooth low-mass tail uses 32/64/128/256/512 at levels 0/1/2/3/4.
-The public rule-size contract and every other panel remain unchanged.
-See `covariance_mass_cutoff.md` for the dedicated convergence tests.
+One fixed rule across LSST's widest angular bin aliases the high-ell
+oscillations: the tested 512/1024-node rules fail at ell=100000.
+`realspace_operator_cov` therefore divides each measured bin into panels
+with ell_max × panel_width <= 128. Their boundaries depend on the physical
+bin and cutoff, not integration level. Refinement changes the rule within
+those panels, while normalization uses the full measured annulus area.
 
-## Angular convergence and didactic review
+An integration panel is not a new observable bin. The spin factors,
+recurrence and output ordering remain those of the measured estimator.
+Scratch accommodates the largest panelled node count; each bin evaluates
+only its own nodes, with one worker owning the complete sum. This separates
+sampling requirements from the estimator definition.
 
-One Gaussian rule across LSST's widest bin aliases the high-ell oscillations:
-at ell=100000 the old 512/1024-node rules fail badly. A generated 2048-node
-rule was studied but is not an accepted production solution.
+## LSST diagnostic: integration error versus table error
 
-`realspace_operator_cov` now splits each measured angular bin into panels
-with ell_max*panel_width <=128. Panel boundaries depend on the physical
-bin and cutoff, not integration level. Each panel uses a precomputed rule;
-all contributions divide by the full measured annulus area. No measured
-bin changes. The recurrence, spin factors, SIMD lane order and deterministic
-per-row ownership remain. Scratch uses the largest panelled node count;
-each bin evaluates only its own real nodes.
-
-The didactic review checked the distinction between an integration panel
-and a measured bin, area normalization, the polynomial-resolution rationale,
-flat node indexing and scratch ownership. New C lines remain within 80
-columns. No SIMD operation was added or left without its existing explanation.
-
-## Evidence so far
-
-With the Cocoa environment active, the rebuilt LSST interface passed:
-
-`python -m pytest projects/lsst_y1/tests/covariance -q`
-
-92 tests, 27.48 seconds; log `/tmp/cov-gsl-ladder-lsst-tests.log`.
-The high-ell scalar antiderivative check passes with composite rules of
-64, 96 and 128 nodes per panel. Tests check GSL polynomial integrals,
-rejection of 32/65/384/2048-node rules, the independent integration ladder,
-global/internal table factors and exact interpolation-node retention.
+The following 2026-10-04 measurements use the fixed Limber, zero-IA model.
+They are not current production timing figures. Non-Limber/NLA/TATT
+validation is separate in `covariance_nonlimber_ia_plan.md`; comparing a
+different Gaussian model with these arrays would mix physics and numerics.
 
 Eight-thread full LSST runs use identical archived CAMB inputs and the
 same 128-node non-Gaussian table. Both 1560-square totals are positive
@@ -78,7 +56,7 @@ The generalized variance ratios C_level0/C_level1 span
 [0.9998014740,1.0002049439], a maximum change of 2.04944e-4.
 Level 1 compared with the previous radial128/mass512/tree256 reference has
 maximum full-mode change 1.41127e-7. These are integration diagnostics,
-not validated production timings; interpolation refinement remains open.
+not validated production timings; these values do not resolve interpolation error.
 
 At fixed earlier high quadratures, refining the non-Gaussian table from
 128 to 255 nodes gives total variance ratios [0.9880792314,1.0404942380].
@@ -89,27 +67,28 @@ Evidence is in external `covariance_reference/results/default_lsst_ng_refined`
 and `gsl_lsst_level0`/`gsl_lsst_level1`; these paths are development records,
 not public README instructions.
 
-The linked interfaces were rebuilt sequentially. Frozen data-vector examples
-passed in LSST Y1 (12), Roman real (12), Roman Fourier (12), Roman KL (12),
-DES Y3 (24), DES Y1 x Planck (12) and DES cluster (16), without changing
-frozen references. Each non-LSST galaxy project also passed its covariance
-adapter test. DES cluster passed all 46 covariance tests. The totals are
-143 covariance tests and 100 frozen data-vector tests across seven projects.
-Notebook outputs were cleared because they described the retired pilot;
-the revised cells have not been executed as a full notebook.
-
 Levels 2 and 3 completed at 476.4301 s and 2173.2408 s respectively.
 Both complete totals are positive definite without repair. Maximum full-mode
 changes are 1.39029465e-4 (level 1 against 2) and 8.26002339e-5 (2 against 3).
 For the latter, component changes normalized to the total level-3 covariance
 are 1.56556e-6 (G), 8.22305e-5 (SSC) and 3.91331e-6 (cNG). This diagnoses
 SSC as the dominant remaining integration difference in this comparison.
-Level 4 was interrupted to prioritize the Armadillo wrapper correction;
-its partial directory is not a completed matrix. Resume that run later,
-without repeating completed levels. Maximum tested level is 4; Roman on
-this laptop stops at 3, with Roman level 4 reserved for a server.
 
-Pending: LSST level 4, including default versus level 4 and level 3 versus 4; converged non-Gaussian interpolation and
-cutoff checks; validated project baselines and quiet eight-thread timing
-table. Keep G, SSC, cNG and total comparisons separate. Do not equate a
-positive matrix or the highest tested resolution with convergence.
+The level-4 directory contains an incomplete run and provides no matrix for
+comparison. The valid conclusions are limited to the completed levels;
+this reference does not schedule another calculation.
+
+The integration implementation's recorded regression included 143
+covariance checks and 100 frozen data-vector checks across seven projects,
+without reference changes. Such regression results establish compatibility,
+not convergence of every covariance direction.
+
+## Implications for accuracy assessment
+
+The interpolation example above changes a full-matrix variance direction
+by 4.05% despite a small Frobenius difference and positive totals. Test
+interpolation, cutoff and integration controls separately; retain G, SSC,
+cNG and total so that a dominant error can be located. Positive definiteness
+and a high nominal resolution are necessary diagnostics, not convergence
+certificates. Final scientific assessment follows parameter errors and
+Figure of Merit as described in `covariance_accuracy.md`.

@@ -59,7 +59,7 @@ full 1e-6 accuracy gate, even though it is much better for SSC than for
 noise pair counts. L_max is a mask-resolution input to refine, not a hard-
 coded universal setting; these results apply to this cap and these bins.
 
-## Cost and didactic review
+## Cost and numerical interpretation
 
 Each SIMDe lane sums one whole bin in fixed multipole order; OpenMP assigns
 complete pairs of bins. The function has no allocation, global cache or
@@ -71,13 +71,10 @@ geometry construction, cosmology and all other covariance terms. Desktop
 applications remained active; no test jobs ran concurrently. Native
 disassembly confirms two-lane fused multiply-add in the mask contraction.
 
-After both three-test runs passed, a separate manual red-eye review read
-the complete C/header and reference/test entry points. It checked the
-ordered-pair definition, raw-mask versus SSC normalization, footprint versus
-signal multipoles, the full-sky limit, mask truncation, ownership and SIMD
-lanes. C/header lines fit 80 columns, with one predicate per line. This is
-a self-review; Fable was unavailable. No project interface or existing
-covariance file is changed by this isolated ticket.
+Mask calculations must distinguish ordered pairs, raw-mask and SSC
+normalizations, footprint multipoles and signal multipoles. The full-sky
+limit and mask truncation provide independent checks. Explicit workspace
+and SIMD-lane ownership are required for deterministic parallel results.
 
 External files: `mask_reference.py`, `build_mask.sh`,
 `check_mask_resolution.py`, and `results/mask*_tests.log`,

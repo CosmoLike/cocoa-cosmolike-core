@@ -98,7 +98,7 @@ Next: finish the missing survey stages, time another representative subset,
 then choose a high-resolution reference budget. Refine that reference
 again before using Fisher/FoM comparisons to choose practical settings.
 
-## Evidence and didactic self-review
+## Evidence and interpretation
 
 External raw outputs, with every timed sample and configuration:
 
@@ -108,12 +108,10 @@ External raw outputs, with every timed sample and configuration:
 - `inputs/roman_timing_camb.npz`;
 - `results/roman_subset_checks.log` and `results/adapter_regression.log`.
 
-After implementation and measurement, a separate didactic self-review
-checked both benchmark files and the small adapter change. Definitions
-distinguish multipole nodes from angular/mass quadrature nodes, per-node
-work from bin-pair work, physical inputs from cost-only arrays, and
-measured timings from extrapolations. Warm-up and allocation scopes are
-explicit. This is a self-review, not a Fable review.
+Timing interpretation requires separate definitions of multipole nodes,
+angular/mass quadrature nodes, per-node work and bin-pair work. Distinguish
+physical inputs from cost-only arrays and measured runtimes from
+extrapolations. Warmup and allocation scope must accompany the numbers.
 
 Validation: all four changed external Python files pass `py_compile`;
 Roman halo moments, angular averages, five-term assembly and SSC responses

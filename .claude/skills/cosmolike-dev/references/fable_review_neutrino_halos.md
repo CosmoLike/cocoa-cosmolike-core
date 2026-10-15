@@ -1,9 +1,12 @@
 # Literature review: P_cb vs P_mm in the halo model with massive neutrinos
 
-Scope: verification for the single a=1 sigma^2(M) table (cosmo3D.c:1983, header
+Source snapshot: the 2026-10-02 single a=1 sigma^2(M) table (cosmo3D.c:1983, header
 cosmo3D.c:1740-1975) and its consumers in
 `/Users/vivianmiranda/data/COCOA/september2026/test/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/halo.c`.
-Every claim is tagged VERIFIED (source read today) or NOT VERIFIED (memory/inference).
+Claims are tagged VERIFIED against the cited sources or NOT VERIFIED
+(inference or unconfirmed evidence). The code map below describes that
+snapshot; `sigma_fftlog_implementation.md` and `halo_model_options.md`
+describe the evolving-variance implementation and expanded option menu.
 Notation: "cb" = CDM+baryons; $f_\nu=\Omega_\nu/\Omega_m$; $\nu=\delta_c/\sigma$.
 
 ## 1. Halo mass function: universal in sigma_cb, not sigma_m
@@ -47,11 +50,11 @@ Notation: "cb" = CDM+baryons; $f_\nu=\Omega_\nu/\Omega_m$; $\nu=\delta_c/\sigma$
   below), (ii) Castorina Fig. 2 / Costanzi Fig. 1 showing the $\sigma_m$ curves
   departing from the measured HMF where the $\sigma_{cb}$ curves track it, and
   (iii) the exponential-tail sensitivity (IT12 factor ~2 at 5e15, 0.1 eV), which
-  is the same lever arm as the group's own CAMB check (0.1-0.9% growth error ->
+  is the same lever arm as the independent CAMB check in `growth_factor_measurements.md` (0.1-0.9% growth error ->
   ~20% in Tinker counts at 1e15, z=1). The direction is unambiguous: using
   total-matter sigma *and* total-matter D(a) underpredicts counts and breaks
-  universality. VERIFIED for (i)-(iii) as cited; the 20% number is the group's
-  own test, not from the literature.
+  universality. VERIFIED for (i)-(iii) as cited; the 20% number is a local
+  numerical measurement, not a literature result.
 
 ## 2. Halo bias: scale-independent and universal only relative to cb
 
@@ -95,7 +98,7 @@ where $P_{cb,m}=(1-f_\nu)P_{cb}+f_\nu P_{cb,\nu}$ is the cb x total-matter cross
 spectrum — this is what galaxy-galaxy lensing probes, since lensing weighs total
 matter while the galaxies sit in cb halos ($P_{hm}=b_c P_{cm}$, Castorina 2014
 Sec. 5). VERIFIED as algebra + simulation support above; no single paper states
-the $\gamma_t$ equation in exactly this form in what I read (the pieces are:
+the $\gamma_t$ equation in exactly this form in the reviewed sources (the pieces are:
 $P_{hh}=b^2P_{cc}$ and $P_{hm}=b_cP_{cm}$, both VERIFIED in 1311.1212; HOD
 galaxies on CDM halos in 1311.0866 Sec. 4).
 
@@ -164,8 +167,8 @@ Practice in current analyses/codes:
   own: its formalism is written for total matter ($\sigma$ from the linear
   matter field, $M=\frac{4}{3}\pi R^3\bar\rho$, bias wrt linear matter, Sec. 2),
   and its fitted parameters (Table 2) are functions of z and $T_{AGN}$ only; HMx
-  is a *response* multiplied by HMcode. So the owner's question "which sigma8
-  does the HMx k_s fit use" resolves to: that formula is HMcode-2020's, and it
+  is a *response* multiplied by HMcode. The sigma8-dependent k_s formula
+  therefore belongs to HMcode-2020, and it
   uses $\sigma_{8,cc}(z)$. VERIFIED (2005.00009 Secs. 2 and 5, Table 2;
   2009.01858 Table 2). Side observation from the code: halo.c approximates
   $\sigma_8(z)$ as (table $\sigma_8$) x a; HMcode-2020 wants $\sigma_{8,cc}$

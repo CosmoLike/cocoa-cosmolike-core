@@ -2,8 +2,8 @@
 
 ## Scope
 
-The supplied-abundance component is the first cluster covariance ticket.
-It is not a completed 6x2pt+N generator. It adds:
+The supplied-abundance component supplies count responses and their
+contractions. It is one part of the joint 6x2pt+N generator:
 
 - `counts_cluster_cov.c/h`: count-shell volume conversion, unconditional
   SIMDe, independent (bin,node-pair) OpenMP work with collapse(2).
@@ -143,10 +143,13 @@ lines within 80 columns. Python setup stays explicit, while array
 contractions use the existing C implementation.
 
 No performance measurement was taken during the project regressions.
-This ticket establishes a correct boundary, not an optimized full-cluster
+These checks establish a component boundary, not an optimized full-cluster
 runtime or 8-core speedup. No production accuracy setting is certified.
 
-## Next physical integration
+## Conditions for full joint assembly
+
+The joint model is documented in `covariance_cluster_joint.md`. The
+following conditions distinguish it from a counts-only component:
 
 1. Supply n_i and B_i from the chosen richness-selection/HMF model on
    common covariance nodes. Do not equate a fitted selection-modified

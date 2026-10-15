@@ -159,15 +159,15 @@ This establishes a possible numerical failure mechanism. It does **not**
 prove which algorithm/version/configuration generated the delivered Roman
 matrix, or exclude quadrature and physical-model errors. Its file records
 G and SSC+cNG together, and the original cosmology, survey inputs and
-generation settings have not been located. The challenge repository supplied
-by the owner gives a closely related configuration, discussed below.
+generation settings have not been located. The challenge repository
+provides a closely related configuration, discussed below.
 A faithful regeneration is needed to assign
 the historical root cause, refining interpolation and integration
 separately and retaining SSC and cNG as separate outputs.
 
-## The owner's Roman data-challenge lead
+## Roman data-challenge comparison
 
-The owner supplied the
+The
 [Fourier medium-tier challenge](https://github.com/CosmoLike/roman_cpip_data_challenge/tree/d1c1a2cffee1ad9167aae8e4d80666cb295cf963/data_challenge1_fourier_medium).
 The same repository has a
 [real-space medium-tier README](https://github.com/CosmoLike/roman_cpip_data_challenge/blob/d1c1a2cffee1ad9167aae8e4d80666cb295cf963/data_challenge1_real_medium/README.md)
@@ -251,13 +251,14 @@ stored-zero checks. Challenge evidence is in
 downloaded, pinned files in `roman_challenge_source/`. The diagnostic scripts and source review
 were read again for units, matrix scaling, interpretation of signed
 contributions, and the distinction between localization and root cause.
-No production computation changed in this ticket.
+This diagnosis concerns the supplied matrix and does not identify its
+generation algorithm uniquely.
 
 ## Future-generator regression: physical Roman SSC recomputation
 
-The owner clarified that the priority is a reliable new Roman covariance,
-not recovering the provenance of the old file. The old negative mode is
-now a demanding test direction, not a prerequisite for proceeding.
+The negative mode supplies a demanding regression direction for a new
+Roman covariance. Its use does not require attributing the historical
+failure to one algorithm without the original generation settings.
 
 The external `recompute_roman_ssc_mode.py` computes actual halo-response
 SSC for the Roman redshift distributions and 15 real-space angular bins.

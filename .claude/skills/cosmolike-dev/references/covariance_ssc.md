@@ -100,12 +100,9 @@ heuristic was added from this one case. The external benchmark is
 `benchmark_covariance_components.py`, with raw measurements in
 `results/component_timings.json`.
 
-A separate manual didactic red-eye pass followed both six-test runs,
-before beginning the next component. It checked the entire C/header:
-mask versus matter multipoles, the radial delta and its units, the origin
-of the subtraction sign, full-spectrum versus shell quantities, ownership,
-SIMD-lane meaning, and odd tails are explained at their point of use.
-All C/header lines fit 80 columns; conditions have one comparison per
-line. Unsupported mask normalization stops explicitly. This was a
-self-review, not a Fable review. The code makes no claim to a calibrated
-halo response, full SSC survey prediction, or frozen precision settings.
+SSC validation must distinguish mask and matter multipoles, the units of
+the radial delta, and full-spectrum versus shell responses. Derive the
+survey-mean subtraction sign and specify buffer ownership, SIMD lanes and
+odd tails. Unsupported mask normalization fails explicitly. These
+component checks do not calibrate a physical halo response or select
+survey precision settings.

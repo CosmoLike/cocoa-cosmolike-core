@@ -1,8 +1,8 @@
 # Covariance optimization review, 2026-10-03
 
-This review follows the module-wide didactic pass. It profiles small
-Roman components and tests proposed changes externally; no new production
-accuracy setting, interpolation API or compiler mode is introduced.
+Component profiling separates interpolation accuracy, arithmetic cost
+and thread scaling. The experiments do not independently select a
+production survey accuracy setting.
 Experiments use the compiled Roman Real interface, strict Clang builds,
 explicit OpenMP and single-threaded OpenBLAS on Apple M2 Pro.
 Production chains target x86 supercomputers. These laptop measurements
@@ -10,10 +10,6 @@ cannot decide x86 SIMD gains: AVX2/AVX-512 widths and gather/FMA mappings,
 register pressure, cache and memory bandwidth differ from Apple NEON.
 Keep unconditional SIMDe. Re-measure architecture-sensitive choices on
 the actual x86 CPU and strict production compiler before selecting them.
-
-The owner subsequently confirmed that the laptop was quiet enough.
-The completed measurements and the selected halo-loop adjustment appear
-in the final section below; they supersede the earlier timing deferrals.
 
 ## Patterns taken from the existing engines
 
@@ -62,19 +58,10 @@ the existing angular kernel with compiler unroll factors 2 and 4.
 SIMDe arithmetic is already present; disassembly contains native vector
 FMA, multiplication, addition and division instructions.
 
-At the owner's earlier request, this pass prioritized interpolation accuracy
-and the negative-mode investigation. The queued timing job was stopped
-before it launched. A lookup-validation preflight invoked timing helpers
-while project tests were running; those elapsed times were discarded.
-No performance result was retained from that attempt. Run the prepared profile
-only on a quiet machine, one benchmark at a time, after all competing
-computational jobs have exited. Do not use noisy Mac results to reject
-the default SIMDe design for production x86.
-After all 435 project tests passed and their processes exited, two CPU
-activity snapshots five seconds apart still showed substantial WebKit and
-desktop activity. No benchmark was launched. The snapshots are retained
-locally in `results/quiet_machine_check.json`; production timing remains
-deferred until the host is quiet.
+Timing samples taken alongside tests or substantial desktop activity are
+excluded from performance evidence. The retained controlled measurements
+below ran one job at a time. Noisy laptop measurements cannot determine
+the production x86 SIMD design.
 
 ## Cubic construction in physical wavenumber
 
@@ -126,7 +113,7 @@ Repeating at m_nu=0.30 eV gives a worst peak error of 3.68e-6; at
 w0=-0.8, wa=0.2 it gives 2.52e-6. No significant entries change sign.
 Relative errors in small entries are larger; these are not FoM bounds.
 
-The separate `check_dense_linear_lookup.py` tests the owner's complete
+The separate `check_dense_linear_lookup.py` tests the complete
 construction/lookup sequence. It compares 48 off-grid Gauss-Legendre
 query points with direct integrals, using the same 21 exact build rows:
 
@@ -172,7 +159,7 @@ specific coarse fixed-ell tables, not the coarse-cubic/dense-linear design.
 The fixed-physical-k result must not be advertised as a measured speedup
 or accuracy certificate for a complete Limber projection.
 
-## Decisions and next integration check
+## Design constraints and validation
 
 - Keep strict arithmetic, explicit independent-output OpenMP and SIMDe.
 - Do not reject an x86 SIMD optimization solely because the M2 shows a
@@ -189,9 +176,9 @@ or accuracy certificate for a complete Limber projection.
   Fisher FoM/errors before selecting production coarse/dense counts.
 
 No claimed timing gain here is an end-to-end Roman covariance speedup.
-The pilot still excludes unfinished all-pairs non-Limber survey stages.
+The pilot excludes all-pairs non-Limber survey stages.
 
-## Evidence and didactic self-review
+## Evidence and review criteria
 
 External experiments under `test/covariance_reference/` are
 `review_optimization.py`, `check_dense_linear_lookup.py`,
@@ -212,11 +199,10 @@ The review checked coordinate definitions, array orientation, padding,
 signed quantities, initialization/warm-up scope and the distinction
 between construction and hot lookup. It also separates interpolation
 errors from quadrature refinement and from projected covariance accuracy.
-This is a didactic self-review; Fable 5 was unavailable.
 
-## Follow-up: eight-core scaling and the process boundary
+## Eight-core scaling and the process boundary
 
-The owner requires useful scaling to 8--10 OpenMP workers per process,
+The target is useful scaling to 8--10 OpenMP workers per process,
 with 1/2/4/8-thread measurements on this laptop. C must not call MPI.
 A later Python driver, through the C++ interface, may divide larger
 matrix subblocks among MPI processes. A 40-core node can then run five
@@ -262,44 +248,27 @@ Every result is bitwise equal across the three layouts and 1/2/4/8
 threads. The dedicated small-batch project test also compares the
 one-a/two-k result with its entries in a larger table.
 
-The first timing attempt encountered desktop activity and was archived
-as `halo_thread_scaling_contended.json`. It is explicitly excluded from
-performance evidence. A five-second CPU-time measurement subsequently
-found 1.27 cores of desktop/background work, so clean timings were deferred
-and correctness work continued. No speedup should be inferred from those
-discarded samples. The eight performance cores are the primary scaling
-target; the laptop also has four efficiency cores.
+The archived `halo_thread_scaling_contended.json` is excluded from
+performance evidence. The controlled measurements below target the eight
+performance cores; the laptop also has four efficiency cores.
 
-A future SSC builder has another clear reuse opportunity: the external
+SSC table construction has a further reuse opportunity: the external
 response adapter requests a separate small shifted-k halo batch per
 wavenumber. It consequently repeats mass-weight preparation at the same
 scale factor. Design the production response-table build around shared
 mass weights and profiles, and measure a diagonal-moment path before
 adding it; computing an entire quadratic pair table solely for its
-diagonal would waste work. This is an identified next experiment, not an
-implemented API or claimed speedup.
+diagonal would waste work. This observation alone does not establish a
+speedup or justify an additional API.
 
-The separate didactic review checked that the new loop overviews explain
-why mass weights and profiles are independent, why the completion sum
-stays ordered, and how small batches use all workers. New C lines stay
-within 80 columns. Existing SIMD calls and their lane explanations are
-unchanged. Debug tests cover all halo and SSC checks, including physical
-mass refinement, thread repeatability and complete rectangular subblock
-assembly. This remains a self-review; no unavailable model review is
-claimed.
+Loop explanations must state why mass weights and profiles are
+independent and why the completion sum remains ordered. Debug checks
+cover mass refinement, repeatability and rectangular subblock assembly;
+the parallel layout must preserve the existing SIMD sums.
 
-The two loop changes were saved separately in commit `33a5fc5` after the
-bitwise checks and the default/debug covariance tests. This commits the
-parallel work distribution, not a measured speedup. After all project
-regressions finished, a fresh five-second CPU-time sample still measured
-1.18 cores of desktop activity, principally WindowServer and the Codex
-renderer/service. No new timing run was started. The external record is
-`results/quiet_check_final.json`; the later measurements follow below.
+## Controlled scaling measurements
 
-## Completed quiet-machine measurements
-
-The owner confirmed that the machine was available for timing. Each job
-ran alone: no concurrent build, test suite, CAMB calculation or second
+Each timed job ran alone: no concurrent build, test suite, CAMB calculation or second
 benchmark. Ordinary desktop services remained active. Hardware was Apple
 M2 Pro (eight performance and four efficiency cores), macOS 13.7.5,
 Clang 19.1.7, arm64. OpenMP used 1/2/4/8 threads with
@@ -462,12 +431,8 @@ The local raw records are `results/halo_thread_scaling_chunked.json`
 `review_optimization.py timing`, under the external covariance reference.
 All samples are retained, including the slower repetitions.
 
-The didactic self-review checked the new profile-loop overview, its
-two-rows/eight-workers example, chunk endpoint explanation and low-mass
-completion slot. Every C line is within 80 columns; the SIMD moment sums
-and their explanations remain unchanged. This is a self-review, not an
-unavailable Fable review. Production changes are confined to `halo_cov.c`.
-Only LSST currently compiles that routine into its public interface.
+The selected layout changes are confined to `halo_cov.c`; they preserve
+the SIMD moment sums and low-mass completion order.
 
 After installing the measured code, the standard LSST interface rebuild
 and 61 project checks passed: all 53 covariance tests plus eight frozen
@@ -482,13 +447,13 @@ full suites were not repeated for this covariance-only layout change.
 
 These measurements identify component costs and support one small halo
 layout change. Full Roman G+SSC+cNG generation, full/selected-matrix
-positivity and Fisher/FoM convergence remain separate unfinished work.
+positivity and Fisher/FoM convergence require separate evidence.
 
-## Full survey assembly follow-through
+## Full survey assembly measurements
 
 The measured row-batched power reader is integrated in spectra_cov.c and
-used by the Python halo helper and full survey assembler. Roman now builds
-the same covariance bindings as LSST. Complete supported-model matrices
+used by the Python halo helper and full survey assembler. Roman and LSST build
+the same covariance bindings. Complete supported-model matrices
 have been computed, with separate G, SSC and cNG outputs. The full cold
 runtime and positivity checks are recorded in
 [covariance_full_survey_timing.md](covariance_full_survey_timing.md).
@@ -497,8 +462,8 @@ experiment; the full runs evaluate every radial shell directly.
 
 ## Rejected: four-wavenumber SIMD linear power reader (2026-10-05)
 
-**Status: did not improve runtime on either tested machine. Do not
-promote this experiment to production or repeat it without new evidence.**
+**The candidate did not improve runtime on either tested machine.**
+Production adoption requires new performance evidence.
 The implementation is retained on branch `simde`, commit `0c6b2ce`,
 based on core v5.07. Production retains the existing scalar `p_lin_at_a`
 inside the OpenMP row loop.

@@ -39,9 +39,8 @@ The references are external `non_gaussian_reference.py` and
 LSST tests use `COSMOLIKE_NON_GAUSSIAN_LIBRARY` plus the external-reference
 path. Logs are `results/non_gaussian{,_debug}_tests.log`.
 
-After both five-test runs, a separate manual didactic red-eye pass read
-the full C/header and tests. It checked the two response slopes, units,
-fractional versus dimensional response, halo-partition counting, array
-roles, SIMD-lane ownership and odd tails. C/header lines fit 80 columns;
-guards have one comparison per line. This was a self-review, not Fable.
-The numerical survey projection, physics-delta and PSD gates remain open.
+Interpret response slopes in their stated units: fractional and
+dimensional responses are different objects. Halo-partition multiplicities,
+array roles, SIMD lanes and odd tails require explicit checks. Passing
+component tests alone does not validate a full projected covariance or
+its parameter-information accuracy.

@@ -73,7 +73,7 @@ positivity of a future full G+SSC+cNG+counts matrix or survey convergence.
 External developer evidence: `test/covariance_reference/`
 `cluster_angular_consistency.py` and its JSON report in `results/`.
 Debug evidence is `/tmp/check_cluster_spectra_debug.py` and
-`/tmp/cluster-spectra-debug-test.log` in this session. The analytic tests
+`/tmp/cluster-spectra-debug-test.log` in the external validation record. The analytic tests
 are tracked in `des_cluster/tests/covariance/test_spectra_cluster.py`.
 
 ## Complete two-point Gaussian pilot
@@ -105,14 +105,12 @@ quadratic-form argument, and retained the limits of this Gaussian pilot.
 
 ## Didactic review
 
-The manual review followed the tests before starting another major ticket.
-It checked the normalized versus biased cluster window, different cg/cs
-mean models, core versus observed shear conventions, units, complete pair
-coverage, output ownership and unsupported physics boundaries. Every
-SIMDe call states lane meanings and its mathematical role. Loop overviews
-explain the physical calculation and why work is independent. C/header
-and modified C++ lines fit 80 columns, with one comparison per line and
-separate paragraphs. No claim of a separate-agent review is made.
+All-pairs cluster spectra distinguish normalized and biased windows,
+cluster–galaxy and cluster–shear mean models, and core versus observed
+shear conventions. Complete pair coverage is required even for unmeasured
+cross spectra. Units, output ownership and unsupported model boundaries
+are part of the API. Explain each SIMD lane and why worker outputs are
+independent before optimizing the loops.
 
 ## Shared notebook preparation (2026-10-04)
 

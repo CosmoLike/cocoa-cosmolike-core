@@ -70,8 +70,8 @@ External reproduction files are `operators_reference.py`, `build_operators.sh`
 and `benchmark_operators.py` in `test/covariance_reference/`. LSST's opt-in
 `test_covariance_operators.py` needs `COSMOLIKE_COVARIANCE_REFERENCE` and
 `COSMOLIKE_OPERATORS_LIBRARY`. Logs are `results/operators*_tests.log`.
-The operator library is isolated; no project interface is relinked by this
-ticket. The seven-project regression run preceding it remains unchanged.
+These commands describe the isolated operator-library measurement; they
+do not substitute for project-interface regression coverage.
 
 ## Geometry-build timing
 
@@ -93,16 +93,13 @@ Raw results are `results/operators_baseline_timing.json`. Native disassembly
 in `results/operators_simd.disassembly.txt` confirms two-lane multiply and
 fused arithmetic in the recurrence. These are not full covariance timings.
 
-## Separate didactic red-eye pass
+## Interpretation and implementation requirements
 
-After optimized/debug tests passed, reread the complete C/header and the
-reference/test entry points as one ticket. The function documentation now
-distinguishes observed shear from the core transform convention, derives the
-area measure and integer mode weights, explains the Jacobi recurrence and
-its two rolling rows, and identifies every SIMD lane and worker-owned row.
-Small-angle tests retain a zero absolute tolerance wherever a nonzero signal
-must survive. Every C/header line fits 80 columns and each predicate occupies
-its own line. This is a manual self-review; Fable was unavailable.
+The operator contract distinguishes observed shear from the core
+transform convention. Derive the area measure, integer mode weights and
+Jacobi recurrence, including the meaning of its rolling rows. Every SIMD
+lane and worker owns a defined output. Small-angle tests retain zero
+absolute tolerance where a nonzero signal must survive.
 
 The full rewrite remains open. These tested operators do not replace the
 remaining non-Limber, mask, survey-accuracy, layout and output gates.

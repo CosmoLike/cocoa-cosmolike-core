@@ -75,7 +75,7 @@ GCC will not auto-emit gather instructions. Interpolation-table fill loops
 scattered indices keep hand-written SIMDe gather + FMA bodies, with a comment
 explaining the auto-vectorization blocker, a scalar tail that calls the same
 `int_for_*_core` scalar function for individual nodes and vector tails.
-The owner retired selectable scalar branches: SIMDe is always compiled,
+SIMDe is always compiled; there are no selectable whole-library scalar branches,
 including in debug builds. Use external scalar references for comparisons.
 
 For contiguous access, start from local pointers and verify what the

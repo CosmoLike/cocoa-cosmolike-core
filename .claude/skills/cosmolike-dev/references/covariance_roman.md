@@ -1,13 +1,12 @@
-# Roman covariance: requested survey reference
+# Roman covariance: survey conventions and reference model
 
-Owner request, 2026-10-03: use
 [Eifler et al., arXiv:2004.05271](https://arxiv.org/html/2004.05271v1)
-as background for a covariance of the existing **roman_real** project,
-not a reproduction of the paper's ten-bin analysis (owner clarification).
-Section 2.1, Table 2 and Section 3 specify the
-imaging 3x2pt case. Section 2.2 points to Krause & Eifler (2017), Appendix
-A, for covariance equations. The paper's broader cluster, spectroscopic
-and supernova forecast is not part of this first 3x2pt generator.
+provides physical background for the existing **roman_real** project.
+Its ten-bin survey differs from the installed eight-bin inputs. Section
+2.1, Table 2 and Section 3 specify the imaging 3x2pt case; Section 2.2
+points to Krause & Eifler (2017), Appendix A, for covariance equations.
+The paper's cluster, spectroscopic and supernova forecasts are outside
+this galaxy/shear example.
 
 | Input | Paper value |
 |---|---|
@@ -46,8 +45,8 @@ Section 10 item 6, records working defaults of 2415 deg^2, total lens and
 source densities each 41.3 arcmin^-2 (5.1625 per bin), and shape dispersion
 0.30 per component. It distinguishes these from the older paper's survey
 and from the incompletely established provenance of the shipped files.
-Preserve these explicit working defaults unless the owner changes them;
-the paper is background, not authorization to replace them. Do not
+Keep these example inputs distinct from the paper's survey; citing the
+paper does not make its parameters interchangeable with the installed data. Do not
 reconvolve the existing n(z) or import the paper's Fourier scale cuts.
 
 Local candidate parent histograms exist in
@@ -73,8 +72,8 @@ This record specifies the new target; it is not a generated covariance.
 
 ## Runtime before expensive convergence runs
 
-The owner requested a subset estimate instead of a potentially hours-long
-full run. The [small-component timing record](covariance_roman_timing.md)
+A bounded subset estimate separates setup costs from projection scaling
+before an expensive full refinement. The [small-component timing record](covariance_roman_timing.md)
 separates shared three-dimensional tables from tomographic projection.
 After that estimate, use a deliberately refined configuration as a
 candidate numerical reference, verify another refinement, and assess the

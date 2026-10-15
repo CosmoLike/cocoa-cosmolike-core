@@ -1,145 +1,89 @@
 # Portable covariance notebook workflow
 
-The owner requested public Python examples in LSST Y1, reusable algorithms
-in `cosmolike_notebook_utils`, an `EXAMPLE_EVALUATE_COVARIANCE.ipynb` entry
-point, and covariance plotters informed by Krause papers. Bash harnesses and
-machine-local libraries are not part of the public workflow.
+Shared algorithms live in `cosmolike_notebook_utils`; each project's
+`EXAMPLE_EVALUATE_COVARIANCE.ipynb` imports a thin survey adapter. Public
+examples depend on the installed project interface rather than external
+shell harnesses or machine-local shared libraries. The production CLI and
+notebook boundaries are described in `covariance_interface_rollout.md`.
 
-## Boundaries
+## Responsibilities
 
-- `python_components_cov.cpp` binds the existing eight covariance C
-  components to owned NumPy arrays. Shapes, dimensions and physical
-  domains are checked before entering C. Project-local compilation links
-  the shared sources. Only LSST currently enables all these bindings.
+- Covariance bindings validate shapes and physical domains before C calls
+  and return arrays with a defined lifetime. Every supported project
+  binds the shared components; algorithms do not live in project copies.
 - `covariance/geometry.py`, `gaussian.py`, `halo.py`, `sampling.py` and
-  `diagnostics.py` receive an explicit interface or numeric arrays.
-  Setup is cold; numerical array contractions, dense queries and C calls
-  are hot. No project interface is imported by the package.
-- `plot_covariances.py` uses only NumPy/Matplotlib. It follows the existing
-  show=1 / show=None convention and does not set global plotting styles.
-- `reference/` contains separately implemented numerical oracles.
-  Production code must never use them to compute an expected result.
-- LSST's `covariance/lsst_y1_covariance.py` owns survey choices and the
-  initializer. The notebook imports its thin wrapper. Initialization does
-  not load the project's likelihood covariance or modify data-vector grids.
+  `diagnostics.py` receive explicit interfaces or arrays. The package
+  never imports a particular project's compiled interface.
+- `plot_covariances.py` uses NumPy and Matplotlib, follows the existing
+  show=1 / show=None convention and leaves global styling to the notebook.
+- Independent `reference/` implementations provide numerical oracles.
+  Production routines never compute their own expected test result.
+- Survey adapters own bin layouts, physical inputs and initialization.
+  Forecast initialization does not load the likelihood covariance or
+  modify the ordinary data-vector grids.
 
-## Example physics
+## Example interpretation
 
-Five lens/source bins use the shipped normalized n(z) files. The explicit
-forecast assumes total lens/source densities 18/10 arcmin^-2 equally split
-between five bins, 12300 deg^2, sigma_e=0.26 per component, mnu=0, no IA,
-photo-z shifts or magnification. These are not the frozen likelihood's
-parameters. The SRD guides the totals, not the per-bin allocation.
+The original LSST one-source pilot used five lens/source distributions,
+12300 deg2, total lens/source densities 18/10 arcmin^-2 split equally,
+sigma_e=0.26 per component, massless neutrinos and zero IA, photo-z shifts
+and magnification. These are explicit forecast choices, not a claim to
+reproduce the frozen likelihood model. The SRD guides the total densities,
+not the assumed equal per-bin allocation.
 
-The first example computes one source's 52x52 xi+/xi- Gaussian covariance,
-with all crossed angular spectra available, Limber spectra, full-sky bin
-operators and cap-mask pair noise. It does not claim SSC/cNG or non-Limber
-survey completeness. Both test resolutions use the same physical model.
+Its 52×52 xi+/xi- Gaussian matrix used all crossed angular spectra,
+Limber projection, full-sky bin operators and cap-mask pair noise. The
+saved comparison with boosts 1/2/4 at fixed CAMB inputs gave maximum
+variance-ratio departures from boost 4 of 1.043470e-4 and 1.102522e-5.
+Maximum error-bar changes were 2.410347e-5 and 2.644153e-6. All three
+totals were positive definite. This is one-source Gaussian validation,
+not full-survey, SSC/cNG or Fisher convergence.
 
-The initial headless notebook execution produced minimum correlation
-lambda=0.3376751679 and max generalized variance-ratio departure 1.02148e-4
-when doubling ell, radial, angular and mask resolution. This is a pilot
-numerical check, not a certified FoM setting or a speed benchmark.
+Global boost and quadrature refinement are separate controls. See
+`covariance_defaults.md` for their current definitions. An old notebook's
+saved settings identify that measurement; current defaults must never be
+substituted into its provenance.
 
-## Figures and didactic review
+## Figures and explanations
 
-Inspected five rendered outputs: split correlation triangles, two component
-maps plus histogram, xi+/xi- standard deviations, percent error changes, and covariance-difference maps.
-Labels, colorbars, signs and zero-reference handling were checked.
-The component-plot design follows Barreira, Krause & Schmidt (2018)
-arXiv:1807.04266 Fig. 1; split correlation triangles follow Friedrich et al.
-(2021), arXiv:2012.08568 Fig. 6. The notebook shows its own computed Gaussian
-pieces, not invented SSC/cNG or the papers' data. Element denominators near
-zero are explicitly masked; diagonal normalization is also available.
+Useful diagnostics include split correlation triangles, component maps,
+standard deviations, percent error changes and covariance differences.
+The component-map convention follows Barreira, Krause & Schmidt (2018),
+arXiv:1807.04266 Fig. 1; split triangles follow Friedrich et al. (2021),
+arXiv:2012.08568 Fig. 6. Plot actual computed components and state each
+denominator. Mask near-zero element denominators; offer variance-scale
+normalization when relative component errors are misleading.
 
-The self-review checked source/field ordering, shape-noise convention,
-analytic white-noise replacement, cubic construction vs linear queries,
-input ownership, signed response handling and cross-block completeness.
-C++ lines stay <=80 columns. No separate Fable review was available.
+Use shared frameless legends and shared labels where meanings match.
+Keep formulas and interpretation in the guide rather than figure footers.
+Inspect labels, colorbars, signs, matrix boundaries and zero-reference
+handling on saved images. Numerical artist checks complement visual
+inspection; neither replaces the other.
 
-## Tests and execution
+## Reproduction and regression coverage
 
-The old eight component suites no longer require external environment
-paths. They call the normal LSST extension; raw C ABI calls are retained
-only for output-canary tests and independent physical sampling. Temporary
-artificial survey/CAMB files are deleted after tests. All 53 covariance
-tests pass, including seven notebook API/plot tests and the new public halo
-batch/response check. The notebook was executed headlessly with nbconvert;
-its outputs are from committed cells, with no hand-entered scientific data.
+From an activated Cocoa installation, run the covariance tests with
+`python -m pytest -q projects/lsst_y1/tests/covariance`. Execute the actual
+notebook cells through nbconvert and retain outputs from that execution.
+A kernel that cannot bind a local socket has not executed a numerical
+check; fix the launch environment without altering scientific settings.
 
-The first combined sector run found a CAMB import-path conflict: covariance
-setup chose site-packages, then Cobaya required external_modules/code/CAMB.
-The covariance conftest now chooses the same CAMB source before import.
-This is path selection, not replacement of an imported module. The combined
-rerun passed all 109 collected tests. One additional notebook-helper check
-was added after that run started; the final covariance-only run includes it
-and passes all 53 checks.
+Tests use the normal project extension. Direct C ABI calls are reserved
+for buffer-canary tests or independent sampling. Temporary artificial
+inputs remain separate from supplied data and frozen references. The
+covariance and likelihood paths must select the same CAMB installation
+before import; a site-packages/external-modules mismatch caused the
+recorded collection failure without a numerical-code defect.
 
-Data-vector modules are in tests/data_vector; covariance modules in
-tests/covariance. Frozen files, hashes and reference generator stay at
-parent tests and are unchanged. The ordinary documented command selects
-only data_vector. A covariance-only command locates the built interface
-through its own conftest. The plot tests draw a noninteractive canvas and
-inspect numerical artist data; manual image inspection complements them.
+The pilot validation passed 53 covariance tests and a combined 109-test
+LSST run. The six other projects passed 104/45/49/63/45/29 checks for
+Roman real/Fourier/KL, DES Y3, DES×Planck and DES cluster respectively.
+The original failing import log and successful unchanged rerun remain in
+`results/covariance_scaling/project_tests_final.json` under the external
+reference directory. Counts identify that validation configuration, not
+the current test collection. No frozen output changed.
 
-No runtime speedup is claimed for the new Python workflows. Quiet-machine
-halo loop comparisons belong to covariance_optimization_review.md, and
-must not overlap notebook execution or test runs.
-
-## One accuracy boost
-
-Supported boosts 1,2,4,8 resolve projection and halo preparation controls.
-Every doubling raises signal/mask cutoffs, radial and angular quadrature,
-lensing-window intervals, halo mass and angular counts. Tree angular panels
-increase by one; the centered response step halves. The interpolation and
-physical model still constrain attainable accuracy; no automatic production
-FoM certificate is claimed. Invalid boosts fail before initialization.
-
-The final executed notebook compares boosts 1,2,4 at fixed CAMB inputs and
-physical settings. The generalized variance changes relative to boost 4 were
-1.043470e-4 (boost 1) and 1.102522e-5 (boost 2). Maximum error-bar changes were
-2.410347e-5 and 2.644153e-6. All three matrices were positive definite. The
-reference's self-comparison differs from unity only at roundoff. These are
-Gaussian one-source example results, not full-survey accuracy statements.
-
-Final plots use Cocoa's STIX/retina notebook settings, distinct line styles,
-legends above panels and percent changes. All five final PNG outputs were
-visually inspected. LSST's covariance README has a numbered contents list,
-explicit anchors and self-contained Step flows; MarkdownIt rendered its
-three tables and four callouts and found no broken local links or anchors.
-
-Validation commands from configured Cocoa:
-
-- `python -m pytest -q projects/lsst_y1/tests/covariance`: exit 0, 53 passed.
-- `python -m jupyter nbconvert --to notebook --execute --inplace
-  --ExecutePreprocessor.timeout=600
-  projects/lsst_y1/EXAMPLE_EVALUATE_COVARIANCE.ipynb`: exit 0; 13 cells,
-  five figures, outputs committed from execution. Jupyter needed local
-  socket permission in the agent sandbox; this is not a project limitation.
-- Default LSST compilation including all eight C components and both
-  covariance C++ sources: exit 0.
-- `git diff --check`: passed before commits.
-
-All seven project regression runs completed successfully without refreezing:
-
-| Project | Passed checks |
-|---|---:|
-| roman_real | 104 |
-| roman_fourier | 45 |
-| roman_kl | 49 |
-| des_y3 | 63 |
-| desy1xplanck | 45 |
-| des_cluster | 29 |
-| lsst_y1, combined covariance/data-vector rerun | 109 |
-
-The final covariance-only run separately passes 53 checks. The combined
-LSST run reports 15 warnings from the existing emulator dependencies;
-none is a test failure. The original multi-project coordinator retains
-its nonzero exit for the first LSST import-path failure. Keep that log:
-the explicit combined rerun, not a suppressed failure, establishes the
-fixed result. External `results/covariance_scaling/project_tests_final.json`
-records both attempts. Concurrent regression elapsed times are not timing
-evidence. The main repository and all seven project working trees are clean.
-
-The seven final README render/link checks passed, including the subsequently
-edited test instructions. No frozen data or reference manifest changed.
+Notebook execution times and concurrent test runtimes do not measure a
+speedup. Controlled component benchmarks belong to
+`covariance_optimization_review.md`; they run without competing builds,
+notebooks or numerical tests.

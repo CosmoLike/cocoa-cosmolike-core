@@ -1,24 +1,22 @@
 # Covariance convergence: parameter constraints and valid matrices
 
-Owner clarifications, 2026-10-03: Figure of Merit (FoM) convergence is the
-scientific objective; a usable total covariance cannot have negative
-eigenvalues. The owner suggests trying 1e-3 convergence of important modes.
-The mode definition and final acceptance protocol remain to be measured
-on roman_real. No production covariance has passed this new protocol yet.
+Figure of Merit (FoM) and marginalized parameter-error convergence are
+the scientific objectives. A usable total covariance must also be positive
+definite after the likelihood selection. Relative stability at 1e-3 is a
+proposed scale for important modes and parameter constraints, not a
+universal acceptance threshold established by the literature. The
+measurements below do not establish full Roman FoM convergence.
 
-## Why the earlier criteria were inappropriate
+## Distinguish numerical diagnostics from inference criteria
 
-The 1e-6 elementwise target originated in the external study's
-`12_fable_phase0_review.md`, C2 item 2(a), then entered `PLAN.md`'s
-reference exit criteria. It was a reference-quality proposal, not a
-requirement derived from Roman parameter constraints. Carrying it into
-production as a universal blocker was inappropriate. Relative errors of
-near-zero SSC cross terms are particularly poor science criteria.
+A universal 1e-6 elementwise target has no demonstrated connection to
+Roman parameter constraints. Relative errors of nearly zero SSC cross
+terms are particularly poor measures of scientific impact.
 
-The subsequent suggestion to adopt |delta chi2| < 0.2 as the main
-covariance criterion was also withdrawn. That is the owner's data-vector
-criterion. It is not a covariance-convergence standard. Retain quadratic
-form comparisons as diagnostics, without making that number the gate.
+The data-vector criterion Delta chi2 < 0.2 compares predictions using a
+fixed covariance; it is not a covariance-convergence standard. Quadratic
+form comparisons remain useful diagnostics, but acceptance of a covariance
+requires its effect on parameter uncertainties and matrix validity.
 
 ## What Krause and collaborators actually tested
 
@@ -43,7 +41,7 @@ form comparisons as diagnostics, without making that number the gate.
   quadrature LSST covariance with a negative eigenvalue from inference.
 
 These papers do not establish a universal 1e-6 entrywise or 1e-3 eigenvalue
-criterion. The latter is our proposed numerical target for fixed physics.
+criterion. The latter is a proposed numerical target for fixed physics.
 
 ## Proposed Roman numerical protocol
 
@@ -130,7 +128,7 @@ the cell spacing and the upper endpoint at each boost. Only the first old
 node survived a doubling. Even with a fixed endpoint, doubling n points
 gives 2*n-1 intervals instead of the intended 2*(n-1).
 
-`covariance_accuracy` now starts with 15 intervals across ell=2..10000.
+`covariance_accuracy` starts with 15 intervals across ell=2..10000.
 Each doubling halves that same logarithmic step. Increasing the signal
 cutoff appends cells, rather than stretching existing ones. Resolved
 settings hold the explicit ng_ell array instead of ng_ell_nodes; the full
@@ -151,7 +149,7 @@ cutoffs retains the old modes. Mass, radial and angular Gauss--Legendre
 rules change their nodes and weights together; those are quadrature rules,
 not interpolation grids, and were not replaced merely to force nesting.
 DenseLogTable has caller-owned sampling choices rather than boost defaults;
-its documentation now explains refinement of both interval counts.
+its documentation explains refinement of both interval counts.
 
 CAMB tables remain fixed under the covariance boost. The notebook CAMB
 helper's redshift copy grid is nested, but its log-k copy grid still uses
@@ -249,9 +247,10 @@ power-copy choice. Direct responses between those choices change by up to
 This isolates a practical floor associated with the slope changes of the
 copied power interpolant, which feed the SSC dilation derivative. It does
 not prove that this cubic reconstruction is the exact CAMB derivative.
-The production CAMB/power-copy policy was deliberately not changed by this
-covariance-grid fix. Validate dense nested copying against CAMB's own
-interpolator and physical covariance/Fisher results before adopting it.
+These measurements isolate the interpolation mechanism. The global
+power-preparation policy and its independent validation are described in
+`covariance_four_halo_power.md`; this experiment alone is not a
+physical covariance or Fisher validation.
 
 Evidence: check_response_input_floor.py and results/response_input_floor.*.
 The measured maximum/RMS curves were rendered and visually inspected in
@@ -269,19 +268,13 @@ cover exact inherited coordinates, cutoff bracketing without stretching,
 owned trimmed arrays, invalid grids and saved-grid roundtrips. The existing
 tests retain all component/reference and one/eight-thread comparisons.
 
-The manual didactic pass checked intervals versus points, fixed coordinates
-versus values refined by quadrature, table support versus measured cutoff,
-Fourier trimming, distinction from Gaussian rules and fixed CAMB inputs.
-There are no new C loops or SIMD intrinsics. Public documentation and all
-seven notebooks explain the nested sampling and its limits without claiming
-that positive-definiteness or a single boost establishes convergence.
-
-All seven project notebooks were then executed sequentially from their
-committed cell sources, with refreshed outputs. Every cell completed.
-The 28 galaxy/shear totals (seven projects, two spaces, two boosts) remain
-positive, as do both DES joint totals after removal of their defined Y
-null rows. All 44 scientific figures were extracted and visually inspected
-for readable axes, component labels, legends and matrix boundaries.
+Nested-grid validation distinguishes intervals from points, fixed input
+coordinates from quadrature refinement, and interpolation support from
+the measured cutoff. In the associated notebook record, all 28
+galaxy/shear totals were positive, as were both DES joint totals after
+removing the defined Y null rows. The 44 saved scientific figures provide
+component and matrix diagnostics; positivity alone does not establish
+numerical convergence.
 
 With the nested multipole grid, the DES joint boost-1/2 comparison has
 maximum generalized variance departure 0.18453723. Minimum correlation

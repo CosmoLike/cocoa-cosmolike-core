@@ -154,7 +154,7 @@ sits inside the $\sigma(M)$ / one-loop / shear window, is the scale already vali
 in the CCL fix, and differs from k = 0.2 by 0.03%. One-line change per likelihood; C
 code untouched; f stays a clean fixed-scale slope.
 
-(c) **Owner's growth at $k_{\rm NL}(z)$.** $k_{\rm NL}(z)$ (from $\sigma(1/k,z)=1$) runs
+(c) **Growth at $k_{\rm NL}(z)$.** $k_{\rm NL}(z)$ (from $\sigma(1/k,z)=1$) runs
 over ~0.15–1/Mpc for z = 0–2 — entirely inside the flat/saturated part of D(k) (the
 0.06 eV free-streaming scale is well below 0.2/Mpc, so the suppression has saturated).
 Numerically it equals option (b) to ~0.03%, i.e. unmeasurable against the 0.2 chi2

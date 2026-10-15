@@ -1,10 +1,10 @@
 # Evolving variance and cb halo statistics: implementation record
 
-2026-10-03. Owner-approved Phases 2 and 3 of `neutrino_growth_plan.md`.
-Implementation and validation are complete for the supported builds.
-Local scripts and raw logs: `test/neutrino_growth_study/implementation/`.
-That directory is not tracked, so this record preserves the decisions
-and measurements with the source. No GitHub push is authorized.
+The evolving matter and cb variance tables supply halo peak heights, mass
+slopes and concentration growth. The measurements below identify the
+2026-10-03 implementation configuration; the covariance-tail configuration
+is stated separately. Raw scripts and logs reside in
+`test/neutrino_growth_study/implementation/`.
 
 ## Calculation and public interface
 
@@ -18,10 +18,11 @@ The initial bias-0.5 trial failed Roman's independent variance check.
 Bias 0.8 reduces its maximum tested error from 1.8265e-4 to 6.9887e-6
 without doubling the FFT workspace. A separately doubled FFT interval
 at bias 0.5 agrees within 1.32e-8 relatively down to 1e-40 Msun/h.
-See `wynn_validation_20261006.md` for the outstanding validation gates.
+See `wynn_validation_20261006.md` for the tail-stability validation.
 
 `cosmo3D.c` builds sigma_m^2(M,a), sigma_cb^2(M,a), and their logarithmic
-mass slopes from the evolving linear spectra. It uses FFTLog bias 1.5,
+mass slopes from the evolving linear spectra. The measured 2026-10-03
+configuration used FFTLog bias 1.5,
 the supplied uniform logarithmic k spacing, edge-power continuation to
 1e-7 through 1e5 h/Mpc, a smooth taper over the upper quarter of Fourier
 frequencies, and the analytic Mellin transform of the spherical top-hat
@@ -43,7 +44,7 @@ lensing weights and nonlinear matter spectra retain total matter.
 The Bhattacharya growth prescription is an adopted extension of a fit
 without a massive-neutrino calibration. EMUL2 retains its pre-existing
 approximation P_cb = P_lin/(1-f_nu)^2. CAMB supplies the actual cb table.
-The external DES reference keeps its non-halo growth convention but now
+The external DES reference keeps its non-halo growth convention and
 integrates the evolving cb spectrum independently for halo statistics.
 
 ## Threading experiment
@@ -91,13 +92,10 @@ example, the upper-edge bracket rule, table-index meanings, and the two
 steps of bilinear interpolation. Like-shaped work arrays share a role
 dimension; struct members have one declaration and explanation per line.
 Cache allocation conditions follow cosmo2D.c directly in the `if`.
-The owner’s simple-guards/no-speculative-recovery rule is in SKILL.md.
+Guards validate inputs at their boundary; speculative recovery must not
+conceal invalid numerical results.
 
-A manual second review covered the halo callers as well as the new
-engine. The skill's named Fable 5 reviewer is not available in this
-session; no Fable review is claimed.
-
-Checks completed before refreezing:
+Independent validation of the measured configuration:
 
 - C against the independently implemented Python FFTLog study: maximum
   relative discrepancy 1.83e-13 in variance and 5.5e-13 in slope.
@@ -124,16 +122,16 @@ options and update the halo probe interface. Only the documented
 reference generator writes frozen data and manifests; survey observations
 and shipped synthetic vectors are not regenerated for this change.
 
-## Unconditional direct indexing (owner request, same session)
+## Direct indexing and grid assumptions
 
-The FFTLog redshift lookup now reuses `piecewise_index` and the existing
+The FFTLog redshift lookup reuses `piecewise_index` and the existing
 lnPL segment metadata. A before/after comparison at every one of the 256
 scale-factor rows, 33 masses from 1e6 to 1e17 M_sun/h, both fields and both
 saved neutrino masses was bit-identical for variance and slope (67,584
 values). This check precedes the retirement of the build flag below.
 
-At the owner's request, COSMO3D_ASSUME_PIECEWISE_UNIFORM is retired:
-cosmo3D.c retains only the direct-index implementations. The segment
+`cosmo3D.c` uses direct indexing for its piecewise-uniform grids.
+`COSMO3D_ASSUME_PIECEWISE_UNIFORM` is not a selectable build option. The segment
 metadata, detector and setter calls are unconditional, including in debug
 builds; all seven Makefiles remove the flag. The retained C/C++ tokens in
 cosmo3D.c, generic_interface.cpp, basics.c, basics.h and structs.h were
@@ -150,9 +148,9 @@ no frozen or survey data is edited. The current side includes permanent
 OpenBLAS pinning too. Raw result: full_vector_comparison.log.
 
 The drift table measures all changes since each frozen snapshot, not the
-isolated effect of Phases 2 and 3. In particular, the non-halo configurations
+isolated effect of the evolving variance tables. In particular, the non-halo configurations
 have HOD and halo IA disabled: their drift includes the previously committed
-Phase 1 growth-k change to 0.05/Mpc. Their September frozen configurations
+growth-k change to 0.05/Mpc. Their September frozen configurations
 do not pin growth_k and therefore resolve that value from the live code.
 The cluster configurations additionally change through the evolving cb halo
 statistics. Reference-update commits must state both contributions.
@@ -184,7 +182,7 @@ reported separately from the independent matched-settings oracle.
 
 ## Permanent OpenBLAS thread limit
 
-The owner requires OpenBLAS to stay at one thread; parallelism belongs to
+OpenBLAS stays at one thread; parallelism belongs to
 the explicit CosmoLike OpenMP loops. A shared runtime lookup calls
 openblas_set_num_threads(1) at module import, initial setup, OpenMP team
 configuration, and before both covariance inversion paths. There is no
@@ -206,7 +204,7 @@ BLAS limit likewise leave BLAS at one and OpenMP at four, produce
 bit-identical inverses, and have residual 1.19e-13 or smaller.
 The same controlled three-inversion check passes in all seven projects,
 including Roman-Real, Roman-Fourier, Roman-KL, DES-Y3 and DESxPlanck:
-OpenBLAS remains at one, the explicitly requested OpenMP team remains at
+OpenBLAS remains at one, the configured OpenMP team remains at
 four, and repeated inverses agree bitwise. Calls requesting one, four
 and eight OpenMP threads likewise preserve that team while pinning BLAS.
 
@@ -219,8 +217,8 @@ pre-existing aggressive-mode limitation, not a passing validation; the
 default build passes and the residual guard correctly stops the bad
 aggressive result. Raw reproduction: baseline_aggressive_cluster_init.log.
 
-The owner retired aggressive mode on 2026-10-03. All seven Makefiles now
-reject its environment flag instead of compiling with fast-math. The
+The supported Makefiles reject the aggressive-mode environment flag
+because its fast-math configuration fails covariance-inverse checks. The
 ordinary Roman covariance guard also catches an aggressive-build residual
 of 83919.9135. Its selected tests had 34 passes and five failures (four
 inverse guards and one 1.47e-12 halo rounding mismatch against a 1e-12
@@ -230,14 +228,14 @@ default and debug. Installation guidance and the development skill list
 the unsupported floating-point flags; no individual flag was isolated
 as the cause. All seven retired-mode rejection checks passed.
 
-## Final project validation
+## Project validation of the measured configuration
 
 Every suite runs in a started cocoapy311 Cocoa environment, with
 OMP_NUM_THREADS=4 and COCOA_HALO_SLOW=1. BLAS is held at one by the
 compiled interface as well as the test shell. Command from Cocoa/:
 `python -m pytest projects/PROJECT/tests -q`.
 
-Completed on the final default build (including permanent BLAS pinning):
+The 2026-10-03 default-build validation, including permanent BLAS pinning:
 
 | Project | Result | Elapsed seconds |
 |---|---:|---:|

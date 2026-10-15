@@ -1,4 +1,4 @@
-# CosmoLike pitfalls: bugs we actually shipped or nearly shipped
+# CosmoLike pitfalls: observed numerical and performance failures
 
 Every entry here happened. When reviewing a patch, scan this list against the
 diff. When debugging, match the symptom column first — most "mystery" failures

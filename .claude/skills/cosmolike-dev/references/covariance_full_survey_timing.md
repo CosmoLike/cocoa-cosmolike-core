@@ -112,11 +112,11 @@ with identical saved CAMB tables, agree bitwise at one/eight threads in G,
 SSC, cNG, total, signal and radial geometry for both surveys. Smoke timing
 is not used as performance evidence.
 
-The didactic self-review covered array axes/units, the interpolation/projection
-identity, the common matter calculation, the survey-mean subtraction,
-all-cross-pair assembly and the independent-row OpenMP rationale. This is
-a manual self-review, not a Fable review. New covariance C remains inside
-covariances/ and respects 80 columns; no new SIMD arithmetic was added.
+Full-survey assembly relies on explicit array axes/units, the
+interpolation–projection identity, shared matter preparation, survey-mean
+subtraction and every crossed field pair. Independent output rows permit
+OpenMP without changing a row's summation order. Numerical covariance
+algorithms remain in `covariances/`.
 
 ## Local measurement artifacts
 

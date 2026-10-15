@@ -1,9 +1,8 @@
 # Halo-model option menu, 2026-10-08
 
-Owner request: add concentration, mass-function and halo-bias options
-beyond the defaults, following what OneCov and TJPCov expose, without
-changing any default. Implemented in `cosmolike/halo.c` and
-`cosmolike/halo.h` on `bugfix`; the selectors stay
+Concentration, mass-function and halo-bias choices allow comparisons with
+OneCov and TJPCov while retaining the default model. The implementation
+lives in `cosmolike/halo.c` and `cosmolike/halo.h`; the selectors are
 `like.halo_model[0..2]` with defaults 0 (set in `structs.c`).
 
 ## The menu
@@ -54,8 +53,8 @@ halo_model[0] and [3] only. Nothing guards [1] (bias) or [2]
 cluster b_nl and one-halo P1h tables, while the commentary and
 arXiv 2503.13631 assume Tinker 2010 bias and Bhattacharya 2013 (with
 its D_cb^1.15 neutrino treatment; Duffy has no growth factor at all).
-Owner decision needed before exposing the menu to cluster runs: guard
-the cluster path or document the combination.
+Exposing these choices to cluster runs requires either a guard on the
+unsupported combination or an explicit physical model and validation.
 
 Caveat 2 (halo batch, 0a761b5; Fable-verified): selecting
 HALO_BIAS_SHETH_MO_TORMEN_2001 also RESCALES the default Tinker 2010
@@ -63,13 +62,14 @@ mass function, because tinker_alpha normalizes int b f dnu = 1 with the
 selected bias: alpha = 0.3207 at z = 0 instead of 0.3684 (-13 percent;
 -14.5 percent at z = 1; independently reproduced as 0.3208/0.3686).
 This changes every mass-function consumer and will not match pyccl's
-Tinker10 + Sheth01 (pyccl does not re-normalize). Owner options: pin
-the Tinker bias inside tinker_alpha, or guard the combination.
+Tinker10 + Sheth01 (pyccl does not re-normalize). Possible model policies
+are to pin the Tinker bias inside tinker_alpha or guard this combination;
+they have different physical meanings and must not be interchanged silently.
 
 Caveat 3 (halo batch, 0a761b5): bias_norm, hod_tables, p_gm, p_gg and
 ia_tables are not keyed on like.halo_model[0..2] (only tinker_alpha
 is): changing the menu mid-process returns stale tables. Harmless
-today only because no Python setter exists. Under HMF_TINKER_2008,
+while no Python setter exposes mid-process changes. Under HMF_TINKER_2008,
 int f dnu diverges logarithmically at small nu, so 1 - bias_norm loses
 its "missing share" meaning.
 

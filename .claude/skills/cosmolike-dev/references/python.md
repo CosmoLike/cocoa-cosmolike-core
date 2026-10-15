@@ -384,7 +384,7 @@ figures of different probes look alike and notebooks can swap them.
   overall titles, repeated close-up titles and explanatory footers; put
   formulas and interpretation in the README. The per-project n(z) study
   uses at most two panels, while its common reconstruction illustration
-  can retain the requested original/3/5/7 columns. Explain the chosen
+  can retain original/3/5/7 columns to compare reconstruction models. Explain the chosen
   histogram edge and redshift range in both the script comments and the
   study README. Keep the generator and saved outputs in the owning test
   or study folder, and verify updated imports and paths after moving them.

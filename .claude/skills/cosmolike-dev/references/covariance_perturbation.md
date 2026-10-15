@@ -60,15 +60,10 @@ External artifacts are `cng_reference.py`, `build_perturbation.sh` and
 when `COSMOLIKE_COVARIANCE_REFERENCE` and
 `COSMOLIKE_PERTURBATION_LIBRARY` point to that reference and isolated library.
 
-## Separate didactic red-eye pass
+## Interpretation and implementation requirements
 
-After both five-test runs passed, manually reread the entire C/header
-and comparison code before starting halo integration. The comments explain
-the physical meaning of F2/F3, the planar measure, Wick multiplicities,
-the corner rearrangement, each stage of the SIMD expression, input units,
-ownership, thread ownership and the unused odd lane. All C/header lines
-fit 80 columns; guards have one predicate per line. The code keeps
-unsupported zero angular denominators out of the calculation explicitly.
-This was a self-review; no Fable review was run. The remaining halo and
-survey work is explicit, so passing these tests cannot be mistaken for a
-validated full cNG covariance.
+Explain F2/F3, the planar angular measure, Wick multiplicities and the
+corner rearrangement before the SIMD expression. Units, buffer ownership,
+worker outputs and unused odd lanes define the implementation contract.
+Unsupported zero angular denominators fail explicitly. Component accuracy
+does not establish a complete projected cNG model.

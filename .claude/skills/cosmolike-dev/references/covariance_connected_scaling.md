@@ -12,7 +12,7 @@ each pair of angular bins and probe types. For the LSST layout this meant
 5460 calls, each starting two OpenMP regions. The per-call work could not
 amortize their synchronization, particularly at eight workers.
 
-`covariance_project_connected` now creates one team for all angular
+`covariance_project_connected` creates one team for all angular
 blocks. Each task forms the shared `measure*T` weights and calls the
 same `gaussian_project_cov` primitive for its catalog pairings. That
 primitive suppresses nested teams. Each worker owns its weight, weighted

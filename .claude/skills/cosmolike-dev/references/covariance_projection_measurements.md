@@ -20,7 +20,7 @@ ellipticity dispersions per component. The CAMB arrays are shared inputs;
 the reference contractions are independent NumPy computations.
 
 The raw mask file is `inputs/cap_mask_cl.txt`, with L=0..4096 and
-C_0=Omega^2/(4 pi). The subsequent [pair-geometry ticket](covariance_mask.md)
+C_0=Omega^2/(4 pi). The [pair-geometry calculation](covariance_mask.md)
 implements noise geometry from this same raw-mask convention. It finds that
 the pilot's cutoff leaves 1.05e-5 pair-area error and up to 1.30e-6 SSC shell
 error; the full survey gate must include a refined mask. This diagnostic
@@ -179,7 +179,7 @@ These are differences from the pinned theoretical vector, not chi-squared
 against shipped data. They are harmonic center-of-band diagnostics and
 cannot certify a production real-space delta-chi-squared threshold.
 
-## Reproduction and didactic review
+## Reproduction and interpretation
 
 External adapters and references:
 `survey_ng_inputs.py`, `projected_ng_reference.py`,
@@ -190,15 +190,12 @@ External adapters and references:
 and `survey_displacements`. The adapters read the compiled core; the
 independent projection reference imports only NumPy.
 
-After the projection comparisons and refinement run, a separate manual
-red-eye pass checked the complete adapter and reference: row ordering,
-array shapes, units, mean-window versus short-mode windows, signed terms,
-and the distinction between a diagnostic and an exact band average.
-Unused reference parameters were removed so the signature states the
-actual mathematical inputs. This is a self-review, not a Fable review.
-The failed refinement gate remains visible; no reference was refrozen.
+Projection checks must match row order, shapes, units, survey-mean and
+short-mode windows, and signed terms. A band-center diagnostic is not an
+exact band average. Keep a failed refinement criterion visible; changing
+its reference cannot establish convergence.
 
-The later smooth-power experiment was reviewed separately: its spline
+The smooth-power experiment uses a separate interpolation model: its spline
 interpolates lnP in lnk, uses endpoint secants as clamped derivatives, and
 continues those slopes as power laws outside the input range. Redshift
 interpolation remains linear. Every linear power within a tree diagram
