@@ -162,10 +162,28 @@ covariance kernels, whose integration settings need their own checks.
 and `integration_accuracy: 7` (8,192 nodes per Limber panel). Source/lens
 mean-redshift quadrature also refines with the level and is capped at 8,192.
 Each row keeps the stored NLA fiducial, histogram, mask and covariance fixed.
-Δχ² = (d_b − d_a)ᵀ C⁻¹ (d_b − d_a) measures separation of predictions, not
-a change in goodness of fit. Squared distances are not additive.
+The distance between two predicted data vectors is
+
+```math
+\Delta\chi^2 = (d_b-d_a)^{\mathsf T} C^{-1} (d_b-d_a).
+```
+
+Here $`C`$ is the supplied survey covariance. This measures the change in
+predictions; it is not the change in goodness of fit to observed data.
 
 ![Original cubic and three Akima preparation choices](figures/histogram_original_cubic_vs_three_five_seven_akima.png)
+
+The illustration uses one uniform histogram and matching axes across columns.
+Preparation points lie at these fractions of each bin width, from its left edge:
+
+| Preparation factor | Point positions within each bin |
+|---|---|
+| 3 | 1/6, 1/2, 5/6 |
+| 5 | 1/10, 3/10, 1/2, 7/10, 9/10 |
+| 7 | 1/14, 3/14, 5/14, 1/2, 9/14, 11/14, 13/14 |
+
+All three factors retain the original bin centre. More points narrow the
+smoothed edge; all three Akima curves still redistribute probability between bins.
 
 | Project | Original → 3 | 3 → 5 | 3 → 7 | 5 → 7 |
 |---|---:|---:|---:|---:|

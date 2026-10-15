@@ -182,20 +182,17 @@ def main():
                        label='Original bin centres')
             ax.axhline(0., color='0.55', linewidth=.8)
             ax.grid(alpha=.13)
-            ax.set_xlabel('Coordinate / original bin width')
-            if column == 0:
-                ax.set_ylabel('Normalized density')
         axes[0, column].set_title(titles[curve_index])
         axes[0, column].set_xlim(0., 7.)
         axes[0, column].set_ylim(-.025, .62)
-        axes[0, column].legend(loc='upper left', fontsize=8.4)
+        if column == 0:
+            axes[0, column].legend(loc='upper left', fontsize=8.4, frameon=False)
         # This illustrative edge at coordinate 3 is chosen in advance, unlike
         # the automatic survey close-up. The window includes both neighbouring
         # cell centres (2.5 and 3.5) with a small margin beyond each centre.
         axes[1, column].set_xlim(2.45, 3.55)
         axes[1, column].set_ylim(.12, .62)
         axes[1, column].axvline(3., color='0.4', linestyle=':', linewidth=1)
-        axes[1, column].set_title('Close-up of the same bin edge', fontsize=11)
         if column == 3:
             positions = [2.5, 41/14, 3., 43/14, 3.5]
             labels = ['2½', '2.929', '3\n(bin edge)', '3.071', '3½']
@@ -221,20 +218,9 @@ def main():
             arrowprops={'arrowstyle': '<->', 'color': colour})
         ax.text(3., .584, f'Transition width: 1/{factor} bin',
                 ha='center', color=colour, fontsize=9)
-    fig.suptitle('Original cubic versus 3-, 5- and 7-point Akima preparation',
-                 fontsize=20, y=.98)
-    fig.text(.5, .055,
-             'All three odd factors retain the original bin centre. '
-             '3 points: 1/6, 1/2, 5/6.  '
-             '5 points: 1/10, 3/10, 1/2, 7/10, 9/10.  '
-             '7 points: 1/14, 3/14, …, 13/14 of each bin.',
-             ha='center', fontsize=11)
-    fig.text(.5, .027,
-             'Same illustrative uniform histogram and axis scales. '
-             'More points narrow the smoothed edge; '
-             'all three Akima curves still redistribute probability between bins.',
-             ha='center', fontsize=10.5)
-    fig.tight_layout(rect=(0, .09, 1, .94))
+    fig.supxlabel('Coordinate / original bin width', fontsize=11)
+    fig.supylabel('Normalized density', fontsize=11, x=.006)
+    fig.tight_layout(rect=(.015, 0, 1, 1))
     fig.savefig(output / 'histogram_original_cubic_vs_three_five_seven_akima.png', dpi=180)
     fig.savefig(output / 'histogram_original_cubic_vs_three_five_seven_akima.pdf')
     plt.close(fig)
