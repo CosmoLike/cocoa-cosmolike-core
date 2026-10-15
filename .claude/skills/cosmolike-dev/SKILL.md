@@ -153,7 +153,8 @@ those omissions with the matrix and retain the defined Y null-row map.
 Its Makefile omits `_cov` sources and objects and defines
 `COSMOLIKE_NO_COVARIANCE` so the project interface omits covariance bindings.
 Keep ordinary data-vector evaluation and supplied-covariance inversion usable
-in that build. Document activation/recompilation in each project README;
+in that build. Document activation/recompilation in each project's
+`covariance/README.md`, linked from its main README;
 test both build modes and do not add covariance dependencies to data-vector
 C files. The module's `has_covariance` attribute reports the compiled mode.
 
@@ -169,7 +170,7 @@ or maintain a second optimized implementation in either C++ layer.
 Keep the shared Python survey workflow common too; select its numerical
 backend explicitly. Test agreement of both paths, array ownership and
 one/eight-thread determinism. Explain this division clearly in human
-READMEs, with separate production and notebook subsections.
+covariance guides, with separate production and notebook subsections.
 
 **Notebook C++ wrappers.** Follow `halo_wrapper_cluster.cpp` and
 `cosmo2D_wrapper.cpp`: numeric inputs, results and working arrays use
@@ -210,6 +211,18 @@ from the repository; do not present a developer's external harness as a
 public test interface. State implemented capabilities and remaining limits
 without turning the README into a development log.
 
+Cocoa's maintenance skill governs shared README layout. Project main
+READMEs summarize tests and covariance capabilities and link to the
+respective guides; commands and numerical details stay in those guides.
+Introduce optional studies as a bullet at the top of `tests/README.md`.
+Keep their instructions in `tests/studies/README.md`, generators beside
+that guide and outputs in `tests/studies/results/`; ordinary data-vector
+figures and generators belong in `tests/data_vector/`.
+Split accuracy explanations by control, with short paragraphs, code
+blocks and tables. Define mathematical factors and summation indices
+explicitly for students. Apply common layout changes across projects
+without copying project-specific limitations into unrelated pages.
+
 Published covariance timings use the **production CLI** and each project's
 shipped evaluate YAML. Measure complete G + SSC + cNG construction, including
 first-use tables, on a quiet machine with sequential runs. Distinguish that
@@ -219,10 +232,12 @@ timings are a different baseline; quantify conversion overhead with matched
 inputs and identical output checks. Current seven-project measurements and
 the matched interface comparison are in
 `references/covariance_cli_timing.md`.
-Make the production/exploration distinction prominent in each project's
-opening README and beside Cocoa's code-comparison timing notes. Explain
-that the notebook array-conversion overhead is separate from the shared
-C kernels; scope any quoted overhead factor to its matched measurement.
+Published runtime tables and matched CLI/wrapper speedup factors live in
+Cocoa's main README; project guides link there. Routine timing checks do
+not automatically replace the published values. Put the CLI/exploration
+warning in the covariance guide, not at the top of the project README.
+Explain that notebook array-conversion overhead is separate from the
+shared C kernels without duplicating timing numbers across projects.
 
 Write skill instructions as impersonal project guidance for all
 contributors. State the requirement and its rationale directly, without

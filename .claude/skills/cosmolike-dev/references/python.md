@@ -379,6 +379,15 @@ figures of different probes look alike and notebooks can swap them.
   that wraps, and a bin label sitting on a curve are found by looking.
   Array dependences invented for a dry run prove the call signature, not
   the y-ranges.
+- **README figures leave space for the data.** Use one shared, frameless
+  legend and shared axis labels where their meanings match. Omit obvious
+  overall titles, repeated close-up titles and explanatory footers; put
+  formulas and interpretation in the README. The per-project n(z) study
+  uses at most two panels, while its common reconstruction illustration
+  can retain the requested original/3/5/7 columns. Explain the chosen
+  histogram edge and redshift range in both the script comments and the
+  study README. Keep the generator and saved outputs in the owning test
+  or study folder, and verify updated imports and paths after moving them.
 
 ### Notebooks and notebook wrappers
 
