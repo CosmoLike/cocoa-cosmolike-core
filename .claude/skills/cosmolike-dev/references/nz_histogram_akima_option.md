@@ -1,226 +1,177 @@
-# Optional histogram/Akima reconstruction
+# Histogram reconstruction: model, implementation and numerical validation
 
-The production `bugfix` default remains the original midpoint n(z).
-`photoz_histogram_akima: 1` is an explicit alternative in every likelihood
-YAML of LSST Y1, Roman real/Fourier/KL, DES Y3, DES×Planck, DES cluster and
-DES Y6. The two experimental branches remain available; do not replace the
-default or restore the earlier area-correction experiment without a request.
+A histogram specifies probability in redshift cells, but does not determine
+its distribution within each cell. A smooth n(z) therefore introduces a
+reconstruction model. The original midpoint curve and histogram preparation
+followed by Akima are two such models; numerical stability alone cannot
+establish which is physically more accurate.
 
-## Three-, five- and seven-point experiment
+## Model definition
 
-The user authorized `experimental/nz-akima-3-5-7` from the clean
-`bugfix` commits. Core and all eight project repositories use that branch.
-`photoz_histogram_akima_factor: 3`, `5` or `7` chooses the first preparation,
-independently of every accuracy control. The original midpoint curve is still
-mode 0, and mode 1 still defaults to three. The source/lens loader caches and
-Akima workspace sizes must change when only this factor changes. Test
-3 -> 5 -> 3, 3 -> 7 -> 3 and fresh YAML agreement, plus lookup refinement at all three factors.
+Every likelihood YAML in the eight survey projects exposes:
 
-The study record is `test/nz_akima_three_five/monitor_state.json`.
-The completed follow-up compared native GSL 4096/8192-point rules and
-independent interpolation boosts. The current manual study below supersedes
-the earlier routine reconstruction tests and their economical settings.
-Its results belong in `native_refinement_8192/`; do not mix them with the
-earlier composite-rule references below. The preparation factor remains
-fixed in every boost comparison. Post-Akima refinement subdivides the same
-polynomial exactly and has passed the synthetic reader checks at boosts
-1–4; changes under a global boost can still come from other lookup tables.
+| Control | Meaning |
+|---|---|
+| `photoz_histogram_akima: 0` | Original midpoint reconstruction; the default. |
+| `photoz_histogram_akima: 1` | Uniform histogram preparation followed by Akima. |
+| `photoz_histogram_akima_factor: 3` | Preparation factor; allowed values are 3, 5 and 7. |
 
-All eight factor-5 and factor-7 scans completed. Each preserved the
-threefold level-6 vector bitwise and matched fresh YAML with the live factor
-switch. All 24 permanent reconstruction/factor tests and 17 existing frozen
-default checks passed without failures, errors or skips. Six synthetic
-reader tests passed in both the strict build and isolated DEBUG/UBSan build,
-with no sanitizer findings. The permanent plot script reproduces the
-published PNG and numerical checks bitwise.
+Mode 0 retains the existing interpolation and redshift-column conventions.
+Mode 1 always uses Akima, so `photoz_interpolation_type` has no effect on
+that mode; `photoz_zmid_convention` still determines the input cell edges.
+Z_LOW supplies left edges, with the last width repeated. Z_MID supplies
+centres, with edges halfway between centres and half-spacing outer edges.
 
-The independently recomputed accuracy audit and test counts are saved in
-`dev_scripts/nz_akima_factor_validation.json`. Raw vector distances for
-every level match the study records; fresh selected-level tests reproduce
-them. The next lower level exceeds 0.1 for both factors in every physical
-project. These are measured practical levels for the stored fiducials,
-not a parameter-space accuracy guarantee.
-The complete model table and example levels are in `cosmolike/README.md`;
-each project saves `tests/studies/results/nz_akima_factor.json` and its reference vectors.
-DES Y6 is identity-metric software checking only. This remains an experiment;
-no likelihood integration defaults, frozen inputs or references are changed.
+For an input histogram with N cells, preparation creates mN uniform cells,
+where m is the selected factor. On uniform input this repeats each density
+m times. Odd factors retain a prepared centre at each original centre.
+For irregular input, each prepared density is the sum of overlapping input
+probabilities divided by the prepared cell width. This remapping conserves
+total area, but need not retain the original centres.
 
-The subsequent user-requested accuracy follow-up raises the common
-3/5/7 test level to 3 for LSST/Roman KL, 4 for DES Y3/Planck/cluster,
-and 5 for Roman real/Fourier. All 14 tests passed; see
-`dev_scripts/nz_akima_raised_accuracy.json` and the project records.
-The separate original-versus-three-point tests retain their prior
-levels. Initial minimum-level scans above remain historical evidence.
-One extra level still leaves seven-point numerical Delta chi2 of
-0.0502/0.0566 for DES Planck/cluster; use the retained level-6 model
-distances when judging changes across preparations. LSST and DES Y3
-remain exceptions to a smaller 5->7 than 3->5 distance. Do not claim that
-decreasing model distances proves a physically correct reconstruction.
+Akima joins the prepared centres with cubic polynomials. A repeated density
+half a prepared cell outside each histogram edge allows evaluation over the
+whole support without extrapolation. Queries outside that support return
+zero. Input normalization precedes interpolation; no subsequent clipping or
+area correction is applied. Signed input cells are retained.
 
-## Implementation contract
+The preparation factor is a **model choice**, independent of every accuracy
+control. Raising it narrows the transitions between histogram cells and
+changes n(z). An accuracy scan must keep it fixed.
 
-- YAML -> likelihood initialization -> `init_photoz_histogram_akima` ->
-  `Ntable.photoz_histogram_akima` -> the two public photo-z readers.
-- Mode 0 retains their original arithmetic, including existing interpolation
-  and z-column controls. Mode 1 ignores `photoz_interpolation_type` but keeps
-  `photoz_zmid_convention`.
-- `nz_histogram_akima` shares numerical preparation between source and lens,
-  with separate cached storage records. Its first preparation is exactly
-  `preparation_factor * nzbins`; the chosen factor must NEVER depend on an
-  accuracy setting. The experimental branch allows three, five or seven.
-- Irregular input bins are overlap-averaged into a uniform preparation grid.
-  Fit GSL Akima through its centres and repeated endpoint samples. Subdivide
-  its cubic coefficients algebraically for the final uniform lookup; never
-  refit a natural cubic. No binary search or allocation in the hot lookup.
-- Caller-owned cached GSL workspaces are separate for each tomographic bin.
-  Prepare independent rows under `omp parallel for schedule(static)`.
-  Allocate/release workspaces serially; preserve bitwise thread determinism.
-- A live selector switch reloads existing histogram copies through the usual
-  sample setters. Their reconstruction stamps force recomputation of common
-  bounds, per-bin support, lens means and dependent kernels. Test 0 -> 1 -> 0.
-- Explain cache ownership, every allocation block, threshold scans and the
-  coefficient transformations beside the code. Use braces and separate lines
-  for every conditional and loop; do not compress control flow.
+## Uniform lookup and cache ownership
 
-## Scientific interpretation
+`nz_histogram_akima` in `redshift_spline.c` shares the source/lens algorithm
+while keeping separate cached storage for the two samples. The public
+selector `init_photoz_histogram_akima` connects likelihood initialization
+to the reconstruction mode and preparation factor in `Ntable`.
 
-Mode 1 is a reconstruction choice, not an accuracy boost. The original
-midpoint cubic and the fixed-threefold Akima define different smooth n(z).
-The uniform-bin threefold construction preserves total area to rounding;
-individual bin areas change. Irregular remapping preserves total area before
-Akima, but a general Akima fit need not preserve it or positivity.
-No added area correction or clipping is applied by this option.
+Final lookup refinement subdivides the fitted polynomials algebraically.
+If a piece is P(u), a smaller interval stores the coefficients of
+P(u0 + h t). This is the same curve, not a second spline fit. Uniform
+spacing gives direct interval indexing without binary search or allocation
+in the reader. Both reconstruction modes require uniform lookup grids.
 
-For uniform cells with normalized masses p and factor m = 3, 5 or 7,
-the ideal curve has q_j = p_j + 3/(32m) * (p_(j-1) - 2p_j + p_(j+1));
-repeat the endpoint mass for its missing neighbour. At m=3 this is
-15 p_j/16 + (p_(j-1) + p_(j+1))/32. This identity explains total-area
-conservation and neighbour exchange, not physical superiority of the model.
+Storage is reused while its dimensions match. A changed histogram, edge
+convention, preparation factor or lookup factor triggers reconstruction.
+Selector/factor changes must also refresh support bounds, lens means and
+dependent kernels through the sample setters. Cosmology changes and the
+usual photo-z shifts/stretch do not refit n(z); the latter change query
+coordinates and the density Jacobian.
 
-## Current manual study (supersedes routine reconstruction comparisons)
+Each tomographic row owns a GSL workspace and output coefficients. Allocate
+and release workspaces serially, then prepare independent rows with
+`omp parallel for schedule(static)`. There is no cross-thread reduction.
+Comments should explain ownership, the relative-density tail cutoff and
+coefficient transformations. The tail cutoff selects integration bounds;
+it does not clip the stored distribution or bound the integrated tail mass.
 
-The user requested that model-choice sensitivity NOT run on every code change.
-The expensive `test_nz_reconstruction.py` and `test_nz_akima_factor.py` files
-have been replaced by explicit `tests/studies/run_nz_reconstruction.py`
-wrappers in the seven projects with physical covariances. These scripts call
-`cocoa_nz_study.py`; they report distances without a frozen expected output.
-Each physical-covariance project also exposes `tests/studies/study_nz_reconstruction.py`,
-which explicitly runs the same script in a fresh subprocess and fails on its
-scientific checks. The `study_` prefix avoids routine discovery; invoke the
-file explicitly with pytest. It computes fresh outputs and does not compare
-with a frozen model vector or assert an expected reconstruction distance.
-Ordinary pytest keeps the synthetic reader checks and frozen likelihood tests.
-DES Y6 is excluded from statistical distances.
+## Probability conservation and redistribution
 
-The manual study compares original/3/5/7 at accuracyboost5 and integration
-level7, then original at current YAML numerical defaults versus original at
-those refined settings. It keeps the stored physical point and all input
-files fixed. Every quadrature rule is capped at8192; the source/lens moments
-also refine, as described in `integration_accuracy_4096.md`. The former
-compile-time GSL bypass is removed; uniform-grid preparation is mandatory.
+For uniform input cells, let p_i be the normalized mass in cell i and q_i
+the area of the ideal reconstructed curve over that same cell. Repeated
+endpoint densities and m = 3, 5 or 7 give
 
-Each `tests/studies/README.md` has the model-distance table, a separate
-original-default numerical distance, the four-column toy illustration and
-a two-panel compiled-reader/area figure. Raw records are in
-`tests/studies/results/`; the shared summary is
-`dev_scripts/nz_akima_manual_study.json`. External launch/build/check records
-are in `test/nz_akima_three_five/manual_study_cap8192/` and
-`reader_cap8192_build/`. Check monitor_state.json before launching work.
+```math
+q_i = p_i + \frac{3}{32m}(p_{i-1}-2p_i+p_{i+1}).
+```
 
-All seven capped studies are verified. Their original-default distances
-range from 0.0021653 to 0.0249203; all current 5->7 model distances are smaller
-than 3->5. This does not erase the residual boost sensitivity recorded in
-`dev_scripts/nz_akima_prior_native_refinement.json`. All default vectors are
-bitwise unchanged; six synthetic-reader and 17 frozen-default checks pass.
-Ordinary pytest collection in all eight projects excludes these studies.
+Use the endpoint mass for a missing neighbour. At m = 3 this becomes
+q_i = 15p_i/16 + (p_{i-1}+p_{i+1})/32. The correction is a discrete second
+difference: neighbouring gains and losses cancel in the sum, preserving
+total area while changing individual cell probabilities. Increasing m
+reduces the exchange by narrowing the smoothed transition.
 
-The explicit pytest entry points also pass in all seven physical-covariance
-projects: seven tests, no failures, errors or skips. Their fresh vectors,
-inverse covariances, reader-area arrays and reported distances exactly
-reproduce the saved study. The separate verification record is
-`test/nz_akima_three_five/manual_pytest_8192/accepted_validation.json`.
-This reproducibility check does not turn the saved measurements into frozen
-acceptance targets for future reconstruction studies.
+This identity depends on uniform cells and the repeated-density
+construction. For irregular input, conservation by the overlap remapping
+does not imply conservation by the subsequent Akima fit. General Akima
+interpolation also has no positivity guarantee.
 
-The shared plotter is `cosmolike_notebook_utils/plot_nz_reconstruction.py`.
-Every manual study calls it after the compiled area audit, and each survey
-has `tests/studies/generate_nz_reconstruction_figures.py` to redraw saved results.
-All seven two-panel figures were visually inspected. Keep the explanatory
-footer out of figures; definitions, settings and area accounting belong in
-the project study README, as explicitly requested by the user.
+Measure total area separately from redistribution. For nonnegative input
+and reconstructed cell masses, the redistributed percentage is
 
-The user accepts practical numerical stability relative to Delta chi2 0.2.
-Do not label a small remaining numerical change as a blocked scientific
-study, or continue boost escalation without a new reason. Keep the measured
-residual sensitivity explicit; do not claim exact continuum convergence or
-physical truth of a chosen sub-bin interpolation.
+```math
+R = 100 \times \frac{1}{2}
+    \sum_i \left|\frac{q_i}{\sum_j q_j}-p_i\right|.
+```
 
-The following sections retain the history of the earlier comparisons and
-practical-level choices; their former routine test filenames are historical.
+The denominator sums reconstructed areas over every original redshift cell
+of one tomographic distribution. The outer sum compares those normalized
+areas with the input probabilities in the same cells. The half prevents
+counting each transfer twice, as both a loss and a gain. This diagnostic
+normalization does not renormalize the production reader. For signed
+inputs, the same expression measures normalized area differences rather
+than a literal fraction of probability transferred.
 
-## Permanent checks and records
+## Separating model sensitivity from numerical error
 
-At initial adoption every project had `tests/data_vector/test_nz_reconstruction.py`, using its
-frozen NLA fiducial at a measured practical integration level, and the
-shared `cocoa_nz_testing.py`. It compares vectors in the same masked covariance,
-checks YAML versus live selection and exact default round trips, and audits
-integrated cell areas using the actual C readers. Two- and four-point Gauss
-rules split at every polynomial knot must agree within 2e-13 per cell.
-LSST also exercises uniform/irregular inputs, accuracy boosts and thread counts
-in `test_nz_histogram_reader.py`. No tests-only C function was added.
+The survey metric is
 
-Public explanations, input fingerprints, measured model distances and area
-figures live in each project's study README and
-`tests/studies/results/nz_reconstruction.json`.
-DES Y6's identity-covariance distance is a software metric only. Keep the
-actual frozen signed input cells in these tests; three earlier controlled
-studies clipped negatives in both arms, so do not silently substitute their
-measurements for the permanent raw-input case.
+```math
+\Delta\chi^2 = (d_b-d_a)^{\mathsf T}C^{-1}(d_b-d_a),
+```
 
-The external integration record is `test/nz_akima_yaml/`. All jobs are
-sequential; see its monitor_state.json and run/followups ledgers before
-resuming anything. The earlier 1024/2048/4096 study is retained separately in
-`test/nz_histogram_experiment/`. No scientific tolerance or frozen reference
-is changed. Covariance-generation accuracy is a separate question: the
-coarse experimental Akima covariance window/radial refinement checks were
-not converged, and the data-vector Delta chi2 test does not validate them.
+with fixed physical inputs, mask and supplied covariance C. Comparing
+reconstructions measures model sensitivity. Comparing accuracy settings
+within one reconstruction measures numerical sensitivity. Neither is a
+change in goodness of fit to observed data.
 
-## Validation and example accuracy
+The reproducible study uses `accuracyboost: 5` and
+`integration_accuracy: 7` for original/3/5/7, and separately evaluates the
+original reconstruction at its YAML defaults. All quadrature rules are
+capped at 8,192 points, including source/lens redshift moments. Native GSL
+allocation and the independence of quadrature from interpolation controls
+are described in [the integration reference](integration_accuracy_4096.md).
 
-The reference calculation uses level 6 (4096 points). Routine comparison
-examples use the lowest measured level near a vector-distance target of 0.1.
-This is an explicitly adopted practical test budget, not a strict universal
-physics tolerance. Roman Fourier level 3 is retained at 0.106799. Both curves
-and their model displacement were checked against the same reference.
+The original-default numerical distances range from 0.0021653 to 0.0249203
+across the seven supplied physical covariances. In these refined
+comparisons, every 5→7 distance is smaller than its 3→5 distance. The
+results support practical stability relative to a Δχ² scale of 0.2 at the
+stored NLA points; they do not establish a continuum limit or a preferred
+physical reconstruction. Global boosts can still affect other interpolation
+tables even when n(z) itself is invariant under lookup refinement.
 
-| Project | Test level | Akima numerical Delta chi2 vs level 6 | Refined model Delta chi2 |
-|---|---:|---:|---:|
-| lsst_y1 | 2 | 0.0315961152 | 0.990789032 |
-| roman_real | 3 | 0.0332351054 | 0.253947593 |
-| roman_fourier | 3 | 0.106798981 | 0.491419608 |
-| roman_kl | 2 | 0.00295310751 | 0.636057262 |
-| des_y3 | 2 | 0.0454913695 | 0.184156599 |
-| desy1xplanck | 3 | 0.0187756726 | 0.249582294 |
-| des_cluster | 3 | 0.0166744456 | 0.481671865 |
+DES Y6 supplies an identity metric rather than a physical survey covariance
+and has no statistical Δχ² row. Data-vector convergence does not establish
+covariance-generation convergence: coarse Akima window/radial refinements
+have shown unresolved sensitivity and require their own checks.
 
-DES Y6 uses level 0 only as a software check; its identity covariance supplies
-no statistical accuracy threshold. All eight mode-selection tests passed at
-their practical settings and at level 6. Exact 0->1->0 and YAML/live agreement,
-unchanged covariance and the original compiled-reader arithmetic were
-verified. All 17 existing frozen default checks passed without refreezing.
-The eight 2048->4096 refinements have maximum physical Akima Delta chi2
-0.000121638 (DES cluster).
+## Validation and reproducibility
 
-The LSST synthetic uniform/irregular readers preserve the Akima curve under
-lookup-grid refinement and are bitwise equal at 1/8 threads. Both checks pass
-with changed C/C++ objects compiled at O0 with DEBUG and undefined-behavior /
-float-division sanitizers; no sanitizer finding occurred. The eight
-covariance-operator checks pass after replacing the stale expectation that
-2048-point rules are rejected: 2048/4096 composite rules now receive the same
-polynomial-exactness tests, with unsupported sizes still rejected.
+Routine regression coverage retains synthetic-reader checks and frozen
+likelihood checks. The expensive reconstruction study is invoked separately
+because its purpose is to compare modeling choices, not to enforce a frozen
+model displacement.
 
-Each project README has one two-panel figure: compiled reader curves at an
-interior histogram edge and all-bin probability redistribution. Dense edge
-samples are verified against the original reader audit. Total-area errors
-remain in a table. All saved measurements retain the full 4096 reference;
-the public test can reproduce it through COCOA_NZ_INTEGRATION_ACCURACY=6.
+- Check original → Akima → original and factor 3 → 5 → 3 / 3 → 7 → 3
+  round trips, including agreement with fresh YAML initialization.
+- Check source/lens readers on uniform and irregular histograms, with fixed
+  preparation factor under lookup refinement. Boosts 1–4 preserve the curve;
+  one/eight-thread evaluations are bitwise equal in the recorded checks.
+- Audit areas from the compiled readers, splitting at every polynomial
+  knot. Two- and four-point Gauss rules agree within 2e-13 per original cell.
+- Keep physical inputs and covariance fixed in vector comparisons. Verify
+  finite results, unchanged covariance and exact restoration of the original
+  vector. Do not replace signed inputs with clipped inputs or refreeze a
+  likelihood to conceal a numerical change.
+
+Six reader cases and 17 frozen-default checks pass; strict and DEBUG/UBSan
+reader checks show no sanitizer findings. All seven explicit study tests
+reproduce the saved vectors, inverse covariances, area arrays and distances.
+This reproducibility evidence is specific to the recorded configurations.
+
+`cocoa_nz_study.py` implements the shared calculation and area audit.
+Each physical-covariance project exposes
+`tests/studies/run_nz_reconstruction.py` and
+`tests/studies/study_nz_reconstruction.py`. Results and the interpretation of
+figures belong in `tests/studies/README.md` and `tests/studies/results/`.
+The shared plotter is `cosmolike_notebook_utils/plot_nz_reconstruction.py`;
+project `generate_nz_reconstruction_figures.py` scripts redraw saved results.
+Explanations and settings belong in the guide, not in figure footers.
+
+The maintained numerical summary is `dev_scripts/nz_akima_manual_study.json`.
+`dev_scripts/nz_akima_prior_native_refinement.json` records independent
+boost/rule sensitivity. Earlier factor scans remain in the validation and
+raised-accuracy JSON records; they are configuration-specific evidence,
+not universal minimum integration levels. Composite-rule, clipped-input
+and native-GSL results must not be mixed as interchangeable references.

@@ -122,14 +122,11 @@ make owned copies. Profile first on a quiet machine, then compare 1/2/4/8
 workers and check accuracy before changing these paths. No speedup claim
 or notebook stage time from contended runs is performance evidence.
 
-The DES notebook executes headlessly through nbconvert, retaining its
-galaxy/shear real/Fourier examples and adding joint angular boosts 1 and
-2. Local Jupyter kernel sockets required sandbox escalation, which was
-approved. All cells completed; the final two scientific plots were
-extracted and visually inspected (correlation triangles and component
-maps/histogram). All labels and the narrow count block remain readable.
-The second run's plots are byte-identical to the inspected images. A
-subsequent paragraph/comment formatting pass leaves the code AST unchanged.
+The DES notebook includes galaxy/shear real/Fourier examples and joint
+angular boosts 1 and 2. The saved joint figures show correlation triangles
+and component maps/histograms. Inspect the narrow count block as well as
+the large two-point blocks; readable labels are necessary to interpret
+cross-covariance structure.
 
 Both 2764-entry Y totals are positive. Their minimum correlation
 eigenvalues are 1.78193938305e-5 and 1.78220177945e-5. The maximum
@@ -192,7 +189,7 @@ The external reproducibility record is
 `covariance_reference/benchmark_cluster_joint.py` and
 `covariance_reference/results/cluster_joint_timing.json`.
 
-## Nested-grid notebook follow-up (2026-10-04)
+## Nested-grid comparison (2026-10-04)
 
 After the shared nested-multipole and bounded-spectrum changes, the full
 notebook was executed again. Both joint totals remain positive after

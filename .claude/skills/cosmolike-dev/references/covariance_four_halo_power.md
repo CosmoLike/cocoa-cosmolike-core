@@ -79,8 +79,9 @@ Preparing one selective 11,993-node table takes 0.122 +/- 0.015 ms in
 25 warm helper calls, with free excluded. Global preparation averages
 0.132 seconds. The selective slowdown therefore is not the cubic setup:
 the shared angular worker evaluates native powers for lower halo orders
-and extra refined powers/terms for 4h. The selective experiment is retired. The user chose globally refined
-power as the covariance production default.
+and extra refined powers/terms for 4h. Global refinement is the production
+default because it avoids that repeated work and preserves the existing
+C API.
 
 ## Retired selective-prototype validation
 
@@ -91,15 +92,14 @@ library on an unequal/equal-pair test with an odd SIMD remainder. Both APIs
 and one/eight-thread results agree bitwise. The new 4h result agrees with
 the globally densified natural-cubic control at the tested unequal pairs.
 
-The selective all-project run was intentionally stopped when the user
-chose global refinement. Its completed outputs are retained; exit143 is
-not a numerical failure. The adopted global checks are recorded below;
-do not treat the selective tests as their replacement.
-No frozen references or scientific tolerances have been changed.
+The selective prototype has targeted checks, not a complete all-project
+validation. Its archived outputs cannot substitute for the independent
+global-default checks below. No scientific tolerance or frozen reference
+was changed for those checks.
 
 ## Adopted global-default checks
 
-The ordinary LSST YAML and shared initializer now reproduce the measured
+The ordinary LSST YAML and shared initializer reproduce the measured
 global control exactly: all installed inputs and every entry of G, SSC,
 cNG and total are bitwise equal. The 1,560-entry total is positive definite.
 Construction took 55.91 seconds in this additional single run; initialization
@@ -115,13 +115,12 @@ passed as recorded below; quiet cross-code timings are also complete.
 The main cross-code refreshes completed: 32 OneCov stages, including
 complete small Fourier and real-space G/SSC/cNG/total matrices, and 63
 TJPCov stages covering Gaussian, SSC, halo moments and separated matter
-trispectra. TJPCov native 4h maxima are now 1.1853%, 5.7215% and 7.1214%
+trispectra. In this comparison, TJPCov native 4h maxima are 1.1853%, 5.7215% and 7.1214%
 at z=0.1, 0.5 and 1. The last occurs at K=Q=10 h/Mpc, where CCL 4h is
 only 0.00604% of its summed trispectrum. Identical power and moments
 still agree within 4.983e-6 fractionally. The natural-cubic control gives
-0.4875% at 11,993 nodes and 0.3883% at 23,985. Native TJPCov projected
-cNG/full totals have not yet been compared; do not infer those results
-from the separated matter terms.
+0.4875% at 11,993 nodes and 0.3883% at 23,985. This separated-matter comparison does not measure native TJPCov projected
+cNG or full totals; those results cannot be inferred from matter terms.
 
 All 40 OneCov dependent controls also completed. The small complete
 Fourier and real-space totals are positive definite. Their generalized
@@ -135,9 +134,8 @@ Both source hashes remain in the comparison provenance. Applying the
 committed helper to the archived native inputs reproduces every installed
 power/grid array byte exactly; no source-hash equality is assumed.
 
-Validated scripts and results are committed locally in OneCov-benchmark-
-as 89190ed/87ba6ba and in tjcovbenchmark as f98e2ce/b03301b. The production
-helper is core commit 1d4428d.
+The comparison provenance identifies the production helper as core
+`1d4428d`; OneCov and TJPCov records retain their own source fingerprints.
 
 ### All-project regression, 2026-10-07
 
@@ -155,33 +153,25 @@ changes to frozen references or scientific tolerances:
 | DES cluster | 21 | 79 |
 | Total | 139 | 575 |
 
-The accepted XML records were checked against every expected module.
-The first Roman real fresh-process cache check stopped because the
-sandbox denied OpenMPI's local socket bind. Its unchanged retry passed
-with local socket permission. The failed attempt is preserved separately;
-the resumed runner reused 48 successful records with verified SHA256
-hashes and ran only unfinished modules. No failed XML enters the totals.
+The accepted XML records cover every expected module. A socket-permission
+failure is retained separately from its successful unchanged retry; only
+successful module records enter the totals. A launcher failure is not a
+numerical regression, but it must not be counted as a passed test.
 
 The covariance-disabled LSST interface also reproduced its NLA and TATT
 reference likelihoods exactly. This check uses the previously built
 isolated library: global power refinement changes no C sources.
 
-The first notebook launch stopped before executing any cell because
-Jupyter did not forward the temporary kernel search path from its client
-configuration. Setting that path on the actual kernel-spec manager passed
-a startup/execute/shutdown smoke check. Only notebook execution resumed;
-all suite outputs and the unsuccessful launcher attempt are preserved.
-
-All seven covariance notebooks then completed: 57 code cells and 21
+The notebook validation covers: 57 code cells and 21
 embedded figures. Every figure was visually inspected; executed file
 hashes, source-cell retention and absence of error outputs were checked.
 All seven computed totals passed their notebook positivity diagnostic
 after the likelihood selection. The original likelihood covariances are
 only comparison inputs; this is not a claim of reproducing their physics.
-The outputs are committed in their respective project repositories.
-Notebook execution times are not the controlled timing benchmark.
+The saved project outputs retain their executed source cells. Notebook
+execution times are not controlled timing benchmarks.
 
-### Quiet cross-code timing completion, 2026-10-07
+### Cross-code timing measurement, 2026-10-07
 
 OneCov-benchmark- completed 36 sequential timing commands after every
 regression and notebook job had finished. Eight OpenMP threads and one
@@ -217,7 +207,8 @@ External study: `test/covariance_reference/four_halo_power_study/`.
 `diagnose.py` scans power refinement and measures the C preparation;
 `summarize.py` checks bitwise repetition and aggregates the timing samples.
 `run_regressions.sh` runs project modules sequentially and preserves logs.
-Only the parent launches numerical/compiler work; timing jobs never overlap.
+Run numerical/compiler jobs sequentially; timing jobs require an otherwise
+quiet machine.
 
 The adopted path is checked by
 `test/covariance_reference/global_power_validation/full_default.py`. Its

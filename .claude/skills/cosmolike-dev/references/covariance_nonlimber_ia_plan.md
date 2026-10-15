@@ -1,15 +1,16 @@
-# Planned covariance non-Limber spectra and intrinsic alignment
+# Gaussian covariance: hybrid non-Limber spectra and intrinsic alignment
 
-Status: **Gaussian kernels and survey workflows implemented; validation below**.
-The active scope is non-Limber gg/gs and NLA/TATT in Gaussian covariance.
-SSC/cNG calculations are explicitly excluded. The stopped LSST integration
-validation stays stopped. Implement and commit in small tested blocks.
+The Gaussian model combines non-Limber gg/gs with NLA/TATT. Shear-shear
+remains Limber. This support does not extend the physical model of SSC/cNG
+or the selected-cluster joint forecast. Component checks, survey
+measurements and the design conditions for further extensions are
+separated below.
 
 Current full G + SSC + cNG runtime measurements, including these Gaussian
 extensions, are recorded in [the production CLI timing study](covariance_cli_timing.md).
 The study covers all seven projects and a matched notebook-interface check.
 
-### Completed transform component
+### FFTLog transform component
 
 `fftlog_cov.c/.h` owns shared FFTW plans and per-worker buffers. Forward
 transforms are retained across 16-multipole blocks. Gamma and phase
@@ -46,7 +47,7 @@ FFT radial grid 4097 -> 8193 changes spectra by 1.7e-7. Both backends and
 one/eight threads agree bitwise; sampled hybrid matrices are positive
 definite and ell=300 corrections are below 1% of variance normalization.
 These checks do not establish each project's cutoff or covariance/Fisher
-accuracy. The TATT and survey sections below record subsequent work.
+accuracy. TATT and survey-level validation have separate checks below.
 
 ### Gaussian TATT component
 
@@ -106,7 +107,7 @@ not joint 6x2pt+N. The joint adapter rejects non-Limber or IA until its
 cluster transfers are implemented. DESxPlanck still excludes CMB fields.
 These values test the new non-Limber controls at zero IA, not convergence
 of all quadratures, angular transforms, interpolation, cosmologies or
-Fisher derivatives. No full G+SSC+cNG integration run was restarted.
+Fisher derivatives.
 
 A separate all-project test checks finite NLA/TATT spectra and bitwise
 production/notebook agreement with actual catalog inputs. The broad-bin
@@ -142,7 +143,7 @@ bound. The ordinary interface imports. The previously validated optimized
 covariance-enabled binary was restored afterwards. The extra C code is
 still wholly inside covariances/, with no data-vector C modification.
 
-### Final project regressions
+### Project regression coverage
 
 Sequential optimized project runs passed 174 covariance tests: LSST 119,
 Roman real/Fourier/KL and DES Y3/DESxPlanck one adapter test each, and DES
@@ -152,43 +153,14 @@ assembly grids with the actual catalogs. DES cluster includes an explicit
 rejection of unsupported joint non-Limber/NLA requests.
 
 The frozen `test_example1.py` and `test_example2.py` suites passed in all
-seven projects: 52 tests total, including repeated-cosmology race checks.
-The six galaxy/shear projects test NLA and TATT; cluster examples test their
-supported NLA model. No data-vector references were refrozen. Roman KL's
-first attempt failed to locate its interface in worker subprocesses;
-adding the actual project interface directory to PYTHONPATH fixed the
-launch environment, with no source or reference change.
+seven projects: 52 tests including repeated-cosmology race checks. The
+six galaxy/shear projects cover NLA and TATT; cluster examples cover their
+supported NLA model. No data-vector references were changed.
 
-All seven CLI YAML files resolve through Cobaya's reader and parameterization
-with OMP_NUM_THREADS=8, and their notebook code cells pass syntax checks.
-Six notebook outputs were cleared because their new default Gaussian model
-would make the old Limber results misleading. Full G+SSC+cNG notebooks
-were not re-executed; the full-matrix checks above concern Gaussian only.
-The cluster notebook retains its unchanged joint-model outputs. The source
-review checked physical stage explanations, scalar SIMD equivalents,
-per-intrinsic comments, source ownership and 80-column new C/header lines.
-All changes were committed locally; no push was performed.
-
-## Original starting point (historical)
-
-
-| Layer | Available behavior | Missing behavior |
-| --- | --- | --- |
-| Data-vector `cosmo2D.c` | FFTLog non-Limber galaxy autos and galaxy–shear spectra, including the linear/NLA source kernel. | Its selected pair maps and autos-only clustering do not supply the full covariance field matrix. |
-| Covariance `spectra_cov.c` | All-pairs Limber spectra; separate density, lensing/magnification and signed NLA windows; optional Limber RSD. | Covariance-owned non-Limber transforms and matched linear subtraction. |
-| Covariance `forecast.py` | Initializes a massless-neutrino, linear-bias forecast. | It initializes IA off and explicitly sets all IA amplitudes to zero. |
-| Covariance `survey.py` | Builds the full G/SSC/cNG matrix from shared arrays. | It requests `include_ia=False`, `include_rsd=False`; its connected weights select lensing alone for sources. |
-| Cluster forecast | All-pairs supplied cluster Limber spectra and joint assembly. | Cluster non-Limber transfers and a validated joint nonzero-IA model. |
-
-Zero IA is a restriction of the current complete forecast, not an absence
-of NLA throughout CosmoLike, nor a requirement of covariance physics.
-Turning on one low-level flag would update Gaussian spectra without
-automatically updating every SSC/cNG and cluster source leg. Complete the
-model consistently before advertising nonzero-IA forecast support.
-
-Current low-level NLA checks validate signed windows and contractions;
-some references consume the same supplied windows. They do not independently
-validate the full IA model or establish survey-level NLA convergence.
+CLI configuration validation covers Cobaya reading and parameterization.
+Notebook outputs must be regenerated whenever their Gaussian model changes;
+old Limber outputs do not validate a non-Limber default. Full-matrix
+measurements in this reference concern Gaussian covariance only.
 
 ## Physics sources and limits of adoption claims
 
@@ -238,13 +210,14 @@ matrices and cubes. Both call the same numerical routines. Shared Python
 orchestration belongs in `cosmolike_notebook_utils/covariance/`; project
 folders contain only survey choices, examples and tests.
 
-Retain flat geometry, massless neutrinos and linear galaxy bias for the
-first validation. Keep magnification and RSD as explicit follow-on field
-components, never silently ignored requested options. Massive-neutrino
-unequal-time growth, TATT, stochastic IA, nonlinear/tidal IA responses,
-and non-Limber SSC/cNG need separate physical extensions.
+The validated Gaussian baseline uses flat geometry, massless neutrinos
+and linear galaxy bias. Magnification and signed NLA are included in the
+gg/gs hybrid spectra; unsupported RSD combinations fail explicitly.
+Massive-neutrino unequal-time growth, stochastic IA, IA-specific
+nonlinear/tidal responses and non-Limber SSC/cNG require distinct physical
+extensions. Gaussian TATT support does not provide those extensions.
 
-## Original non-Limber ticket and remaining extensions
+## Non-Limber design and validation requirements
 
 ### N1. Freeze the field and normalization contract
 
@@ -275,12 +248,13 @@ joint field matrix. A common positive k measure makes the linear term a
 Gram matrix, but does not guarantee positivity of the complete hybrid
 nonlinear result after subtraction. Check that result separately.
 
-Deliverable: equations, axis/units contract, supported-model guards and
-an independent small reference. No public default changes at this stage.
+Equations, axis/units contracts, supported-model guards and independent
+references are prerequisites for a survey default.
 
 ### N2. Validate a covariance-owned transform component
 
-Proposed files: `nonlimber_cov.c/.h`. Keep helpers private unless a second
+Transforms live in `fftlog_cov.c/.h` and all-pairs projection in
+`nonlimber_cov.c/.h`. Keep helpers private unless a second
 consumer needs them. Use a caller-owned grouped workspace and serial FFTW
 planning; reuse plans while their dimensions and execution requirements
 match. Own and release all real/complex buffers explicitly.
@@ -314,8 +288,9 @@ arbitrary quadrature count resolves them.
 
 ### N3. Assemble all-pairs hybrid spectra and expose both APIs
 
-Build gg, gs and ss from shared field transfers, retaining cross-bin and
-excluded gs pairs. Keep the existing Limber entry for independent tests.
+Retain all gg, gs and ss pairs, including crossed and unmeasured gs pairs.
+The implemented hybrid corrects gg/gs; a future ss correction requires
+the same field-consistent validation. Keep the existing Limber entry for independent tests.
 Use one field-consistent multipole transition; initially calculate every
 pair through a supplied cutoff. Do not copy the data-vector per-pair
 relative early exit, which is unreliable for a cross spectrum near zero.
@@ -325,7 +300,7 @@ Expose transfers and the exact-linear, matched-Limber and final spectra
 as separately inspectable notebook quantities. Production returns the
 owned final arrays needed by the shared survey driver without Armadillo
 conversion. Validate shape, units and lifetimes in both boundaries; do not
-copy physics into wrappers. Proposed binding edits belong in existing
+copy physics into wrappers. Binding changes belong in existing
 covariance `production_interface_cov.cpp`, component wrappers/bindings and
 their headers, plus the optional project build lists as needed.
 
@@ -344,19 +319,19 @@ do not subtract it as though it were linear power.
 
 Test narrow redshift bins and every crossed family before projecting all
 blocks through the existing cluster-lensing Y transformation. Counts,
-count Poisson noise and count SSC are unchanged by this spectra ticket.
+count Poisson noise and count SSC are separate from this spectra extension.
 It does not add the separately missing non-SSC count–spectrum covariance.
 
 ### N5. Select accuracy controls and measure costs
 
 Add covariance-owned internal controls for log-distance resolution,
 padding/support, non-Limber multipole extent and any coarse/dense tables.
-Names and base values become public only after tests. The global
+Public names and base values require independent checks. The global
 `accuracy_boost` multiplies each internal refinement; it must not replace
 the survey's tuned baseline. Refine node counts by intervals and preserve
 the old sample positions. `integration_accuracy` remains the independent
-quadrature selector, with the supported precomputed GSL rules and a
-64-node minimum. FFT lengths are not GSL quadrature counts.
+quadrature selector; its supported rules and caps are documented in
+`integration_accuracy_4096.md`. FFT lengths are not GSL quadrature counts.
 
 Try exact coarse samples followed by cubic-spline construction of a dense
 table and linear hot lookups only where measured transfer smoothness
@@ -390,14 +365,13 @@ The proposed 1e-3 mode scale is a starting diagnostic, not an automatically
 accepted universal threshold. The data-vector delta-chi2 target is not a
 covariance accuracy certificate.
 
-Complete optimized/debug checks, optional-covariance-disabled builds and
-data-vector regression tests. Finish a separate didactic review of each
-major component before starting the next: physics rationale, scalar SIMD
-equivalent, explanation of every intrinsic, ownership, paragraph breaks,
-one declaration/comparison per line and 80-column C/header lines. Commit
-each validated ticket locally; never push.
+Validation covers optimized/debug builds, covariance-disabled builds and
+data-vector regression tests. Explanations must cover physical rationale,
+scalar SIMD equivalents, each intrinsic and workspace ownership. Keep
+paragraph breaks, one declaration/comparison per line and 80-column
+C/header lines.
 
-## Original IA ticket; connected IA remains outside the current scope
+## Alignment-model consistency and connected-term extensions
 
 ### I1. Make the forecast model explicit
 
@@ -407,12 +381,11 @@ growth factor, sign, redshift evolution and source-bin mapping. Compare
 the existing low-level window against an independently calculated NLA
 amplitude, rather than reusing that window in both sides of the test.
 
-Expose `none` and `NLA` plus named amplitudes/evolution in the shared
-configuration. Match each project's established nuisance convention;
-do not invent one common nonzero amplitude for all surveys. Remove the
-unconditional zeroing only when this configuration is consumed throughout
-the workflow. Reject unsupported TATT requests clearly. Save the resolved
-IA model and parameters beside each generated matrix.
+The shared Gaussian configuration exposes no IA, NLA and TATT with
+explicit amplitudes. Match each project's nuisance convention rather than
+assigning one arbitrary amplitude to every survey. Save the resolved
+model and parameters beside each matrix, and distinguish Gaussian IA
+from the separately limited SSC/cNG and joint-cluster terms.
 
 ### I2. Complete Gaussian NLA and connect it to non-Limber
 
@@ -464,20 +437,15 @@ and notebook paths, array ownership, repeated model changes and disabled
 covariance builds. Run the project data-vector checks without refreezing
 their supplied likelihood covariances.
 
-## Completion boundaries
+## Physical scope of the results
 
-N1–N6 complete non-Limber **spectra used by Gaussian covariance** under the
-declared hybrid approximation. They do not remove long-mode Limber from
-SSC or unequal-time approximations from cNG. Archive these model choices
-separately; never change a single blanket label to “fully non-Limber.”
+The implemented non-Limber correction supplies spectra used by Gaussian
+covariance. It does not remove the long-mode Limber approximation from
+SSC or unequal-time approximations from cNG. Selected-cluster non-Limber
+transfers and the connected NLA model described above remain separate
+extensions. A single “fully non-Limber” label would conceal these limits.
 
-I1–I4 complete the explicitly validated NLA forecast approximation only.
-Gaussian TATT/B modes are now implemented as recorded above. Stochastic
-IA and IA-specific nonlinear/tidal responses remain separate extensions. A converged numerical calculation is not
-proof that any of these physical approximations is adequate for a survey.
-
-The Gaussian-only implementation authorization supersedes the original
-planning-only status. Never test integration above
-level 4; Roman on this laptop stops at level 3. Preserve completed LSST
-levels 0–3 and both interrupted level-4 folders. Never restart the paused
-overnight validation automatically.
+Gaussian TATT E/B support includes its stated Limber loop terms. Stochastic
+IA and IA-specific nonlinear/tidal responses require additional physics.
+Numerical convergence cannot establish the accuracy of these physical
+approximations for a survey.

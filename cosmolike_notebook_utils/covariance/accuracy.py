@@ -54,8 +54,8 @@ def covariance_accuracy(
     integration_accuracy=0 must already resolve the integrals. Angular
     kernels split wide bins into panels to resolve their fastest oscillations.
     Low-level tests may also use the precomputed 64-node rule. The internal
-    Wynn mass tail alone uses 32/64/128/256/512/1024/2048 nodes;
-    arbitrary smaller or generated rules are unsupported. Refinement never
+    Wynn mass tail alone uses 32/64/128/256/512/1024/2048/4096 nodes;
+    sizes outside these fixed ladders are unsupported. Refinement never
     changes measured bins.
 
     Returns:
@@ -72,7 +72,7 @@ def covariance_accuracy(
     Raises:
         ValueError for accuracy_boost or nonlimber_accuracyboost outside
         1, 2, 4, 8, another factor or count that is not a positive integer,
-        nonlimber_lmax < 2, an integration level outside 0..6, ell_max < 3
+        nonlimber_lmax < 2, an integration level outside 0..7, ell_max < 3
         or a nonpositive response_step.
 
     Interpolation refinement divides intervals, retaining every old sample.

@@ -6,11 +6,12 @@
 retained; small-entry relative errors are diagnostics, not a universal
 production blocker.
 
-The first survey integration ticket adds `spectra_cov.c/.h` and the small
-`generic_interface_cov.cpp/.hpp` binding in `cosmolike/covariances/`.
-Only LSST links the binding at this stage. No existing core C file changed.
-This is a measured intermediate implementation, not a frozen production
-covariance contract or a completed non-Limber survey generator.
+`spectra_cov.c/.h` owns covariance radial windows and all-pairs Limber
+spectra. The measurements below describe the initial LSST component
+configuration. Subsequent shared interfaces and Gaussian non-Limber/IA
+scope are documented in `covariance_interface_rollout.md` and
+`covariance_nonlimber_ia_plan.md`; this component record is not a complete
+survey-accuracy certificate.
 
 ## Inputs and physics
 
@@ -99,19 +100,15 @@ Raw artifacts: `spectra_timing.json`, `spectra_loop_comparison.json`,
 `spectra_core_comparison.json`, and `spectra_simd.s` under the external
 `covariance_reference/results/` directory.
 
-## Separate didactic red-eye pass
+## Interpretation and implementation requirements
 
-After the six focused tests passed, reread the full C/header and binding
-as one ticket. This is a manual self-review; Fable was unavailable.
-The comments now derive the cumulative geometry, distinguish density
-from lensing/IA, explain the positive radial measure and field-matrix
-construction, identify every SIMD lane and worker's output, and state
-which arrays own memory. All C/header lines fit within 80 columns and
-guards have one predicate per line. The endpoint branch and RSD distance
-guard stop unsupported inputs with an explanation. Remaining accuracy
-and physics limits are stated rather than hidden by recovery logic.
+Explain cumulative lensing geometry, density versus lensing/IA weights,
+the positive radial measure and construction of the field matrix. Each
+SIMD lane and worker needs an explicit output region. Endpoint and RSD
+distance guards reject unsupported inputs rather than concealing accuracy
+or physical limits through recovery logic.
 
-This pass was complete before starting the next SSC ticket. The isolated
+The isolated
 debug LSST library passes all six new checks plus ten existing example and
 non-Limber regressions (16 total), with UBSan/float-divide-by-zero enabled.
 All seven project suites also pass: 405 passes with 21 external-library

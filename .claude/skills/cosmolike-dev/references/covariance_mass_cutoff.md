@@ -2,7 +2,7 @@
 
 ## Wynn tail adoption
 
-The later authorized update extends covariance moment integrals to 1e-40
+Covariance moment integrals extend to 1e-40
 Msun/h. Eleven four-decade panels below 1e4 supply I11 partial integrals
 with lower endpoints 1, 1e-4, ..., 1e-40. The C epsilon recurrence uses
 these eleven sums and a residual completion [1-E(0)]u(k,M_min), where E
@@ -48,43 +48,12 @@ G is bitwise unchanged, and SSC/cNG are diagnosed separately in the
 validation reference. This regression result does not establish Fisher
 convergence or calibrate the extrapolated halo population.
 
-### Six-point work queue
+### Alternative unresolved-population model
 
-Keep these numbers stable and repeat all six points in meaningful progress
-reports so the queue remains visible. Points 1, 2, 5 and 6 are complete;
-remaining comparison work is in points 3 and 4. Routine monitoring stays
-silent unless there is a new finding, failure or finish.
-
-1. Implement the 1e-40 covariance tail, stable Wynn extrapolation and
-   accurate FFTLog weighting. Completed and committed in core d95867f,
-   with corresponding updates in all seven projects. Targeted tests pass.
-2. Seven-project regression sweep, full G/SSC/cNG/total comparisons and
-   debug/covariance-disabled checks completed and verified. Record the
-   acceptance evidence in local commits. Never push.
-3. Regenerate the OneCov comparison plots, timings and README with the
-   committed Wynn baseline. Accuracy results, figures, README and scripts
-   are committed as 05e05f2/2ed749a; quiet timing reruns remain. Historical
-   cutoff studies belong in skill references, not the human README.
-4. Compare TJPCov with CoCoA using the same LSST Y1 component and complete
-   matrix tests as OneCov. Gaussian, 19 native SSC cases, four sampling
-   diagnostics and native halo comparisons are committed through ac0ef60.
-   Separated trispectra/cNG, complete small matrices, real-space checks
-   and quiet timings remain. Numerical jobs stay sequential. Record
-   native real-space SSC/cNG as unsupported by the inspected TJPCov
-   dispatcher, not as zero components.
-5. CCL-benchmark README audit and refresh completed, committed as c6d2ae0
-   and 9608443. The old growth-export pivot and current CoCoA choice are
-   distinguished. Future numerical reruns must reconcile those inputs;
-   the documentation update does not make old measurements new.
-6. Schmidt study completed and closed. Retain the current Wynn prescription;
-   do not run the proposed experiments or implement a replacement population.
-   The source study is preserved in `schmidt_unresolved_population.md`.
-
-### Archived Schmidt study; production prescription retained
-
-Decision (2026-10-06): keep the current model. The outline below and the
-separate study reference are background only, not queued implementation
-or numerical experiments. The Wynn validation and comparison work continue.
+The production prescription remains Wynn extrapolation with residual
+response completion. The alternative in
+`schmidt_unresolved_population.md` is a physical-model study, not an
+implementation or a queued numerical run.
 
 Schmidt (2016), arXiv:1511.02231 Appendix A, motivates the following
 comparison with unchanged resolved fits. At a cutoff Ms define F_s=int_resolved f dnu
@@ -102,12 +71,12 @@ enforcing these two scalar integrals. Li, Hu & Takada (2016),
 arXiv:1511.01454, provides the separate-universe abundance-response test
 that connects bias to physical calibration.
 
-## Earlier adoption of the 1e4 cutoff
+## Resolved mass range and the HOD floor
 
-The explicitly authorized change lowers limits.halo_m[RANGE_MIN] from
-1e6 to 1e4 Msun/h. This shared table-domain setting lives in structs.c;
-its one-line change is part of this range-extension ticket, not permission
-to move covariance algorithms into the data-vector C files.
+`limits.halo_m[RANGE_MIN]` is 1e4 Msun/h. The measurements in this section
+compare it with the former 1e6 floor. Shared table-domain coverage does not
+change the ownership of covariance algorithms or the cluster-selection
+mass interval. The covariance-only extension below 1e4 is described above.
 
 Covariance examples use halo_mass_edges() from the shared Python package.
 It adds two one-decade mass panels below 1e6, retaining all eight original
@@ -213,7 +182,7 @@ All 50 cluster covariance tests then pass. No C calculation was changed.
 
 All seven project interfaces were rebuilt in the optimized strict mode.
 Data-vector and covariance sectors ran separately and sequentially, with
-COCOA_HALO_SLOW=1 for Roman's optional halo tier. The environment requested
+COCOA_HALO_SLOW=1 for Roman's optional halo tier. The validation environment used
 eight OpenMP threads and one BLAS thread; individual test modules retain
 their own thread settings, including explicit thread-repeatability sweeps.
 

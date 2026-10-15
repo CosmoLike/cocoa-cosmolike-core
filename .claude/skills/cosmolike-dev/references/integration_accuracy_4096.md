@@ -1,98 +1,65 @@
-# Extended integration levels
+# Extended quadrature: numerical controls and validation
 
-## Current experimental branch: native GSL through 8192 points
+## Native GSL rules
 
-On `experimental/nz-akima-3-5-7`, level 7 selects 8192 points in all
-ordinary Limber paths, cluster projections/counts and the covariance
-accuracy resolver. Existing lower-level choices remain unchanged.
-`malloc_gslint_glfixed` now calls `gsl_integration_glfixed_table_alloc`
-directly at every supported size. GSL owns node generation and storage;
-the wrapper only handles allocation failure. Callers retain their caches.
+`integration_accuracy` selects quadrature independently of interpolation
+accuracy. Level 7 selects 8,192 points in ordinary Limber paths, cluster
+projections/counts and the covariance accuracy resolver. Existing lower-level
+choices remain intact. No fixed rule exceeds 8,192 points.
 
-The user requested this simpler implementation instead of constructing
-composite rules. The generated high-order rules differ from the earlier
-composite rules, so those earlier vectors are historical results, not
-bitwise regression targets for current high-order calculations.
+`malloc_gslint_glfixed` delegates to `gsl_integration_glfixed_table_alloc`
+at every supported size and handles allocation failure. GSL owns node
+generation and storage; callers own the cached table and its invalidation.
+This avoids maintaining a separate implementation of GSL's internal storage
+layout. Generated high-order rules are single Gauss-Legendre rules over
+each physical panel, not copies of a lower-order rule on subpanels.
 
-Native GSL's generated rules have absolute polynomial-moment errors below
-4e-10 in the local checks. The user approved a practical 1e-9 absolute
-tolerance for these checks; stored rules retain their tighter tolerance.
-Do not turn this into a relaxation of the survey Delta chi2 requirements.
+Source/lens mean-redshift integration in `redshift_spline.c` also refines:
+levels 0–5 select 256/512/1024/2048/4096/8192 points, with levels 6–7 capped
+at 8192. `redshift_spline_cluster.c` instead uses refining trapezoid grids.
+Uniform n(z) lookup is mandatory; there is no compile-time GSL-reader bypass.
+The reconstruction factor remains independent of both quadrature and lookup
+refinement, as explained in [the histogram reference](nz_histogram_akima_option.md).
 
-Current records are under `test/nz_akima_three_five/`: `native_8192/`,
-`native_checks_8192_final/` and `native_refinement_8192/`. The native rule,
-angular/mass/tree-sector checks and all 17 frozen-default checks passed.
-The six histogram-reader cases also passed at interpolation boosts 1–4.
-The user accepts practical stability relative to Delta chi2 0.2. Do not
-continue global-boost escalation in pursuit of an exact continuum limit.
-The permanent manual study is `cocoa_nz_study.py`, called explicitly by each
-survey's `tests/studies/run_nz_reconstruction.py`; it is not collected by
-routine pytest. All seven `manual_study_cap8192/` runs completed and were
-verified with fixed inputs/covariances and original cache round trips.
-All seven original default vectors remain bitwise unchanged. Six reader
-checks and 17 frozen-default checks passed; ordinary collection in all
-eight projects excludes these expensive studies. Current published records
-are in `dev_scripts/nz_akima_manual_study.json`.
-DES Y6 has no physical covariance and is excluded from statistical distances.
+## Accuracy criteria
 
-The source/lens mean-redshift rules in `redshift_spline.c` now refine too:
-256/512/1024/2048/4096/8192 at levels 0/1/2/3/4/5, capped at 8192 for
-levels 6 and 7. The user explicitly rejected extending any rule beyond8192.
-The defaults remain unchanged. `redshift_spline_cluster.c` uses refining
-trapezoid grids and has no capped fixed-Gauss selector to extend.
-The old `DONT_NZ_FAST_SUMBSAMPLE` bypass is retired: all galaxy n(z) readers
-prepare uniform lookup grids, whether the reconstruction is cubic or Akima.
+Generated GSL rules have measured absolute polynomial-moment errors below
+4e-10. Their analytic checks use an absolute 1e-9 tolerance; stored rules
+retain tighter checks. Relative errors are inappropriate for moments near
+zero. This quadrature-unit criterion does not relax survey-level Δχ² or
+covariance-convergence requirements.
 
-## Historical composite implementation (retired)
+Checks cover symmetric ordered nodes, positive weights, polynomial moments,
+affine interval maps and both GSL consumers. Targeted covariance checks also
+exercise radial spectra, mass moments, angular operators and tree angles.
+Successful rule checks establish the numerical building blocks; they do not
+certify the resolution of every physical integrand.
 
-`integration_accuracy` retains the existing defaults and levels 0–4.
-Level 5 selects 2048 points and level 6 selects 4096 points in every
-ordinary data-vector Limber path, including cluster projections and
-cached derivative paths. The shared covariance accuracy resolver exposes
-the same levels for radial, angular, mass and tree-angle integration.
+The histogram study holds physical inputs and covariance fixed while varying
+interpolation and quadrature separately. Its practical stability scale is
+Δχ² = 0.2 at the stored fiducial points. Escalation beyond the tested settings
+requires evidence of a material unresolved error, rather than an assumption
+that every small remaining difference warrants another global refinement.
+Covariance convergence requires its own matrix and inference diagnostics.
 
-The new sizes are **composite rules**, not single Gauss-Legendre rules of
-orders 2048 or 4096. `malloc_gslint_glfixed` maps GSL's stored 1024-point
-nodes onto two or four equal subintervals. It stores the positive half
-of the symmetric result in GSL's public descriptor layout, with owned
-arrays and `precomputed=0` for ordinary GSL destruction. Existing sizes
-still call the original allocator. The caller's cached descriptor is
-rebuilt only when its existing numerical-settings cache invalidates.
-GSL's public implementation documents the symmetric storage and free:
-https://github.com/ampl/gsl/blob/master/integration/glfixed.c
+## Evidence and reference compatibility
 
-The old rule choices differ between consumers: clustering and cluster
-counts already reach 1024 at level 3, while shear and most other Limber
-paths reach it at level 4. Those choices are preserved. The covariance
-ladder is 96/128/256/512/1024/2048/4096; its Wynn-tail ladder is
-32/64/128/256/512/1024/2048. The latter therefore also uses the composite
-helper at its final level. Arbitrary generated orders remain unsupported
-at covariance interfaces. The global interpolation `accuracy_boost`
-does not select quadrature sizes.
+Native-rule and targeted covariance-sector checks pass, together with six
+histogram-reader cases and 17 frozen-default checks. Seven explicit
+reconstruction studies preserve the original default vectors bitwise and
+check exact restoration after changing reconstruction. Their maintained
+summary is `dev_scripts/nz_akima_manual_study.json`; DES Y6 is excluded from
+statistical distances because its identity metric is not a survey covariance.
 
-Validation in `nz_histogram_experiment/results/`:
+Detailed native-rule measurements and test outputs are in the external
+`test/nz_akima_three_five/native_8192/`, `native_checks_8192_final/` and
+`native_refinement_8192/` records. The committed histogram reference explains
+the corresponding model comparisons and their limits.
 
-- `extended_rules_checks.json`: all supported stored rules plus 2048/4096
-  have ordered symmetric nodes, positive weights, accurate analytic
-  moments and affine-map integrals through both GSL consumers. Rules
-  through 1024 reproduce GSL arrays bitwise.
-- `akima_fourier_refined.json`: Roman Fourier and KL, both original and
-  Akima n(z), levels 4/5/6, matched inputs/masks/covariances. All four
-  level-4 vectors reproduce the previous modules bitwise. Level-6
-  representation distances are 0.491420 and 0.636057; the last Akima
-  refinement distances are 4.49e-5 and 4.81e-7.
-- `extended_covariance_sector_checks.json`: both new sizes passed public
-  halo-moment, real-space-operator and tree-angle checks. Maximum mass
-  changes from 1024 were 2.22e-7 fractionally; angular changes were below
-  6.7e-15 absolute. These are small-fixture checks, not full survey
-  covariance convergence.
-- `extended_covariance_original_checks.xml`: 23 tests passed in the LSST
-  notebook-tools and covariance-spectra modules, including new extended
-  rule tests. The Akima counterpart retains two coarse-resolution
-  failures described in `nz_threefold_akima.md`; do not relax those tests
-  or call Akima production-validated.
-
-External builds preserve original strict compilation commands, source
-and module hashes. Installed interfaces are unchanged. This validates the
-new rules and selected consuming paths, not convergence of every survey
-at a chosen level, a full new regression release, or a timing claim.
+Composite rules assembled from the stored 1024-point rule use different
+nodes from native GSL rules of the same total size. Their saved results
+therefore provide a method comparison, not a bitwise target for the native
+implementation. Preserve that distinction when reading the earlier
+`test/nz_histogram_experiment/results/extended_rules_checks.json` and
+`extended_covariance_sector_checks.json` records. Neither implementation's
+small-fixture tests alone establish full-survey covariance convergence.

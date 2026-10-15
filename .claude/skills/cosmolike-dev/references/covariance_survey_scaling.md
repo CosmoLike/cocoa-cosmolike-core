@@ -68,7 +68,7 @@ development records, not public README prerequisites.
 
 ## Fresh interfaces with grouped halo rows and connected blocks
 
-All seven interfaces now include the I11-only halo path and complete
+All seven interfaces include the I11-only halo path and complete
 connected-block wrapper. The controlled Gaussian and halo comparisons
 are separate records; this pass measures the combined complete forecast.
 The model, boost, timing exclusions, warm-up and repetition rules above

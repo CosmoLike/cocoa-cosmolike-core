@@ -82,14 +82,12 @@ LSST interface. Logs and sampled inputs are in `covariance_reference/`.
 Set `COSMOLIKE_HALO_COVARIANCE_LIBRARY` and the usual external-reference
 path to run LSST's `test_covariance_halo.py`.
 
-## Didactic red-eye pass
+## Interpretation and implementation requirements
 
-After the five focused tests passed, reread the complete C/header before
-assembling responses or trispectra. Comments distinguish peak-height
-physics, number density, volume factors, cb versus total observables,
-profile mass definition, unresolved mass, the five moment roles and each
-precomputation stage. Allocation ownership and deterministic output lanes
-are explicit. Every C/header line fits 80 columns, with one predicate per
-line. A simple density guard rejects uninitialized input. This is a manual
-self-review, not a Fable review. Full covariance/model accuracy is still
-an open gate.
+Halo-moment explanations must distinguish peak height, number density,
+volume weights, cb versus total fields, profile mass definition and
+unresolved mass. The five moments have different physical roles; sharing
+preparation does not make their weights interchangeable. Allocation and
+output ownership preserve deterministic parallel sums. The density guard
+rejects uninitialized input; component checks do not establish full
+covariance accuracy.

@@ -64,7 +64,7 @@ The 256-to-512 changes in the new density/single/pair moments are
 interpolated readers; no survey accuracy setting or FoM claim follows.
 
 External evidence: `test/covariance_reference/cluster_moments_pilot.py`,
-`check_cluster_moments_debug.py`, their results and session logs. Public
+`check_cluster_moments_debug.py`, their results and validation logs. Public
 tests are `des_cluster/tests/covariance/test_moments_cluster.py`.
 
 ## Non-SSC count-matter cross projection
@@ -89,24 +89,22 @@ estimators in two volumes. It independently recovers the two-halo factor
 two and volume cancellation, with 3e-13 relative agreement. Other algebra
 comparisons use 2e-14. It is not a survey accuracy or timing measurement.
 
-The subsequent manual didactic review checked the first versus second
-mass-moment indices, full-halo I11 versus selected J11, why a count's
-area cancels, the f_K^-2 projection, source transfers and the distinction
-between matter partners and discrete cluster partners. The docstrings and
-public README state units and output shapes and do not call this a full
-cluster covariance. The notebook package exports both count helpers.
+Count–spectrum contractions distinguish first and second mass-moment
+indices, full-halo I11 from selected J11, and matter partners from discrete
+cluster partners. Explain why survey area cancels from a count response
+and why the cross projection retains f_K^-2. Source transfers, units and
+output shapes must be explicit; count helpers alone are not a full
+cluster covariance.
 
 ## Didactic review of the mass integrator
 
-Completed after the analytic, debug and physical checks, before the next
-major implementation ticket. The manual pass checked dimensions, selection
-versus catalog normalization, the incomplete response interpretation,
-exclusive-category versus different-halo correlations, ownership and odd
-SIMD tails. Every intrinsic explains lane contents and the mathematical
-operation. Loop overviews explain the physical sum and independent work.
-C/header and added C++ lines fit 80 columns; declarations and predicates
-are separated. Public README text defines the selected moments and links
-the primary papers, with no machine-local harness or bot-skill dependency.
+The selected-moment contract distinguishes selection weights from catalog
+normalization, an incomplete mass response from a completed matter
+response, and exclusive categories from different-halo correlations.
+Explain dimensions and SIMD tails at the calculations that use them.
+Each loop needs a physical sum, an independent output and explicit memory
+ownership. Public documentation defines moments and units with primary
+references rather than machine-local test paths.
 
 ## Batched physical sample reader (2026-10-04)
 

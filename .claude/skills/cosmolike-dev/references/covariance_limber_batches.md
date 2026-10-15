@@ -64,10 +64,9 @@ and RSD off/on with NLA and magnification present. Every spectrum, base
 window and geometry value is bitwise identical, including uneven final
 batches. The subsequent all-project covariance run passes 116 checks.
 
-The manual didactic review checked why multipoles are independent while
-radial nodes cannot be dropped, preservation of unmeasured crossed pairs,
-the first snapshot's ownership, the dictionary copy before replacing its
-spectrum array, explicit storage-only batch semantics and physical units.
-The loop overview explains the reason for batching; no new intrinsic or
-C loop needs a SIMD explanation. Full high-boost Gaussian convergence is
-recorded in covariance_accuracy.md separately from performance evidence.
+Multipole batches are independent, but radial nodes and unmeasured
+crossed field pairs cannot be dropped. The first returned snapshot must
+own its arrays; replacing a spectrum in a copied result must not mutate
+an earlier result. Batching is a storage choice. Numerical high-boost
+Gaussian convergence is documented in `covariance_accuracy.md` separately
+from these performance measurements.

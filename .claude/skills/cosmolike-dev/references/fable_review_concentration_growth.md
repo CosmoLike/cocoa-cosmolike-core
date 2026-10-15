@@ -1,6 +1,6 @@
 # Which D(z) in Bhattacharya 2013's c = 9.0 nu^-0.29 D^1.15 with massive neutrinos?
 
-Follow-up to fable_review_F_neutrino_halos.md. Code reference: conc(),
+Companion to `fable_review_neutrino_halos.md`. Code reference: conc(),
 `/Users/vivianmiranda/data/COCOA/september2026/test/cocoa/Cocoa/external_modules/code/cosmolike_core/cosmolike/halo.c:677-700`.
 Tags: VERIFIED (source read, with arXiv id + section/eq/fig) or NOT VERIFIED.
 
@@ -40,7 +40,7 @@ So: in B13 there is a single growth function, entering twice — through
 $\nu\propto 1/D$ and through the $D^{1.15}$ prefactor. Net sensitivity of the
 $200\rho_b$ full-sample fit to D at fixed $\sigma(M,0)$:
 $$c\;\propto\;\nu^{-0.29}D^{1.15}\;\propto\;D^{0.29}\,D^{1.15}=D^{1.44}.$$
-(Derivation from the VERIFIED fit; the 1.44 combination itself is my algebra.)
+(The exponent 1.44 follows algebraically from the cited fit.)
 
 ## 2. c(M,z) in simulations WITH massive neutrinos
 
@@ -85,9 +85,9 @@ $$c\;\propto\;\nu^{-0.29}D^{1.15}\;\propto\;D^{0.29}\,D^{1.15}=D^{1.44}.$$
   neutrino mass into CDM. VERIFIED (2009.01858 Sec. 4, Eqs.
   concentration_mass, formation_redshift, Dolag_correction).
 - DEMNUni, Quijote, Mira-Titan, Euclid neutrino code comparison, Bayer et al.,
-  Ishiyama (Uchuu), Hagstotz et al.: I found no dedicated c(M, m_nu)
-  calibration from these suites in the searches performed. NOT VERIFIED
-  (absence claim; searched today). HMcode-2016 (1602.02154) neutrino details:
+  Ishiyama (Uchuu), Hagstotz et al.: no dedicated c(M, m_nu) calibration
+  was identified in the 2026-10-02 literature review. This limited search
+  does not establish absence of such a calibration. NOT VERIFIED. HMcode-2016 (1602.02154) neutrino details:
   not read. NOT VERIFIED.
 
 None of the above expresses c(M, m_nu) through a *total-matter* growth; where
@@ -111,12 +111,12 @@ Takada).
   the physics, a single growth function is only a time-translation device.
   VERIFIED precedents as cited in Sec. 2; the application to B13 specifically
   is inference, NOT VERIFIED.
-- Size of the choice: with the group's CAMB numbers ($D_{cb}$ at halo scales
+- Size of the choice: with the CAMB measurements in `growth_factor_measurements.md` ($D_{cb}$ at halo scales
   vs total-matter D at $k_0=5\times10^{-4}$/Mpc differing by 0.1-0.9% for
   $m_\nu=0.06$-0.6 eV at z=0.3-1), the full sensitivity $c\propto D^{1.44}$
   (prefactor $D^{1.15}$ plus $\nu^{-0.29}\propto D^{+0.29}$) gives
-  **0.14-1.3% in c** between the two growth choices (the task's quoted
-  1.15x route alone gives 0.1-1.0%). For comparison, all VERIFIED error
+  **0.14-1.3% in c** between the two growth choices (the prefactor-only
+  sensitivity gives 0.1-1.0%). For comparison, all VERIFIED error
   scales of the same quantity are larger: +-20% cosmology non-universality of
   c-nu (1112.5479 Sec. 5), $\sigma_c=0.33c$ per-halo scatter (1112.5479
   Sec. 4.3), 10-20% systematic spread between simulation analyses and a 1.05
@@ -127,24 +127,24 @@ Takada).
   $P_{lin}$ at $k_0=5\times10^{-4}$/Mpc) is the *least* motivated option with
   neutrinos: at $k_0<k_{nr}$ it tracks the total-matter large-scale growth,
   which misses the free-streaming suppression at halo scales entirely — this
-  is exactly the 0.1-0.9% growth error the group measured, amplified by the
-  exponential HMF tail elsewhere. (Code behavior per the task context and
-  cosmo3D.c:1740-1975, read; characterization VERIFIED from code.)
+  is exactly the 0.1-0.9% growth difference in that measurement, amplified by the
+  exponential HMF tail elsewhere. This describes the source inspected
+  on 2026-10-02; the evolving-variance implementation is documented in
+  `sigma_fftlog_implementation.md`.
 
-## 4. Recommendation for cosmolike
+## 4. Implications for the halo prescription
 
-1. Keep Bhattacharya 2013 as the c(M) model for now: its own +-20%
+1. The Bhattacharya 2013 baseline has substantial calibration uncertainty: its own +-20%
    non-universality and the 0.33c scatter dominate every neutrino-related
    subtlety, and Massara 2014 verified that an unmodified massless c(M) on cb
    halos is adequate at current halo-model accuracy.
-2. In HALO_FIELD_CB mode, build *one* cb growth factor $D_{cb}(a)$ at halo
+2. A separable approximation uses *one* cb growth factor $D_{cb}(a)$ at halo
    scales (e.g. from $\sqrt{P_{cb}(k_h,a)/P_{cb}(k_h,1)}$ at
    $k_h\sim0.1$-0.5/Mpc, or $\sigma_{8,cb}(z)$ ratios) and use it everywhere
    the a=1 sigma table is rescaled — fnu, halo bias, bias_norm *and* both D's
    inside conc() (the $\nu$ argument and the $D^{1.15}$ prefactor). Splitting
    the two D's in conc() has no calibration basis and would break the
-   internal consistency of the B13 fit (and the group's
-   historical-consistency rule). The conc()-specific gain from the better D is
+   internal consistency of the B13 fit. The conc()-specific gain from the better D is
    only 0.14-1.3%, but it comes for free once the shared growfac is fixed for
    the mass function, where the same 0.1-0.9% matters at the tens-of-percent
    level in cluster counts.
@@ -156,7 +156,13 @@ Takada).
    large-scale growth with neutrinos clustered along CDM, VERIFIED); Diemer &
    Joyce 2019 with cb-based peak height is the better-motivated modern c(M)
    (5% in massless LCDM/scale-free, VERIFIED abstract of 1809.07326), but its
-   massive-neutrino usage is NOT VERIFIED anywhere I read. Note from Mummery
+   massive-neutrino usage is NOT VERIFIED by the sources reviewed here. Note from Mummery
    2017 that the neutrino effect on c(M) is mostly an amplitude shift tracking
    the suppressed growth — a $\nu$-based model fed with $\sigma_{cb}$ already
    captures most of it automatically.
+
+The current implementation uses evolving cb variances and
+D_cb(M,a)=sigma_cb(M,a)/sigma_cb(M,1), rather than a selectable halo field
+or one pivot-growth rescaling. See `neutrino_growth_plan.md` for that
+design. This improves field consistency without supplying a new
+massive-neutrino calibration of the concentration fit.

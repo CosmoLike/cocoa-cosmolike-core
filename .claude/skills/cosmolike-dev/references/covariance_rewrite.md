@@ -1,51 +1,37 @@
-# Covariance rewrite: constraints, first implementation, and remaining gates
+# Covariance architecture, physical conventions and validation
 
-Owner request: 2026-10-03. Local source baseline: core `852296f`, after the
-sigma_cb(M,a) implementation. The study lives outside git in
-`test/cosmocov_port_study/` and the independent references in
-`test/covariance_reference/`. This record keeps the constraints and current
-status available in a fresh core checkout; it does not replace the study.
+Covariance construction combines supplied survey inputs, spectra and halo
+responses with estimator-specific projection operators. The implementation
+separates these layers so that their physical assumptions, numerical errors
+and computational costs can be checked independently.
 
-## Boundaries
+## Module boundaries
 
-- New C code only in `cosmolike/covariances/`, with filenames ending
-  `_cov.c`. Existing data-vector C files are not modified for this rewrite.
-  The later explicit request to retire the global SIMD switches is a
-  separate maintenance ticket; it does not relax this port boundary.
-- Covariance tables, grids, model choices and cache ownership are separate
-  from the data vector. Reading public APIs is allowed. Private copies of
-  internal helpers stay private to the covariance module when needed.
-- OpenBLAS remains at one thread. Parallelism belongs to explicit OpenMP
-  loops, with static scheduling and no sum split across workers.
-- Default strict-IEEE and debug builds only. Aggressive/fast-math mode is
-  retired. No new binary searches on uniform or piecewise-uniform grids.
-- Use small guards for unsupported inputs. No speculative recovery system.
-- Production SIMD paths are unconditional. Scalar comparison builds live
-  only in the external test harness. Keep C lines within 80 columns and
-  put each comparison or predicate on its own line, including assignments.
-- After each tested major ticket, complete a separate didactic red-eye
-  review for an advanced undergraduate reader before starting the next
-  major ticket. This applies to a substantial component, not each helper.
-- Commit locally; the owner pushes. Never push.
+- Covariance C routines live in `cosmolike/covariances/`, with filenames
+  ending `_cov.c`. Keep covariance-specific calculations out of data-vector
+  C files. Changes to shared primitives require their own regression checks.
+- Covariance grids, model choices and ownership are separate from the data
+  vector. Public shared readers can be reused, but data-vector pair cuts and
+  cache lifetimes do not define covariance behavior.
+- OpenBLAS uses one thread. Explicit OpenMP loops own parallelism, with
+  static scheduling and complete sums assigned to individual workers.
+- Production SIMD is unconditional. Independent scalar comparisons belong
+  in external tests. Use strict-IEEE or debug builds; fast-math is unsupported.
+- Uniform or piecewise-uniform grids use direct indexing. Unsupported inputs
+  receive explicit guards rather than speculative recovery paths.
+- Comments explain equations, units, memory ownership and numerical choices.
+  Review each substantial component as a coherent calculation, including its
+  header and tests. C lines stay within 80 columns, with separate predicates
+  and readable control-flow blocks.
+- Commit locally; publishing remains a separate action. Never push.
 
-## What the study review changes
+Halo statistics use sigma_cb(M,a) and rho_cb, with scale-dependent cb growth
+in concentration. The M200m radius and lensing mass weight use total matter.
+A total/cb selector or one growth factor for every halo mass would change
+this physical prescription. The neutrino-free limit does not justify that
+simplification for massive-neutrino cosmologies.
 
-The September plan used `covariance/`, assumed the old sigma(M,1) halo
-convention, and referred to three compiler modes and a concurrent cluster
-port. Those descriptions are obsolete. The directory is `covariances/`;
-halo statistics use sigma_cb(M,a) and rho_cb, concentration uses scale-
-dependent cb growth, and only strict default/debug builds are supported.
-The M200m radius and lensing mass weight still use total matter. Do not
-bring back the retired total/cb halo switch or evolve all masses with a
-single growth factor.
-
-Review anchors: reports 01/09 for Gaussian, noise and Fourier conventions;
-02/10/11/12 for cNG, SSC, derivations and the contract gates; 03/04/08 for
-the node/halo/side-module architecture; 05/06/07 for project requirements,
-existing covariance variants and literature. Their line numbers refer to
-older source. Verify the actual code before copying a method.
-
-The current source establishes these implementation patterns:
+## Numerical design
 
 | Existing source | Covariance consequence |
 |---|---|
@@ -54,7 +40,12 @@ The current source establishes these implementation patterns:
 | `cosmo3D.c::sigma2_fields_build` | Separate workspace geometry from cosmology values; group arrays with the same lifetime; warm lazy tables before parallel work. |
 | `halo.c::nfw_fmadd4` and mass-node loops | Hoist row invariants, use explicit SIMDe, and preserve fused-operation rounding. Measure how vector values move through registers. |
 
-## First validated slice
+These patterns explain why workspaces and physical values have separate
+lifetimes, and why all-pairs spectra must be prepared before projection.
+They are design constraints, not a claim that one tile size or loop order
+is fastest on every architecture.
+
+## Gaussian foundation and estimator conventions
 
 `cosmolike/covariances/gaussian_cov.c` contains stateless production
 building blocks: integer-ell Wick covariance, projection by two supplied
@@ -62,12 +53,11 @@ operators, stable spherical annulus pair area, and analytic pure-noise
 covariance. The caller owns and reuses scratch. There is no allocation,
 FFTW planning, BLAS call, global cache, or spectrum computation here.
 
-These are provisional numerical interfaces, not the frozen full module
-contract. They exercise the Gaussian algebra without introducing a survey
-driver or modifying any project covariance. They do not complete Phase 0,
-Phase 1 or Phase 2 of the study.
+These supplied-input primitives isolate the Gaussian algebra from survey
+assembly. Their validation must be distinguished from the convergence of
+the complete covariance.
 
-Physics sources checked directly:
+Physics references:
 
 - [Krause & Eifler, CosmoLike](https://arxiv.org/html/1601.05779v1),
   Appendix A, Eq. 28 in v1: the two Gaussian Wick pairings and mode count.
@@ -76,7 +66,7 @@ Physics sources checked directly:
   noise, effective dispersion per shear component, and ordered versus
   unordered galaxy pairs.
 - [Takada & Hu, super-sample covariance](https://arxiv.org/html/1302.6994v3),
-  corrected Eq. 44 and Appendix A: anchors for the later response and
+  corrected Eq. 44 and Appendix A: anchors for response and
   line-of-sight covariance, not implemented by the Gaussian primitives.
 
 Noise is supplied in the observed field: N_g=1/n and
@@ -96,9 +86,56 @@ Measured or mask-derived pair areas can replace the uniform-survey area.
 
 The real-space harmonic part computes CC+CN+NC directly, avoiding both a
 finite-ell approximation to NN and catastrophic subtraction when N >> C.
-The harmonic option retains NN, suitable for a later Fourier-band driver.
+The harmonic option retains NN, suitable for Fourier-band projection.
 Signal E/B bookkeeping and the removal of low angular modes must be
 resolved with the actual estimator before real-space survey integration.
+
+## Component organization
+
+| Layer | Responsibility and reference |
+|---|---|
+| Survey inputs | [Radial inputs and all-pairs spectra](covariance_survey_inputs.md): covariance-owned efficiencies and complete field-pair coverage. |
+| Gaussian non-Limber and IA | [Hybrid spectra and alignment](covariance_nonlimber_ia_plan.md): matched Limber subtraction, density/RSD kernels and E/B bookkeeping. |
+| Angular and mask operators | [Bin operators](covariance_operators.md) and [mask geometry](covariance_mask.md): estimator normalization, exact integer bands and pair areas. |
+| SSC | [Mask and shell responses](covariance_ssc.md), with explicit long-mode and local/global-mean conventions. |
+| cNG | [Perturbation averages](covariance_perturbation.md), [halo moments](covariance_halo.md) and [response/trispectrum assembly](covariance_non_gaussian.md). |
+| Project interfaces | [Production and exploration interfaces](covariance_interface_rollout.md), with shared C calculations and separate output ownership. |
+| Cluster forecasts | [Joint covariance model](covariance_cluster_joint.md), including its selected-halo and count-cross approximations. |
+
+These references own the implemented capabilities and limitations of their
+components. A Gaussian non-Limber or IA calculation does not imply the same
+extension of SSC/cNG. A joint cluster matrix is not automatically a complete
+selected/discrete-halo covariance.
+
+## Survey-level validation
+
+A correct primitive is necessary but insufficient for a trustworthy survey
+covariance. Validation must cover the following distinct questions:
+
+1. Do inputs, units, row ordering, noise and physical conventions match the
+   independent comparison? Keep Gaussian, SSC and cNG arrays separate.
+2. Are all required field pairs present, including cross-bin gg and gs pairs
+   excluded by data-vector scale or overlap cuts? Match the linear Limber
+   term subtracted from the non-Limber density calculation.
+3. Are radial, angular, mask and mass grids independently resolved? A
+   spherical-cap pilot showed a 1.05e-5 pair-area error from its mask cutoff
+   and SSC-shell changes up to 1.30e-6 after mask refinement. Geometry
+   resolution must therefore be tested alongside the covariance integrals.
+4. Is the total matrix finite and positive on the intended estimator space,
+   and are parameter errors and Figure of Merit stable under refinement?
+   Use the [covariance accuracy protocol](covariance_accuracy.md). Do not
+   transfer the data-vector Δχ² threshold directly to covariance convergence.
+5. Are physical approximations identified separately from numerical error?
+   Takada & Hu's corrected Eq. 44 differentiates the two-halo spectrum;
+   the squeezed-tree alternative uses the linear-spectrum slope. Their
+   difference must be measured. The tree coefficients (17/7, 1/2) are not
+   a calibrated nonlinear tidal response, and an inferred paper typo is
+   not a published erratum.
+
+Negative magnification products are physical signed contributions. Never
+clip them, repair eigenvalues or refreeze a likelihood to hide a failed
+comparison. Cross-code agreement and regression tests establish different
+facts from convergence or physical calibration.
 
 ## Measurements (Apple M2 Pro, 2026-10-03)
 
@@ -138,124 +175,13 @@ The last check uses broad rings and a 3e-4 tail tolerance; it does not
 choose a production ell cutoff. NumPy longdouble equals float64 on this
 host; high-precision claims come only from the mpmath checks.
 
-## Didactic red-eye review of the Gaussian foundation
+## Reproducible Gaussian kernel benchmark
 
-Completed a separate manual review after the seven primitive checks passed
-in optimized and debug SIMD builds. This was a self-review, not a Fable
-model review. Read the whole C/header pair, tests and module documentation
-as one major ticket before beginning another implementation component.
-
-- The Wick comments derive both surviving pairings and explain the
-  integer-multipole mode count, observed-field noise, and NN separation.
-- The projection comments define operator normalization, array ownership,
-  worker ownership, vector-lane meanings and why no ell reduction changes
-  order. Weighting and projection now have separate visual sections.
-- The pair-count comments distinguish repeated catalog IDs from distinct
-  catalogs, ordered from unordered pairs, and per-component shear noise.
-  The two boolean assignments are explicitly mapped to Kronecker deltas.
-- Removed the production scalar switch. Every C/header line is at most
-  80 characters; guards and combined assignments have one predicate per
-  line. The external scalar baseline remains available for checking.
-- Remaining scientific limits are explicit: uniform-footprint pair area,
-  independent catalogs, supplied operators/spectra, and no survey driver.
-
-The final rebuilt project run passed **399 tests across all seven
-projects**, including Roman's slow halo checks and the seven new LSST
-primitive checks. Another 24 debug checks passed for the common and
-cluster paths. No references were refrozen. Counts, logs and the separate
-SIMD-retirement review are recorded in
-[the SIMD retirement record](simd_retirement.md).
-The final comments also make the shared ell grid and disjoint writable
-rows explicit; vector names follow the existing `v2d`/`v` convention.
-
-## Next gates, before a survey covariance can be used
-
-The first survey-input ticket now has its own
-[implementation, validation and didactic-review record](covariance_survey_inputs.md).
-It supplies all-pairs Limber spectra and covariance-owned efficiencies;
-the full non-Limber and Phase-0 accuracy gates below remain open.
-The [SSC mask/shell-response ticket](covariance_ssc.md) adds independently
-tested mask normalization and response projection, including a general
-correlated-radial-kernel path through the existing SIMDe contraction.
-Its supplied response can now come from the explicit halo prescriptions below.
-The [cNG angular ticket](covariance_perturbation.md) now checks reduced
-SIMDe tree averages against explicit Wick diagrams and high-precision
-corner integrals.
-The subsequent [halo-moment ticket](covariance_halo.md) and
-[response/trispectrum assembly ticket](covariance_non_gaussian.md) now
-implement and independently test those node-level ingredients. Full
-survey integration and the Phase-0 physics/accuracy gates remain open.
-The external [projection diagnostic](covariance_projection_measurements.md)
-connects these ingredients on the pinned survey without replacing a project
-covariance or claiming that band centers are exact band averages.
-
-After these five tickets, all seven project suites passed: 405 tests with
-21 external-library skips. Enabling every isolated covariance library
-passed all 34 focused tests, including those 21, for **426 distinct passing
-tests**. The 27 new focused tests also pass with debug instrumentation;
-the isolated debug LSST interface passes ten existing example/non-Limber
-regressions as well. No references were refrozen. Component timing and
-accuracy measurements are recorded with each ticket, including failures
-of the full survey refinement gate.
-
-The following [angular-operator ticket](covariance_operators.md) adds six
-optimized/debug checks, for 432 distinct passing tests including the earlier
-project run. It builds unit-normalized full-sky spin-bin averages and exact
-integer Fourier bands. This isolated library does not relink the projects;
-their survey-operator integration and accuracy gates remain open.
-
-The [mask pair-geometry ticket](covariance_mask.md) adds three isolated
-optimized/debug tests, for 435 distinct passing tests including the earlier
-project run. Direct cap geometry exposes a 1.05e-5 pair-area error at the
-pilot's mask cutoff; the refined mask also moves SSC shell variances by up
-to 1.30e-6. Mask resolution is part of the still-open survey accuracy gate.
-All 43 covariance tests pass together with the external libraries enabled
-(`results/combined_covariance_final_tests.log`). The final radial diagnostic
-with a common refined mask changes total modes by at most 1.043e-6.
-The old SSC componentwise production gate
-is superseded by [the accuracy protocol](covariance_accuracy.md).
-Roman FoM convergence has not yet been measured.
-
-1. Complete the pinned 2-lens/2-source configuration's convergence study
-   and the requested [Roman real-space target](covariance_roman.md), using
-   FoM, parameter errors and covariance validity as the scientific tests.
-   The overlapping samples, signed magnification, per-bin noise, CAMB dump
-   and raw spherical-cap mask are available outside git. The preliminary
-   projected diagnostic does not yet meet the full numerical contract.
-2. Implement and validate covariance-owned all-pairs spectra: cross-bin
-   gg, excluded gs, non-Limber gg and gamma_t, full magnification foreground,
-   and consistent matched linear Limber subtraction. Keep every field pair.
-3. Complete the Phase-0 independent SSC/cNG references, the CosmoCov oracle
-   gate, units tests, realistic-node PSD checks and physics-delta metrics.
-   Preserve separate Gaussian, SSC and cNG arrays; never clip negative
-   eigenvalues or discard negative magnification products.
-4. Before freezing SSC choices, distinguish the study's derived forms from
-   published formulae: Takada & Hu's corrected Eq. 44 differentiates the
-   two-halo spectrum, while the study's squeezed-tree derivation uses the
-   linear-spectrum slope. Keep the derivation and measure that difference.
-   The projected tree coefficients (17/7,1/2) are not a calibrated nonlinear
-   tidal response. No inferred paper typo is a published erratum.
-5. Freeze full headers only after the study's gates pass. Then wire the
-   dataset inputs, row ordering, separate covariance outputs, writer and
-   project generators. New covariance files coexist with existing ones
-   until validated. Do not refreeze a likelihood to hide a failed check.
-
-The full rewrite remains open in Cocoa's execution backlog. No claim of
-delta-chi-squared < 0.2 or of survey covariance convergence follows from
-the primitive tests or timing table.
-
-## Developer-only Gaussian reference workflow
-
-Moved from the public covariance README after the owner's documentation
-clarification. These commands depend on the owner's external checkout and
-local build environment; they are not instructions for a fresh core clone.
-The public README now explains the physics and each source file directly,
-with paper citations and no links to bot skills or untracked studies.
-
-The independent NumPy/mpmath reference lives outside git, at the owner's
-requested `test/covariance_reference/`. Its `build_primitives.sh` compiles
-the Gaussian production functions into an isolated library without relinking
-any project. From `test/`, with the Cocoa conda environment active on macOS:
+The independent NumPy/mpmath reference is external to the core repository,
+in `test/covariance_reference/`. Its `build_primitives.sh` creates isolated
+libraries without relinking a project. The following commands require that
+checkout and the Cocoa conda environment on macOS; a fresh core clone alone
+does not provide these artifacts.
 
 ```bash
 bash covariance_reference/build_primitives.sh scalar
@@ -265,7 +191,7 @@ bash covariance_reference/build_primitives.sh debug_simd
 export OPENBLAS_NUM_THREADS=1
 export COSMOLIKE_COVARIANCE_REFERENCE="$PWD/covariance_reference"
 export COSMOLIKE_COVARIANCE_LIBRARY="$PWD/covariance_reference/results/gaussian_simd.dylib"
-python cocoa/Cocoa/projects/lsst_y1/tests/test_covariance_primitives.py -v
+python cocoa/Cocoa/projects/lsst_y1/tests/covariance/test_covariance_primitives.py -v
 ```
 
 Run the same test with each library. The project's pytest suite discovers
@@ -287,5 +213,5 @@ production accuracy setting.
 The scalar comparison compiles the pinned core baseline `6f055d0` with
 an explicit scalar `fma` sum; the production projection always uses SIMDe.
 Bitwise agreement was checked on native FMA/NEON. Targets that emulate
-FMA require their own rounding comparison. This historical workflow
-covers the Gaussian primitives, not every later covariance component.
+FMA require their own rounding comparison. This pinned workflow
+covers the Gaussian primitives, not the full covariance assembly.

@@ -38,13 +38,10 @@ External reproduction: `test/covariance_reference/cluster_localization_pilot.py`
 and its JSON report. No performance claim is made while project
 regressions are running.
 
-## Separate didactic review
+## Interpretation and implementation requirements
 
-Read the entire helper, tests and public explanation after the numerical
-checks and before the next major ticket. The explanation derives why
-one versus two transformations appear in different blocks; defines the
-joint indexing and angular order; shows why the second product reads the
-first product's result; and separates deterministic zero rows from bad
-eigenvalues. Array rearrangements explain which axis the C projection
-sums. Existing C lane-level documentation remains the implementation
-reference; no new intrinsic or scalar fallback was added.
+Localization requires one transformation for a cross block and two for
+an auto block. Explain the joint indexing, angular order and the axis
+summed by each C projection. The second matrix product consumes the first
+product's result. Deterministic zero rows from the Y transform must remain
+distinct from unphysical negative covariance modes.

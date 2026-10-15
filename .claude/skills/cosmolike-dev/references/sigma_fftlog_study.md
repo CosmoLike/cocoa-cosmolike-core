@@ -1,9 +1,10 @@
 # sigma^2(R, z): FFTLog vs direct integration
 
-Study for PLAN.md Phase 2 (owner request, 2026-10-02). Python only; no
-repository was edited. Accuracy only: no speed benchmark was run (the
-machine was busy). `timing.py` was checked on a tiny case and is ready for
-a run on a quiet machine (section 6).
+The Python study compares direct quadrature and FFTLog for the evolving
+variance. Accuracy experiments and controlled timings have separate
+methods and scopes; the C implementation and its validation are described
+in `sigma_fftlog_implementation.md`. Measurements identify the
+2026-10-02 study configuration.
 
     sigma^2(R) = 1/(2 pi^2) int dk k^2 P(k) W(kR)^2 = int dln k Delta^2(k) W(kR)^2
     W(x) = 3 j1(x)/x,  Delta^2 = k^3 P/(2 pi^2),  M = (4 pi/3) rho_crit Omega_field R^3
@@ -192,7 +193,7 @@ Reading of the table:
 | work, N_a = 256 | 2.4e7 p_lin reads | 4.8e5 exp + 1.8e8 MAC | 3.4e5 exp + 4.2e8 MAC (fast 4.9e7) | 5.1e5 exp + ~5e7 flop (fast 1.4e5 exp + ~1.5e7) |
 | per-cosmology setup | none (node cache once) | rebuild W, D: 192 x 1280 x 4 x 2 scatter-adds, 2.5e5 exp | none if grids fixed in Mpc; else rebuild (N_in FFT pairs) | kernel phase e^(-i eta (u_0+v_0)): 1001 sincos; M(b + i eta) once |
 | memory | node cache 104 kB | W + D 5.7 MB, g 3.8 MB | G + GD 13 MB (fast 1.5 MB) | kernels 32 kB; per thread 2000 + 2 x 1001 complex (48 kB); batched 12 MB |
-| threading | OpenMP over masses (today) or over a | BLAS, or OpenMP over (a, row) blocks with serial dot products | same as B1 | OpenMP over a, one single-threaded FFTW plan per transform (cosmo2D model) |
+| threading | OpenMP over masses in the baseline or over a | BLAS, or OpenMP over (a, row) blocks with serial dot products | same as B1 | OpenMP over a, one single-threaded FFTW plan per transform (cosmo2D model) |
 | bit-identical 1 vs 4 threads (measured, `--check-determinism`) | yes | **no** with OpenBLAS (1.8e-15) | **no** with OpenBLAS (1.8e-15); fast grid: yes | yes (batched and per-a) |
 
 **When B1's weights must be rebuilt.** W_ij = sum_q wf_q k_q^(b-3)
@@ -243,7 +244,7 @@ then has the same accuracy as C fast.
 ## 4b. Measured timings (2026-10-02, quiet machine)
 
 Apple M2 Pro laptop, macOS; Python 3.12, NumPy 2.4.3, SciPy 1.17.1, OpenBLAS
-(the `ccl` conda environment); nothing else of the session running (load
+(the `ccl` conda environment); no competing study processes (load
 average 2.5 to 3.5 from the system). Each entry is the median over 30 calls
 after 3 warm-up calls; "setup" is the per-cosmology build. Times in ms for
 N_a = 256 a nodes x 1024 ln M nodes, from the ln P(k, a) rows to

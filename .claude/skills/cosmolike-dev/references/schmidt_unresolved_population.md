@@ -1,16 +1,14 @@
 # Archived study: an effective unresolved halo population
 
-Decision (2026-10-06): retain the current Wynn prescription. This study
-is closed; its proposed experiments and implementation options are not
-active work. Reopening them requires a new request. No production physics
-was changed, and the ongoing Wynn validation and code comparisons continue.
+The production prescription remains Wynn extrapolation with residual
+response completion. This alternative physical-model study is not an
+implementation plan or an active numerical job.
 
-Status: source and literature study, 2026-10-06. No numerical runs or
-production changes accompany this document. The production baseline is
-core d95867f: FFTLog bias 0.8, covariance panels down to 1e-40 Msun/h,
-guarded Wynn extrapolation of I11, and residual zero-wavenumber completion.
-Its broader regression validation is tracked separately. This study does
-not make that validation complete.
+The source/literature comparison uses core d95867f as its baseline:
+FFTLog bias 0.8, covariance mass panels down to 1e-40 Msun/h, guarded Wynn
+extrapolation of I11 and residual zero-wavenumber completion. Numerical
+validation of that prescription is in `wynn_validation_20261006.md`.
+No numerical results are claimed for the alternative model here.
 
 The useful first experiment is small: replace the extrapolated population
 below a chosen mass by a population with specified total mass and linear
@@ -87,8 +85,8 @@ fixed in this study.
 
 Restrict the first experiment to the supported massless-neutrino matter
 covariance. Then rho_cb equals rho_m. A massive-neutrino extension needs
-separate treatment of the total-matter response; it is not authorized by
-this exercise. The data-vector HOD floor, halo fits and sigma tables stay
+separate treatment of the total-matter response and lies outside this
+massless-model comparison. The data-vector HOD floor, halo fits and sigma tables stay
 unchanged throughout.
 
 ## Mass and response are different weights

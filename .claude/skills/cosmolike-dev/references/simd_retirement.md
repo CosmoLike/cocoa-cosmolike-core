@@ -1,4 +1,4 @@
-# SIMD switches retired (owner request, 2026-10-03)
+# Unconditional SIMDe compilation
 
 Production compiles the existing SIMDe paths in optimized and debug builds.
 `COSMO2D_NOT_USE_SIMD`, the halo-specific `HALO_NOT_USE_SIMD`, and the new
@@ -6,10 +6,9 @@ covariance scalar switch are retired. Do not add a replacement opt-out.
 Scalar single-point functions and incomplete-vector tails are still part
 of the algorithms; they are not optional whole-library scalar modes.
 
-This is a separate maintenance request made after the Gaussian foundation
-was tested and didactically reviewed. It explicitly authorizes the switch
-retirement outside `cosmolike/covariances/`; the covariance port itself
-still must not modify the existing data-vector C files.
+SIMD compilation is a shared-core policy. The covariance implementation
+boundary remains separate: covariance algorithms belong in
+`cosmolike/covariances/`, not in existing data-vector C files.
 
 ## What changed
 
@@ -20,13 +19,13 @@ still must not modify the existing data-vector C files.
   scalar-switch forwarding. Native architecture choices within SIMDe and
   the existing fused-operation helpers are preserved.
 - All seven project Makefiles include SIMDe unconditionally. Debug builds
-  keep their existing `-O0` and sanitizer settings; they now exercise the
+  keep their existing `-O0` and sanitizer settings; they exercise the
   SIMD implementations used by the optimized builds.
 - Updated comments and this skill so they no longer prescribe scalar
   preprocessor fallbacks. Existing algorithm-specific controls unrelated
   to the retired SIMD switches are unchanged.
 
-## Validation and final didactic review
+## Validation of branch removal (2026-10-03)
 
 - Isolated debug builds compiled successfully for LSST Y1 and DES cluster,
   covering the common core and cluster extensions with native SIMDe at
@@ -56,19 +55,14 @@ CAMB and repeated models, not likelihood or covariance benchmarks.
 The separate 24 debug checks covered the common and cluster C paths;
 the installed project libraries remain optimized.
 
-Completed a separate manual didactic red-eye review after the tests.
-Checked the removed branches, retained single-point/tail calculations,
-thread ownership, unchanged summation order, Makefiles and public comments.
-Replaced stale references to deleted branches with the equations being
-computed. Updated the skill's conflicting fallback instructions. The
-Gaussian follow-up also uses house `v2d`/`v` names and explicitly states
-that operators share one ell grid and writable rows must be disjoint.
-These final clarifications change only comments; the retained-token check
-still passes. This was a self-review, not a Fable model review.
+Removing a scalar build mode must preserve single-point functions, vector
+tails, summation order and thread ownership. The retained-token comparison
+below checks this directly. Gaussian operators share one multipole grid;
+parallel callers require disjoint writable output rows.
 
 ## External checks
 
-The owner keeps studies and independent tests outside git, under `test/`.
+Independent studies and validation scripts reside under external `test/`.
 `simd_reference/check_retirement.py` compares the 11 existing C/header
 files affected by global-switch removal with core commit `6bc8cb7`,
 selecting that revision's SIMD branches using

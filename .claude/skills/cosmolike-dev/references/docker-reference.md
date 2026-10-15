@@ -11,7 +11,7 @@ read the actual error before proposing a fix.
 
 ---
 
-## Editing conventions Claude must follow
+## Editing conventions
 
 These are non-negotiable formatting rules for any Dockerfile fix or modification.
 

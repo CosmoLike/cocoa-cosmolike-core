@@ -116,8 +116,8 @@ lane-by-lane explanations remain. The public README explains the optional
 I11-only interface without referring to internal test files.
 
 The complete all-project baseline is in covariance_gaussian_scaling.md.
-Rerun every covariance suite and frozen likelihood example after the
-remaining shared projection changes, before completing this work.
+Shared projection changes require covariance-suite and frozen-likelihood
+regressions in every consuming project.
 
 Internal records live in test/covariance_reference/: the shell-group
 benchmark, I11 debug harness, complete DES before/after arrays and timing
