@@ -275,7 +275,7 @@ The explicit `tests/studies/run_nz_reconstruction.py` in each survey measures
 the original cubic and the fixed 3-, 5- and 7-point Akima reconstructions,
 then calls [plot_nz_reconstruction.py](plot_nz_reconstruction.py). To redraw
 only the saved figure, run that project's
-`tests/generate_nz_reconstruction_figures.py`. This helper saves a PNG; it
+`tests/studies/generate_nz_reconstruction_figures.py`. This helper saves a PNG; it
 uses the recorded C-reader curves and never fits a replacement spline.
 
 Each survey's `tests/studies/README.md` explains the settings, total-area

@@ -8,7 +8,7 @@ A distribution is one source or lens tomographic bin. A histogram cell is
 one redshift interval WITHIN that distribution. Keeping those two meanings
 of "bin" separate is essential when choosing the close-up and labelling bars.
 
-Run a project's tests/generate_nz_reconstruction_figures.py to call this
+Run a project's tests/studies/generate_nz_reconstruction_figures.py to call this
 shared function with its saved JSON measurements and NPZ arrays. The
 project's tests/studies/README.md explains the metric and how to recompute
 the measurements; this module only draws them.

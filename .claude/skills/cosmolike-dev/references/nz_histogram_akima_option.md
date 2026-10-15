@@ -41,7 +41,7 @@ them. The next lower level exceeds 0.1 for both factors in every physical
 project. These are measured practical levels for the stored fiducials,
 not a parameter-space accuracy guarantee.
 The complete model table and example levels are in `cosmolike/README.md`;
-each project saves `tests/nz_akima_factor.json` and its reference vectors.
+each project saves `tests/studies/results/nz_akima_factor.json` and its reference vectors.
 DES Y6 is identity-metric software checking only. This remains an experiment;
 no likelihood integration defaults, frozen inputs or references are changed.
 
@@ -144,7 +144,7 @@ acceptance targets for future reconstruction studies.
 
 The shared plotter is `cosmolike_notebook_utils/plot_nz_reconstruction.py`.
 Every manual study calls it after the compiled area audit, and each survey
-has `tests/generate_nz_reconstruction_figures.py` to redraw saved results.
+has `tests/studies/generate_nz_reconstruction_figures.py` to redraw saved results.
 All seven two-panel figures were visually inspected. Keep the explanatory
 footer out of figures; definitions, settings and area accounting belong in
 the project study README, as explicitly requested by the user.
@@ -170,7 +170,8 @@ LSST also exercises uniform/irregular inputs, accuracy boosts and thread counts
 in `test_nz_histogram_reader.py`. No tests-only C function was added.
 
 Public explanations, input fingerprints, measured model distances and area
-figures live in each project's test README and `tests/nz_reconstruction.json`.
+figures live in each project's study README and
+`tests/studies/results/nz_reconstruction.json`.
 DES Y6's identity-covariance distance is a software metric only. Keep the
 actual frozen signed input cells in these tests; three earlier controlled
 studies clipped negatives in both arms, so do not silently substitute their
