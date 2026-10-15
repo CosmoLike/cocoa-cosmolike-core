@@ -152,91 +152,66 @@ Smoothing redistributes probability among original bins. All three odd-factor
 constructions preserve total area for uniform inputs with its endpoint
 padding, but this does not extend to arbitrary irregular grids or imply
 physical superiority. No extra normalization or negative-value clipping is
-introduced. Each project's `tests/data_vector/README.md` documents its
+introduced. Each project's `tests/studies/README.md` documents its
 refined model-distance comparison, compiled-reader plots and area audit.
 These tests use a fixed covariance; selecting Akima also affects shared
 covariance kernels, whose integration settings need their own checks.
 
 
-**Three-, five- and seven-point comparison.** All six columns below are
-$\Delta\chi^2=(d_b-d_a)^T C^{-1}(d_b-d_a)$, evaluated at each project's
-stored NLA fiducial with its unchanged mask and covariance. Every model
-vector uses integration level 6 (4096 points per Limber panel). The original
-curve is mode 0; 3, 5 and 7 are mode 1 with that preparation factor. Squared
-pairwise distances are not additive and do not identify a physically correct
-reconstruction. DES Y6 is excluded because it has only an identity metric.
+**Manual reconstruction study.** The following distances use `accuracyboost: 5`
+and `integration_accuracy: 7` (8,192 nodes per Limber panel). Source/lens
+mean-redshift quadrature also refines with the level and is capped at 8,192.
+Each row keeps the stored NLA fiducial, histogram, mask and covariance fixed.
+Δχ² = (d_b − d_a)ᵀ C⁻¹ (d_b − d_a) measures separation of predictions, not
+a change in goodness of fit. Squared distances are not additive.
 
 ![Original cubic and three Akima preparation choices](figures/histogram_original_cubic_vs_three_five_seven_akima.png)
 
-| Project | Original→3 | Original→5 | Original→7 | 3→5 | 3→7 | 5→7 |
-|---|---:|---:|---:|---:|---:|---:|
-| lsst_y1 | 0.990789 | 1.27447 | 1.36556 | 0.049004 | 0.183673 | 0.129663 |
-| roman_real | 0.253948 | 0.257046 | 0.26918 | 0.00541502 | 0.0100066 | 0.00104369 |
-| roman_fourier | 0.49142 | 0.518576 | 0.543613 | 0.0337058 | 0.0687978 | 0.00668988 |
-| roman_kl | 0.636057 | 0.418349 | 0.369425 | 0.0656038 | 0.136764 | 0.0132937 |
-| des_y3 | 0.184157 | 0.153392 | 0.134684 | 0.00729463 | 0.0263713 | 0.00842768 |
-| desy1xplanck | 0.249582 | 0.274286 | 0.268742 | 0.00984155 | 0.0146133 | 0.00127463 |
-| des_cluster | 0.481672 | 0.658537 | 0.801138 | 0.063902 | 0.155039 | 0.0214314 |
-
-For the 3/5/7 comparison tests, all three models now use the same
-raised integration level within each project: one above the initial
-five/seven-point practical selection. Levels 3, 4 and 5 use 512, 1024
-and 2048 points per Limber panel. The original-versus-three-point tests
-retain their separately documented levels. These are example settings,
-not new likelihood defaults or a parameter-space accuracy guarantee.
-Roman Fourier retains `accuracyboost: 2`; the others use 1.
-
-Each numerical error below compares a reconstruction with its own
-4096-point result using the unchanged survey covariance.
-
-| Project | Common test level | 3-point numerical $\Delta\chi^2$ | 5-point numerical $\Delta\chi^2$ | 7-point numerical $\Delta\chi^2$ |
+| Project | Original → 3 | 3 → 5 | 3 → 7 | 5 → 7 |
 |---|---:|---:|---:|---:|
-| lsst_y1 | 3 | 0.000380565 | 0.000826309 | 0.00278714 |
-| roman_real | 5 | 8.28135e-06 | 5.43484e-05 | 0.000231345 |
-| roman_fourier | 5 | 4.4899e-05 | 0.000176144 | 0.000267337 |
-| roman_kl | 3 | 0.000244673 | 0.00112475 | 0.000838769 |
-| des_y3 | 4 | 2.16743e-05 | 2.27008e-05 | 0.000420484 |
-| desy1xplanck | 4 | 0.000343869 | 0.0179718 | 0.0501837 |
-| des_cluster | 4 | 0.00904842 | 0.0395607 | 0.0565506 |
+| LSST Y1 | 0.02145265 | 0.009772072 | 0.01650432 | 0.005330874 |
+| Roman real | 0.04098763 | 0.003217879 | 0.004495904 | 0.0002784492 |
+| Roman Fourier | 0.3884214 | 0.03066017 | 0.06344008 | 0.006038686 |
+| Roman KL | 0.3654277 | 0.0671849 | 0.1395857 | 0.01358566 |
+| DES Y3 | 0.07438433 | 0.001364246 | 0.003688686 | 0.0006181514 |
+| DES × Planck | 0.1304652 | 0.002228624 | 0.002972851 | 0.0001359452 |
+| DES cluster | 0.3804323 | 0.00781692 | 0.01416825 | 0.002362326 |
 
-The following comparison separates integration refinement from changing
-the histogram reconstruction. The complete six-pair level-6 table above
-remains unchanged.
+The 5→7 distances are smaller than 3→5 for all seven projects at these
+settings. We use practical stability relative to Δχ² = 0.2, rather than an
+exact continuum requirement. This does not identify the true sub-bin density
+or guarantee accuracy at other cosmologies. Earlier boost refinements still
+show measurable changes; the [earlier scan](../dev_scripts/nz_akima_prior_native_refinement.json)
+is retained separately from the final capped rerun. The current [study record](../dev_scripts/nz_akima_manual_study.json)
+includes the effect of refining the previously capped redshift moments.
 
-| Project | 3→5: raised level | 3→5: level 6 | 5→7: raised level | 5→7: level 6 |
-|---|---:|---:|---:|---:|
-| lsst_y1 | 0.0507956 | 0.049004 | 0.134923 | 0.129663 |
-| roman_real | 0.00545438 | 0.00541502 | 0.00114732 | 0.00104369 |
-| roman_fourier | 0.0347687 | 0.0337058 | 0.00539157 | 0.00668988 |
-| roman_kl | 0.0666049 | 0.0656038 | 0.0133121 | 0.0132937 |
-| des_y3 | 0.00748681 | 0.00729463 | 0.00932842 | 0.00842768 |
-| desy1xplanck | 0.0231524 | 0.00984155 | 0.0120344 | 0.00127463 |
-| des_cluster | 0.0753564 | 0.063902 | 0.0263298 | 0.0214314 |
+**Numerical check with the reconstruction held fixed.** Only the two accuracy
+settings change, from each current likelihood YAML's defaults to boost 5 and
+level 7. The original n(z) interpretation and all physical inputs stay fixed.
 
-An extra level reduces the error substantially for most projects, but
-DES×Planck and DES cluster retain seven-point numerical distances of
-0.0502 and 0.0566. Their raised-level model distances still differ visibly
-from the refined values; a numerical budget below 0.1 alone is not
-enough to resolve every small model change. In the level-6 table, the
-5→7 distance is smaller than 3→5 for five projects; LSST and DES Y3 are
-exceptions.
-This sequence does not establish a universal convergence law or select
-a physically correct reconstruction.
+| Project | Default boost / integration level | Original default → refined Δχ² |
+|---|---:|---:|
+| LSST Y1 | 1 / 0 | 0.002165317 |
+| Roman real | 1 / 0 | 0.01362654 |
+| Roman Fourier | 2 / 0 | 0.009719738 |
+| Roman KL | 1 / 0 | 0.006599444 |
+| DES Y3 | 1 / 0 | 0.005614897 |
+| DES × Planck | 1 / 0 | 0.02212658 |
+| DES cluster | 1 / 1 | 0.0249203 |
 
-All 14 raised-level tests passed. Their saved vectors match the earlier
-independent scans bitwise, and both factor tests reproduce the same
-three-point vector. The [follow-up record](../dev_scripts/nz_akima_raised_accuracy.json)
-includes pairwise displacement errors as well as scalar distances.
-The 2048→4096 checks support the refined table without establishing an
-exact continuum limit.
-Selecting Akima for covariance generation requires a separate convergence
-check of its own line-of-sight quadrature.
+These studies are **not collected by ordinary pytest**. Run each project's
+`tests/studies/run_nz_reconstruction.py` explicitly; its `tests/studies/README.md`
+provides commands, two-panel compiled-reader plots, area accounting and raw
+records. The first preparation factor stays fixed under numerical refinement.
+Lightweight synthetic reader checks and frozen likelihood regressions remain
+in the usual tests. DES Y6 is excluded from statistical distances because it
+has no supplied physical covariance. Covariance generation with Akima kernels
+requires its own line-of-sight integration checks.
 
-The project's `tests/data_vector/test_nz_akima_factor.py` checks both
-alternatives and their saved refined vectors. Its test README gives the
-commands, all numerical levels and input fingerprints. The illustration is
-reproducible with `dev_scripts/plot_nz_akima_preparation.py`; it uses uniform
-toy bins and is distinct from each project's compiled-reader figure.
+The illustration is reproducible with `dev_scripts/plot_nz_akima_preparation.py`;
+it uses uniform toy bins and is separate from the actual survey-reader figures.
+Uniform-grid preparation is mandatory in both reconstruction modes; the
+compile-time direct-GSL bypass has been retired.
 
 Photometric-redshift, or **photo-z**, parameters change the inferred
 redshift distribution of a sample. Magnification changes observed galaxy

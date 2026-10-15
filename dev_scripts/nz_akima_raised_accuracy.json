@@ -5,7 +5,8 @@
     "numerical_delta_chi2": {
       "three": 0.00038056481722310756,
       "five": 0.0008263087345174438,
-      "seven": 0.0027871433494553845
+      "seven": 0.0027871433494553845,
+      "original": 9.743389498599657e-08
     },
     "pairwise": {
       "three_to_five": {
@@ -22,6 +23,11 @@
         "raised_delta_chi2": 0.1349229939445046,
         "reference_delta_chi2": 0.1296626007475585,
         "displacement_error_delta_chi2": 0.0013233169597383204
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.9859983777432191,
+        "reference_delta_chi2": 0.9907890318644372,
+        "displacement_error_delta_chi2": 0.00038354263108581556
       }
     },
     "tests": {
@@ -35,6 +41,12 @@
     "vector_sha256": {
       "5": "769ccd24cdcd0e35a84bd4bdd3df3cef3cea0eaee74fb791c8e2304d734ae020",
       "7": "cbb669f674e13a99ec2f9391917b6dcc776dee452e0150365ec24219cd52983c"
+    },
+    "original_vector_source": {
+      "project": "lsst_y1",
+      "level": 3,
+      "status": "reused",
+      "source": "/Users/vivianmiranda/data/COCOA/september2026/test/nz_akima_yaml/results/lsst_y1_level3.npz"
     }
   },
   "roman_real": {
@@ -43,7 +55,8 @@
     "numerical_delta_chi2": {
       "three": 8.281349932156818e-06,
       "five": 5.434837411493849e-05,
-      "seven": 0.0002313450896648378
+      "seven": 0.0002313450896648378,
+      "original": 2.6483750600625594e-06
     },
     "pairwise": {
       "three_to_five": {
@@ -60,6 +73,11 @@
         "raised_delta_chi2": 0.0011473196319457828,
         "reference_delta_chi2": 0.0010436886369974419,
         "displacement_error_delta_chi2": 0.00012243274855536392
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.25317860428872896,
+        "reference_delta_chi2": 0.2539475928097576,
+        "displacement_error_delta_chi2": 1.2834601857890665e-05
       }
     },
     "tests": {
@@ -73,6 +91,12 @@
     "vector_sha256": {
       "5": "f9cea44150f832969fbaaada7cdbc176ccf41e6d695c9dff873cdfceb74eb590",
       "7": "7302a0cc149c31edce2912c681ad9bb675ca9b272e9cf35215cf553ca6b22091"
+    },
+    "original_vector_source": {
+      "project": "roman_real",
+      "level": 5,
+      "status": "reused",
+      "source": "/Users/vivianmiranda/data/COCOA/september2026/test/nz_akima_yaml/results/roman_real_level5.npz"
     }
   },
   "roman_fourier": {
@@ -81,7 +105,8 @@
     "numerical_delta_chi2": {
       "three": 4.489897139686011e-05,
       "five": 0.0001761435527862034,
-      "seven": 0.0002673370719071992
+      "seven": 0.0002673370719071992,
+      "original": 2.7183190580615952e-05
     },
     "pairwise": {
       "three_to_five": {
@@ -98,6 +123,11 @@
         "raised_delta_chi2": 0.005391573809886569,
         "reference_delta_chi2": 0.0066898843161503465,
         "displacement_error_delta_chi2": 0.0003125327208288978
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.484530656157122,
+        "reference_delta_chi2": 0.4914196075940396,
+        "displacement_error_delta_chi2": 7.80437696206656e-05
       }
     },
     "tests": {
@@ -111,6 +141,12 @@
     "vector_sha256": {
       "5": "5dcd5f2aeb6528843e93f2643c31838218c0bd5d41e99e8aeebd3b0fcab618ac",
       "7": "198ab370c92bd8f8d3918eda78523c3cd09fbe74227e90323b9cfb3a48ef3bd3"
+    },
+    "original_vector_source": {
+      "project": "roman_fourier",
+      "level": 5,
+      "status": "reused",
+      "source": "/Users/vivianmiranda/data/COCOA/september2026/test/nz_akima_yaml/results/roman_fourier_level5.npz"
     }
   },
   "roman_kl": {
@@ -119,7 +155,8 @@
     "numerical_delta_chi2": {
       "three": 0.00024467297343601146,
       "five": 0.0011247501639875994,
-      "seven": 0.0008387689918169099
+      "seven": 0.0008387689918169099,
+      "original": 9.883183864967682e-07
     },
     "pairwise": {
       "three_to_five": {
@@ -136,6 +173,11 @@
         "raised_delta_chi2": 0.013312093710733212,
         "reference_delta_chi2": 0.013293722813739264,
         "displacement_error_delta_chi2": 0.0004109456308346493
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.6375974506812907,
+        "reference_delta_chi2": 0.6360572621591313,
+        "displacement_error_delta_chi2": 0.00024386454453627994
       }
     },
     "tests": {
@@ -149,6 +191,12 @@
     "vector_sha256": {
       "5": "7ab9f625adcfddee53a07af86998def193cc9228a13905a9edd75333e4599436",
       "7": "470764e1b767d1a27a8e0810a5ba854957181a56c831f470f686bdd381a14d11"
+    },
+    "original_vector_source": {
+      "project": "roman_kl",
+      "level": 3,
+      "status": "passed",
+      "returncode": 0
     }
   },
   "des_y3": {
@@ -157,7 +205,8 @@
     "numerical_delta_chi2": {
       "three": 2.1674325848237206e-05,
       "five": 2.2700798515585786e-05,
-      "seven": 0.0004204840707575303
+      "seven": 0.0004204840707575303,
+      "original": 5.2477573526836634e-06
     },
     "pairwise": {
       "three_to_five": {
@@ -174,6 +223,11 @@
         "raised_delta_chi2": 0.009328421827350653,
         "reference_delta_chi2": 0.008427676975390538,
         "displacement_error_delta_chi2": 0.0003767223197813942
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.1847933252253818,
+        "reference_delta_chi2": 0.18415659921735883,
+        "displacement_error_delta_chi2": 1.8497113074621416e-05
       }
     },
     "tests": {
@@ -187,6 +241,12 @@
     "vector_sha256": {
       "5": "81a4e309c52a04cec2965e7f7e296b67ae20b27e8a3498389947f0dc023795ec",
       "7": "8391d6b75516da61fa6a9b7557736df0e9880e9635ee23c9546d47d7bfcc5483"
+    },
+    "original_vector_source": {
+      "project": "des_y3",
+      "level": 4,
+      "status": "passed",
+      "returncode": 0
     }
   },
   "desy1xplanck": {
@@ -195,7 +255,8 @@
     "numerical_delta_chi2": {
       "three": 0.00034386855506469917,
       "five": 0.01797179118268271,
-      "seven": 0.050183718061021815
+      "seven": 0.050183718061021815,
+      "original": 6.398288473918578e-06
     },
     "pairwise": {
       "three_to_five": {
@@ -212,6 +273,11 @@
         "raised_delta_chi2": 0.012034404997739924,
         "reference_delta_chi2": 0.001274634855181451,
         "displacement_error_delta_chi2": 0.009343471949781069
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.24778781733929478,
+        "reference_delta_chi2": 0.24958229379780367,
+        "displacement_error_delta_chi2": 0.00034694684378363606
       }
     },
     "tests": {
@@ -225,6 +291,12 @@
     "vector_sha256": {
       "5": "eb77753772da7e14ad78ab1ca93851638a986ff952269c723eea72ee65ce2dcd",
       "7": "f763cac492ab2032151393b89a1e99ad6de2ebd613517edd945f88dd20d3df67"
+    },
+    "original_vector_source": {
+      "project": "desy1xplanck",
+      "level": 4,
+      "status": "passed",
+      "returncode": 0
     }
   },
   "des_cluster": {
@@ -233,7 +305,8 @@
     "numerical_delta_chi2": {
       "three": 0.009048424361795399,
       "five": 0.039560666820632334,
-      "seven": 0.056550645595569285
+      "seven": 0.056550645595569285,
+      "original": 6.307205453196806e-05
     },
     "pairwise": {
       "three_to_five": {
@@ -250,6 +323,11 @@
         "raised_delta_chi2": 0.026329828156191934,
         "reference_delta_chi2": 0.02143141541582969,
         "displacement_error_delta_chi2": 0.003691335144545198
+      },
+      "original_to_three": {
+        "raised_delta_chi2": 0.4993108820310232,
+        "reference_delta_chi2": 0.4816718647428655,
+        "displacement_error_delta_chi2": 0.009026976705718077
       }
     },
     "tests": {
@@ -263,6 +341,12 @@
     "vector_sha256": {
       "5": "1f87a646194c15c6eaa646dbeed24d084e58c811c16c52a16dc1960aff611cef",
       "7": "4ce65134b8e4e054581410458e71f04568db74a1bdcba95bd8c7047e6c11a9be"
+    },
+    "original_vector_source": {
+      "project": "des_cluster",
+      "level": 4,
+      "status": "passed",
+      "returncode": 0
     }
   }
 }

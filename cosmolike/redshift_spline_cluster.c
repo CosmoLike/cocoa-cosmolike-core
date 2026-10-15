@@ -24,6 +24,12 @@
 // Here the normalized cluster n(z) is constructed AFTER multiplying the
 // selection by the volume element and, optionally, the predicted abundance.
 //
+// In a DES cluster run, both files therefore matter, for different reasons:
+//   - galaxy source/lens histograms use the chosen cubic or Akima reader;
+//   - cluster selection probabilities keep their linear interpolation here.
+// Applying histogram normalization or 3/5/7 repetition to a selection
+// probability would change the meaning of the supplied cluster model.
+//
 // Units (the library's): z dimensionless, comoving distance chi in c/H0,
 // dV/dz per steradian in (c/H0)^3, n(z) per unit z (integrates to 1).
 //
@@ -397,6 +403,9 @@ static void selection_kernel_table(void)
     phi_.phi  = (double**) malloc2d(nbin, n_max);
 
     // --- 5. LINEAR RESAMPLING OF THE INPUT ONTO THE FINE NODES ---
+    // This step preserves straight segments when the fine grid contains
+    // their original endpoints. It does not infer a smooth galaxy n(z):
+    // phi is a selection probability, before volume/abundance weighting.
     // Fine and input nodes are both sorted, so the input cell holding
     // node k is found by walking one index forward (no search).
     for (int ni=0; ni<nbin; ni++) {

@@ -181,10 +181,9 @@ static double ell_prefactor_shear(const double l)
 
 // ---------------------------------------------------------------------------
 // Gauss-Legendre table shared by every quadrature of this file (both
-// Limber panels and the counts). Levels 5/6 use two/four subintervals
-// of the stored 1024-point rule; Ntable.high_def_integration climbs the
-// ladder. The smallest rung must resolve the erf edges of the selection
-// kernels <phi_i|z> (width sigma_z ~ 0.006 (1+z)) on a cluster bin.
+// Limber panels and the counts). Ntable.high_def_integration selects the
+// rule size. Even the smallest rule must resolve the erf edges of the
+// selection kernels <phi_i|z> (width sigma_z ~ 0.006 (1+z)) on a cluster bin.
 //
 // Cache invalidation: rebuilt when Ntable.random changes.
 // ---------------------------------------------------------------------------
@@ -197,7 +196,9 @@ static const gsl_integration_glfixed_table* limber_gl_table_cluster(void)
     const int hdi = abs(Ntable.high_def_integration);
 
     // Levels 0-4 retain their original rules.
-    int nodes_per_panel = (hdi <= 4) ? 1024 : (hdi == 5) ? 2048 : 4096;
+    int nodes_per_panel = (hdi <= 4) ? 1024 :
+                          (hdi == 5) ? 2048 :
+                          (hdi == 6) ? 4096 : 8192;
     if (0 == hdi) {
       nodes_per_panel = 128;
     }

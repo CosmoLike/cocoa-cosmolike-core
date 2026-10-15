@@ -956,19 +956,19 @@ static double nz_histogram_akima(
 
   // Both samples use the same preparation, but own different input
   // histograms and projection bounds. Select those arrays before rebuilding.
-  const int ntomo = (sample == 0) ? redshift.shear_nbin
+  const int ntomo = (0 == sample) ? redshift.shear_nbin
                                 : redshift.clustering_nbin;
-  const int nzbins = (sample == 0) ? redshift.shear_nzbins
+  const int nzbins = (0 == sample) ? redshift.shear_nzbins
                                  : redshift.clustering_nzbins;
 
-  double** input = (sample == 0) ? redshift.shear_zdist_table
+  double** input = (0 == sample) ? redshift.shear_zdist_table
                                : redshift.clustering_zdist_table;
-  double* bounds = (sample == 0) ? redshift.shear_zdist_zall
+  double* bounds = (0 == sample) ? redshift.shear_zdist_zall
                                : redshift.clustering_zdist_zall;
-  double (*ranges)[MAX_SIZE_ARRAYS] = (sample == 0) ? redshift.shear_zdist_z
+  double (*ranges)[MAX_SIZE_ARRAYS] = (0 == sample) ? redshift.shear_zdist_z
                                                 : redshift.clustering_zdist_z;
 
-  const uint64_t stamp = (sample == 0) ? redshift.random_shear
+  const uint64_t stamp = (0 == sample) ? redshift.random_shear
                                      : redshift.random_clustering;
   const int factor = (Ntable.nz_fine_sampling_factor < 4)
       ? 4 : Ntable.nz_fine_sampling_factor;
@@ -985,13 +985,13 @@ static double nz_histogram_akima(
   const int refine = (int) ceil(factor / prep_factor);
   const int nfine = (nprep + 1) * refine + 1;
 
-  // --- REBUILD STORAGE AND GRIDS ---
-  if (t->table == NULL ||
+  // --- 1. REBUILD ONLY WHEN THE RECONSTRUCTION CHANGES ---
+  if (NULL == t->table ||
       fdiff2(t->cache[0], stamp) ||
       t->cache[1] != (uint64_t) (1 + Ntable.photoz_zmid_convention) ||
       t->cache[2] != (uint64_t) factor ||
       t->cache[3] != (uint64_t) prep_factor) {
-    if (nzbins < 2 || input == NULL) {
+    if (nzbins < 2 || NULL == input) {
       log_fatal("n(z) needs at least two histogram cells");
       exit(1);
     }
@@ -1000,23 +1000,23 @@ static double nz_histogram_akima(
     // and prepared redshift cells. Replace it only if those sizes change;
     // new density values with the same sizes reuse the existing storage.
     // Refining the final lookup grid does not enlarge this first stage.
-    if (t->prepared == NULL ||
+    if (NULL == t->prepared ||
         t->ntomo_cache != ntomo ||
         t->nprep_cache != nprep) {
       // These arrays have the old dimensions. Release them before
       // allocating the preparation rows and sample positions below.
-      if (t->prepared != NULL) {
+      if (NULL != t->prepared) {
         free(t->prepared);
       }
 
-      if (t->knots != NULL) {
+      if (NULL != t->knots) {
         free(t->knots);
       }
 
       // Each pointer owns a GSL spline with its own internal storage.
       // Free those objects using the OLD bin count, then free the pointer
       // array itself. Freeing only that array would leak the GSL storage.
-      if (t->splines != NULL) {
+      if (NULL != t->splines) {
         for (int i = 0; i < t->ntomo_cache; i++) {
           gsl_spline_free(t->splines[i]);
         }
@@ -1031,7 +1031,7 @@ static double nz_histogram_akima(
       t->knots = malloc1d(nprep + 2);
       t->splines = malloc(ntomo * sizeof(gsl_spline*));
 
-      if (t->splines == NULL) {
+      if (NULL == t->splines) {
         log_fatal("Akima workspace allocation failed");
         exit(1);
       }
@@ -1048,7 +1048,7 @@ static double nz_histogram_akima(
       for (int i = 0; i < ntomo; i++) {
         t->splines[i] = gsl_spline_alloc(gsl_interp_akima, nprep + 2);
 
-        if (t->splines[i] == NULL) {
+        if (NULL == t->splines[i]) {
           log_fatal("Akima allocation failed");
           exit(1);
         }
@@ -1062,14 +1062,14 @@ static double nz_histogram_akima(
     // The final lookup may be refined without changing the Akima
     // preparation. Resize its values and coefficients separately, keeping
     // the same fitted curve on a denser grid.
-    if (t->table == NULL ||
+    if (NULL == t->table ||
         t->ntomo_cache != ntomo ||
         t->nfine_cache != nfine) {
-      if (t->table != NULL) {
+      if (NULL != t->table) {
         free(t->table);
       }
 
-      if (t->coeff != NULL) {
+      if (NULL != t->coeff) {
         free(t->coeff);
       }
 
@@ -1085,9 +1085,9 @@ static double nz_histogram_akima(
     // Original edges are needed for the overlap calculation and the
     // runtime range check. Their array size depends only on the input
     // histogram, not on either uniform grid.
-    if (t->edges == NULL ||
+    if (NULL == t->edges ||
         t->nzbins_cache != nzbins) {
-      if (t->edges != NULL) {
+      if (NULL != t->edges) {
         free(t->edges);
       }
 
@@ -1095,6 +1095,10 @@ static double nz_histogram_akima(
       t->nzbins_cache = nzbins;
     }
 
+    // --- 2. TURN THE INPUT HISTOGRAM INTO UNIFORM CELL AVERAGES ---
+    // A uniform grid makes later queries arithmetic, even when the input
+    // bin widths differ. This is a change of representation, not a spline.
+    //
     // Density rows come first in the input table; its final row is
     // the z column. Convert that column to bin edges using the selected
     // left-edge or centre convention before calculating overlap areas.
@@ -1106,9 +1110,15 @@ static double nz_histogram_akima(
           z, nzbins, k, Ntable.photoz_zmid_convention);
     }
 
-    // A prepared cell receives the probability from every original
-    // bin it overlaps, divided by its own width and the histogram total.
-    // This defines its constant density before Akima smooths the jumps.
+    // For a prepared cell J of width dx, use
+    //
+    //   density[J] = sum_k(input_density[k] * overlap_width[J,k])
+    //                / (dx * input_total_area).
+    //
+    // Multiplication by dx recovers the probability assigned to J. Since
+    // the new cells cover the old ones without gaps, summing those masses
+    // preserves the total. For uniform input this just repeats each bin's
+    // density; an edge inside a new cell instead contributes a weighted mix.
     histogram_upsample_uniform(
         t->edges, histogram, ntomo, nzbins, nprep, t->prepared);
 
@@ -1131,7 +1141,7 @@ static double nz_histogram_akima(
     bounds[RANGE_MIN] = fmax(fine[0], 1.e-5);
     bounds[RANGE_MAX] = fine[nprep];
 
-    // --- PREPARE EACH TOMOGRAPHIC CURVE ---
+    // --- 3. SET PROJECTION BOUNDS AND FIT EACH TOMOGRAPHIC CURVE ---
     // Each tomographic bin owns its spline and output rows, so parallel
     // fits never modify another bin's workspace.
     #pragma omp parallel for schedule(static)
@@ -1162,7 +1172,7 @@ static double nz_histogram_akima(
       }
 
       // Use the retained cell edges: a centre would discard half a cell.
-      ranges[RANGE_MIN][i] = (sample == 0) ? fmax(fine[first], 1.001e-5)
+      ranges[RANGE_MIN][i] = (0 == sample) ? fmax(fine[first], 1.001e-5)
                                          : fine[first];
       ranges[RANGE_MAX][i] = fine[last + 1];
 
@@ -1182,6 +1192,13 @@ static double nz_histogram_akima(
       t->prepared[i][0] = t->prepared[i][1];
       t->prepared[i][nprep + 1] = t->prepared[i][nprep];
 
+      // Fit once, then store the SAME polynomial on smaller intervals.
+      // For example, if one Akima piece is P(u) = a + b*u + c*u^2 + d*u^3,
+      // a subinterval starting at u0 with width h stores P(u0 + h*t).
+      // Expanding this expression changes coefficients, not the curve.
+      // Thus an accuracy boost refines lookup storage without moving the
+      // histogram edge or applying a second smoothing operation.
+      // akima_upsample_uniform performs this algebra and stores each piece.
       akima_upsample_uniform(t->knots, t->prepared[i], nprep + 2, refine,
                              t->splines[i], t->table[i], t->coeff[i]);
     }
@@ -1199,13 +1216,13 @@ static double nz_histogram_akima(
     exit(1);
   }
 
-  // --- EVALUATE THE CACHED DENSITY ---
+  // --- 4. ANSWER A QUERY WITHOUT REFITTING OR SEARCHING ---
   zz -= nuisance.photoz[sample][0][nj];
 
   // Only lenses have a stretch. Skipping the identity transform avoids
   // rounding a point across an endpoint by subtracting/restoring its mean.
-  const double stretch = (sample == 0) ? 1.0 : nuisance.photoz[1][1][nj];
-  if (stretch != 1.0) {
+  const double stretch = (0 == sample) ? 1.0 : nuisance.photoz[1][1][nj];
+  if (1.0 != stretch) {
     const double mean = redshift.clustering_zdist_z[ZDIST_MEAN][nj];
     zz = (zz - mean) / stretch + mean;
   }
@@ -1285,8 +1302,8 @@ static double nz_histogram_akima(
 //
 //   The histogram is normalized before these fits. Neither fit explicitly
 //   conserves individual cell probabilities or renormalizes its own area.
-//   DONT_NZ_FAST_SUMBSAMPLE bypasses the final grid and evaluates the
-//   first GSL interpolant directly.
+//   Uniform-grid preparation is mandatory. GSL is used only during
+//   preparation; all integrand queries evaluate the stored cubic directly.
 //
 //   Stage 2 (hot path, called millions of times per likelihood): one
 //   multiply computes the fine-grid index (no binary search, no GSL
@@ -1313,58 +1330,38 @@ static double nz_histogram_akima(
 double nz_source_photoz(double zz, const int nj)
 {
   // The default path below retains the original midpoint reconstruction.
-  if (Ntable.photoz_histogram_akima == 1) {
+  if (1 == Ntable.photoz_histogram_akima) {
     return nz_histogram_akima(zz, nj, 0);
   }
 
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
-// DONT_NZ_FAST_SUMBSAMPLE (sic - SUBSAMPLE) is the escape hatch:
-// defining it removes the uniform fine grid, and the hot path falls
-// back to GSL spline evaluation on the node grid.
-#ifndef DONT_NZ_FAST_SUMBSAMPLE
   // uniform fine grid for direct-index evaluation (no binary search)
   // fine[0] = table_fine (y values), fine[1] = c_fine (spline coefficients)
   static double*** fine = NULL;
   static double zmin_fine;
   static double inv_dz_fine;
   static int nzbins_fine;
-#endif
 
-  // The two photo-z settings are packed into ONE integer so a single
-  // comparison detects a change in either of them:
+  // --- 1. DECIDE WHETHER THE STORED CURVE CAN BE REUSED ---
+  // The histogram stamp changes when its values or dimensions change.
+  // The other keys track the interpretation of the z column and the
+  // interpolation grids. Cosmology and photo-z shifts do not change the
+  // curve itself, so they must not force this preparation to run again.
   //
-  //   packed = 1 + photoz_interpolation_type + 8*photoz_zmid_convention
-  //
-  // Read it like a two-digit number whose "ones digit" is the
-  // interpolation type (0-7) and whose "eights digit" is the z-column
-  // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
-  // type 0 with convention 1 gives 1 + 0 + 8 = 9.
-  //
-  // As long as the type stays in 0-7 and the convention is 0 or 1, two
-  // different settings pairs never produce the same packed number. (With
-  // a multiplier of 2 they could: type 2 with convention 0 and type 0
-  // with convention 1 would both give 3, and that settings change would
-  // be mistaken for "nothing changed" - stale n(z) tables, silently wrong
-  // physics.) The meaningful types are 0, 1 and 2 (malloc_gsl_interp maps
-  // any other value to Steffen); init_photoz_conventions does not reject
-  // values outside the ranges this encoding assumes.
-  //
-  // The 1+ offset keeps a stamped slot nonzero, so it can never equal
-  // the zero that C puts in the static cache array before the first
-  // build.
-  //
-  // cache[2] holds the fine-sampling factor the fine grid was built
-  // with. It is keyed on its value, not on Ntable.random: Ntable.random
-  // is redrawn by every Ntable setter (init_binning, ...), and the n(z)
-  // tables must not rebuild for changes that do not touch them.
-  if (table == NULL ||
+  // Pack interpolation type and edge convention into separate bit ranges:
+  //   key = 1 + type + 8*convention.
+  // Types 0..7 cannot overlap the convention's contribution. The added one
+  // also distinguishes a valid key from the initially zero static cache.
+  // The fine-grid factor has its own key; unrelated Ntable changes do not
+  // require rebuilding n(z).
+  if (NULL == table ||
       fdiff2(cache[0], redshift.random_shear) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
                                 + 8*Ntable.photoz_zmid_convention) ||
       cache[2] != (uint64_t) Ntable.nz_fine_sampling_factor) {
-    if (table == NULL) {
+    if (NULL == table) {
       for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++) {
         photoz_splines[i] = NULL;
       }
@@ -1373,10 +1370,13 @@ double nz_source_photoz(double zz, const int nj)
     const int ntomo  = redshift.shear_nbin;
     const int nzbins = redshift.shear_nzbins;
 
-    if (table != NULL) {
+    if (NULL != table) {
       free(table);
     }
 
+    // --- 2. PLACE THE ORIGINAL DENSITIES AT THEIR SAMPLE POSITIONS ---
+    // This branch treats the tabulated heights as point values at centres.
+    // It does not first repeat each histogram cell as the Akima branch does.
     table = (double**) malloc2d(ntomo + 2, nzbins);
     const double zmin = redshift.shear_zdist_zall[RANGE_MIN];
     const double zmax = redshift.shear_zdist_zall[RANGE_MAX];
@@ -1395,15 +1395,19 @@ double nz_source_photoz(double zz, const int nj)
       table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
 
+    // --- 3. NORMALIZE THE HISTOGRAM BEFORE INTERPOLATING ---
+    // This fixes the discrete histogram sum. A later smooth fit can still
+    // move probability between cells and slightly change the total area.
+    //
     // Row layout of table (ntomo + 2 rows, nzbins columns):
     //
     //   table[0]        = combined n(z) of the whole sample
-    //   table[1..ntomo] = per-bin n(z), each normalized to unit integral
+    //   table[1..ntomo] = per-bin density samples, normalized by histogram area
     //   table[ntomo+1]  = the z nodes shared by every row
     //
     // NORM[i] = bin i's raw-histogram integral (cell sum times width
     // dz_histo) and norm = sum_i NORM[i], the whole sample's. Dividing
-    // bin i by NORM[i] makes rows 1..ntomo unit-normalized; the
+    // bin i by NORM[i] gives each row a unit histogram sum; the
     // combined row then reweights them by the sample fractions
     // NORM[i]/norm:
     //
@@ -1442,17 +1446,19 @@ double nz_source_photoz(double zz, const int nj)
     }
 
     for (int i = 0; i < ntomo+1; i++) {
-      if (photoz_splines[i] != NULL) {
+      if (NULL != photoz_splines[i]) {
         gsl_interp_free(photoz_splines[i]);
       }
 
       photoz_splines[i] = malloc_gsl_interp(nzbins);
     }
-#ifndef DONT_NZ_FAST_SUMBSAMPLE
     // -----------------------------------------------------------------
-    // Resample each spline onto a uniform fine grid. The GSL spline on
-    // the node grid is evaluated once here; the hot path below uses
-    // direct-index lookup with no binary search.
+    // --- 4. PREPARE A UNIFORM GRID FOR REPEATED INTEGRAND QUERIES ---
+    // Fit the original density samples, sample that curve on a finer grid,
+    // and fit a natural cubic to those fine samples. Unlike the Akima
+    // branch, this IS a second fit, so its accuracy depends on the grid.
+    // The benefit is that every later query finds its interval directly:
+    // dividing by a constant spacing replaces a binary search.
     // -----------------------------------------------------------------
     nzbins_fine = Ntable.nz_fine_sampling_factor*nzbins + 1;
     // eps nudges both fine-grid endpoints just inside the spline's
@@ -1465,7 +1471,7 @@ double nz_source_photoz(double zz, const int nj)
     const double dz_fine = (zmax_fine - zmin_fine) / ((double) nzbins_fine - 1);
     inv_dz_fine = 1.0 / dz_fine;
 
-    if (fine != NULL) {
+    if (NULL != fine) {
       free(fine);
     }
 
@@ -1495,19 +1501,6 @@ double nz_source_photoz(double zz, const int nj)
       }
       spline_coeffs_uniform(fine[0][i], nzbins_fine, dz_fine, fine[1][i]);
     }
-#else
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < ntomo+1; i++) {
-      int status = gsl_interp_init(photoz_splines[i],
-                                   table[ntomo+1],
-                                   table[i],
-                                   nzbins);
-      if (status) {
-        log_fatal(gsl_strerror(status));
-        exit(1);
-      }
-    }
-#endif
     cache[0] = redshift.random_shear;
     // same packed encoding as the rebuild condition above
     cache[1] = (uint64_t) (1 + Ntable.photoz_interpolation_type
@@ -1515,32 +1508,19 @@ double nz_source_photoz(double zz, const int nj)
     cache[2] = (uint64_t) Ntable.nz_fine_sampling_factor;
   }
 
+  // --- 5. EVALUATE THE PREPARED CURVE AT A PHOTO-Z-SHIFTED REDSHIFT ---
+  // Everything above belongs to preparation. This part runs at each
+  // quadrature point and only reads the completed tables.
   const int ntomo = redshift.shear_nbin;
   if (nj < 0 || nj > ntomo - 1) {
     log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
     exit(1);
   }
 
+  // A positive delta-z moves the distribution to higher redshift;
+  // evaluating it here therefore queries the stored curve at z - delta-z.
   zz = zz - nuisance.photoz[0][0][nj];
 
-#ifdef DONT_NZ_FAST_SUMBSAMPLE
-  const int nzbins = redshift.shear_nzbins;
-  double res;
-  if (zz <= table[ntomo+1][0] || zz >= table[ntomo+1][nzbins - 1]) {
-    res = 0.0;
-  }
-  else {
-    int status = gsl_interp_eval_e(photoz_splines[nj+1],
-                                   table[ntomo+1],
-                                   table[nj+1],
-                                   zz, NULL, &res);
-    if (status) {
-      log_fatal(gsl_strerror(status));
-      exit(1);
-    }
-  }
-  return res;
-#else
   // out-of-support test; the upper bound rebuilds the grid edge:
   // zmin_fine + (nzbins_fine - 1)*dz_fine = zmax_fine
   if (zz <= zmin_fine || zz >= zmin_fine + (nzbins_fine - 1) / inv_dz_fine) {
@@ -1585,7 +1565,6 @@ double nz_source_photoz(double zz, const int nj)
   const double b = (dy * inv_dz_fine) - dx * (c_i1 + 2.0 * c_i) / 3.0;
   const double d = (c_i1 - c_i) / (3.0 * dx);
   return fine[0][nj+1][index] + delx * (b + delx * (c_i + delx * d));
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,11 +1597,13 @@ double int_for_zmean_source(double z, void* params)
 //
 //   zmean_source(ni) = int_{zmin[ni]}^{zmax[ni]} z * n_i(z) dz
 //
-// over the bin's tabulated range, with n_i = nz_source_photoz
-// (normalized to unit integral over all z; no norm division is applied,
-// unlike zmean_all). All bins are tabulated at once with fixed-order
-// Gauss-Legendre quadrature (256/512/1024 nodes, chosen by
-// |Ntable.high_def_integration|).
+// over the bin's tabulated range, with n_i = nz_source_photoz.
+// The input histogram is normalized before smoothing; unlike zmean_all,
+// this function does not divide by the fitted curve's area. All bins
+// are tabulated at once with fixed-order
+// Gauss-Legendre quadrature, refined by |Ntable.high_def_integration|.
+// The source mean integrates z*n(z) directly; it is not the normalized
+// mean of the smoothed curve if that curve's total area differs from one.
 //
 // Cache invalidation:
 // the table rebuilds when Ntable.random or
@@ -1653,8 +1634,14 @@ double zmean_source(int ni)
 
     table = (double*) malloc1d(redshift.shear_nbin);
     const int hdi = abs(Ntable.high_def_integration);
-    const size_t szint = (0 == hdi) ? 256 : 
-                         (1 == hdi) ? 512 : 1024; // predefined GSL tables
+    // Refine the moment rule up to the shared maximum. Sharper reconstructed
+    // edges must be refinable here too. Keeping the old low-order rule
+    // would hide moment error behind an otherwise refined projection.
+    const size_t szint = (0 == hdi) ?   256 :
+                        (1 == hdi) ?   512 :
+                        (2 == hdi) ?  1024 :
+                        (3 == hdi) ?  2048 :
+                        (4 == hdi) ?  4096 : 8192;
     if (w != NULL) {
       gsl_integration_glfixed_table_free(w);
     }
@@ -1789,8 +1776,8 @@ double pf_histo_n(double z, const int ni)
 //
 //   The histogram is normalized before these fits. Neither fit explicitly
 //   conserves individual cell probabilities or renormalizes its own area.
-//   DONT_NZ_FAST_SUMBSAMPLE bypasses the final grid and evaluates the
-//   first GSL interpolant directly.
+//   Uniform-grid preparation is mandatory. GSL is used only during
+//   preparation; all integrand queries evaluate the stored cubic directly.
 //
 //   Stage 2 (hot path, called millions of times per likelihood): one
 //   multiply computes the fine-grid index (no binary search, no GSL
@@ -1816,54 +1803,39 @@ double pf_histo_n(double z, const int ni)
 double nz_lens_photoz(double zz, int nj)
 {
   // The default path below retains the original midpoint reconstruction.
-  if (Ntable.photoz_histogram_akima == 1) {
+  if (1 == Ntable.photoz_histogram_akima) {
     return nz_histogram_akima(zz, nj, 1);
   }
 
   static uint64_t cache[MAX_SIZE_ARRAYS];
   static double** table = NULL;
   static gsl_interp* photoz_splines[MAX_SIZE_ARRAYS+1];
-#ifndef DONT_NZ_FAST_SUMBSAMPLE
   // uniform fine grid for direct-index evaluation (no binary search)
   // fine[0] = table_fine (y values), fine[1] = c_fine (spline coefficients)
   static double*** fine = NULL;
   static double zmin_fine;
   static double inv_dz_fine;
   static int nzbins_fine;
-#endif
 
-  // The two photo-z settings are packed into ONE integer so a single
-  // comparison detects a change in either of them:
+  // --- 1. DECIDE WHETHER THE STORED CURVE CAN BE REUSED ---
+  // The histogram stamp changes when its values or dimensions change.
+  // The other keys track the interpretation of the z column and the
+  // interpolation grids. Cosmology and photo-z shifts do not change the
+  // curve itself, so they must not force this preparation to run again.
   //
-  //   packed = 1 + photoz_interpolation_type + 8*photoz_zmid_convention
-  //
-  // Read it like a two-digit number whose "ones digit" is the
-  // interpolation type (0-7) and whose "eights digit" is the z-column
-  // convention: type 2 with convention 0 gives 1 + 2 + 0 = 3, while
-  // type 0 with convention 1 gives 1 + 0 + 8 = 9.
-  //
-  // As long as the type stays in 0-7 and the convention is 0 or 1, two
-  // different settings pairs never produce the same packed number. (With
-  // a multiplier of 2 they could: type 2 with convention 0 and type 0
-  // with convention 1 would both give 3, and that settings change would
-  // be mistaken for "nothing changed" - stale n(z) tables, silently wrong
-  // physics.) The meaningful types are 0, 1 and 2 (malloc_gsl_interp maps
-  // any other value to Steffen); init_photoz_conventions does not reject
-  // values outside the ranges this encoding assumes.
-  //
-  // The 1+ offset keeps a stamped slot nonzero, so it can never equal
-  // the zero that C puts in the static cache array before the first
-  // build.
-  //
-  // cache[2]: the fine-sampling factor of the fine grid, keyed on its
-  // value (see nz_source_photoz).
+  // Pack interpolation type and edge convention into separate bit ranges:
+  //   key = 1 + type + 8*convention.
+  // Types 0..7 cannot overlap the convention's contribution. The added one
+  // also distinguishes a valid key from the initially zero static cache.
+  // The fine-grid factor has its own key; unrelated Ntable changes do not
+  // require rebuilding n(z).
   if (NULL == table ||
       fdiff2(cache[0], redshift.random_clustering) ||
       cache[1] != (uint64_t) (1 + Ntable.photoz_interpolation_type
                                 + 8*Ntable.photoz_zmid_convention) ||
       cache[2] != (uint64_t) Ntable.nz_fine_sampling_factor)
   {
-    if (table == NULL) {
+    if (NULL == table) {
       for (int i = 0; i < MAX_SIZE_ARRAYS+1; i++) {
         photoz_splines[i] = NULL;
       }
@@ -1872,10 +1844,13 @@ double nz_lens_photoz(double zz, int nj)
     const int ntomo  = redshift.clustering_nbin;
     const int nzbins = redshift.clustering_nzbins;
 
-    if (table != NULL) {
+    if (NULL != table) {
       free(table);
     }
 
+    // --- 2. PLACE THE ORIGINAL DENSITIES AT THEIR SAMPLE POSITIONS ---
+    // This branch treats the tabulated heights as point values at centres.
+    // It does not first repeat each histogram cell as the Akima branch does.
     table = (double**) malloc2d(ntomo + 2, nzbins);
     const double zmin = redshift.clustering_zdist_zall[RANGE_MIN];
     const double zmax = redshift.clustering_zdist_zall[RANGE_MAX];
@@ -1894,15 +1869,19 @@ double nz_lens_photoz(double zz, int nj)
       table[ntomo+1][k] = zmin + (k + off) * dz_histo;
     }
 
+    // --- 3. NORMALIZE THE HISTOGRAM BEFORE INTERPOLATING ---
+    // This fixes the discrete histogram sum. A later smooth fit can still
+    // move probability between cells and slightly change the total area.
+    //
     // Row layout of table (ntomo + 2 rows, nzbins columns):
     //
     //   table[0]        = combined n(z) of the whole sample
-    //   table[1..ntomo] = per-bin n(z), each normalized to unit integral
+    //   table[1..ntomo] = per-bin density samples, normalized by histogram area
     //   table[ntomo+1]  = the z nodes shared by every row
     //
     // NORM[i] = bin i's raw-histogram integral (cell sum times width
     // dz_histo) and norm = sum_i NORM[i], the whole sample's. Dividing
-    // bin i by NORM[i] makes rows 1..ntomo unit-normalized; the
+    // bin i by NORM[i] gives each row a unit histogram sum; the
     // combined row then reweights them by the sample fractions
     // NORM[i]/norm:
     //
@@ -1942,7 +1921,7 @@ double nz_lens_photoz(double zz, int nj)
     }
     
     for (int i = 0; i < ntomo+1; i++) {
-      if (photoz_splines[i] != NULL) {
+      if (NULL != photoz_splines[i]) {
         gsl_interp_free(photoz_splines[i]);
       }
 
@@ -1960,11 +1939,13 @@ double nz_lens_photoz(double zz, int nj)
         exit(1);
       }
     }
-#ifndef DONT_NZ_FAST_SUMBSAMPLE
     // -----------------------------------------------------------------
-    // Resample each spline onto a uniform fine grid. The GSL spline on
-    // the node grid is evaluated once here; the hot path below uses
-    // direct-index lookup with no binary search.
+    // --- 4. PREPARE A UNIFORM GRID FOR REPEATED INTEGRAND QUERIES ---
+    // Fit the original density samples, sample that curve on a finer grid,
+    // and fit a natural cubic to those fine samples. Unlike the Akima
+    // branch, this IS a second fit, so its accuracy depends on the grid.
+    // The benefit is that every later query finds its interval directly:
+    // dividing by a constant spacing replaces a binary search.
     // -----------------------------------------------------------------
     nzbins_fine = Ntable.nz_fine_sampling_factor*nzbins + 1;
     
@@ -1978,7 +1959,7 @@ double nz_lens_photoz(double zz, int nj)
     const double dz_fine = (zmax_fine - zmin_fine) / ((double) nzbins_fine - 1);
     inv_dz_fine = 1.0 / dz_fine;
 
-    if (fine != NULL) {
+    if (NULL != fine) {
       free(fine);
     }
 
@@ -1999,7 +1980,6 @@ double nz_lens_photoz(double zz, int nj)
       }
       spline_coeffs_uniform(fine[0][i], nzbins_fine, dz_fine, fine[1][i]);
     }
-#endif
     cache[0] = redshift.random_clustering;
     // same packed encoding as the rebuild condition above
     cache[1] = (uint64_t) (1 + Ntable.photoz_interpolation_type
@@ -2007,36 +1987,22 @@ double nz_lens_photoz(double zz, int nj)
     cache[2] = (uint64_t) Ntable.nz_fine_sampling_factor;
   }
 
+  // --- 5. EVALUATE THE PREPARED CURVE AT A PHOTO-Z-SHIFTED REDSHIFT ---
+  // Everything above belongs to preparation. This part runs at each
+  // quadrature point and only reads the completed tables.
   const int ntomo = redshift.clustering_nbin;
   if (nj < 0 || nj > ntomo - 1) {
     log_fatal("nj = %d bin outside range (max = %d)", nj, ntomo);
     exit(1);
   }
+
+  // Undo the shift and stretch to query the unmodified stored curve.
+  // The final division by stretch below is the Jacobian: widening dz
+  // requires lowering the density by the same factor to preserve n(z) dz.
   zz = (zz - nuisance.photoz[1][0][nj]
            - redshift.clustering_zdist_z[ZDIST_MEAN][nj]) / nuisance.photoz[1][1][nj]
        + redshift.clustering_zdist_z[ZDIST_MEAN][nj];
 
-#ifdef DONT_NZ_FAST_SUMBSAMPLE
-  const int nzbins = redshift.clustering_nzbins;
-  double res; 
-  if (zz <= table[ntomo+1][0] || zz >= table[ntomo+1][nzbins - 1]) { // z_v = table[ntomo+1]
-    res = 0.0;
-  }
-  else {
-    int status = gsl_interp_eval_e(photoz_splines[nj+1], 
-                                   table[ntomo+1],
-                                   table[nj+1],
-                                   zz, 
-                                   NULL, 
-                                   &res);
-    if (status) {
-      log_fatal(gsl_strerror(status));
-      exit(1);
-    }
-    res = res / nuisance.photoz[1][1][nj];
-  }
-  return res;
-#else
   // -----------------------------------------------------------------------
   // Hot-path cubic spline evaluation on the uniform fine grid.
   //
@@ -2085,7 +2051,6 @@ double nz_lens_photoz(double zz, int nj)
   double res = fine[0][nj+1][index] + delx * (b + delx * (c_i + delx * d));
   res = res / nuisance.photoz[1][1][nj];
   return res;
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -2147,11 +2112,11 @@ double norm_for_zmean(double z, void* params)
 //
 // over the bin's tabulated range [zdist_zmin[i], zdist_zmax[i]], with
 // n_i = nz_lens_photoz. Unlike zmean_source, this divides by the norm:
-// the 1/sigma of nz_lens_photoz keeps the integral over all z at one,
-// but a shift or a stretch can move part of n_i outside the bin's
+// the 1/sigma of nz_lens_photoz preserves the curve's total area during
+// a stretch. A shift or stretch can move part of n_i outside the bin's
 // tabulated range, and the division makes the result the mean of n_i
-// over that range. Fixed-order Gauss-Legendre quadrature (256/512/1024
-// nodes, chosen by |Ntable.high_def_integration|).
+// over that range. The fixed Gauss-Legendre rule is refined by
+// |Ntable.high_def_integration|, independently of the n(z) reconstruction.
 //
 // No cache: set_lens_sample calls it once per n(z) load, with the lens
 // photo-z nuisance at the identity, to fill the fiducial means
@@ -2165,8 +2130,14 @@ double norm_for_zmean(double z, void* params)
 void zmean_all(double* out)
 {
   const int hdi = abs(Ntable.high_def_integration);
-  const size_t szint = (0 == hdi) ? 256 :
-                       (1 == hdi) ? 512 : 1024; // predefined GSL tables
+  // Refine the moment rule up to the shared maximum. Sharper reconstructed
+  // edges must be refinable here too. The lens mean is the stretch
+  // pivot, so its integration error can move the entire distribution.
+  const size_t szint = (0 == hdi) ?   256 :
+                      (1 == hdi) ?   512 :
+                      (2 == hdi) ?  1024 :
+                      (3 == hdi) ?  2048 :
+                      (4 == hdi) ?  4096 : 8192;
   gsl_integration_glfixed_table* w = malloc_gslint_glfixed(szint);
 
   (void) nz_lens_photoz(0., 0); // init static vars

@@ -1,0 +1,186 @@
+{
+  "settings": {
+    "accuracyboost": 5,
+    "integration_accuracy": 7,
+    "maximum_quadrature_nodes": 8192
+  },
+  "rows": [
+    {
+      "label": "LSST Y1",
+      "project": "lsst_y1",
+      "default_accuracyboost": 1.0,
+      "default_integration_accuracy": 0,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.0021653168405796628,
+      "reconstruction_distances": {
+        "original_to_three": 0.021452645097102842,
+        "three_to_five": 0.009772072375720517,
+        "three_to_seven": 0.01650431904897905,
+        "five_to_seven": 0.005330874324656557
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 7.08421026066607e-26,
+        "three": 8.15906385362049e-17,
+        "five": 1.4629931506693222e-15,
+        "seven": 3.34998891163685e-16
+      },
+      "default_vector_unchanged_bitwise": true
+    },
+    {
+      "label": "Roman real",
+      "project": "roman_real",
+      "default_accuracyboost": 1.0,
+      "default_integration_accuracy": 0,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.013626538630661475,
+      "reconstruction_distances": {
+        "original_to_three": 0.040987625093305134,
+        "three_to_five": 0.0032178791829781937,
+        "three_to_seven": 0.004495904038841715,
+        "five_to_seven": 0.0002784491647022553
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 9.902799186445023e-26,
+        "three": 8.904378916429642e-17,
+        "five": 6.739873264132512e-16,
+        "seven": 1.775457549981417e-15
+      },
+      "default_vector_unchanged_bitwise": true
+    },
+    {
+      "label": "Roman Fourier",
+      "project": "roman_fourier",
+      "default_accuracyboost": 2.0,
+      "default_integration_accuracy": 0,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.009719737669342775,
+      "reconstruction_distances": {
+        "original_to_three": 0.3884213594514962,
+        "three_to_five": 0.030660172288317827,
+        "three_to_seven": 0.06344007635122924,
+        "five_to_seven": 0.00603868590926878
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 2.0224910807737018e-25,
+        "three": 6.780241264396057e-17,
+        "five": 5.885505499793521e-16,
+        "seven": 2.9201071793200612e-15
+      },
+      "default_vector_unchanged_bitwise": true
+    },
+    {
+      "label": "Roman KL",
+      "project": "roman_kl",
+      "default_accuracyboost": 1.0,
+      "default_integration_accuracy": 0,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.006599443631197372,
+      "reconstruction_distances": {
+        "original_to_three": 0.36542767033504275,
+        "three_to_five": 0.06718490132485296,
+        "three_to_seven": 0.13958572095202015,
+        "five_to_seven": 0.013585662912169174
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 4.701005505809063e-26,
+        "three": 1.1690124506192362e-16,
+        "five": 6.997749904752425e-19,
+        "seven": 2.428069453748764e-16
+      },
+      "default_vector_unchanged_bitwise": true
+    },
+    {
+      "label": "DES Y3",
+      "project": "des_y3",
+      "default_accuracyboost": 1.0,
+      "default_integration_accuracy": 0,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.005614897107346897,
+      "reconstruction_distances": {
+        "original_to_three": 0.07438433126443353,
+        "three_to_five": 0.0013642462601458614,
+        "three_to_seven": 0.0036886859245078285,
+        "five_to_seven": 0.0006181514032063631
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 3.1476636564126742e-24,
+        "three": 6.149070893355952e-18,
+        "five": 2.299634202907497e-17,
+        "seven": 5.606278389616338e-16
+      },
+      "default_vector_unchanged_bitwise": true
+    },
+    {
+      "label": "DES \u00d7 Planck",
+      "project": "desy1xplanck",
+      "default_accuracyboost": 1.0,
+      "default_integration_accuracy": 0,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.02212658147715019,
+      "reconstruction_distances": {
+        "original_to_three": 0.13046520404902306,
+        "three_to_five": 0.0022286244725531444,
+        "three_to_seven": 0.0029728510159583877,
+        "five_to_seven": 0.00013594516268500276
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 3.8210116808552133e-10,
+        "three": 9.728755622228201e-08,
+        "five": 9.338829162642401e-07,
+        "seven": 4.213739157344974e-06
+      },
+      "default_vector_unchanged_bitwise": true
+    },
+    {
+      "label": "DES cluster",
+      "project": "des_cluster",
+      "default_accuracyboost": 1.0,
+      "default_integration_accuracy": 1,
+      "refined_accuracyboost": 5.0,
+      "refined_integration_accuracy": 7,
+      "original_default_to_refined": 0.024920297458163196,
+      "reconstruction_distances": {
+        "original_to_three": 0.38043231039176795,
+        "three_to_five": 0.007816920064764107,
+        "three_to_seven": 0.014168246146147893,
+        "five_to_seven": 0.002362326056296881
+      },
+      "redshift_moment_refinement_delta_chi2": {
+        "original": 8.599551536693963e-20,
+        "three": 1.9383788576349764e-15,
+        "five": 2.3834259675343547e-14,
+        "seven": 9.376886097705298e-14
+      },
+      "default_vector_unchanged_bitwise": true
+    }
+  ],
+  "scope": "Fixed NLA fiducials, supplied covariances, original signed histograms; manual study, not routine regression",
+  "prior_native_refinement": "nz_akima_prior_native_refinement.json",
+  "prior_native_refinement_scope": "Historical boost/rule study before extending source/lens mean-redshift integration; not current final model distances.",
+  "plotting": {
+    "module": "cosmolike_notebook_utils/plot_nz_reconstruction.py",
+    "called_by": "cocoa_nz_study.audit_and_plot",
+    "panels_per_project": 2,
+    "figure_footer": "Removed; definitions and settings are in each project README."
+  },
+  "source_provenance": {
+    "executed_study_sha256": "ec356f5fe96ce3c418449392057aba238f77378e798274e807d4f70ff95d821c",
+    "published_study_sha256": "5f31d801528ea2f16d368a3f38088935acfa0b8c329585cca431fa222682e5d2",
+    "only_change_after_numerical_execution": "Relocated plotting import to cosmolike_notebook_utils; scientific calculation unchanged."
+  },
+  "validation": {
+    "completed_project_studies": 7,
+    "default_vectors_bitwise_unchanged": true,
+    "accepted_reader_checks": 6,
+    "accepted_frozen_default_checks": 17,
+    "ordinary_collection_excludes_studies_in_projects": 8,
+    "maximum_independent_distance_recalculation_difference": 5.551115123125783e-16,
+    "figures_visually_checked": 7
+  }
+}

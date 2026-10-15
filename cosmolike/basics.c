@@ -245,7 +245,7 @@ gsl_interp* malloc_gsl_interp(const int n)
   else {
     result = gsl_interp_alloc(gsl_interp_steffen, n);
   }
-  if (result == NULL) {
+  if (NULL == result) {
     log_fatal("array allocation failed"); exit(1);
   }
   return result;
@@ -278,60 +278,31 @@ gsl_spline* malloc_gsl_spline(const int n)
   else {
     result = gsl_spline_alloc(gsl_interp_steffen, n);
   }
-  if (result == NULL) {
+  if (NULL == result) {
     log_fatal("array allocation failed"); exit(1);
   }
   return result;
 }
 
 // ---------------------------------------------------------------------------
-// Allocate a Gauss-Legendre fixed-point integration table.
+// Allocate a Gauss-Legendre integration table using GSL.
 //
-// Wraps gsl_integration_glfixed_table_alloc() with a fatal-on-failure
-// guarantee, consistent with the other allocation helpers in this module.
-// Sizes 2048 and 4096 use two or four equal subintervals of the stored
-// 1024-point rule. They refine resolution without generating less precise
-// high-order weights. Existing sizes keep exactly their original tables.
+// Keep node generation and table ownership inside GSL. Callers cache this
+// table, so allocation is preparation work rather than part of each integral.
+// The wrapper only turns allocation failure into the same fatal error used
+// by the other allocation helpers in this file.
 //
-// @param n  Number of quadrature points (order of the integration rule).
-//           Higher values increase accuracy at the cost of more function
-//           evaluations per integration call.
-// @return   Pointer to the newly allocated table. Never returns NULL;
-//           terminates the program on allocation failure.
+// @param n  Number of quadrature points over the integration interval.
+// @return   A GSL table; release with gsl_integration_glfixed_table_free.
 // ---------------------------------------------------------------------------
 gsl_integration_glfixed_table* malloc_gslint_glfixed(const int n)
 {
-  if (n == 2048 || n == 4096) {
-    gsl_integration_glfixed_table* w = malloc(sizeof(*w));
-    if (w == NULL) { log_fatal("array allocation failed"); exit(1); }
-    w->n = n;
-    w->x = malloc1d(n/2);
-    w->w = malloc1d(n/2);
-    w->precomputed = 0; // GSL free releases these caller-owned arrays
-    gsl_integration_glfixed_table* base = gsl_integration_glfixed_table_alloc(1024);
-    if (base == NULL) { log_fatal("array allocation failed"); exit(1); }
-
-    // GSL stores the positive half in ascending order and obtains the
-    // negative half by reflection. On [-1,1], panel width is 2/npanel;
-    // its affine map multiplies each weight by 1/npanel. Filling only
-    // the positive panels gives the symmetric composite rule, usable
-    // by both gsl_integration_glfixed and glfixed_point unchanged.
-    const int npanel = n/1024;
-    for (int panel = 0; panel < npanel/2; panel++) {
-      const double lo = 2.0*panel/npanel;
-      const double hi = 2.0*(panel + 1)/npanel;
-      for (int j = 0; j < 1024; j++) {
-        const int k = panel*1024 + j;
-        gsl_integration_glfixed_point(lo, hi, j, &w->x[k], &w->w[k], base);
-      }
-    }
-    gsl_integration_glfixed_table_free(base);
-    return w;
-  }
   gsl_integration_glfixed_table* w = gsl_integration_glfixed_table_alloc(n);
-  if (w == NULL) {
-    log_fatal("array allocation failed"); exit(1);
+  if (NULL == w) {
+    log_fatal("array allocation failed");
+    exit(1);
   }
+
   return w;
 }
 
@@ -876,12 +847,12 @@ bin_avg set_bin_average(
   if (Ntable.Ntheta == 0) {
     log_fatal("Ntable.Ntheta not initialized"); exit(EXIT_FAILURE);
   }
-  if (P == NULL || (ntheta != Ntable.Ntheta) || fdiff2(cache[0], Ntable.random))
+  if (NULL == P || (ntheta != Ntable.Ntheta) || fdiff2(cache[0], Ntable.random))
   {
-    if (P != NULL) {
+    if (NULL != P) {
       free(P);
     }
-    if (xminmax != NULL) {
+    if (NULL != xminmax) {
       free(xminmax);
     }
 
@@ -1576,7 +1547,7 @@ int line_count(
   )
 {  
   FILE* ein = fopen(filename, "r");
-  if (ein == NULL) 
+  if (NULL == ein)
   {
     log_fatal("File not open (%s)", filename);
     exit(1);

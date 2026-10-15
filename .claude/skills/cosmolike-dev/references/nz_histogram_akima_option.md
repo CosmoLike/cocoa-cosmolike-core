@@ -17,6 +17,15 @@ Akima workspace sizes must change when only this factor changes. Test
 3 -> 5 -> 3, 3 -> 7 -> 3 and fresh YAML agreement, plus lookup refinement at all three factors.
 
 The study record is `test/nz_akima_three_five/monitor_state.json`.
+The completed follow-up compared native GSL 4096/8192-point rules and
+independent interpolation boosts. The current manual study below supersedes
+the earlier routine reconstruction tests and their economical settings.
+Its results belong in `native_refinement_8192/`; do not mix them with the
+earlier composite-rule references below. The preparation factor remains
+fixed in every boost comparison. Post-Akima refinement subdivides the same
+polynomial exactly and has passed the synthetic reader checks at boosts
+1–4; changes under a global boost can still come from other lookup tables.
+
 All eight factor-5 and factor-7 scans completed. Each preserved the
 threefold level-6 vector bitwise and matched fresh YAML with the live factor
 switch. All 24 permanent reconstruction/factor tests and 17 existing frozen
@@ -88,9 +97,57 @@ repeat the endpoint mass for its missing neighbour. At m=3 this is
 15 p_j/16 + (p_(j-1) + p_(j+1))/32. This identity explains total-area
 conservation and neighbour exchange, not physical superiority of the model.
 
+## Current manual study (supersedes routine reconstruction comparisons)
+
+The user requested that model-choice sensitivity NOT run on every code change.
+The expensive `test_nz_reconstruction.py` and `test_nz_akima_factor.py` files
+have been replaced by explicit `tests/studies/run_nz_reconstruction.py`
+wrappers in the seven projects with physical covariances. These scripts call
+`cocoa_nz_study.py`; they report distances without a frozen expected output.
+Ordinary pytest keeps the synthetic reader checks and frozen likelihood tests.
+DES Y6 is excluded from statistical distances.
+
+The manual study compares original/3/5/7 at accuracyboost5 and integration
+level7, then original at current YAML numerical defaults versus original at
+those refined settings. It keeps the stored physical point and all input
+files fixed. Every quadrature rule is capped at8192; the source/lens moments
+also refine, as described in `integration_accuracy_4096.md`. The former
+compile-time GSL bypass is removed; uniform-grid preparation is mandatory.
+
+Each `tests/studies/README.md` has the model-distance table, a separate
+original-default numerical distance, the four-column toy illustration and
+a two-panel compiled-reader/area figure. Raw records are in
+`tests/studies/results/`; the shared summary is
+`dev_scripts/nz_akima_manual_study.json`. External launch/build/check records
+are in `test/nz_akima_three_five/manual_study_cap8192/` and
+`reader_cap8192_build/`. Check monitor_state.json before launching work.
+
+All seven capped studies are verified. Their original-default distances
+range from 0.0021653 to 0.0249203; all current 5->7 model distances are smaller
+than 3->5. This does not erase the residual boost sensitivity recorded in
+`dev_scripts/nz_akima_prior_native_refinement.json`. All default vectors are
+bitwise unchanged; six synthetic-reader and 17 frozen-default checks pass.
+Ordinary pytest collection in all eight projects excludes these studies.
+
+The shared plotter is `cosmolike_notebook_utils/plot_nz_reconstruction.py`.
+Every manual study calls it after the compiled area audit, and each survey
+has `tests/generate_nz_reconstruction_figures.py` to redraw saved results.
+All seven two-panel figures were visually inspected. Keep the explanatory
+footer out of figures; definitions, settings and area accounting belong in
+the project study README, as explicitly requested by the user.
+
+The user accepts practical numerical stability relative to Delta chi2 0.2.
+Do not label a small remaining numerical change as a blocked scientific
+study, or continue boost escalation without a new reason. Keep the measured
+residual sensitivity explicit; do not claim exact continuum convergence or
+physical truth of a chosen sub-bin interpolation.
+
+The following sections retain the history of the earlier comparisons and
+practical-level choices; their former routine test filenames are historical.
+
 ## Permanent checks and records
 
-Every project has `tests/data_vector/test_nz_reconstruction.py`, using its
+At initial adoption every project had `tests/data_vector/test_nz_reconstruction.py`, using its
 frozen NLA fiducial at a measured practical integration level, and the
 shared `cocoa_nz_testing.py`. It compares vectors in the same masked covariance,
 checks YAML versus live selection and exact default round trips, and audits

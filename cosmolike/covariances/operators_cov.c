@@ -180,7 +180,8 @@ void realspace_operator_cov(
       && nquad != 512
       && nquad != 1024
       && nquad != 2048
-      && nquad != 4096) {
+      && nquad != 4096
+      && nquad != 8192) {
     log_fatal("realspace_operator_cov: unsupported GL size %d", nquad);
     exit(1);
   }

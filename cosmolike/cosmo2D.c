@@ -2135,9 +2135,8 @@ enum {
 //
 // The quadrature points and weights come from the GSL fixed-order table w,
 // which is shared with the Limber integration routines. The number of points
-// (96-4096 for ss, 128-4096 for gg, 64-4096 for gs/gk/ks, keyed on
-// Ntable.high_def_integration) controls the
-// accuracy of the numerical integration.
+// is selected by Ntable.high_def_integration. Increasing this setting
+// refines the integral without changing its physical support.
 //
 // Thread safety: the loop over nodes runs single-threaded, so it safely
 // performs the first (lazy) initialization of the static interpolation
@@ -2851,8 +2850,8 @@ static void C_ss_tomo_limber_work(
 // C_l at a sparse set of ell values (like.ell[]).
 //
 // Cache invalidation:
-// the static Gauss-Legendre table w (96/128/256/512/
-// 1024/2048/4096 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// the static Gauss-Legendre table w, whose size is selected by
+// abs(Ntable.high_def_integration), rebuilds when
 // Ntable.random changes; the cosmo_nodes are rebuilt on every call (they
 // depend on the current cosmology).
 //
@@ -2889,7 +2888,8 @@ void C_ss_tomo_limber_nointerp_ells(
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -3103,7 +3103,8 @@ void dC_ss_dlnk_tomo_limber_work(
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     w = malloc_gslint_glfixed(szint);
     cn = create_cosmo_nodes(amin, amax, w);
     WCq = (double***) malloc3d(5, redshift.shear_nbin, cn.npts);
@@ -3473,7 +3474,8 @@ double C_ss_tomo_limber(
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -3563,13 +3565,13 @@ double C_ss_tomo_limber(
       //
       // The real-space projections (xi_pm_tomo, via the shared ss_
       // struct and C_ss_tomo_limber_fill) read this table at every
-      // integer ell up to Ntable.LMAX ~ 1e5 inside their Legendre
+      // integer ell up to Ntable.LMAX inside their Legendre
       // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
       // A linear read, however, is only accurate on a dense table -
-      // and each of the N_ell = 512 nodes costs one exact Limber
+      // and each dense-table node costs one exact Limber
       // quadrature, which is the expensive part.
       //
       // The coarse grid splits the difference: a cubic spline carries
@@ -3577,9 +3579,9 @@ double C_ss_tomo_limber(
       // expensive quadratures run on few nodes and a cheap cubic
       // upsampling fills the dense table:
       //
-      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //   exact Limber quadrature on ncoarse nodes
       //     -> spline_coeffs_uniform: one tridiagonal solve per row
-      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> Horner evaluation at the precomputed fine offsets
       //     -> the unchanged dense table
       //     -> the same fast linear reads by every consumer
       //
@@ -4499,10 +4501,10 @@ static void C_gs_tomo_limber_work(
 // ggl pair: the entry point of C_gs_tomo_limber_work.
 //
 // Builds the Gauss-Legendre quadrature nodes of each lens bin on its Limber
-// range [amin_lens, amax_lens] (64 nodes at the default accuracy, more with
-// Ntable.high_def_integration; a bin whose range magnification widens
-// gets one such rule on its n(z) support and one on the foreground, see
-// create_cosmo_nodes_lens), the ell prefactors
+// range [amin_lens, amax_lens], with resolution selected by
+// Ntable.high_def_integration. Magnification extends the support: those
+// bins get a separate foreground rule (see create_cosmo_nodes_lens).
+// Also builds the ell prefactors
 //
 //   ell_prefactor  = l (l+1) / (l + 1/2)^2                  (magnification)
 //   ell_prefactor2 = sqrt((l-1) l (l+1) (l+2)) / (l + 1/2)^2 (spin-2 shear)
@@ -4524,8 +4526,8 @@ static void C_gs_tomo_limber_work(
 // outputs to get both Limber terms of the non-Limber split at once.
 //
 // Cache invalidation:
-// the static Gauss-Legendre table w (64/128/256/512/
-// 1024/2048/4096 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// the static Gauss-Legendre table w, whose size is selected by
+// abs(Ntable.high_def_integration), rebuilds when
 // Ntable.random changes; the per-lens-bin cosmo_nodes are rebuilt on
 // every call (they depend on the current cosmology).
 //
@@ -4557,7 +4559,8 @@ void C_gs_tomo_limber_nl_lin_nointerp_ells(
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -4841,7 +4844,8 @@ double C_gs_tomo_limber(
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
 
@@ -4974,13 +4978,13 @@ double C_gs_tomo_limber(
       //
       // The real-space projections (w_gammat_tomo, via the shared gs_
       // struct and C_gs_tomo_limber_fill) read this table at every
-      // integer ell up to Ntable.LMAX ~ 1e5 inside their Legendre
+      // integer ell up to Ntable.LMAX inside their Legendre
       // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
       // A linear read, however, is only accurate on a dense table -
-      // and each of the N_ell = 512 nodes costs one exact Limber
+      // and each dense-table node costs one exact Limber
       // quadrature, which is the expensive part.
       //
       // The coarse grid splits the difference: a cubic spline carries
@@ -4988,9 +4992,9 @@ double C_gs_tomo_limber(
       // expensive quadratures run on few nodes and a cheap cubic
       // upsampling fills the dense table:
       //
-      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //   exact Limber quadrature on ncoarse nodes
       //     -> spline_coeffs_uniform: one tridiagonal solve per row
-      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> Horner evaluation at the precomputed fine offsets
       //     -> the unchanged dense table
       //     -> the same fast linear reads by every consumer
       //
@@ -5718,10 +5722,9 @@ static void C_gg_tomo_limber_work(
 // multipole values: the entry point of C_gg_tomo_limber_work.
 //
 // Builds the Gauss-Legendre nodes of each lens bin on [amin_lens,
-// amax_lens] (128 nodes at default; 256/512/1024 at levels 1/2/3-4,
-// 2048/4096 at levels 5/6+); a bin whose range magnification
-// widens gets one such rule on its n(z) support and one on the
-// foreground, see create_cosmo_nodes_lens) and the magnification prefactor
+// amax_lens], with resolution selected by Ntable.high_def_integration.
+// Magnification extends the support: those bins get a separate rule on
+// the foreground (see create_cosmo_nodes_lens). Also builds the prefactor
 // l (l+1)/(l + 1/2)^2, then calls C_gg_tomo_limber_work.
 //
 // Two outputs, either may be NULL:
@@ -5736,8 +5739,8 @@ static void C_gg_tomo_limber_work(
 // Limber terms of the non-Limber split for every lens bin at once.
 //
 // Cache invalidation:
-// the static Gauss-Legendre table w (128/256/512/1024/2048/4096
-// nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// the static Gauss-Legendre table w, whose size is selected by
+// abs(Ntable.high_def_integration), rebuilds when
 // Ntable.random changes; the per-lens-bin cosmo_nodes are rebuilt on
 // every call (they depend on the current cosmology).
 //
@@ -5769,7 +5772,8 @@ void C_gg_tomo_limber_nl_lin_nointerp_ells(
                          (1 == hdi) ? 256 :
                          (2 == hdi) ? 512 :
                          (hdi <= 4) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -6389,10 +6393,9 @@ static void C_gk_tomo_limber_work(
 // values: the entry point of C_gk_tomo_limber_work.
 //
 // Builds the Gauss-Legendre nodes of each lens bin on [amin_lens,
-// amax_lens] (64 nodes at default; 128/256/512/1024/2048/4096 for
-// Ntable.high_def_integration = 1/2/3/4/5/6+); a bin whose range
-// magnification widens gets one such rule on its n(z) support and one on
-// the foreground, see create_cosmo_nodes_lens) and the spin-0 prefactor
+// amax_lens], with resolution selected by Ntable.high_def_integration.
+// Magnification extends the support: those bins get a separate rule on
+// the foreground (see create_cosmo_nodes_lens). Also builds the spin-0 factor
 // l*(l+1)/(l + 1/2)^2 per multipole, then calls C_gk_tomo_limber_work.
 //
 // Cache invalidation:
@@ -6427,7 +6430,8 @@ void C_gk_tomo_limber_nointerp_ells(
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -6735,13 +6739,13 @@ double C_gk_tomo_limber(const double l, const int ni)
       //
       // The real-space projection (w_gk_tomo, via the shared gk_
       // struct and C_gk_tomo_limber_fill) reads this table at every
-      // integer ell up to Ntable.LMAX ~ 1e5 inside its Legendre
+      // integer ell up to Ntable.LMAX inside its Legendre
       // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
       // A linear read, however, is only accurate on a dense table -
-      // and each of the N_ell = 512 nodes costs one exact Limber
+      // and each dense-table node costs one exact Limber
       // quadrature, which is the expensive part.
       //
       // The coarse grid splits the difference: a cubic spline carries
@@ -6749,9 +6753,9 @@ double C_gk_tomo_limber(const double l, const int ni)
       // expensive quadratures run on few nodes and a cheap cubic
       // upsampling fills the dense table:
       //
-      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //   exact Limber quadrature on ncoarse nodes
       //     -> spline_coeffs_uniform: one tridiagonal solve per row
-      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> Horner evaluation at the precomputed fine offsets
       //     -> the unchanged dense table
       //     -> the same fast linear reads by every consumer
       //
@@ -7104,8 +7108,8 @@ static void C_ks_tomo_limber_work(
 // arbitrary array of ell values and writes results indexed 0..nell-1.
 //
 // Cache invalidation:
-// the static Gauss-Legendre table w (64/128/256/512/
-// 1024/2048/4096 nodes, keyed on abs(Ntable.high_def_integration)) rebuilds when
+// the static Gauss-Legendre table w, whose size is selected by
+// abs(Ntable.high_def_integration), rebuilds when
 // Ntable.random changes; the per-bin cosmo_nodes are rebuilt on every
 // call (they depend on the current cosmology).
 //
@@ -7135,7 +7139,8 @@ void C_ks_tomo_limber_nointerp_ells(
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) gsl_integration_glfixed_table_free(w);
     w = malloc_gslint_glfixed(szint);
     cache[0] = Ntable.random;
@@ -7355,7 +7360,8 @@ void dC_ks_dlnk_tomo_limber_work(
                          (2 == hdi) ? 256 :
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     w = malloc_gslint_glfixed(szint);
     for (int b = 0; b < redshift.shear_nbin; b++) {
       cn_all[b] = create_cosmo_nodes(aminb[b], amaxb[b], w);
@@ -7729,13 +7735,13 @@ double C_ks_tomo_limber(
       //
       // The real-space projection (w_ks_tomo, via the shared ks_
       // struct and C_ks_tomo_limber_fill) reads this table at every
-      // integer ell up to Ntable.LMAX ~ 1e5 inside its Legendre
+      // integer ell up to Ntable.LMAX inside its Legendre
       // sums. At that call rate only the optimized, vectorized linear
       // read is affordable: a cubic-spline lookup per ell would
       // dominate the whole evaluation.
       //
       // A linear read, however, is only accurate on a dense table -
-      // and each of the N_ell = 512 nodes costs one exact Limber
+      // and each dense-table node costs one exact Limber
       // quadrature, which is the expensive part.
       //
       // The coarse grid splits the difference: a cubic spline carries
@@ -7743,9 +7749,9 @@ double C_ks_tomo_limber(
       // expensive quadratures run on few nodes and a cheap cubic
       // upsampling fills the dense table:
       //
-      //   exact Limber quadrature on ncoarse nodes (default 192)
+      //   exact Limber quadrature on ncoarse nodes
       //     -> spline_coeffs_uniform: one tridiagonal solve per row
-      //     -> Horner evaluation at the 512 precomputed fine offsets
+      //     -> Horner evaluation at the precomputed fine offsets
       //     -> the unchanged dense table
       //     -> the same fast linear reads by every consumer
       //
@@ -7921,8 +7927,8 @@ double int_for_C_kk_limber(double a, void* params)
 // does this before its parallel table fill).
 //
 // Cache invalidation:
-// the static GSL table w (64/128/256/512/1024/2048/4096 nodes,
-// keyed on abs(Ntable.high_def_integration)) rebuilds when Ntable.random
+// the static GSL table w, whose size is selected by
+// abs(Ntable.high_def_integration), rebuilds when Ntable.random
 // changes.
 //
 // Parameters:
@@ -7945,7 +7951,8 @@ double C_kk_limber_nointerp(const double l, const int init)
                          (2 == hdi) ? 256 : 
                          (3 == hdi) ? 512 :
                          (4 == hdi) ? 1024 :
-                         (5 == hdi) ? 2048 : 4096; // composite above 1024
+                         (5 == hdi) ? 2048 :
+                         (6 == hdi) ? 4096 : 8192;
     if (w != NULL) {
       gsl_integration_glfixed_table_free(w);
     }

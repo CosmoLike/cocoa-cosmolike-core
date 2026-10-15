@@ -1,4 +1,49 @@
-# Integration levels through 4096 points
+# Extended integration levels
+
+## Current experimental branch: native GSL through 8192 points
+
+On `experimental/nz-akima-3-5-7`, level 7 selects 8192 points in all
+ordinary Limber paths, cluster projections/counts and the covariance
+accuracy resolver. Existing lower-level choices remain unchanged.
+`malloc_gslint_glfixed` now calls `gsl_integration_glfixed_table_alloc`
+directly at every supported size. GSL owns node generation and storage;
+the wrapper only handles allocation failure. Callers retain their caches.
+
+The user requested this simpler implementation instead of constructing
+composite rules. The generated high-order rules differ from the earlier
+composite rules, so those earlier vectors are historical results, not
+bitwise regression targets for current high-order calculations.
+
+Native GSL's generated rules have absolute polynomial-moment errors below
+4e-10 in the local checks. The user approved a practical 1e-9 absolute
+tolerance for these checks; stored rules retain their tighter tolerance.
+Do not turn this into a relaxation of the survey Delta chi2 requirements.
+
+Current records are under `test/nz_akima_three_five/`: `native_8192/`,
+`native_checks_8192_final/` and `native_refinement_8192/`. The native rule,
+angular/mass/tree-sector checks and all 17 frozen-default checks passed.
+The six histogram-reader cases also passed at interpolation boosts 1–4.
+The user accepts practical stability relative to Delta chi2 0.2. Do not
+continue global-boost escalation in pursuit of an exact continuum limit.
+The permanent manual study is `cocoa_nz_study.py`, called explicitly by each
+survey's `tests/studies/run_nz_reconstruction.py`; it is not collected by
+routine pytest. All seven `manual_study_cap8192/` runs completed and were
+verified with fixed inputs/covariances and original cache round trips.
+All seven original default vectors remain bitwise unchanged. Six reader
+checks and 17 frozen-default checks passed; ordinary collection in all
+eight projects excludes these expensive studies. Current published records
+are in `dev_scripts/nz_akima_manual_study.json`.
+DES Y6 has no physical covariance and is excluded from statistical distances.
+
+The source/lens mean-redshift rules in `redshift_spline.c` now refine too:
+256/512/1024/2048/4096/8192 at levels 0/1/2/3/4/5, capped at 8192 for
+levels 6 and 7. The user explicitly rejected extending any rule beyond8192.
+The defaults remain unchanged. `redshift_spline_cluster.c` uses refining
+trapezoid grids and has no capped fixed-Gauss selector to extend.
+The old `DONT_NZ_FAST_SUMBSAMPLE` bypass is retired: all galaxy n(z) readers
+prepare uniform lookup grids, whether the reconstruction is cubic or Akima.
+
+## Historical composite implementation (retired)
 
 `integration_accuracy` retains the existing defaults and levels 0–4.
 Level 5 selects 2048 points and level 6 selects 4096 points in every

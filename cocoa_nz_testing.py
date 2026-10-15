@@ -303,11 +303,14 @@ def compare_histogram_reconstructions(harness, native, project, example,
     return record
 
 
-def histogram_probability_audit(native, source_file, lens_file):
+def histogram_probability_audit(native, source_file, lens_file,
+                                preparation_factors=(3,), accuracyboost=1.0):
     """Integrate the compiled curves over every original Z_LOW histogram cell.
 
-    Reset shifts/stretch and use the default final grid (factor five), so
-    this measures reconstruction alone. Split at every reader knot; a
+    Reset shifts/stretch, so this measures reconstruction alone. The optional
+    preparation_factors select fixed histogram models; accuracyboost sets only
+    their final lookup density (and the default cubic's second fit). Split at
+    every reader knot; a
     two-point Gauss rule integrates each cubic exactly. A four-point rule
     independently checks the partition. No Limber or cosmology is involved.
     Returns per-distribution metrics and arrays suitable for area plots.
@@ -320,13 +323,26 @@ def histogram_probability_audit(native, source_file, lens_file):
         tables[sample] = np.loadtxt(fname=filename)
     arrays = {}
     rows = []
-    for enabled in (0, 1):
+    if not preparation_factors or any(factor not in (3, 5, 7)
+                                     for factor in preparation_factors):
+        raise ValueError("Choose preparation factors from 3, 5 and 7")
+    if accuracyboost < 1:
+        raise ValueError("The probability audit requires accuracyboost >= 1")
+    arms = [(0, "original")]
+    names = {3: "three", 5: "five", 7: "seven"}
+    for factor in preparation_factors:
+        label = "akima" if len(preparation_factors) == 1 else names[factor]
+        arms.append((factor, label))
+    final_factor = int(np.ceil(5 * accuracyboost))
+    for factor, arm in arms:
+        enabled = int(factor != 0)
         native.initial_setup()
-        native.init_photoz_histogram_akima(enabled=enabled)
+        native.init_accuracy_boost(accuracy_boost=accuracyboost, integration_accuracy=0)
+        native.init_photoz_histogram_akima(
+            enabled=enabled, preparation_factor=max(factor, 3))
         native.init_redshift_distributions_from_files(
             lens_multihisto_file=str(lens_file), lens_ntomo=tables["lens"].shape[1] - 1,
             source_multihisto_file=str(source_file), source_ntomo=tables["source"].shape[1] - 1)
-        arm = "original" if enabled == 0 else "akima"
         for sample in ("source", "lens"):
             table = tables[sample]
             z = table[:, 0]
@@ -338,12 +354,13 @@ def histogram_probability_audit(native, source_file, lens_file):
                 width = (upper - lower) / count
                 knots = np.linspace(start=lower + .5 * width + 1.e-15,
                                     stop=lower + (count - .5) * width - 1.e-15,
-                                    num=5 * count + 1)
+                                    num=final_factor * count + 1)
             else:
-                prepared = 3 * count
+                prepared = factor * count
                 width = (edges[-1] - edges[0]) / prepared
-                inverse_width = 2 * (prepared + 1) / ((prepared + 1) * width)
-                knots = edges[0] - .5 * width + np.arange(2 * (prepared + 1) + 1) / inverse_width
+                refinement = int(np.ceil(max(4, final_factor) / factor))
+                node_count = refinement * (prepared + 1) + 1
+                knots = edges[0] - .5 * width + np.arange(node_count) * width / refinement
             inside = (knots > edges[0]) & (knots < edges[-1])
             partition = np.unique(np.concatenate((edges, knots[inside])))
             centres = .5 * (partition[:-1] + partition[1:])
@@ -395,11 +412,14 @@ def histogram_probability_audit(native, source_file, lens_file):
             arrays[prefix + "_z"] = query
             arrays[prefix + "_density"] = np.asarray(curves)
     _sample_histogram_edge(native=native, source_file=source_file, lens_file=lens_file,
-                           rows=rows, arrays=arrays)
-    return {"final_grid_factor": 5, "shift": 0, "lens_stretch": 1, "rows": rows}, arrays
+                           rows=rows, arrays=arrays, arms=arms,
+                           accuracyboost=accuracyboost)
+    return {"final_grid_factor": final_factor, "shift": 0,
+            "lens_stretch": 1, "rows": rows}, arrays
 
 
-def _sample_histogram_edge(native, source_file, lens_file, rows, arrays):
+def _sample_histogram_edge(native, source_file, lens_file, rows, arrays,
+                           arms, accuracyboost):
     """Add dense C-reader samples of one interior transition for the figure.
 
     Choose the distribution with the largest original-bin redistribution,
@@ -428,9 +448,11 @@ def _sample_histogram_edge(native, source_file, lens_file, rows, arrays):
     reader.restype = ctypes.c_double
     source_count = np.loadtxt(fname=source_file).shape[1] - 1
     lens_count = np.loadtxt(fname=lens_file).shape[1] - 1
-    for enabled, arm in ((0, "original"), (1, "akima")):
+    for factor, arm in arms:
         native.initial_setup()
-        native.init_photoz_histogram_akima(enabled=enabled)
+        native.init_accuracy_boost(accuracy_boost=accuracyboost, integration_accuracy=0)
+        native.init_photoz_histogram_akima(
+            enabled=int(factor != 0), preparation_factor=max(factor, 3))
         native.init_redshift_distributions_from_files(
             lens_multihisto_file=str(lens_file), lens_ntomo=lens_count,
             source_multihisto_file=str(source_file), source_ntomo=source_count)

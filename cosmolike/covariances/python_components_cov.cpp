@@ -52,7 +52,7 @@ void bind_covariance_components(py::module_& module)
             nquad);
       },
       "Precomputed GSL nodes and weights [2,nquad] on [-1,1]. "
-      "Allowed sizes: 64,96,128,256,512,1024,2048,4096; smaller rules are rejected.",
+      "Supported stored/generated rules only; see covariance_accuracy_profile.",
       py::arg("nquad"));
 
   // edges_rad [nbin+1] in radians, mask_cl [nmask] (raw C_L^W from L=0),

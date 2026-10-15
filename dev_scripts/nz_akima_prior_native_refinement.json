@@ -1,0 +1,744 @@
+{
+  "scope": "Native GSL 4096/8192, fixed pre-Akima factors, independent interpolation boosts",
+  "projects": [
+    {
+      "project": "lsst_y1",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 1.0594578542436708e-07,
+          "three": 1.7429533646163472e-08,
+          "five": 4.26706982576945e-08,
+          "seven": 1.034198946691704e-07,
+          "model_displacement_changes": {
+            "original_to_three": 4.5810311303254724e-08,
+            "three_to_five": 1.9216378045011784e-08,
+            "three_to_seven": 1.0357733813777947e-07,
+            "five_to_seven": 1.7324292187749394e-07
+          },
+          "table_entry_changes": {
+            "original_to_three": -1.604626727469416e-05,
+            "three_to_five": -9.26379583640613e-06,
+            "three_to_seven": 1.7025276838472658e-05,
+            "five_to_seven": -1.1216375922218358e-05
+          }
+        },
+        "boost_default_to_2": {
+          "original": 0.0007188297354987878,
+          "three": 0.8559680430869775,
+          "five": 0.8496460540531174,
+          "seven": 0.8608243018927567,
+          "model_displacement_changes": {
+            "original_to_three": 0.858330865157111,
+            "three_to_five": 0.05104406883879851,
+            "three_to_seven": 0.24862823047670904,
+            "five_to_seven": 0.15668642138654293
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.9345192791744289,
+            "three_to_five": -0.015296956718257718,
+            "three_to_seven": -0.1008372500586257,
+            "five_to_seven": -0.11223662803278178
+          }
+        },
+        "boost_2_to_3": {
+          "original": 2.26581977710448e-05,
+          "three": 0.03446567545949523,
+          "five": 0.1309583940172114,
+          "seven": 0.1866348235271979,
+          "model_displacement_changes": {
+            "original_to_three": 0.03428643953473252,
+            "three_to_five": 0.05289882280113879,
+            "three_to_seven": 0.12519678730178307,
+            "five_to_seven": 0.03466525202974042
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.03542582280747132,
+            "three_to_five": -0.013591989825817441,
+            "three_to_seven": -0.046770674000316925,
+            "five_to_seven": -0.008683346385540363
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 6.66316191584399e-06,
+          "three": 0.0630648063817855,
+          "five": 0.10936548204131102,
+          "seven": 0.13090185797152132,
+          "model_displacement_changes": {
+            "original_to_three": 0.06327982116053629,
+            "three_to_five": 0.03031205320139614,
+            "three_to_seven": 0.05150168697774312,
+            "five_to_seven": 0.01076796704616957
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.07025372252016898,
+            "three_to_five": -0.01034721907348856,
+            "three_to_seven": -0.019577325983015977,
+            "five_to_seven": -0.00343382183571995
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.9908158704084291,
+          "three_to_five": 0.0490175015207307,
+          "three_to_seven": 0.18367254402755762,
+          "five_to_seven": 0.1296958872073785
+        },
+        "level7_boost2": {
+          "original_to_three": 0.05628054496672556,
+          "three_to_five": 0.033711281006636576,
+          "three_to_seven": 0.08285231924577038,
+          "five_to_seven": 0.017448042798674505
+        },
+        "level7_boost3": {
+          "original_to_three": 0.09170636777419688,
+          "three_to_five": 0.020119291180819135,
+          "three_to_seven": 0.03608164524545346,
+          "five_to_seven": 0.008764696413134142
+        },
+        "level7_boost5": {
+          "original_to_three": 0.021452645254027902,
+          "three_to_five": 0.009772072107330575,
+          "three_to_seven": 0.01650431926243748,
+          "five_to_seven": 0.005330874577414192
+        },
+        "level7_default": {
+          "original_to_three": 0.9907998241411544,
+          "three_to_five": 0.049008237724894294,
+          "three_to_seven": 0.1836895693043961,
+          "five_to_seven": 0.1296846708314563
+        }
+      }
+    },
+    {
+      "project": "roman_real",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 1.4563632088259582e-06,
+          "three": 4.6145119148235506e-07,
+          "five": 8.244272520486848e-07,
+          "seven": 2.4281592064959182e-06,
+          "model_displacement_changes": {
+            "original_to_three": 2.8774715567357927e-06,
+            "three_to_five": 6.620105502090893e-07,
+            "three_to_seven": 3.1478492918651187e-06,
+            "five_to_seven": 4.456600333971439e-06
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.0004970477030101228,
+            "three_to_five": 7.72948509828418e-06,
+            "three_to_seven": -2.005947296554629e-05,
+            "five_to_seven": -1.386301583192846e-05
+          }
+        },
+        "boost_default_to_2": {
+          "original": 0.005865406488436162,
+          "three": 0.0602619245934999,
+          "five": 0.0824476919644273,
+          "seven": 0.095633246815443,
+          "model_displacement_changes": {
+            "original_to_three": 0.05274494365961797,
+            "three_to_five": 0.015752227904630725,
+            "three_to_seven": 0.027901298341138237,
+            "five_to_seven": 0.0034151346205704503
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.143106760487502,
+            "three_to_five": 0.005892311639750939,
+            "three_to_seven": 0.009523443200990637,
+            "five_to_seven": 0.00116845208047867
+          }
+        },
+        "boost_2_to_3": {
+          "original": 0.0006203330734415227,
+          "three": 0.10257183185528862,
+          "five": 0.12981706631259354,
+          "seven": 0.1527371364062057,
+          "model_displacement_changes": {
+            "original_to_three": 0.10164365285482294,
+            "three_to_five": 0.01591961199888744,
+            "three_to_seven": 0.027914345758893983,
+            "five_to_seven": 0.002727182806483867
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.05195781370835342,
+            "three_to_five": -0.007543877699067597,
+            "three_to_seven": -0.013227155333281717,
+            "five_to_seven": -0.001638199629235042
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 8.903459073521417e-05,
+          "three": 0.03498492243791357,
+          "five": 0.04240144565157417,
+          "seven": 0.05013161322024084,
+          "model_displacement_changes": {
+            "original_to_three": 0.034910746458387876,
+            "three_to_five": 0.004065394144803051,
+            "three_to_seven": 0.006774054919172015,
+            "five_to_seven": 0.0008370319928162726
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.0184521091793639,
+            "three_to_five": -0.0005346589801379746,
+            "three_to_seven": -0.0018289183264986845,
+            "five_to_seven": -0.00030145454271649733
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.2540072607372279,
+          "three_to_five": 0.005396374871633162,
+          "three_to_seven": 0.010048594051791255,
+          "five_to_seven": 0.0010635142139244316
+        },
+        "level7_boost2": {
+          "original_to_three": 0.11139754795273601,
+          "three_to_five": 0.011296415996482385,
+          "three_to_seven": 0.019551977779816345,
+          "five_to_seven": 0.002218103278571173
+        },
+        "level7_boost3": {
+          "original_to_three": 0.05943973424438259,
+          "three_to_five": 0.003752538297414788,
+          "three_to_seven": 0.006324822446534628,
+          "five_to_seven": 0.000579903649336131
+        },
+        "level7_boost5": {
+          "original_to_three": 0.04098762506501869,
+          "three_to_five": 0.003217879317276813,
+          "three_to_seven": 0.004495904120035943,
+          "five_to_seven": 0.00027844910661963364
+        },
+        "level7_default": {
+          "original_to_three": 0.254504308440238,
+          "three_to_five": 0.005404104356731446,
+          "three_to_seven": 0.010028534578825708,
+          "five_to_seven": 0.001049651198092503
+        }
+      }
+    },
+    {
+      "project": "roman_fourier",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 1.5251684387901016e-05,
+          "three": 6.823533366247015e-07,
+          "five": 1.8106848550285504e-06,
+          "seven": 3.7683672133556947e-06,
+          "model_displacement_changes": {
+            "original_to_three": 2.1758883384395243e-05,
+            "three_to_five": 1.5218307289828996e-06,
+            "three_to_seven": 3.3096321236720103e-06,
+            "five_to_seven": 6.320434554964001e-06
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.0052073758792512415,
+            "three_to_five": 9.240930372565737e-05,
+            "three_to_seven": -0.0002612161027099047,
+            "five_to_seven": -0.000122877894740624
+          }
+        },
+        "boost_2_to_3": {
+          "original": 0.003978636814031331,
+          "three": 0.1295169361219179,
+          "five": 0.15942728483561852,
+          "seven": 0.1782785096777197,
+          "model_displacement_changes": {
+            "original_to_three": 0.12529642820171993,
+            "three_to_five": 0.014134798097208493,
+            "three_to_seven": 0.02724207120078918,
+            "five_to_seven": 0.0031421031912794994
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.06373550280732693,
+            "three_to_five": -0.000820074195579161,
+            "three_to_seven": -0.0002800234572806065,
+            "five_to_seven": 0.00010606588587605721
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 0.0007743307503746353,
+          "three": 0.04630983173918714,
+          "five": 0.06103669263984513,
+          "seven": 0.07219846005309831,
+          "model_displacement_changes": {
+            "original_to_three": 0.046155565014186446,
+            "three_to_five": 0.0038643541312498265,
+            "three_to_seven": 0.009645965889099738,
+            "five_to_seven": 0.0016175187767770189
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.04445919825306943,
+            "three_to_five": -0.002157231889468203,
+            "three_to_seven": -0.005087590210332782,
+            "five_to_seven": -0.0007853938641509779
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.4914086843955562,
+          "three_to_five": 0.03354506928216618,
+          "three_to_seven": 0.06906890603275051,
+          "five_to_seven": 0.0068408916007892985
+        },
+        "level7_boost3": {
+          "original_to_three": 0.4328805574674805,
+          "three_to_five": 0.03281740439031268,
+          "three_to_seven": 0.06852766647276,
+          "five_to_seven": 0.006824079591924732
+        },
+        "level7_boost5": {
+          "original_to_three": 0.38842135921441107,
+          "three_to_five": 0.030660172500844476,
+          "three_to_seven": 0.06344007626242722,
+          "five_to_seven": 0.006038685727773754
+        },
+        "level7_default": {
+          "original_to_three": 0.4966160602748074,
+          "three_to_five": 0.03363747858589184,
+          "three_to_seven": 0.0688076899300406,
+          "five_to_seven": 0.0067180137060486745
+        }
+      }
+    },
+    {
+      "project": "roman_kl",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 2.9165103970263535e-09,
+          "three": 6.8760288428940205e-09,
+          "five": 2.706686347633393e-08,
+          "seven": 3.4568333542655413e-07,
+          "model_displacement_changes": {
+            "original_to_three": 4.163164660396815e-09,
+            "three_to_five": 1.6299141711851215e-08,
+            "three_to_seven": 2.8604117216506523e-07,
+            "five_to_seven": 2.3066292064802325e-07
+          },
+          "table_entry_changes": {
+            "original_to_three": 3.2410121308945605e-06,
+            "three_to_five": -9.128504488351008e-06,
+            "three_to_seven": 1.9425106429438177e-05,
+            "five_to_seven": 9.703997893385774e-06
+          }
+        },
+        "boost_default_to_2": {
+          "original": 0.003826923681744056,
+          "three": 0.17604207416939374,
+          "five": 0.1814902878993787,
+          "seven": 0.19178947383286632,
+          "model_displacement_changes": {
+            "original_to_three": 0.17056537749004375,
+            "three_to_five": 0.004809949473262582,
+            "three_to_seven": 0.015569879499190887,
+            "five_to_seven": 0.0037520234858038526
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.17081193484487506,
+            "three_to_five": -0.0021824558268565136,
+            "three_to_seven": -0.006824299638640702,
+            "five_to_seven": -0.001159222565554726
+          }
+        },
+        "boost_2_to_3": {
+          "original": 0.0002826778803355056,
+          "three": 0.14564794121463476,
+          "five": 0.17776412885897996,
+          "seven": 0.18682259092323286,
+          "model_displacement_changes": {
+            "original_to_three": 0.14529409734214888,
+            "three_to_five": 0.007753199709225024,
+            "three_to_seven": 0.012223069687495019,
+            "five_to_seven": 0.001106113806992721
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.08195621396308506,
+            "three_to_five": 0.004362187465955417,
+            "three_to_seven": 0.006148213940846192,
+            "five_to_seven": -5.379118375525155e-05
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 3.133982826333411e-05,
+          "three": 0.013089218578615636,
+          "five": 0.02949936729368724,
+          "seven": 0.04161431677222274,
+          "model_displacement_changes": {
+            "original_to_three": 0.013082447510954144,
+            "three_to_five": 0.007182733517237189,
+            "three_to_seven": 0.017191698431187626,
+            "five_to_seven": 0.0030002249476431754
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.017870000054805768,
+            "three_to_five": -0.0006155312184920186,
+            "three_to_seven": 0.003585379071254502,
+            "five_to_seven": 0.0015413646454321799
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.6360625789105675,
+          "three_to_five": 0.0656298291287958,
+          "three_to_seven": 0.13665700168825243,
+          "five_to_seven": 0.013247607936751744
+        },
+        "level7_boost2": {
+          "original_to_three": 0.46525388507782334,
+          "three_to_five": 0.06343824479745093,
+          "three_to_seven": 0.12985212715604116,
+          "five_to_seven": 0.012098089369090403
+        },
+        "level7_boost3": {
+          "original_to_three": 0.3832976711147383,
+          "three_to_five": 0.06780043226340635,
+          "three_to_seven": 0.13600034109688736,
+          "five_to_seven": 0.012044298185335152
+        },
+        "level7_boost5": {
+          "original_to_three": 0.3654276710599325,
+          "three_to_five": 0.06718490104491433,
+          "three_to_seven": 0.13958572016814186,
+          "five_to_seven": 0.013585662830767332
+        },
+        "level7_default": {
+          "original_to_three": 0.6360658199226984,
+          "three_to_five": 0.06562070062430744,
+          "three_to_seven": 0.13667642679468187,
+          "five_to_seven": 0.01325731193464513
+        }
+      }
+    },
+    {
+      "project": "des_y3",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 1.4520830844459858e-06,
+          "three": 5.7305578626459995e-06,
+          "five": 6.006742027872925e-06,
+          "seven": 5.934220375982036e-06,
+          "model_displacement_changes": {
+            "original_to_three": 2.6615919153555942e-06,
+            "three_to_five": 4.637941552834436e-07,
+            "three_to_seven": 2.405532870971104e-07,
+            "five_to_seven": 1.1298333844225934e-06
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.00021937304861324725,
+            "three_to_five": -6.8682091229213885e-06,
+            "three_to_seven": -9.85907906270872e-06,
+            "five_to_seven": -5.280979329905233e-06
+          }
+        },
+        "boost_default_to_2": {
+          "original": 5.2618023443255214e-05,
+          "three": 0.2040651931286802,
+          "five": 0.2504361359736261,
+          "seven": 0.2649990453996391,
+          "model_displacement_changes": {
+            "original_to_three": 0.2056064567960947,
+            "three_to_five": 0.011973051000982074,
+            "three_to_seven": 0.0456113884512719,
+            "five_to_seven": 0.014448239832893459
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.101237609288151,
+            "three_to_five": 0.006537282750922213,
+            "three_to_seven": 0.00881359036915728,
+            "five_to_seven": -0.002692160186266268
+          }
+        },
+        "boost_2_to_3": {
+          "original": 2.4555704318809916e-06,
+          "three": 0.06092901132964899,
+          "five": 0.14430830564545072,
+          "seven": 0.21114571803478704,
+          "model_displacement_changes": {
+            "original_to_three": 0.060789905745844856,
+            "three_to_five": 0.023244045487571047,
+            "three_to_seven": 0.05463221847779568,
+            "five_to_seven": 0.006990215029627466
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.018716657753221733,
+            "three_to_five": -0.010460710104200367,
+            "three_to_seven": -0.028474209650600768,
+            "five_to_seven": -0.004736995227816149
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 6.804557820380114e-07,
+          "three": 0.05467664421786782,
+          "five": 0.06001809383462336,
+          "seven": 0.05488093991032719,
+          "model_displacement_changes": {
+            "original_to_three": 0.05474975951611498,
+            "three_to_five": 0.0018450667142787692,
+            "three_to_seven": 0.0031449944474941896,
+            "five_to_seven": 0.0006207490718172394
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.027042497879060573,
+            "three_to_five": -0.0020050831351295303,
+            "three_to_seven": -0.003017211687972167,
+            "five_to_seven": -0.00037962325012262513
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.18416715376779444,
+          "three_to_five": 0.007299624908772362,
+          "three_to_seven": 0.02637637574498677,
+          "five_to_seven": 0.008432210971496497
+        },
+        "level7_boost2": {
+          "original_to_three": 0.0827101714310302,
+          "three_to_five": 0.013830039450571653,
+          "three_to_seven": 0.03518010703508134,
+          "five_to_seven": 0.005734769805900324
+        },
+        "level7_boost3": {
+          "original_to_three": 0.10142682918425193,
+          "three_to_five": 0.003369329346371287,
+          "three_to_seven": 0.006705897384480574,
+          "five_to_seven": 0.0009977745780841746
+        },
+        "level7_boost5": {
+          "original_to_three": 0.07438433130519136,
+          "three_to_five": 0.0013642462112417569,
+          "three_to_seven": 0.0036886856965084066,
+          "five_to_seven": 0.0006181513279615495
+        },
+        "level7_default": {
+          "original_to_three": 0.1839477807191812,
+          "three_to_five": 0.007292756699649441,
+          "three_to_seven": 0.026366516665924062,
+          "five_to_seven": 0.008426929992166592
+        }
+      }
+    },
+    {
+      "project": "desy1xplanck",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 1.257426411323518e-05,
+          "three": 3.38322408764674e-08,
+          "five": 4.929012639178473e-07,
+          "seven": 1.674624894584569e-06,
+          "model_displacement_changes": {
+            "original_to_three": 1.265910319392669e-05,
+            "three_to_five": 3.512684536861741e-07,
+            "three_to_seven": 2.0916019716032015e-06,
+            "five_to_seven": 3.6674883307686916e-06
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.0025287691814945,
+            "three_to_five": 7.528310641111494e-06,
+            "three_to_seven": -4.905083129498437e-05,
+            "five_to_seven": -1.5207860007860003e-05
+          }
+        },
+        "boost_default_to_2": {
+          "original": 0.0069134853865567125,
+          "three": 0.16355504910427635,
+          "five": 0.19428798169926836,
+          "seven": 0.21937989775446878,
+          "model_displacement_changes": {
+            "original_to_three": 0.15671292273477944,
+            "three_to_five": 0.02029305274047496,
+            "three_to_seven": 0.043822825754966294,
+            "five_to_seven": 0.005604693292148764
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.10819967580765977,
+            "three_to_five": -0.0054608045011985,
+            "three_to_seven": 0.0016015016960697296,
+            "five_to_seven": 0.0028268878284914123
+          }
+        },
+        "boost_2_to_3": {
+          "original": 0.0004394719556365557,
+          "three": 0.013544529659588259,
+          "five": 0.004498638724759332,
+          "seven": 0.002032375796527196,
+          "model_displacement_changes": {
+            "original_to_three": 0.013094858702560655,
+            "three_to_five": 0.006268254593644453,
+            "three_to_seven": 0.019683590332323857,
+            "five_to_seven": 0.004969268105379567
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.01520907306444999,
+            "three_to_five": 0.00020340262863747724,
+            "three_to_seven": 2.198735604517707e-05,
+            "five_to_seven": 0.00013697698849738163
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 2.5803842529716445e-05,
+          "three": 0.0017482897637588484,
+          "five": 0.007370448567437649,
+          "seven": 0.022155188746880706,
+          "model_displacement_changes": {
+            "original_to_three": 0.001734227529359398,
+            "three_to_five": 0.0024404950747865853,
+            "three_to_seven": 0.012438549523325099,
+            "five_to_seven": 0.0043196030626730594
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.0018189819454494383,
+            "three_to_five": -0.002342301172379488,
+            "three_to_seven": -0.013230647653386433,
+            "five_to_seven": -0.004101259027681923
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.2495746030034455,
+          "three_to_five": 0.009827290477188668,
+          "three_to_seven": 0.014641739310429096,
+          "five_to_seven": 0.0012890481254834117
+        },
+        "level7_boost2": {
+          "original_to_three": 0.14390369637728023,
+          "three_to_five": 0.004374014286631279,
+          "three_to_seven": 0.01619419017520384,
+          "five_to_seven": 0.004100728093966964
+        },
+        "level7_boost3": {
+          "original_to_three": 0.12869462331283024,
+          "three_to_five": 0.004577416915268757,
+          "three_to_seven": 0.01621617753124902,
+          "five_to_seven": 0.004237705082464346
+        },
+        "level7_boost5": {
+          "original_to_three": 0.13051360525827968,
+          "three_to_five": 0.0022351157428892685,
+          "three_to_seven": 0.0029855298778625862,
+          "five_to_seven": 0.00013644605478242282
+        },
+        "level7_default": {
+          "original_to_three": 0.25210337218494,
+          "three_to_five": 0.00983481878782978,
+          "three_to_seven": 0.014592688479134112,
+          "five_to_seven": 0.0012738402654755517
+        }
+      }
+    },
+    {
+      "project": "des_cluster",
+      "numerical_checks": {
+        "native_4096_to_8192": {
+          "original": 5.1551182120857744e-05,
+          "three": 2.2218096934319817e-05,
+          "five": 4.989375850179488e-05,
+          "seven": 5.133370933730034e-05,
+          "model_displacement_changes": {
+            "original_to_three": 7.536987249559833e-05,
+            "three_to_five": 6.340168605722597e-05,
+            "three_to_seven": 2.6797274243214795e-05,
+            "five_to_seven": 8.567319125972939e-05
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.006402488090910319,
+            "three_to_five": 5.888316961841222e-06,
+            "three_to_seven": -1.4379041629847267e-05,
+            "five_to_seven": -0.0001682536304098009
+          }
+        },
+        "boost_default_to_2": {
+          "original": 0.0011054909746848957,
+          "three": 0.24069934565270001,
+          "five": 0.5507259877420464,
+          "seven": 0.8202352810576226,
+          "model_displacement_changes": {
+            "original_to_three": 0.21733332885224246,
+            "three_to_five": 0.14875445458910694,
+            "three_to_seven": 0.3456339371933744,
+            "five_to_seven": 0.04269287511211787
+          },
+          "table_entry_changes": {
+            "original_to_three": 0.02091717257796094,
+            "three_to_five": -0.03350352353878747,
+            "three_to_seven": -0.10030938988860777,
+            "five_to_seven": -0.016646072441797447
+          }
+        },
+        "boost_2_to_3": {
+          "original": 1.0594035170452348e-05,
+          "three": 0.2213213080899965,
+          "five": 0.3488185532913306,
+          "seven": 0.41212715298890357,
+          "model_displacement_changes": {
+            "original_to_three": 0.2211008798834699,
+            "three_to_five": 0.031838399421721,
+            "three_to_seven": 0.06280895071469914,
+            "five_to_seven": 0.006041615553870188
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.10582239071908967,
+            "three_to_five": -0.024235663005763314,
+            "three_to_seven": -0.045969196381411476,
+            "five_to_seven": -0.0036235146950115977
+          }
+        },
+        "level7_boost3_to_level7_boost5": {
+          "original": 2.3466194898100853e-06,
+          "three": 0.03415602260913013,
+          "five": 0.04832043714086335,
+          "seven": 0.04520045177332257,
+          "model_displacement_changes": {
+            "original_to_three": 0.03411780758762291,
+            "three_to_five": 0.012105066502125209,
+            "three_to_seven": 0.009004619590059458,
+            "five_to_seven": 0.0012766255748833193
+          },
+          "table_entry_changes": {
+            "original_to_three": -0.022608969965456138,
+            "three_to_five": 0.0015625950006615003,
+            "three_to_seven": 0.005313705994110353,
+            "five_to_seven": 0.0012962107037580882
+          }
+        }
+      },
+      "comparisons": {
+        "level6_default": {
+          "original_to_three": 0.4815440108500453,
+          "three_to_five": 0.06398762467751515,
+          "three_to_seven": 0.15514750630772312,
+          "five_to_seven": 0.021503955894583586
+        },
+        "level7_boost2": {
+          "original_to_three": 0.5088636715189165,
+          "three_to_five": 0.030489989455689516,
+          "three_to_seven": 0.05482373737748549,
+          "five_to_seven": 0.004689629822376339
+        },
+        "level7_boost3": {
+          "original_to_three": 0.4030412807998269,
+          "three_to_five": 0.0062543264499262015,
+          "three_to_seven": 0.008854540996074014,
+          "five_to_seven": 0.001066115127364741
+        },
+        "level7_boost5": {
+          "original_to_three": 0.38043231083437073,
+          "three_to_five": 0.007816921450587702,
+          "three_to_seven": 0.014168246990184367,
+          "five_to_seven": 0.002362325831122829
+        },
+        "level7_default": {
+          "original_to_three": 0.4879464989409556,
+          "three_to_five": 0.06399351299447699,
+          "three_to_seven": 0.15513312726609327,
+          "five_to_seven": 0.021335702264173785
+        }
+      }
+    }
+  ]
+}

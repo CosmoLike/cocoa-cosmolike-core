@@ -13,7 +13,7 @@ extern "C" {
 // over the bin of the probe's Wigner kernel d^ell (d22, d2-2, d20, d00),
 // so a binned correlation is sum_ell kernel[row][ell] C_ell. Spin rows are
 // zero at ell = 0, 1. A wide bin is split into panels: nquad counts the
-// Gauss-Legendre nodes of each panel (64, 96, 128, 256, 512, 1024, 2048 or 4096), not
+// Gauss-Legendre nodes of each panel (a supported stored/generated rule), not
 // of the whole bin.
 void realspace_operator_cov(
     const int nbin,            // number of angular bins

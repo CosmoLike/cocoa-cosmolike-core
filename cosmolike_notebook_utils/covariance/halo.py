@@ -64,7 +64,7 @@ def halo_trispectrum(interface, a, k, lnm_edges, accuracy_boost, mnu,
         accuracy_boost = 1, 2, 4 or 8; validated only, since the mass and
             angle rules used here do not depend on it.
         mnu = neutrino mass of the initialized cosmology, eV; must be zero.
-        integration_accuracy = 0..6, selecting the stored/composite GSL mass and
+        integration_accuracy = 0..7, selecting the stored/generated GSL mass and
             angle rules and the 20+level angle panels.
     Returns:
         dict with first/second k indices and terms [5,nk*(nk+1)/2].
@@ -162,7 +162,7 @@ def halo_power_response(interface, a, k, lnm_edges, accuracy_boost, mnu,
         lnm_edges = mass panels as in halo_trispectrum.
         accuracy_boost = 1, 2, 4 or 8; divides the centered derivative step.
         mnu = initialized neutrino mass in eV; this prescription needs zero.
-        integration_accuracy = 0..6, selecting the stored/composite mass rule.
+        integration_accuracy = 0..7, selecting the stored/generated mass rule.
     Returns:
         [na,nk] dimensional dP/d(delta_b), in (c/H0)^3. P is Pdelta, the
         configured nonlinear matter power; delta_b is the long density mode.

@@ -249,7 +249,8 @@ void halo_moments_cov(
       && nquad != 512
       && nquad != 1024
       && nquad != 2048
-      && nquad != 4096) {
+      && nquad != 4096
+      && nquad != 8192) {
     log_fatal("halo_moments_cov: unsupported mass rule %d", nquad);
     exit(1);
   }

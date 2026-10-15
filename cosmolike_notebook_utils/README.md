@@ -96,6 +96,7 @@ flowchart TB
 | [plot_datavectors_cluster.py](plot_datavectors_cluster.py) | The cluster observables: `plot_N_cluster` counts, cluster lensing (`plot_gammat_cluster_tomo`, `plot_sigma_cluster_tomo`, `plot_C_cs_tomo_limber`), cluster clustering and cluster x galaxy, in the same panel conventions. |
 | [plot_response.py](plot_response.py) | `plot_response_function`: how each data-vector entry responds to the matter power spectrum, as d ln DV / d ln k curves and cumulative R(k_max). |
 | [fisher.py](fisher.py) | Finite-difference and derivkit derivatives of a supplied data-vector function (`get_ddv`, `get_ddv_dkit`), Fisher assembly (`get_Fisher`, `get_Fisher2`), `get_FoM`, Gaussian priors and getdist contour plots (`plot_Fisher`). |
+| [plot_nz_reconstruction.py](plot_nz_reconstruction.py) | `plot_nz_four_reconstructions`: regenerate the manual study’s two-panel figure from saved compiled-reader samples and bin-area measurements; no cosmology calculation. |
 | [plot_covariances.py](plot_covariances.py) | Covariance figures from supplied arrays: split correlation triangles, component maps and histograms, and standard deviations per angular or multipole bin. |
 | [covariance/](covariance/README.md) | Preparation and assembly of Gaussian, super-sample and connected non-Gaussian covariance forecasts, with accuracy controls, eigenvalue diagnostics and independent test oracles. |
 
@@ -267,3 +268,16 @@ correlation eigenvalues of the matrix a figure summarizes; a plot can
 hide a negative mode that the eigenvalues expose. The project test
 suites under `projects/<name>/tests/` remain the quantitative checks;
 figures complement them.
+
+## How do I reproduce the n(z) reconstruction figure?
+
+The explicit `tests/studies/run_nz_reconstruction.py` in each survey measures
+the original cubic and the fixed 3-, 5- and 7-point Akima reconstructions,
+then calls [plot_nz_reconstruction.py](plot_nz_reconstruction.py). To redraw
+only the saved figure, run that project's
+`tests/generate_nz_reconstruction_figures.py`. This helper saves a PNG; it
+uses the recorded C-reader curves and never fits a replacement spline.
+
+Each survey's `tests/studies/README.md` explains the settings, total-area
+accounting and the redistribution statistic. These details stay in the
+README so the figure contains only the two panels, labels and legends.

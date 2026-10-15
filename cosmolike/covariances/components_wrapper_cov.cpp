@@ -182,8 +182,9 @@ py::dict covariance_limber_spectra_cpp(
       && nquad != 512
       && nquad != 1024
       && nquad != 2048
-      && nquad != 4096) {
-    critical("{}: nquad must be a supported rule: 64,96,128,256,512,1024,2048,4096",
+      && nquad != 4096
+      && nquad != 8192) {
+    critical("{}: unsupported quadrature rule",
       "covariance_limber_spectra_cpp");
     exit(1);
   }
@@ -383,8 +384,8 @@ static void matrix_cov(const arma::Mat<double>& values, const char* name)
   }
 }
 
-// Stored GSL rules and their 2048/4096-point composite refinements are
-// accepted: 64 for low-level tests and the 96 to 4096 accuracy ladder.
+// Supported GSL rules, stored or generated at preparation time, are
+// accepted: 64 for low-level tests and the public accuracy ladder.
 static void quadrature_cov(const int nquad)
 {
   if (nquad != 64
@@ -394,8 +395,9 @@ static void quadrature_cov(const int nquad)
       && nquad != 512
       && nquad != 1024
       && nquad != 2048
-      && nquad != 4096) {
-    critical("{}: nquad must be 64,96,128,256,512,1024,2048 or 4096",
+      && nquad != 4096
+      && nquad != 8192) {
+    critical("{}: unsupported quadrature rule",
       "covariance_limber_spectra_cpp");
     exit(1);
   }
@@ -431,7 +433,7 @@ static void angles_cov(const arma::Col<double>& edges)
 // 64 nodes. The arma::Mat [2,nquad] owns the copy, so releasing GSL's
 // descriptor cannot invalidate the returned data.
 arma::Mat<double> covariance_integration_rule_cpp(
-    const int nquad // precomputed rule size: 64,96,128,256,512,1024,2048,4096
+    const int nquad // supported GSL rule size
   )
 {
   quadrature_cov(nquad);

@@ -101,7 +101,8 @@ Two validated replacements:
   (`nz_source_photoz`, `nz_lens_photoz`) resample onto a uniform fine grid at
   init; the hot path is then `idx = (z - z0)*inv_dz` plus **linear**
   interpolation — pure linear was tested sufficient, no spline needed.
-  Fallback guard: `DONT_NZ_FAST_SUMBSAMPLE`. Caveat: this only works on
+  Uniform-grid preparation is mandatory; the development-only GSL bypass
+  has been retired. Caveat: direct indexing only works on
   uniform grids. The current `cosmo3D.c` redshift axes use validated
   piecewise-uniform metadata and `piecewise_index`. Its nonuniform inverse
   distance lookup `a_chi` uses `set_chi_bucket_index`: a direct bucket
