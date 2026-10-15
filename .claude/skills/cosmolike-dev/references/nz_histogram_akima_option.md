@@ -104,6 +104,11 @@ The expensive `test_nz_reconstruction.py` and `test_nz_akima_factor.py` files
 have been replaced by explicit `tests/studies/run_nz_reconstruction.py`
 wrappers in the seven projects with physical covariances. These scripts call
 `cocoa_nz_study.py`; they report distances without a frozen expected output.
+Each physical-covariance project also exposes `tests/studies/study_nz_reconstruction.py`,
+which explicitly runs the same script in a fresh subprocess and fails on its
+scientific checks. The `study_` prefix avoids routine discovery; invoke the
+file explicitly with pytest. It computes fresh outputs and does not compare
+with a frozen model vector or assert an expected reconstruction distance.
 Ordinary pytest keeps the synthetic reader checks and frozen likelihood tests.
 DES Y6 is excluded from statistical distances.
 
@@ -128,6 +133,14 @@ than 3->5. This does not erase the residual boost sensitivity recorded in
 `dev_scripts/nz_akima_prior_native_refinement.json`. All default vectors are
 bitwise unchanged; six synthetic-reader and 17 frozen-default checks pass.
 Ordinary pytest collection in all eight projects excludes these studies.
+
+The explicit pytest entry points also pass in all seven physical-covariance
+projects: seven tests, no failures, errors or skips. Their fresh vectors,
+inverse covariances, reader-area arrays and reported distances exactly
+reproduce the saved study. The separate verification record is
+`test/nz_akima_three_five/manual_pytest_8192/accepted_validation.json`.
+This reproducibility check does not turn the saved measurements into frozen
+acceptance targets for future reconstruction studies.
 
 The shared plotter is `cosmolike_notebook_utils/plot_nz_reconstruction.py`.
 Every manual study calls it after the compiled area audit, and each survey
