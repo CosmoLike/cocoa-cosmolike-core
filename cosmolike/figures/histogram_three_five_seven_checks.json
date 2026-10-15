@@ -1,0 +1,120 @@
+{
+  "Natural cubic through original centres": {
+    "minimum_density": -0.007022806416259563,
+    "maximum_density": 0.5555771258040689,
+    "total_probability": 1.0005369415807561,
+    "original_bin_probabilities": [
+      0.0,
+      0.05555555555555556,
+      0.1851851851851852,
+      0.5555555555555556,
+      0.1851851851851852,
+      0.01851851851851852,
+      0.0
+    ],
+    "spline_bin_probabilities": [
+      0.003718959662902962,
+      0.0539899020891289,
+      0.20856217272132221,
+      0.5058586292478044,
+      0.20550331028745983,
+      0.022243870343097154,
+      0.0006600972290405269
+    ],
+    "max_original_bin_probability_change": 0.04969692630775113
+  },
+  "3\u00d7 zero order \u2192 Akima": {
+    "minimum_density": 0.0,
+    "maximum_density": 0.5555555555555556,
+    "total_probability": 1.0000000000000002,
+    "original_bin_probabilities": [
+      0.0,
+      0.05555555555555556,
+      0.1851851851851852,
+      0.5555555555555556,
+      0.1851851851851852,
+      0.01851851851851852,
+      0.0
+    ],
+    "spline_bin_probabilities": [
+      0.0017361111111111097,
+      0.05787037037037038,
+      0.19270833333333331,
+      0.5324074074074074,
+      0.191550925925926,
+      0.023148148148148157,
+      0.0005787037037037049
+    ],
+    "max_original_bin_probability_change": 0.02314814814814814
+  },
+  "5\u00d7 zero order \u2192 Akima": {
+    "minimum_density": 0.0,
+    "maximum_density": 0.5555555555555561,
+    "total_probability": 1.0,
+    "original_bin_probabilities": [
+      0.0,
+      0.05555555555555556,
+      0.1851851851851852,
+      0.5555555555555556,
+      0.1851851851851852,
+      0.01851851851851852,
+      0.0
+    ],
+    "spline_bin_probabilities": [
+      0.0010416666666666677,
+      0.056944444444444464,
+      0.18969907407407421,
+      0.5416666666666666,
+      0.18900462962962963,
+      0.021296296296296285,
+      0.0003472222222222184
+    ],
+    "max_original_bin_probability_change": 0.01388888888888895
+  },
+  "7\u00d7 zero order \u2192 Akima": {
+    "minimum_density": 0.0,
+    "maximum_density": 0.5555555555555565,
+    "total_probability": 1.0,
+    "original_bin_probabilities": [
+      0.0,
+      0.05555555555555556,
+      0.1851851851851852,
+      0.5555555555555556,
+      0.1851851851851852,
+      0.01851851851851852,
+      0.0
+    ],
+    "spline_bin_probabilities": [
+      0.0007440476190476187,
+      0.056547619047619055,
+      0.1884093915343916,
+      0.5456349206349207,
+      0.18791335978835977,
+      0.020502645502645498,
+      0.0002480158730158719
+    ],
+    "max_original_bin_probability_change": 0.009920634920634885
+  },
+  "gsl_akima_checks": {
+    "3": {
+      "library": "/Users/vivianmiranda/miniforge/envs/cocoapy311/lib/libgsl.dylib",
+      "max_value_difference": 2.220446049250313e-16,
+      "max_derivative_difference": 1.817990202823694e-15
+    },
+    "5": {
+      "library": "/Users/vivianmiranda/miniforge/envs/cocoapy311/lib/libgsl.dylib",
+      "max_value_difference": 2.220446049250313e-16,
+      "max_derivative_difference": 2.3592239273284576e-15
+    },
+    "7": {
+      "library": "/Users/vivianmiranda/miniforge/envs/cocoapy311/lib/libgsl.dylib",
+      "max_value_difference": 3.3306690738754696e-16,
+      "max_derivative_difference": 3.9968028886505635e-15
+    }
+  },
+  "lookup_subdivision_max_value_change": {
+    "3": 6.661338147750939e-16,
+    "5": 7.771561172376096e-16,
+    "7": 9.992007221626409e-16
+  }
+}

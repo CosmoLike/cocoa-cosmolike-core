@@ -1176,8 +1176,9 @@ the named knobs change.
 Before changing the source/lens histogram readers or their YAML selector,
 read `references/nz_histogram_akima_option.md`. The default remains the
 original midpoint curve. `photoz_histogram_akima: 1` selects the alternative;
-its first factor three is fixed, and final lookup refinement preserves the
-same Akima polynomials. Preserve the exact default round-trip tests.
+its preparation factor is chosen explicitly (3, 5 or 7 on the experimental
+branch) and never scaled by accuracy. Final lookup refinement preserves the
+same Akima polynomials. Preserve exact default and factor round trips.
 
 ## Python code
 

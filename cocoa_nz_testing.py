@@ -13,6 +13,128 @@ from pathlib import Path
 import numpy as np
 
 
+def compare_akima_preparation(harness, native, project, example,
+                              integration_accuracy, preparation_factor=5):
+    """Compare fixed 3x with 5x or 7x preparation at one frozen survey point.
+
+    The first factor changes the smooth model. Integration accuracy only
+    changes its numerical evaluation. Keep the cosmology, signed histogram
+    cells, mask and covariance fixed; test a live 3 -> factor -> 3 round trip
+    and compare the live alternative vector with a separately initialized
+    YAML model.
+
+    Parameters
+    ----------
+    harness, native : module
+        Project test harness and compiled interface.
+    project, example : str
+        Survey name and its frozen NLA example.
+    integration_accuracy : int
+        Numerical level for both reconstructions, independently of the
+        preparation factor.
+    preparation_factor : int
+        Alternative to compare with three: five or seven.
+
+    Returns
+    -------
+    tuple
+        Measurement dictionary, a dictionary of full-length model vectors,
+        and the inverse covariance with masked rows and columns zeroed.
+        DES Y6's identity metric has no statistical interpretation.
+    """
+    if preparation_factor not in (5, 7):
+        raise ValueError("Comparison factor must be 5 or 7; baseline is 3")
+    name = "five" if preparation_factor == 5 else "seven"
+    harness.require_cocoa_environment()
+    harness.verify_frozen()
+    likelihood_name = harness.EXAMPLES[example]["likelihood"]
+    info = harness.load_frozen_info(example=example, tatt=False)
+    options = info["likelihood"][likelihood_name]
+    options["integration_accuracy"] = integration_accuracy
+    options["print_datavector"] = False
+    options["photoz_histogram_akima"] = 1
+    options["photoz_histogram_akima_factor"] = 3
+
+    model = harness.make_model(info=info)
+    try:
+        point = harness.build_point(model=model, example=example, tatt=False)
+        three, inverse, _ = _snapshot(
+            harness=harness, native=native, model=model, point=point,
+            likelihood_name=likelihood_name)
+        likelihood = model.likelihood[likelihood_name]
+        boost = float(likelihood.accuracyboost)
+        inputs = {}
+        for key in ("source_file", "lens_file", "cov_file", "mask_file",
+                    "data_vector_file"):
+            filename = getattr(likelihood, key, None)
+            if filename is not None:
+                path = Path(filename).resolve()
+                inputs[key] = {
+                    "name": path.name,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+
+        # This changes neither the histogram values nor the mode flag.
+        # It therefore specifically tests the preparation-factor cache key.
+        native.init_photoz_histogram_akima(
+            enabled=1, preparation_factor=preparation_factor)
+        alternative_live, inverse_live, _ = _snapshot(
+            harness=harness, native=native, model=model, point=point,
+            likelihood_name=likelihood_name)
+        np.testing.assert_array_equal(x=inverse_live, y=inverse)
+
+        native.init_photoz_histogram_akima(enabled=1, preparation_factor=3)
+        returned, inverse_returned, _ = _snapshot(
+            harness=harness, native=native, model=model, point=point,
+            likelihood_name=likelihood_name)
+        np.testing.assert_array_equal(x=returned, y=three)
+        np.testing.assert_array_equal(x=inverse_returned, y=inverse)
+    finally:
+        model.close()
+
+    # A fresh YAML model must agree with the live switch, including its
+    # integration bounds and lens means used by the photo-z stretch.
+    options["photoz_histogram_akima_factor"] = preparation_factor
+    model = harness.make_model(info=info)
+    try:
+        repeated_point = harness.build_point(
+            model=model, example=example, tatt=False)
+        assert repeated_point == point
+        alternative, inverse_yaml, _ = _snapshot(
+            harness=harness, native=native, model=model, point=point,
+            likelihood_name=likelihood_name)
+        np.testing.assert_array_equal(x=alternative, y=alternative_live)
+        np.testing.assert_array_equal(x=inverse_yaml, y=inverse)
+    finally:
+        model.close()
+
+    selected = np.diag(inverse) > 0.0
+    np.linalg.cholesky(inverse[np.ix_(selected, selected)])
+    np.testing.assert_array_equal(x=inverse[~selected, :], y=0.0)
+    difference = alternative - three
+    distance = float(difference @ inverse @ difference)
+    assert np.isfinite(distance) and distance > 0.0
+    record = {
+        "project": project,
+        "example": example,
+        "point": point,
+        "input_files": inputs,
+        "integration_accuracy": integration_accuracy,
+        "accuracyboost": boost,
+        "preparation_factors": [3, preparation_factor],
+        "delta_chi2": distance,
+        "physical_covariance": project != "des_y6",
+        "roundtrip_bitwise_equal": True,
+        "yaml_live_bitwise_equal": True,
+        "inverse_covariance_unchanged": True,
+    }
+    label = "Delta chi2"
+    if project == "des_y6":
+        label = "Identity-covariance distance (not survey Delta chi2)"
+    print(f"{project}: 3x -> {preparation_factor}x {label} = {distance:.12g}")
+    return record, {"three": three, name: alternative}, inverse
+
+
 def _snapshot(harness, native, model, point, likelihood_name):
     """Evaluate one state and copy its vector and masked inverse covariance."""
     chi2 = harness.evaluate_chi2(model=model, point=point)

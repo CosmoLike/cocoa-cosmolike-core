@@ -6,6 +6,36 @@ YAML of LSST Y1, Roman real/Fourier/KL, DES Y3, DES×Planck, DES cluster and
 DES Y6. The two experimental branches remain available; do not replace the
 default or restore the earlier area-correction experiment without a request.
 
+## Three-, five- and seven-point experiment
+
+The user authorized `experimental/nz-akima-3-5-7` from the clean
+`bugfix` commits. Core and all eight project repositories use that branch.
+`photoz_histogram_akima_factor: 3`, `5` or `7` chooses the first preparation,
+independently of every accuracy control. The original midpoint curve is still
+mode 0, and mode 1 still defaults to three. The source/lens loader caches and
+Akima workspace sizes must change when only this factor changes. Test
+3 -> 5 -> 3, 3 -> 7 -> 3 and fresh YAML agreement, plus lookup refinement at all three factors.
+
+The study record is `test/nz_akima_three_five/monitor_state.json`.
+All eight factor-5 and factor-7 scans completed. Each preserved the
+threefold level-6 vector bitwise and matched fresh YAML with the live factor
+switch. All 24 permanent reconstruction/factor tests and 17 existing frozen
+default checks passed without failures, errors or skips. Six synthetic
+reader tests passed in both the strict build and isolated DEBUG/UBSan build,
+with no sanitizer findings. The permanent plot script reproduces the
+published PNG and numerical checks bitwise.
+
+The independently recomputed accuracy audit and test counts are saved in
+`dev_scripts/nz_akima_factor_validation.json`. Raw vector distances for
+every level match the study records; fresh selected-level tests reproduce
+them. The next lower level exceeds 0.1 for both factors in every physical
+project. These are measured practical levels for the stored fiducials,
+not a parameter-space accuracy guarantee.
+The complete model table and example levels are in `cosmolike/README.md`;
+each project saves `tests/nz_akima_factor.json` and its reference vectors.
+DES Y6 is identity-metric software checking only. This remains an experiment;
+no likelihood integration defaults, frozen inputs or references are changed.
+
 ## Implementation contract
 
 - YAML -> likelihood initialization -> `init_photoz_histogram_akima` ->
@@ -15,7 +45,8 @@ default or restore the earlier area-correction experiment without a request.
   `photoz_zmid_convention`.
 - `nz_histogram_akima` shares numerical preparation between source and lens,
   with separate cached storage records. Its first preparation is exactly
-  `3 * nzbins`; the factor three must NEVER depend on an accuracy setting.
+  `preparation_factor * nzbins`; the chosen factor must NEVER depend on an
+  accuracy setting. The experimental branch allows three, five or seven.
 - Irregular input bins are overlap-averaged into a uniform preparation grid.
   Fit GSL Akima through its centres and repeated endpoint samples. Subdivide
   its cubic coefficients algebraically for the final uniform lookup; never
@@ -39,9 +70,10 @@ individual bin areas change. Irregular remapping preserves total area before
 Akima, but a general Akima fit need not preserve it or positivity.
 No added area correction or clipping is applied by this option.
 
-For uniform cells with normalized masses p, the ideal fixed-threefold curve
-has interior masses q_j = 15 p_j / 16 + (p_(j-1) + p_(j+1)) / 32; repeat the
-endpoint mass for its missing neighbour. This identity explains total-area
+For uniform cells with normalized masses p and factor m = 3, 5 or 7,
+the ideal curve has q_j = p_j + 3/(32m) * (p_(j-1) - 2p_j + p_(j+1));
+repeat the endpoint mass for its missing neighbour. At m=3 this is
+15 p_j/16 + (p_(j-1) + p_(j+1))/32. This identity explains total-area
 conservation and neighbour exchange, not physical superiority of the model.
 
 ## Permanent checks and records

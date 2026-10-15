@@ -136,25 +136,80 @@ with `photoz_histogram_akima`:
 
 - **0 (default):** preserve the original curve through bin centres, using
   `photoz_interpolation_type` for its preparation.
-- **1:** overlap-average the histogram onto a uniform grid with three times
-  as many cells, then fit Akima through their centres. For uniform inputs,
-  each original bin supplies three repeated densities. This first factor
-  is fixed and never scales with an accuracy boost.
+- **1:** overlap-average the histogram onto a uniform grid, then fit Akima
+  through its cell centres. `photoz_histogram_akima_factor` selects **3**
+  (default), **5** or **7** cells per original uniform bin. All retain its
+  centre.
+  This is a reconstruction choice and never scales with an accuracy boost.
 
 The alternative's final table stores algebraically subdivided Akima cubics;
 lookup uses a uniform-grid index and Horner evaluation, without a search or
 a second spline fit. Source and lens caches are separate. A live selector
-change reloads their integration bounds and lens means as well as n(z), so
+or preparation-factor change reloads their integration bounds and lens means as well as n(z), so
 returning to mode 0 restores the original prediction.
 
-Smoothing redistributes probability among original bins. The threefold
-construction preserves total area for uniform inputs with its endpoint
+Smoothing redistributes probability among original bins. All three odd-factor
+constructions preserve total area for uniform inputs with its endpoint
 padding, but this does not extend to arbitrary irregular grids or imply
 physical superiority. No extra normalization or negative-value clipping is
 introduced. Each project's `tests/data_vector/README.md` documents its
 refined model-distance comparison, compiled-reader plots and area audit.
 These tests use a fixed covariance; selecting Akima also affects shared
 covariance kernels, whose integration settings need their own checks.
+
+
+**Three-, five- and seven-point comparison.** All six columns below are
+$\Delta\chi^2=(d_b-d_a)^T C^{-1}(d_b-d_a)$, evaluated at each project's
+stored NLA fiducial with its unchanged mask and covariance. Every model
+vector uses integration level 6 (4096 points per Limber panel). The original
+curve is mode 0; 3, 5 and 7 are mode 1 with that preparation factor. Squared
+pairwise distances are not additive and do not identify a physically correct
+reconstruction. DES Y6 is excluded because it has only an identity metric.
+
+![Original cubic and three Akima preparation choices](figures/histogram_original_cubic_vs_three_five_seven_akima.png)
+
+| Project | Original→3 | Original→5 | Original→7 | 3→5 | 3→7 | 5→7 |
+|---|---:|---:|---:|---:|---:|---:|
+| lsst_y1 | 0.990789 | 1.27447 | 1.36556 | 0.049004 | 0.183673 | 0.129663 |
+| roman_real | 0.253948 | 0.257046 | 0.26918 | 0.00541502 | 0.0100066 | 0.00104369 |
+| roman_fourier | 0.49142 | 0.518576 | 0.543613 | 0.0337058 | 0.0687978 | 0.00668988 |
+| roman_kl | 0.636057 | 0.418349 | 0.369425 | 0.0656038 | 0.136764 | 0.0132937 |
+| des_y3 | 0.184157 | 0.153392 | 0.134684 | 0.00729463 | 0.0263713 | 0.00842768 |
+| desy1xplanck | 0.249582 | 0.274286 | 0.268742 | 0.00984155 | 0.0146133 | 0.00127463 |
+| des_cluster | 0.481672 | 0.658537 | 0.801138 | 0.063902 | 0.155039 | 0.0214314 |
+
+The following levels meet the practical numerical budget of about
+$\Delta\chi^2=0.1$ against the level-6 vector. The accepted three-point
+Roman Fourier example remains at level 3 (0.1068). Levels 2, 3 and 4 use
+256, 512 and 1024 nodes per Limber panel. These settings are measured example
+choices, not new likelihood defaults or a guarantee throughout parameter
+space. Roman Fourier retains `accuracyboost: 2`; the others use 1.
+
+| Project | 3-point level | 5-point level | 5-point numerical $\Delta\chi^2$ | 7-point level | 7-point numerical $\Delta\chi^2$ |
+|---|---:|---:|---:|---:|---:|
+| lsst_y1 | 2 | 2 | 0.0502644 | 2 | 0.0687624 |
+| roman_real | 3 | 4 | 0.00901285 | 4 | 0.0229766 |
+| roman_fourier | 3 | 4 | 0.0228622 | 4 | 0.0969705 |
+| roman_kl | 2 | 2 | 0.0140418 | 2 | 0.0846018 |
+| des_y3 | 2 | 3 | 0.00765192 | 3 | 0.0128378 |
+| desy1xplanck | 3 | 3 | 0.0511181 | 3 | 0.0881241 |
+| des_cluster | 3 | 3 | 0.0558947 | 3 | 0.0837686 |
+
+Seven points require the same practical levels as five in this scan.
+This was checked independently from the saved vectors and reproduced by
+fresh tests at the selected levels. The next lower level exceeds 0.1 in
+every case; the complete audit is in
+[`nz_akima_factor_validation.json`](../dev_scripts/nz_akima_factor_validation.json).
+The 2048→4096 differences are stored with each project test record; these
+support the refined table but do not establish exact continuum limits.
+Selecting Akima for covariance generation requires a separate convergence
+check of its own line-of-sight quadrature.
+
+The project's `tests/data_vector/test_nz_akima_factor.py` checks both
+alternatives and their saved refined vectors. Its test README gives the
+commands, all numerical levels and input fingerprints. The illustration is
+reproducible with `dev_scripts/plot_nz_akima_preparation.py`; it uses uniform
+toy bins and is distinct from each project's compiled-reader figure.
 
 Photometric-redshift, or **photo-z**, parameters change the inferred
 redshift distribution of a sample. Magnification changes observed galaxy

@@ -882,16 +882,18 @@ double zdistr_histo_n(double z, const int ni)
 //     - Z_MID (1): bin centres. Edges lie halfway between adjacent centres;
 //       the outer edges extend by half the nearest centre spacing.
 //
-// 1. FIXED THREEFOLD PREPARATION:
-//   Replace the input by 3 * nzbins equal-width cells over the same range.
-//   For uniform input, each bin becomes three cells with the same density.
+// 1. FIXED HISTOGRAM PREPARATION:
+//   Replace the input by preparation_factor * nzbins equal-width cells.
+//   The user chooses three, five or seven, independently of accuracy.
+//   For uniform input, each bin becomes that many equal-density cells;
+//   all three odd factors retain an output centre at the original bin centre.
 //   For irregular input, a new cell may overlap several old bins: add their
 //   overlap probabilities and divide by the new cell width. Normalize these
 //   densities by the input histogram's total probability.
 //
-//   The factor three is fixed. Raising it would narrow the transitions
-//   between bins and change the reconstructed n(z), not improve the
-//   numerical accuracy of the same reconstruction.
+//   Increasing the first factor narrows transitions between bins and
+//   changes the reconstructed n(z). It does not refine the same smooth model.
+//   For irregular input, uniform remapping need not retain every old centre.
 //
 // 2. SMOOTH CURVE AND FAST LOOKUP:
 //   Fit Akima through the prepared cell centres, joining their densities
@@ -900,12 +902,13 @@ double zdistr_histo_n(double z, const int ni)
 //
 //   Split each polynomial into smaller intervals for the final table.
 //   This stores the SAME curve: there is no second spline fit. The number
-//   of subdivisions is ceil(max(4, nz_fine_sampling_factor) / 3), so the
-//   default factor five gives 3x preparation followed by 2x subdivision.
+//   of subdivisions is ceil(max(4, nz_fine_sampling_factor) / prep_factor).
+//   At the default lookup density, 3x preparation gets 2x subdivision;
+//   5x and 7x need none. Every curve stays fixed under refinement.
 //   Uniform spacing locates the required interval without a binary search.
 //
 // PROBABILITY:
-//   For uniform input, three repeated densities per bin and the endpoint
+//   For uniform input, repeated densities per bin and the endpoint
 //   padding preserve total probability to rounding. Smoothing transfers
 //   probability between neighbouring bins, so individual bin areas change.
 //   For irregular input, the overlap step preserves the total, but the
@@ -913,7 +916,8 @@ double zdistr_histo_n(double z, const int ni)
 //   This reader applies no extra normalization, clipping or area correction.
 //
 // CACHE INVALIDATION:
-//   Rebuild when the histogram, edge convention or final grid factor changes.
+//   Rebuild when the histogram, edge convention, preparation factor or final
+//   grid factor changes. Both grid sizes are checked before reusing storage.
 //   Reuse allocated storage whenever its dimensions still match.
 //   photoz_interpolation_type has no effect: this reader always uses Akima.
 //   Cosmology does not enter this reconstruction. Photo-z shifts and lens
@@ -933,7 +937,7 @@ static double nz_histogram_akima(
   // Source and lens samples are rebuilt independently. Each record owns
   // its arrays and GSL workspaces; only serial cache preparation writes it.
   struct nz_akima_cache {
-    uint64_t cache[3];    // histogram stamp, edge convention, grid factor
+    uint64_t cache[4];    // histogram, convention, lookup and preparation
     double** table;      // ntomo density rows + z row, each of length nfine
     double* edges;       // nzbins + 1 original histogram edges
     double*** coeff;     // [tomographic bin][polynomial power - 1][interval]
@@ -942,6 +946,7 @@ static double nz_histogram_akima(
     gsl_spline** splines; // one reusable GSL workspace per tomographic bin
     int ntomo_cache;     // allocated tomographic bin count
     int nzbins_cache;    // allocated input cell count
+    int nprep_cache;     // allocated preparation cell count (3x, 5x or 7x)
     int nfine_cache;     // allocated final lookup node count
     double inv_dz;       // inverse final-grid spacing in redshift
   };
@@ -968,8 +973,9 @@ static double nz_histogram_akima(
   const int factor = (Ntable.nz_fine_sampling_factor < 4)
       ? 4 : Ntable.nz_fine_sampling_factor;
 
-  // This fixes the reconstruction independently of numerical accuracy.
-  const double prep_factor = 3.0;
+  // The user selects the model. Numerical accuracy can only subdivide its
+  // polynomials below; it must not narrow the fitted edge transitions.
+  const double prep_factor = Ntable.photoz_histogram_akima_factor;
   const int nprep = (int) ceil(prep_factor * nzbins);
 
   // Akima uses one cubic between each pair of prepared sample positions.
@@ -983,19 +989,20 @@ static double nz_histogram_akima(
   if (t->table == NULL ||
       fdiff2(t->cache[0], stamp) ||
       t->cache[1] != (uint64_t) (1 + Ntable.photoz_zmid_convention) ||
-      t->cache[2] != (uint64_t) factor) {
+      t->cache[2] != (uint64_t) factor ||
+      t->cache[3] != (uint64_t) prep_factor) {
     if (nzbins < 2 || input == NULL) {
       log_fatal("n(z) needs at least two histogram cells");
       exit(1);
     }
 
     // Preparation storage depends on the number of tomographic bins
-    // and input redshift cells. Replace it only if those sizes change;
+    // and prepared redshift cells. Replace it only if those sizes change;
     // new density values with the same sizes reuse the existing storage.
     // Refining the final lookup grid does not enlarge this first stage.
     if (t->prepared == NULL ||
         t->ntomo_cache != ntomo ||
-        t->nzbins_cache != nzbins) {
+        t->nprep_cache != nprep) {
       // These arrays have the old dimensions. Release them before
       // allocating the preparation rows and sample positions below.
       if (t->prepared != NULL) {
@@ -1046,6 +1053,10 @@ static double nz_histogram_akima(
           exit(1);
         }
       }
+
+      // Increasing the factor requires larger GSL workspaces even when the
+      // original input dimensions are unchanged. Record the allocated size.
+      t->nprep_cache = nprep;
     }
 
     // The final lookup may be refined without changing the Akima
@@ -1180,6 +1191,7 @@ static double nz_histogram_akima(
     t->cache[0] = stamp;
     t->cache[1] = (uint64_t) (1 + Ntable.photoz_zmid_convention);
     t->cache[2] = (uint64_t) factor;
+    t->cache[3] = (uint64_t) prep_factor;
   }
 
   if (nj < 0 || nj >= ntomo) {
@@ -1250,7 +1262,7 @@ static double nz_histogram_akima(
 //
 // RECONSTRUCTION CHOICE:
 //   photoz_histogram_akima = 0 follows the midpoint path described below.
-//   Value 1 delegates to nz_histogram_akima: fixed 3x histogram preparation,
+//   Value 1 delegates to nz_histogram_akima: fixed 3x, 5x or 7x preparation,
 //   then Akima with exact subdivision for the uniform lookup. That helper
 //   explains its support, probability changes and independent caches.
 //
@@ -1754,7 +1766,7 @@ double pf_histo_n(double z, const int ni)
 //
 // RECONSTRUCTION CHOICE:
 //   photoz_histogram_akima = 0 follows the midpoint path described below.
-//   Value 1 delegates to nz_histogram_akima: fixed 3x histogram preparation,
+//   Value 1 delegates to nz_histogram_akima: fixed 3x, 5x or 7x preparation,
 //   then Akima with exact subdivision for the uniform lookup. That helper
 //   explains its support, probability changes and independent caches.
 //
