@@ -432,12 +432,22 @@ def _sample_histogram_edge(native, source_file, lens_file, rows, arrays,
     for row in rows:
         if row["arm"] == "original":
             originals.append(row)
-    selected = max(originals, key=lambda row: row["bin_redistribution_pct"])
+    # Match the plotter's selection: the original cubic's largest all-cell
+    # redistribution determines the distribution, independently of Akima.
+    selected = originals[0]
+    for row in originals[1:]:
+        if row["bin_redistribution_pct"] > selected["bin_redistribution_pct"]:
+            selected = row
     sample = selected["sample"]
     tomo = selected["tomographic_bin"] - 1
     prefix = sample + "_original"
     edges = arrays[prefix + "_edges"]
     heights = arrays[prefix + "_target"][tomo] / np.diff(edges)
+    # The largest adjacent density jump locates an interior input edge.
+    # Its index is one above the left cell's index. Two cells before and
+    # three after supply context; clipping to the input bounds explains
+    # shorter windows near the first or last cell. Keep this rule aligned
+    # with plot_nz_four_reconstructions so the saved samples fill its axes.
     cell = int(np.argmax(np.abs(np.diff(heights)))) + 1
     left = max(0, cell - 2)
     right = min(heights.size, cell + 3)

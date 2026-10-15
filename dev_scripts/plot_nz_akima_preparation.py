@@ -103,6 +103,9 @@ def main():
     arguments = parser.parse_args()
     output = arguments.output_directory
     output.mkdir(parents=True, exist_ok=True)
+    # The toy histogram has unit-width cells, a central peak and zero-height
+    # end cells. Its coordinate is measured in original bin widths, NOT z.
+    # Normalize the cell masses before comparing any smooth reconstruction.
     edges = np.arange(8.)
     heights = np.array([0., .3, 1., 3., 1., .1, 0.])
     heights /= np.sum(heights * np.diff(edges))
@@ -110,6 +113,10 @@ def main():
     knots = []
     values = []
     curves = []
+    # np.repeat makes factor equal-height subcells from each original cell.
+    # Odd factors retain the original centre as one of their subcell centres.
+    # Repeat each endpoint once outside the support so the fit can be queried
+    # over the complete histogram without extrapolating a polynomial.
     for factor in (1, 3, 5, 7):
         repeated = np.repeat(heights, repeats=factor)
         centres = (np.arange(repeated.size + 2) - .5) / factor
@@ -120,6 +127,9 @@ def main():
     coordinate = np.linspace(0., 7., 7001)
     native_checks = {}
     subdivision_checks = {}
+    # Column zero retains the midpoint natural cubic. Columns one to three
+    # replace the preliminary curves with Akima, then subdivide the same
+    # polynomials for uniform lookup. enumerate supplies (column, factor).
     for index, factor in enumerate((3, 5, 7), start=1):
         akima = Akima1DInterpolator(x=knots[index], y=values[index])
         # Each lookup interval lies inside one Akima polynomial. Preserving
@@ -151,6 +161,9 @@ def main():
     colours = ['#bd5124', '#168568', '#3763ad', '#8756a3']
     plt.rcParams.update({'font.size': 11, 'axes.titlesize': 12,
                          'axes.labelsize': 11})
+    # Each column represents one reconstruction; rows differ ONLY in their
+    # displayed coordinate range. All columns share each row's vertical scale
+    # so different smoothing widths can be compared without axis rescaling.
     fig, axes = plt.subplots(2, 4, figsize=(24, 8.5), sharey='row')
     for column, curve_index in enumerate((0, 1, 2, 3)):
         for row in range(2):
@@ -176,6 +189,9 @@ def main():
         axes[0, column].set_xlim(0., 7.)
         axes[0, column].set_ylim(-.025, .62)
         axes[0, column].legend(loc='upper left', fontsize=8.4)
+        # This illustrative edge at coordinate 3 is chosen in advance, unlike
+        # the automatic survey close-up. The window includes both neighbouring
+        # cell centres (2.5 and 3.5) with a small margin beyond each centre.
         axes[1, column].set_xlim(2.45, 3.55)
         axes[1, column].set_ylim(.12, .62)
         axes[1, column].axvline(3., color='0.4', linestyle=':', linewidth=1)
@@ -197,6 +213,8 @@ def main():
             'Flat plateau', xy=(2.68, heights[2]), xytext=(2.49, .28),
             color=colour, fontsize=11,
             arrowprops={'arrowstyle': '->', 'color': colour})
+        # The closest subcell centres bracket the edge at +/-1/(2*factor).
+        # Akima connects the two plateaus between them, a width of 1/factor.
         half_width = .5 / factor
         ax.annotate(
             '', xy=(3. - half_width, .575), xytext=(3. + half_width, .575),

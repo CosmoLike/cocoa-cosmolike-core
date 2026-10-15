@@ -281,3 +281,37 @@ uses the recorded C-reader curves and never fits a replacement spline.
 Each survey's `tests/studies/README.md` explains the settings, total-area
 accounting and the redistribution statistic. These details stay in the
 README so the figure contains only the two panels, labels and legends.
+
+**How the panels are constructed.** The left close-up follows the same
+rule for every project:
+
+1. Among all source/lens distributions, select the one with the largest
+   probability redistribution under the **original cubic**. This selection
+   does not depend on which Akima curve differs most.
+2. Divide each input cell's normalized probability by its width to obtain
+   histogram heights, then find the largest absolute jump between adjacent
+   heights. This chooses an interior **bin edge**, not a bin centre.
+3. Show two input cells before that edge and three after it, clipping the
+   window to the supplied histogram bounds. Exact ties use the first
+   distribution or edge in the saved order.
+4. Overlay the saved compiled-reader samples for all four reconstructions
+   on that same window. No new spline is fitted for display. The vertical
+   range includes the histogram and all four curves, including negative
+   ringing or boundary cutoffs, with a small margin.
+
+The right panel includes **every** source/lens distribution, independently
+of the close-up selection. Its bars show movement of normalized probability
+between original cells; total-area changes are reported separately in each survey study README.
+
+For example, DES cluster's selected jump is at z = 2.99. Clipping the
+five-cell window at the upper input boundary produces z = 2.97–3.00;
+the original midpoint reader's cutoff at 2.995 is therefore visible inside
+that window. The algorithm does not special-case DES cluster.
+
+The four-column toy illustration is a separate script,
+[`dev_scripts/plot_nz_akima_preparation.py`](../dev_scripts/plot_nz_akima_preparation.py).
+Its coordinate is in original histogram-bin widths, not redshift. The upper
+row shows the whole prescribed histogram; the lower row fixes the edge at
+coordinate 3 and the range 2.45–3.55, including neighbouring centres 2.5 and
+3.5. Shared axes make the three smoothing widths directly comparable. It
+does not use the survey-dependent selection rule above.
