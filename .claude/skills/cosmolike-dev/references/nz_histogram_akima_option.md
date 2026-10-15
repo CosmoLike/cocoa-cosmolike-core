@@ -36,6 +36,18 @@ each project saves `tests/nz_akima_factor.json` and its reference vectors.
 DES Y6 is identity-metric software checking only. This remains an experiment;
 no likelihood integration defaults, frozen inputs or references are changed.
 
+The subsequent user-requested accuracy follow-up raises the common
+3/5/7 test level to 3 for LSST/Roman KL, 4 for DES Y3/Planck/cluster,
+and 5 for Roman real/Fourier. All 14 tests passed; see
+`dev_scripts/nz_akima_raised_accuracy.json` and the project records.
+The separate original-versus-three-point tests retain their prior
+levels. Initial minimum-level scans above remain historical evidence.
+One extra level still leaves seven-point numerical Delta chi2 of
+0.0502/0.0566 for DES Planck/cluster; use the retained level-6 model
+distances when judging changes across preparations. LSST and DES Y3
+remain exceptions to a smaller 5->7 than 3->5 distance. Do not claim that
+decreasing model distances proves a physically correct reconstruction.
+
 ## Implementation contract
 
 - YAML -> likelihood initialization -> `init_photoz_histogram_akima` ->

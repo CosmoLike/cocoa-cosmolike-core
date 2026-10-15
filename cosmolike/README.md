@@ -178,30 +178,57 @@ reconstruction. DES Y6 is excluded because it has only an identity metric.
 | desy1xplanck | 0.249582 | 0.274286 | 0.268742 | 0.00984155 | 0.0146133 | 0.00127463 |
 | des_cluster | 0.481672 | 0.658537 | 0.801138 | 0.063902 | 0.155039 | 0.0214314 |
 
-The following levels meet the practical numerical budget of about
-$\Delta\chi^2=0.1$ against the level-6 vector. The accepted three-point
-Roman Fourier example remains at level 3 (0.1068). Levels 2, 3 and 4 use
-256, 512 and 1024 nodes per Limber panel. These settings are measured example
-choices, not new likelihood defaults or a guarantee throughout parameter
-space. Roman Fourier retains `accuracyboost: 2`; the others use 1.
+For the 3/5/7 comparison tests, all three models now use the same
+raised integration level within each project: one above the initial
+five/seven-point practical selection. Levels 3, 4 and 5 use 512, 1024
+and 2048 points per Limber panel. The original-versus-three-point tests
+retain their separately documented levels. These are example settings,
+not new likelihood defaults or a parameter-space accuracy guarantee.
+Roman Fourier retains `accuracyboost: 2`; the others use 1.
 
-| Project | 3-point level | 5-point level | 5-point numerical $\Delta\chi^2$ | 7-point level | 7-point numerical $\Delta\chi^2$ |
-|---|---:|---:|---:|---:|---:|
-| lsst_y1 | 2 | 2 | 0.0502644 | 2 | 0.0687624 |
-| roman_real | 3 | 4 | 0.00901285 | 4 | 0.0229766 |
-| roman_fourier | 3 | 4 | 0.0228622 | 4 | 0.0969705 |
-| roman_kl | 2 | 2 | 0.0140418 | 2 | 0.0846018 |
-| des_y3 | 2 | 3 | 0.00765192 | 3 | 0.0128378 |
-| desy1xplanck | 3 | 3 | 0.0511181 | 3 | 0.0881241 |
-| des_cluster | 3 | 3 | 0.0558947 | 3 | 0.0837686 |
+Each numerical error below compares a reconstruction with its own
+4096-point result using the unchanged survey covariance.
 
-Seven points require the same practical levels as five in this scan.
-This was checked independently from the saved vectors and reproduced by
-fresh tests at the selected levels. The next lower level exceeds 0.1 in
-every case; the complete audit is in
-[`nz_akima_factor_validation.json`](../dev_scripts/nz_akima_factor_validation.json).
-The 2048→4096 differences are stored with each project test record; these
-support the refined table but do not establish exact continuum limits.
+| Project | Common test level | 3-point numerical $\Delta\chi^2$ | 5-point numerical $\Delta\chi^2$ | 7-point numerical $\Delta\chi^2$ |
+|---|---:|---:|---:|---:|
+| lsst_y1 | 3 | 0.000380565 | 0.000826309 | 0.00278714 |
+| roman_real | 5 | 8.28135e-06 | 5.43484e-05 | 0.000231345 |
+| roman_fourier | 5 | 4.4899e-05 | 0.000176144 | 0.000267337 |
+| roman_kl | 3 | 0.000244673 | 0.00112475 | 0.000838769 |
+| des_y3 | 4 | 2.16743e-05 | 2.27008e-05 | 0.000420484 |
+| desy1xplanck | 4 | 0.000343869 | 0.0179718 | 0.0501837 |
+| des_cluster | 4 | 0.00904842 | 0.0395607 | 0.0565506 |
+
+The following comparison separates integration refinement from changing
+the histogram reconstruction. The complete six-pair level-6 table above
+remains unchanged.
+
+| Project | 3→5: raised level | 3→5: level 6 | 5→7: raised level | 5→7: level 6 |
+|---|---:|---:|---:|---:|
+| lsst_y1 | 0.0507956 | 0.049004 | 0.134923 | 0.129663 |
+| roman_real | 0.00545438 | 0.00541502 | 0.00114732 | 0.00104369 |
+| roman_fourier | 0.0347687 | 0.0337058 | 0.00539157 | 0.00668988 |
+| roman_kl | 0.0666049 | 0.0656038 | 0.0133121 | 0.0132937 |
+| des_y3 | 0.00748681 | 0.00729463 | 0.00932842 | 0.00842768 |
+| desy1xplanck | 0.0231524 | 0.00984155 | 0.0120344 | 0.00127463 |
+| des_cluster | 0.0753564 | 0.063902 | 0.0263298 | 0.0214314 |
+
+An extra level reduces the error substantially for most projects, but
+DES×Planck and DES cluster retain seven-point numerical distances of
+0.0502 and 0.0566. Their raised-level model distances still differ visibly
+from the refined values; a numerical budget below 0.1 alone is not
+enough to resolve every small model change. In the level-6 table, the
+5→7 distance is smaller than 3→5 for five projects; LSST and DES Y3 are
+exceptions.
+This sequence does not establish a universal convergence law or select
+a physically correct reconstruction.
+
+All 14 raised-level tests passed. Their saved vectors match the earlier
+independent scans bitwise, and both factor tests reproduce the same
+three-point vector. The [follow-up record](../dev_scripts/nz_akima_raised_accuracy.json)
+includes pairwise displacement errors as well as scalar distances.
+The 2048→4096 checks support the refined table without establishing an
+exact continuum limit.
 Selecting Akima for covariance generation requires a separate convergence
 check of its own line-of-sight quadrature.
 

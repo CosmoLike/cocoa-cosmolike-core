@@ -41,6 +41,8 @@ def compare_akima_preparation(harness, native, project, example,
         Measurement dictionary, a dictionary of full-length model vectors,
         and the inverse covariance with masked rows and columns zeroed.
         DES Y6's identity metric has no statistical interpretation.
+        COCOA_NZ_REPORT_DIR optionally saves the record and vectors, using
+        separate filenames for each preparation factor.
     """
     if preparation_factor not in (5, 7):
         raise ValueError("Comparison factor must be 5 or 7; baseline is 3")
@@ -132,7 +134,19 @@ def compare_akima_preparation(harness, native, project, example,
     if project == "des_y6":
         label = "Identity-covariance distance (not survey Delta chi2)"
     print(f"{project}: 3x -> {preparation_factor}x {label} = {distance:.12g}")
-    return record, {"three": three, name: alternative}, inverse
+    vectors = {"three": three, name: alternative}
+
+    # Retain the vectors when studying integration refinement. A factor
+    # suffix keeps the five- and seven-point runs from overwriting each other.
+    output_name = os.environ.get("COCOA_NZ_REPORT_DIR")
+    if output_name:
+        output = Path(output_name).resolve()
+        output.mkdir(parents=True, exist_ok=True)
+        stem = output / f"{project}_factor{preparation_factor}"
+        stem.with_suffix(".json").write_text(json.dumps(record, indent=2) + "\n")
+        np.savez_compressed(file=stem.with_suffix(".npz"), **vectors)
+
+    return record, vectors, inverse
 
 
 def _snapshot(harness, native, model, point, likelihood_name):
