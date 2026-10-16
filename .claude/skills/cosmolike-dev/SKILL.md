@@ -213,7 +213,12 @@ execution history in separate logs, not in maintained explanatory references.
 Document test suites in public documentation when they are reproducible
 from the repository; do not present a developer's external harness as a
 public test interface. State implemented capabilities and remaining limits
-without turning the README into a development log.
+without turning the README into a development log. Dated refreeze
+history lives in `references/refreeze_20260928.md`, not in project test
+READMEs. The project-transfer script deletes a donor's tests/ folder;
+recreating the suite for a new survey follows
+`references/project_test_transfer.md`, the recipe the projects/README
+tells users to hand an AI assistant.
 
 Cocoa's maintenance skill governs shared README layout. Project main
 READMEs summarize tests and covariance capabilities and link to the

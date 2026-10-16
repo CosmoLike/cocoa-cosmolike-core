@@ -652,9 +652,12 @@ void init_photoz_histogram_akima(
     const int preparation_factor = 3 // uniform cells per original cell
   );
 
+// n(z) file conventions: the stage-1 interpolant and the z-column reading.
+// A live change reloads loaded histograms through the sample setters, so
+// bounds and lens means follow it, like init_photoz_histogram_akima.
 void init_photoz_conventions(
-    const int interpolation_type,
-    const int zmid_convention
+    const int interpolation_type, // 0 = cspline, 1 = linear, 2+ = steffen
+    const int zmid_convention    // 0 = Z_LOW left edges, 1 = Z_MID points
   );
 
 void init_fpt_internal_boost(
