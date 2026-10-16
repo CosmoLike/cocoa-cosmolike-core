@@ -22,6 +22,7 @@ repository's README (the "shared data-vector checks" section); the
 factories' docstrings describe what runs, not why.
 """
 
+import os
 import unittest
 
 
@@ -208,6 +209,551 @@ def example_suite(u, name, example, label, numbers, tatt_numbers=None):
     for method in methods:
         namespace[method.__name__] = method
     return type(name, (unittest.TestCase,), namespace)
+
+
+def accuracy_suite(u, name, checks, knob_scan=None, nmodels_example=None):
+    """Build the accuracy-advisory class (A-checks, K-scan, N-models).
+
+    Arguments:
+      u               = the project's cocoa_test_utils module.
+      name            = the class name to build; the caller assigns
+                        the class to this same module-level name, so
+                        pytest collects unchanged test ids.
+      checks          = one (method_name, advisory, example, tatt,
+                        label) tuple per A-check: the full collected
+                        method name (e.g. "test_a1_cosmic_shear_nla"),
+                        the printed advisory label (e.g. "A1"), the
+                        key of u.EXAMPLES, the IA-model flag, and the
+                        printed report line (e.g. "example1 (cosmic
+                        shear, NLA)").
+      knob_scan       = the EXAMPLES key the one-knob-at-a-time scan
+                        evaluates (the method
+                        test_a0_one_knob_at_a_time, reading the
+                        "<key>_nla" reference), or None for a project
+                        without the scan.
+      nmodels_example = an (EXAMPLES key, display label) pair enabling
+                        the opt-in N-random-models check
+                        test_ax99_nmodels, or None.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestAccuracy(unittest.TestCase):
+        """The advisory accuracy checks, one test method each.
+
+        They share one frozen-state verification (setUpClass) and one
+        implementation (_accuracy_check), which evaluates a
+        configuration in a worker subprocess and prints the report
+        block. There is no pass/fail on the size of the delta: how
+        much numerical error an analysis tolerates is a judgment
+        call, so only a broken evaluation fails.
+        """
+
+        # @classmethod is a decorator (a line starting with @ that
+        # wraps the function defined below it): it hands the method
+        # the class itself (cls), not an instance; unittest calls
+        # setUpClass once before the first test of the class
+        @classmethod
+        def setUpClass(cls):
+            """Check the environment and the frozen state once for all tests.
+
+            Runs once, before the first test of the class: it moves
+            to ROOTDIR (the Cocoa/ folder; the frozen configurations
+            name paths relative to it), verifies every frozen file
+            against the SHA-256 manifest (an edited frozen state must
+            fail loudly before any physics runs), and loads the
+            frozen reference chi2 values.
+
+            Arguments:
+              cls = this test class (the classmethod decorator passes
+                    the class itself, not an instance).
+
+            Returns:
+              nothing; cls.reference holds the dictionary of
+              frozen/reference_chi2.json: {"<example>_nla" or
+              "<example>_tatt": reference chi2} plus a "_meta" entry.
+
+            Raises:
+              RuntimeError when ROOTDIR is not set (start_cocoa.sh
+              was not sourced); AssertionError when a frozen file
+              differs from the manifest.
+            """
+            u.require_cocoa_environment()
+            u.verify_frozen()
+            cls.reference = u.load_reference()
+
+        def _accuracy_check(self, check, example, tatt, label):
+            """Evaluate one configuration at high accuracy and report.
+
+            u.single_model_chi2(..., high_accuracy=True) starts a
+            worker subprocess (a fresh python process, so no
+            cosmolike state of another model can reach it) that loads
+            the frozen configuration, applies the high-accuracy
+            settings on top of it, builds the cobaya model, evaluates
+            the chi2 at the frozen point, and hands it back as a
+            float. The default-settings value is the frozen
+            reference, so the printed difference is the numerical
+            error the default settings carry.
+
+            Arguments:
+              check   = the advisory label (e.g. "A1") for the
+                        report.
+              example = a key of u.EXAMPLES (exact-physics
+                        configurations only).
+              tatt    = True evaluates the TATT variant against the
+                        TATT-generated data vector, False the NLA
+                        one.
+              label   = one line naming the probe and IA model.
+
+            Returns:
+              nothing; the delta is printed and nothing is asserted.
+            """
+            chi2_high = u.single_model_chi2(example, tatt,
+                                            high_accuracy=True)
+            # `"tatt" if tatt else "nla"` picks the reference-key
+            # suffix, the naming the frozen reference file uses
+            suffix = "tatt" if tatt else "nla"
+            default_ref = self.reference[f"{example}_{suffix}"]
+            u.report_accuracy(f"{check}: {label}", chi2_high,
+                              default_ref)
+
+    # the A-check methods: one small closure per roster row, named
+    # by the row's method_name so the collected ids do not change
+    def make_check(check_name, advisory, example, tatt, label):
+        def test(self):
+            self._accuracy_check(advisory, example, tatt, label)
+        test.__name__ = check_name
+        test.__doc__ = (f"{advisory}: {label}, default vs high "
+                        "accuracy.\n        ")
+        return test
+
+    for row in checks:
+        method = make_check(*row)
+        setattr(TestAccuracy, method.__name__, method)
+
+    if knob_scan is not None:
+        def test_a0_one_knob_at_a_time(self):
+            """K scan: each accuracy knob alone (check A0).
+
+            Advisory: each knob's chi2 and its difference to the
+            frozen default reference print as the scan runs, on the
+            NLA configuration the project binds for the scan. A knob
+            whose delta rivals the all-knobs delta is the driver; a
+            knob whose delta explodes (orders of magnitude beyond the
+            others) signals an interface breakdown, not a numerics
+            improvement.
+            """
+            default_ref = self.reference[f"{knob_scan}_nla"]
+            print("", flush=True)
+            # each entry is (label, likelihood overrides, camb
+            # overrides); the two _ discard the overrides, only the
+            # label is needed here (the worker looks the knob up
+            # again by its label)
+            for label, _, _ in u.ACCURACY_KNOBS:
+                chi2 = u.single_model_chi2(knob_scan, False,
+                                           knob=label)
+                u.report_knob(label, chi2, default_ref)
+
+        TestAccuracy.test_a0_one_knob_at_a_time = \
+            test_a0_one_knob_at_a_time
+
+    if nmodels_example is not None:
+        nm_example, nm_label = nmodels_example
+
+        def test_ax99_nmodels(self):
+            """N-random-models check across the prior. Opt-in, advisory.
+
+            The A-checks measure the numerical error of the default
+            settings at the one frozen fiducial point. This check
+            measures it at N reproducible random points across the
+            prior instead. For each point a synthetic data vector is
+            generated at that point with the default settings, so the
+            default chi2 against it is zero by construction and the
+            high-accuracy chi2 against it is the delta directly (the
+            mechanism lives in u.random_model_accuracy). Nothing
+            fails on a large delta; the deltas only have to be
+            finite.
+
+            Opt-in because each model costs a default
+            build+evaluation plus a high-accuracy build+evaluation,
+            minutes per model. Enable it with the
+            COCOA_ACCURACY_NMODELS environment variable, for example
+
+                COCOA_ACCURACY_NMODELS=10 python -m pytest \\
+                    <this project's test_accuracy.py> -k nmodels
+
+            or with --nmodels N when the file runs as a script. The
+            ax99 in the method name sorts this check after the
+            A-checks (unittest runs methods in name order), so the
+            cheap fiducial checks always report before the expensive
+            multi-model loop starts.
+            """
+            import math
+            # .get returns its second argument, "0", when the
+            # variable is unset, so an untouched environment means a
+            # clean skip
+            n_models_text = os.environ.get(
+                "COCOA_ACCURACY_NMODELS", "0")
+            # int() raises ValueError on non-numeric text; the except
+            # turns the stack trace into an instruction
+            try:
+                n_models = int(n_models_text)
+            except ValueError:
+                raise AssertionError(
+                    f"COCOA_ACCURACY_NMODELS={n_models_text!r} is "
+                    "not an integer; set it to the number of random "
+                    "models, for example COCOA_ACCURACY_NMODELS=10")
+            if n_models <= 0:
+                # the default: report how to enable the check and
+                # pass without building anything
+                print("\n  N-random-models check skipped (set "
+                      "COCOA_ACCURACY_NMODELS=<N>, or run this file "
+                      "with --nmodels <N>, to enable it).",
+                      flush=True)
+                return
+            print(f"\n  N-random-models check: {n_models} models, "
+                  f"{nm_label}, seed base {u.RANDOM_MODEL_SEED}",
+                  flush=True)
+            deltas = u.random_model_accuracy(nm_example, n_models)
+            # enumerate pairs each delta with its position, counted
+            # from 0, so a broken model is named by number
+            for index, delta in enumerate(deltas):
+                # advisory: the size of the delta is a judgment
+                # call, but a non-finite one means the evaluation
+                # itself broke
+                self.assertTrue(
+                    math.isfinite(delta),
+                    msg=f"model {index}: non-finite delta chi2 "
+                        f"{delta!r}")
+            u.report_random_model_summary(deltas)
+
+        TestAccuracy.test_ax99_nmodels = test_ax99_nmodels
+
+    # rename the class last; type(name, ...) is not needed because
+    # the class statement above already built it, so only the two
+    # name attributes change
+    TestAccuracy.__name__ = name
+    TestAccuracy.__qualname__ = name
+    return TestAccuracy
+
+
+def fastpt_reference_suite(u, name, cases):
+    """Build the FASTPT frozen-reference class (TATT via python FAST-PT).
+
+    Arguments:
+      u     = the project's cocoa_test_utils module.
+      name  = the class name to build (assigned by the caller to the
+              same module-level name, so test ids do not change).
+      cases = one (method_name, number, example, label) tuple per
+              check: the collected method name, the printed test
+              number, the key of u.EXAMPLES (one that carries a
+              frozen FASTPT reference), and the full report line,
+              e.g. "example1 (cosmic shear, TATT+FASTPT) chi2 vs
+              frozen reference".
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestFastptReference(unittest.TestCase):
+        """The FASTPT TATT checks, sharing one frozen-state verification.
+
+        Each check evaluates the frozen TATT point with the python
+        FAST-PT package (IA_code: 1) instead of the built-in cfastpt,
+        compares the chi2 with its own frozen FASTPT reference under
+        the usual CHI2_TOLERANCE rule, and prints the frozen
+        FASTPT-minus-CFASTPT difference next to it, so a numerics
+        change in either implementation is visible at a glance.
+        """
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR, verify the frozen state, load the references."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+            cls.reference = u.load_reference()
+
+        def _run_fastpt_case(self, number, example, label):
+            """Evaluate one FASTPT TATT case against its frozen reference.
+
+            Arguments:
+              number  = the test number shown in the report header.
+              example = a key of u.EXAMPLES.
+              label   = one line naming the example and probe.
+
+            Returns:
+              nothing; the assertion fails the test when
+              |chi2 - ref| >= CHI2_TOLERANCE.
+            """
+            chi2 = u.single_model_chi2(example, tatt=True, fastpt=True)
+            ref = self.reference[f"{example}_tatt_fastpt"]
+            cfastpt_ref = self.reference[f"{example}_tatt"]
+            u.report_fastpt_test(number, label, chi2, ref,
+                                 cfastpt_ref, u.CHI2_TOLERANCE)
+            frozen_diff = self.reference[
+                f"{example}_fastpt_minus_cfastpt"]
+            # the + in :+.6f forces a sign, so the direction of the
+            # frozen difference always shows
+            print("  frozen FASTPT - CFASTPT difference = "
+                  f"{frozen_diff:+.6f}", flush=True)
+            self.assertLess(
+                abs(chi2 - ref), u.CHI2_TOLERANCE,
+                msg=f"FASTPT chi2 = {chi2:.6f} vs frozen reference "
+                    f"{ref:.6f} (|delta| >= {u.CHI2_TOLERANCE})")
+
+    def make_case(method_name, number, example, label):
+        def test(self):
+            self._run_fastpt_case(number, example, label)
+        test.__name__ = method_name
+        test.__doc__ = (f"{example} TATT with python FAST-PT stays "
+                        "on its reference.\n        ")
+        return test
+
+    for row in cases:
+        method = make_case(*row)
+        setattr(TestFastptReference, method.__name__, method)
+    TestFastptReference.__name__ = name
+    TestFastptReference.__qualname__ = name
+    return TestFastptReference
+
+
+def fastpt_sweep_suite(u, name, cases):
+    """Build the CFASTPT-vs-FASTPT sweep class.
+
+    Arguments:
+      u     = the project's cocoa_test_utils module.
+      name  = the class name to build (assigned by the caller to the
+              same module-level name, so test ids do not change).
+      cases = one (method_name, number, example, label) tuple per
+              sweep: the collected method name, the printed test
+              number, the key of u.EXAMPLES, and the opening of the
+              report line up to the IA model, e.g. "example2 (3x2pt".
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestFastptSweep(unittest.TestCase):
+        """The direct CFASTPT-vs-FASTPT comparison, one sweep per probe.
+
+        Each sweep evaluates the project's hard-coded points across
+        the intrinsic-alignment prior (u.FASTPT_COMPARISON_POINTS,
+        cosmology fixed at the frozen fiducial) three times: with
+        cfastpt, with FASTPT at the converged two-grid defaults, and
+        with FASTPT at the doubled boosts. The CFASTPT vector is the
+        fiducial of each point, so the pass rule is the chi2 of the
+        FASTPT(low) vector against it (delta^T C^-1 delta), under
+        u.FASTPT_COMPARISON_TOLERANCE; FASTPT(high)'s deviation
+        prints as the advisory grid response. The sweeps read the
+        --high and --mask options (conftest.py). setUpClass loads no
+        reference chi2: these tests compare the two implementations
+        against each other, so the frozen state only supplies the
+        configuration and the data files.
+        """
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state, once per class."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+    def make_sweep(method_name, number, example, label):
+        def test(self):
+            # the conftest copies the --high command line option into
+            # this variable; .get with the "0" default keeps a run
+            # outside pytest on the default settings unless the
+            # variable is exported by hand
+            high = os.environ.get("COCOA_FASTPT_HIGH", "0") == "1"
+            setting = "high accuracy" if high else "default settings"
+            mask = os.environ.get("COCOA_FASTPT_MASK", "frozen")
+            (chi2_cfastpt, chi2_fastpt_low, chi2_fastpt_high,
+             dchi2_low, dchi2_high) = u.cfastpt_vs_fastpt_chi2s(
+                example, high=high, mask=mask)
+            largest = u.report_fastpt_comparison(
+                number,
+                f"{label}, TATT, camb/cosmolike {setting}, "
+                f"mask {mask}): CFASTPT vs FASTPT at 30 "
+                "hard-coded points",
+                chi2_cfastpt, chi2_fastpt_low, chi2_fastpt_high,
+                dchi2_low, dchi2_high, u.FASTPT_COMPARISON_TOLERANCE)
+            self.assertLess(
+                largest, u.FASTPT_COMPARISON_TOLERANCE,
+                msg="max chi2 of the FASTPT(low)-vs-CFASTPT "
+                    f"data-vector difference = {largest:.6f} over "
+                    f"the comparison points ({setting}); limit "
+                    f"{u.FASTPT_COMPARISON_TOLERANCE}")
+        test.__name__ = method_name
+        test.__doc__ = (f"{example}: cfastpt and FASTPT agree at the "
+                        "30 IA points.\n        ")
+        return test
+
+    for row in cases:
+        method = make_sweep(*row)
+        setattr(TestFastptSweep, method.__name__, method)
+    TestFastptSweep.__name__ = name
+    TestFastptSweep.__qualname__ = name
+    return TestFastptSweep
+
+
+def ee2_suite(u, name, race, original=None):
+    """Build the EuclidEmulator2 class (race check, maybe original).
+
+    Arguments:
+      u        = the project's cocoa_test_utils module.
+      name     = the class name to build (assigned by the caller to
+                 the same module-level name, so test ids do not
+                 change).
+      race     = a (method_name, number, example, label) tuple for
+                 the EE2 race check, label up to " race check", e.g.
+                 "example1 (cosmic shear, NLA+EE2)".
+      original = a (method_name, number, example) tuple enabling the
+                 comparison of the installed, modified EE2 against
+                 the pre-modification build (u.EE2_ORIGINAL_COMMIT),
+                 or None for a project without that check.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestEE2(unittest.TestCase):
+        """The EuclidEmulator2 checks, sharing one frozen-state verification.
+
+        setUpClass loads no reference chi2: the original-vs-modified
+        check compares the two EE2 builds against each other and the
+        race check compares one build against itself, so the frozen
+        state only supplies the configuration and the data files.
+        """
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state, once per class."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+    race_name, race_number, race_example, race_label = race
+
+    def race_test(self):
+        """The fiducial with EE2 as 10th of 10 matches a fresh run.
+
+        EE2's OpenMP-threaded compute runs inside every evaluation
+        of the row, so a thread race or leaked state in it moves
+        the second fiducial value.
+        """
+        u.assert_omp_threads()
+        fresh, tenth = u.ten_in_a_row_chi2(race_example, tatt=False,
+                                           ee2=True)
+        u.report_race_test(
+            race_number,
+            f"{race_label} race check: 10 cosmologies in a row",
+            fresh, tenth, u.RACE_TOLERANCE)
+        self.assertLess(
+            abs(tenth - fresh), u.RACE_TOLERANCE,
+            msg=f"10th-in-a-row chi2 = {tenth:.8f} vs fresh "
+                f"{fresh:.8f}")
+
+    race_test.__name__ = race_name
+    setattr(TestEE2, race_name, race_test)
+
+    if original is not None:
+        orig_name, orig_number, orig_example = original
+
+        def original_test(self):
+            """The modified EE2 reproduces the original's data vectors.
+
+            The per-cosmology delta chi2 of the pre-modification
+            build against the installed one, at the ten shared
+            cosmologies, must stay below CHI2_TOLERANCE (0.2), the
+            band of the reference tests.
+            """
+            try:
+                dchi2s = u.ee2_original_vs_cocoa_dchi2s(orig_example)
+            except RuntimeError as error:
+                # a shallow local clone cannot supply the original
+                # commit; that is an installation limitation, not an
+                # EE2 regression
+                self.skipTest(str(error))
+            print(f"\n==== test {orig_number}: modified EE2 vs "
+                  f"original EE2 ({orig_example}, NLA, 10 "
+                  "cosmologies) ====", flush=True)
+            for i, d in enumerate(dchi2s, start=1):
+                print(f"  cosmology {i:2d}: dchi2 = {d:.8f}",
+                      flush=True)
+            largest = max(dchi2s)
+            print(f"  max dchi2 = {largest:.8f}   (limit: < "
+                  f"{u.CHI2_TOLERANCE})", flush=True)
+            self.assertLess(
+                largest, u.CHI2_TOLERANCE,
+                msg=f"max dchi2 of the original-vs-modified EE2 data "
+                    f"vectors = {largest:.8f} over the ten "
+                    f"cosmologies (limit {u.CHI2_TOLERANCE})")
+
+        original_test.__name__ = orig_name
+        setattr(TestEE2, orig_name, original_test)
+
+    TestEE2.__name__ = name
+    TestEE2.__qualname__ = name
+    return TestEE2
+
+
+def nonlinear_suite(u, name, cases):
+    """Build the Halofit-vs-EuclidEmulator2 advisory class.
+
+    Arguments:
+      u     = the project's cocoa_test_utils module.
+      name  = the class name to build (assigned by the caller to the
+              same module-level name, so test ids do not change).
+      cases = one (method_name, advisory, example, label) tuple per
+              check: the collected method name, the printed advisory
+              label (e.g. "NL1"), the key of u.EXAMPLES, and the
+              opening of the report line up to the IA model, e.g.
+              "example1 (cosmic shear".
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestNonlinear(unittest.TestCase):
+        """Halofit scored against EE2, one advisory check per probe.
+
+        Each check evaluates the probe's data vector with both
+        nonlinear-P(k) sources at the ten fixed cosmologies of
+        u.NONLINEAR_COMPARISON_POINTS and reports, per cosmology, the
+        chi2 of the Halofit vector against the EE2 vector (the EE2
+        vector is that cosmology's fiducial, so the baseline is zero
+        by construction). Advisory: the printed report is the
+        product, and the only assertion is structural. The checks
+        read the --mask option (conftest.py). setUpClass loads no
+        reference chi2: the frozen state only supplies the
+        configuration and the data files.
+        """
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state, once per class."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+    def make_check(method_name, advisory, example, label):
+        def test(self):
+            mask = os.environ.get("COCOA_FASTPT_MASK", "frozen")
+            dchi2s = u.halofit_vs_ee2_dchi2s(example, mask=mask)
+            u.report_nonlinear_comparison(
+                f"{advisory}: {label}, NLA, mask {mask}): HALOFIT "
+                "vs EE2 at 10 fixed cosmologies", dchi2s)
+            self.assertEqual(len(dchi2s),
+                             len(u.NONLINEAR_COMPARISON_POINTS))
+        test.__name__ = method_name
+        test.__doc__ = (f"{advisory}: Halofit scored against EE2 at "
+                        "ten cosmologies, advisory.\n        ")
+        return test
+
+    for row in cases:
+        method = make_check(*row)
+        setattr(TestNonlinear, method.__name__, method)
+    TestNonlinear.__name__ = name
+    TestNonlinear.__qualname__ = name
+    return TestNonlinear
 
 
 def baryon_accuracy_suite(u):
