@@ -663,6 +663,176 @@ def assert_omp_threads():
         )
 
 
+def assert_aborts(attempt):
+    """Run attempt() in a forked child; require a nonzero exit status.
+
+    The compiled layers validate their inputs by printing one line
+    through the shared logger ([critical] with the function name and
+    the reason) and ending the whole process with exit(1). They never
+    raise a Python exception, so pytest.raises cannot observe a
+    refusal - the exit would take the test runner down with it.
+
+    assert_aborts therefore runs the call in a forked copy of the
+    test process. os.fork() duplicates the process at the call site,
+    so the child inherits the already-initialized interface, tables
+    and test inputs at no cost; only the one malformed call runs
+    there. The child must die with a nonzero exit status:
+
+      - compiled layer: the validation prints [critical] and calls
+        exit(1);
+      - a Python-level check that raises instead: the uncaught
+        exception also ends the child with status 1.
+
+    Either way the parent's waitpid sees a nonzero status, so this
+    check does not depend on which layer catches the bad input. A
+    child that reaches os._exit(0) means the malformed input was
+    ACCEPTED, and the test fails.
+
+    Forking a process that already started OpenMP threads is safe
+    here because a refused call ends before any parallel region
+    starts; an accepted call could misbehave in the child, but
+    acceptance is already the failure this check exists to catch.
+
+    Arguments:
+      attempt = argument-free function performing exactly one call
+        with one malformed input. It runs only in the child process.
+
+    Returns:
+      nothing; an AssertionError in the parent fails the test when
+      the child accepted the input (exit status 0) or died by a
+      signal.
+    """
+    child = os.fork()
+    if child == 0:
+        # Child: the expected [critical] line is noise in the test
+        # log, so stdout and stderr go to /dev/null before the call.
+        quiet = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(quiet, 1)
+        os.dup2(quiet, 2)
+        # The child must never return into the test runner it
+        # inherited from the fork: every outcome of attempt() ends in
+        # os._exit, which leaves immediately without unwinding into
+        # pytest. BaseException also catches SystemExit, so a
+        # Python-level refusal (raise) and an accepted call both take
+        # a defined exit.
+        try:
+            attempt()
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    status = os.waitpid(child, 0)[1]
+    # WIFEXITED is False when a signal killed the child (for example
+    # a crash inside the call): that is a bug, not a refusal.
+    assert os.WIFEXITED(status), \
+        "malformed-input child died by a signal"
+    assert os.WEXITSTATUS(status) != 0, "malformed input was accepted"
+
+
+# The cosmolike C layer keeps the data-vector dimensions in C globals
+# and aborts a process that initializes a second configuration with
+# different dimensions (WORKER ISOLATION above). In a project whose
+# suite holds more than one data-vector layout, the tests that go
+# through the harness are covered by its workers, but a test that
+# must build its models IN PROCESS (it reads the full data vector
+# from the compiled interface, or needs several model builds to share
+# the C caches) is not. The own_process decorator gives such a test a
+# python process of its own, so two layouts never meet in one
+# process. The variable marks the process that runs such a test's
+# body.
+OWN_PROCESS_FLAG = "COCOA_TESTS_OWN_PROCESS"
+
+
+def own_process(test_file):
+    """Decorator: run one test method in a python process of its own.
+
+    Used as @own_process(__file__) on a unittest test method. In the
+    process pytest (or unittest discover) collected the test in, the
+    decorated method does not run its body: it starts a fresh python
+    on the test's own file, naming that one test on the command line
+    (unittest.main runs exactly the test it is given), and passes
+    when the child exits with code 0. The child carries
+    OWN_PROCESS_FLAG, so there the decorated method runs the body in
+    process, as written. The child's report streams to the same
+    terminal, so a failure prints its assertion there; the parent
+    only relays the verdict.
+
+    Arguments:
+      test_file = the path of the test module (__file__ in that
+                  module), the file the child process runs.
+
+    Returns:
+      the decorator to apply to the test method.
+
+    Raises:
+      nothing at decoration time; the decorated method fails with an
+      AssertionError naming the test when its process exits nonzero.
+    """
+    # functools.wraps copies the method's name and docstring onto the
+    # wrapper, so unittest and pytest still collect and report the
+    # test under its own name
+    import functools
+
+    def decorator(test_method):
+        """Return the replacement of test_method running it in a child.
+
+        Arguments:
+          test_method = the unittest test method being decorated.
+
+        Returns:
+          wrapper, which keeps test_method's name and docstring.
+        """
+        @functools.wraps(test_method)
+        def wrapper(self):
+            """Run the body here in the child, else start the child.
+
+            functools.wraps replaces this docstring by the test
+            method's.
+
+            Arguments:
+              self = the unittest.TestCase instance of the test.
+
+            Returns:
+              the body's result in the child process; nothing in the
+              parent.
+
+            Raises:
+              AssertionError in the parent when the child exits
+              nonzero.
+            """
+            # .get returns None when the variable is absent: only
+            # the child process, which carries the flag, runs the
+            # body
+            if os.environ.get(OWN_PROCESS_FLAG) == "1":
+                return test_method(self)
+            import subprocess
+
+            # "Class.method", the form unittest.main accepts as a
+            # command-line test name inside the file it runs
+            test_id = f"{type(self).__name__}.{self._testMethodName}"
+            # dict(os.environ) is a COPY of the environment: the
+            # edits below reach only the child process
+            environment = dict(os.environ)
+            environment[OWN_PROCESS_FLAG] = "1"
+            # OpenMP reads this at library load inside the fresh
+            # process (the test file sets it at its first line too)
+            environment["OMP_NUM_THREADS"] = REQUIRED_OMP_THREADS
+            print(f"  running {test_id} in its own process ...",
+                  flush=True)
+            # subprocess.run starts the child (sys.executable = this
+            # same python) and BLOCKS until it exits
+            import sys
+            completed = subprocess.run(
+                [sys.executable, os.path.abspath(test_file), test_id],
+                env=environment)
+            self.assertEqual(
+                completed.returncode, 0,
+                f"{test_id} failed in its own process (exit code "
+                f"{completed.returncode}); its report is printed "
+                "above")
+        return wrapper
+    return decorator
+
+
 def sha256_of(path):
     """Fingerprint one file with SHA-256.
 
@@ -1582,6 +1752,28 @@ class CocoaTestHarness:
             return json.load(f)
 
     # ---- the chi2 pipeline --------------------------------------------------
+    def has_tatt(self, example):
+        """Tell whether one example carries a TATT variant.
+
+        The harness reads the TATT data vector of a configuration
+        from its "tatt_dataset" key, so that key IS the statement
+        "this example runs TATT": an example without it never gets
+        the variant (the cluster combinations, whose lensing code has
+        no TATT, are the standing case). The freeze generator asks
+        before it evaluates a TATT reference; test modules of such
+        examples simply never request the variant.
+
+        Arguments:
+          example = a key of the project's EXAMPLES table.
+
+        Returns:
+          True when the example has a TATT variant.
+
+        Raises:
+          KeyError when example names no EXAMPLES entry.
+        """
+        return "tatt_dataset" in self.examples[example]
+
     # cobaya and numpy are imported inside the functions, not at the
     # top of this module. The reason is OpenMP: OMP_NUM_THREADS must
     # be in the environment before the compiled libraries load, and
