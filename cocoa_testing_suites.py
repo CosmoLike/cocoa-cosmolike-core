@@ -23,7 +23,26 @@ factories' docstrings describe what runs, not why.
 """
 
 import os
+import re
 import unittest
+
+
+def _interface(u):
+    """The project's compiled interface module, imported on first use.
+
+    The harness already knows the module's name (the shim passes it to
+    CocoaTestHarness); importing through it keeps the factories free
+    of project names. The import happens inside the test bodies, so
+    collecting the tests never loads the compiled library.
+
+    Arguments:
+      u = the project's cocoa_test_utils module.
+
+    Returns:
+      the imported interface module.
+    """
+    import importlib
+    return importlib.import_module(u._H.interface_module)
 
 
 def _chi2_method(u, example, number, label, tatt):
@@ -980,3 +999,733 @@ DRIFT: {name}: {label}
             self._baryon_drift_check("BD7", "bcemu2025", "BCemu2025")
 
     return TestBaryonDrift
+
+
+# ---- the interface-level families (in-process cache checks) -----------------
+
+# The photo-z convention sweep: (report tag,
+# photoz_interpolation_type, photoz_zmid_convention). The default, each
+# alternative, and the default again.
+PHOTOZ_SETTINGS = (
+    ("cspline/Z_LOW (default)", 0, 0),
+    ("linear", 1, 0),
+    ("steffen", 2, 0),
+    ("Z_MID", 0, 1),
+    ("default again (round trip)", 0, 0),
+)
+
+# The alternatives must be seen (a stale n(z) cache would give exactly
+# zero); the floors are orders of magnitude below the measured deltas,
+# so they only catch a dead flag, never normal numerical drift. Z_MID
+# shifts every distribution by dz/2, hence its larger floor.
+PHOTOZ_DCHI2_FLOORS = {"linear": 1.0e-8, "steffen": 1.0e-8,
+                       "Z_MID": 1.0e-2}
+
+
+def photoz_conventions_suite(u, name, example="example1"):
+    """Build the runtime photo-z convention sweep class.
+
+    The likelihood exposes two runtime knobs that control how the
+    n(z) table files are turned into the smooth distributions the
+    Limber integrals consume: photoz_interpolation_type (the stage-1
+    interpolant) and photoz_zmid_convention (how the z column of the
+    n(z) file is read). The class evaluates the frozen cosmic-shear
+    fiducial under the five PHOTOZ_SETTINGS in one process, measures
+    each alternative's delta chi2 = delta^T C^-1 delta against the
+    default vector, and asserts the dead-flag floors, the frozen
+    reference, and the bitwise round trip back to the default.
+    Running everything in one process is the point: the n(z) caches
+    inside the compiled interface must notice a runtime flag change
+    and rebuild.
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      name    = the class name to build (assigned by the caller to
+                the same module-level name, so test ids do not
+                change).
+      example = the key of u.EXAMPLES the sweep evaluates.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestPhotozConventions(unittest.TestCase):
+        """The five-setting sweep, sharing one frozen-state verification."""
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR, verify the frozen state, load the references."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+            cls.reference = u.load_reference()
+
+        def test_photoz_conventions(self):
+            """Every alternative is seen, and the default round trip is exact."""
+            import shutil
+            import tempfile
+
+            import numpy as np
+            ci = _interface(u)
+
+            vectors_dir = tempfile.mkdtemp(prefix="photoz_conventions_")
+            # addCleanup registers a call unittest makes after the
+            # test, pass or fail: here it removes the temporary folder
+            self.addCleanup(shutil.rmtree, vectors_dir,
+                            ignore_errors=True)
+
+            results = {}
+            icov = None
+            for tag, interp, zmid in PHOTOZ_SETTINGS:
+                print(f"  building model ({example}, NLA, {tag}) ...",
+                      flush=True)
+                info = u.load_frozen_info(example, tatt=False)
+                likelihood_block = \
+                    info["likelihood"][u.EXAMPLES[example]["likelihood"]]
+                likelihood_block["photoz_interpolation_type"] = interp
+                likelihood_block["photoz_zmid_convention"] = zmid
+                vector_path = os.path.join(
+                    vectors_dir, f"dv_{interp}_{zmid}.modelvector")
+                likelihood_block["print_datavector"] = True
+                likelihood_block["print_datavector_file"] = vector_path
+                model = u.make_model(info)
+                point = u.build_point(model, example, tatt=False)
+                chi2 = u.evaluate_chi2(model, point)
+                if not os.path.isfile(vector_path):
+                    raise RuntimeError(
+                        f"print_datavector wrote no file at "
+                        f"{vector_path}")
+                results[tag] = (chi2, u._load_datavector(vector_path))
+                if icov is None:
+                    # all five settings share one dataset (mask,
+                    # covariance), so the masked inverse covariance of
+                    # the first build serves every comparison
+                    icov = np.array(ci.get_inv_cov_masked())
+
+            chi2_default, dv_default = results[PHOTOZ_SETTINGS[0][0]]
+            reference_key = f"{example}_nla"
+
+            print(f"\n  chi2 report ({example}, NLA):")
+            print(f"    default: chi2 = {chi2_default:.6f} "
+                  f"(frozen reference "
+                  f"{self.reference[reference_key]:.6f})")
+            for tag in ("linear", "steffen", "Z_MID"):
+                chi2, dv = results[tag]
+                delta = dv - dv_default
+                dchi2 = float(delta @ icov @ delta)
+                print(f"    {tag:8s}: chi2 = {chi2:.6f}, "
+                      f"delta^T C^-1 delta vs default = {dchi2:.6e}")
+                self.assertGreater(
+                    dchi2, PHOTOZ_DCHI2_FLOORS[tag],
+                    f"{tag}: the flag change was not seen by the n(z) "
+                    "cache (delta chi2 at or below the dead-flag "
+                    "floor)")
+
+            # the default must agree with the frozen reference within
+            # the band the reference tests demand
+            self.assertLess(
+                abs(chi2_default - self.reference[reference_key]),
+                u.CHI2_TOLERANCE)
+
+            # round trip: after all the flips, the default settings
+            # must reproduce the first vector identically: the cache
+            # rebuilt back to the same state
+            _, dv_return = results[PHOTOZ_SETTINGS[-1][0]]
+            self.assertTrue(
+                np.array_equal(dv_return, dv_default),
+                "returning to the default settings did not reproduce "
+                "the default data vector bit for bit; the n(z) cache "
+                "did not rebuild cleanly on the way back")
+
+    TestPhotozConventions.__name__ = name
+    TestPhotozConventions.__qualname__ = name
+    return TestPhotozConventions
+
+
+def nonlimber_suite(u, name, kind, measured, default=0, rtol=0.05,
+                    floor=1.0e-6, example="example2"):
+    """Build one Limber-vs-non-Limber class (clustering or ggl).
+
+    The likelihood key adopt_limber_gg (clustering) or adopt_limber_gs
+    (galaxy-galaxy lensing) chooses between the exact low-l projection
+    and the Limber approximation at every multipole. The class
+    evaluates the frozen fiducial three times in one process (the
+    default, the other setting, the default again) and asserts: the
+    delta is seen (dead-flag floor), only the probe's own block
+    changes, the round trip reproduces the first vector bitwise, the
+    delta chi2 matches the project's measured value to the relative
+    band, and the default reproduces the frozen reference (last, so a
+    stale snapshot cannot hide the other checks).
+
+    Arguments:
+      u        = the project's cocoa_test_utils module.
+      name     = the class name to build (assigned by the caller to
+                 the same module-level name, so test ids do not
+                 change).
+      kind     = "gg" (clustering, adopt_limber_gg, the block after
+                 cosmic shear and ggl) or "ggl" (galaxy-galaxy
+                 lensing, adopt_limber_gs, the block after cosmic
+                 shear).
+      measured = the delta chi2 measured for this project's frozen
+                 fiducial (survey data).
+      default  = the project's adopt_limber_* default (0 non-Limber,
+                 1 Limber).
+      rtol     = the relative band around `measured`.
+      floor    = the dead-flag floor on the delta chi2.
+      example  = the key of u.EXAMPLES the sweep evaluates.
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+    flag_key = {"gg": "adopt_limber_gg", "ggl": "adopt_limber_gs"}[kind]
+    probe = {"gg": "clustering", "ggl": "ggl"}[kind]
+
+    # (report tag, flag value): the default, the other setting, the
+    # default again
+    names = {0: "non-Limber", 1: "Limber"}
+    settings = (
+        (f"{names[default]} (default)", default),
+        (names[1 - default], 1 - default),
+        (f"{names[default]} again (round trip)", default),
+    )
+
+    class TestNonLimber(unittest.TestCase):
+        """Limber vs non-Limber on the frozen fiducial."""
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR, verify the frozen state, load the references."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+            cls.reference = u.load_reference()
+
+        def _run_sweep(self):
+            """Evaluate the three settings and assert the five checks."""
+            import time
+
+            import numpy as np
+            ci = _interface(u)
+
+            reference_key = f"{example}_nla"
+            vectors = {}
+            chi2s = {}
+            icov = None
+            sizes = None
+            nlen = None
+            pairs = None
+            for tag, flag in settings:
+                print(f"  building model ({example}, NLA, {tag}) ...",
+                      flush=True)
+                info = u.load_frozen_info(example, tatt=False)
+                lk_name = u.EXAMPLES[example]["likelihood"]
+                info["likelihood"][lk_name][flag_key] = flag
+                model = u.make_model(info)
+                point = u.build_point(model, example, tatt=False)
+                start = time.perf_counter()
+                chi2s[tag] = u.evaluate_chi2(model, point)
+                elapsed = time.perf_counter() - start
+                print(f"    chi2 = {chi2s[tag]:.6f}  ({elapsed:.1f} s, "
+                      "first evaluation of the model)", flush=True)
+                # full-precision model vector (the printed one keeps
+                # 9 digits)
+                vectors[tag] = np.array(ci.compute_data_vector_masked())
+                if icov is None:
+                    # all settings share one data set (mask,
+                    # covariance), so the first build's masked inverse
+                    # covariance serves all
+                    icov = np.array(ci.get_inv_cov_masked())
+                    like = model.likelihood[lk_name]
+                    if hasattr(ci,
+                               "compute_data_vector_3x2pt_real_sizes"):
+                        sizes = ci.compute_data_vector_3x2pt_real_sizes()
+                        nlen = int(like.ntheta)
+                    else:
+                        sizes = \
+                            ci.compute_data_vector_3x2pt_fourier_sizes()
+                        nlen = int(like.ncl)
+                    if kind == "ggl":
+                        # the kept (lens, source) pairs, lens bin
+                        # outer, for the per-pair report labels
+                        excluded = {(int(zl), int(zs)) for zl, zs in
+                                    (getattr(like, "ggl_exclude", None)
+                                     or [])}
+                        pairs = [(zl, zs)
+                                 for zl in range(int(like.lens_ntomo))
+                                 for zs in range(int(like.source_ntomo))
+                                 if (zl, zs) not in excluded]
+
+            # tags = {flag value: report tag} of the first two
+            # settings, so tags[0] names the non-Limber run and
+            # tags[1] the Limber one (the delta enters quadratically,
+            # so its sign never matters)
+            tags = {flag: tag for tag, flag in settings[:2]}
+            dv_default = vectors[settings[0][0]]
+            delta = vectors[tags[0]] - vectors[tags[1]]
+            dchi2 = float(delta @ icov @ delta)
+
+            if kind == "gg":
+                # the clustering block follows cosmic shear and
+                # galaxy-galaxy lensing in every probe combination:
+                # entries [b0, b1), one block of nlen entries per
+                # lens bin
+                b0 = int(sizes[0]) + int(sizes[1])
+                b1 = b0 + int(sizes[2])
+                nblocks = int(sizes[2]) // nlen
+                block_label = "lens bin"
+                per_block_note = "per lens bin (the bin's block alone):"
+            else:
+                # the ggl block follows cosmic shear: entries
+                # [b0, b1), one block of nlen entries per kept
+                # (lens, source) pair
+                b0 = int(sizes[0])
+                b1 = b0 + int(sizes[1])
+                nblocks = int(sizes[1]) // nlen
+                block_label = "pair"
+                per_block_note = ("per lens-source pair (the pair's "
+                                  "block alone):")
+
+            print(f"\n  delta chi2 report ({example}, NLA):")
+            print(f"    {settings[0][0]}: chi2 = "
+                  f"{chi2s[settings[0][0]]:.6f} "
+                  f"(frozen reference "
+                  f"{self.reference[reference_key]:.6f})")
+            print(f"    {settings[1][0]}: chi2 = "
+                  f"{chi2s[settings[1][0]]:.6f}")
+            print(f"    delta^T C^-1 delta = {dchi2:.4f} "
+                  f"(measured {measured:.4f})")
+            print(f"    {per_block_note}")
+            # per-block contributions, printed largest first; the
+            # loop stops at the first one below 0.1% of the total
+            rows = []
+            for b in range(nblocks):
+                block = np.zeros_like(delta)
+                sl = slice(b0 + b*nlen, b0 + (b + 1)*nlen)
+                block[sl] = delta[sl]
+                rows.append((float(block @ icov @ block), b))
+            for contribution, b in sorted(rows, reverse=True):
+                if contribution < 1.0e-3*max(dchi2, floor):
+                    break
+                if kind == "ggl" and pairs is not None \
+                        and len(pairs) == nblocks:
+                    label = f"(lens {pairs[b][0]}, source {pairs[b][1]})"
+                    print(f"      {label:24s} {contribution:.4f}")
+                else:
+                    print(f"      {block_label} {b:<14d} "
+                          f"{contribution:.4f}")
+
+            self.assertGreater(
+                dchi2, floor,
+                f"non-Limber {probe} did not change the data vector: "
+                f"the {flag_key} flag did not reach the C code, or "
+                f"the {probe} cache did not rebuild")
+
+            outside = np.concatenate((delta[:b0], delta[b1:]))
+            self.assertTrue(
+                np.all(outside == 0.0),
+                f"entries outside the {probe} block changed with "
+                f"{flag_key}")
+
+            self.assertTrue(
+                np.array_equal(vectors[settings[-1][0]], dv_default),
+                "returning to the default did not reproduce the first "
+                f"data vector bit for bit; the {probe} cache did not "
+                "rebuild cleanly")
+
+            self.assertLess(
+                abs(dchi2/measured - 1.0), rtol,
+                f"delta chi2 = {dchi2:.4f} differs from the measured "
+                f"{measured:.4f} by more than {rtol:.0%}")
+
+            # last, so that a stale frozen snapshot does not hide the
+            # four checks above
+            self.assertLess(
+                abs(chi2s[settings[0][0]]
+                    - self.reference[reference_key]),
+                u.CHI2_TOLERANCE,
+                f"{settings[0][0]}: chi2 = "
+                f"{chi2s[settings[0][0]]:.6f} vs frozen reference "
+                f"{self.reference[reference_key]:.6f}")
+
+    def test(self):
+        self._run_sweep()
+    test.__name__ = f"test_nonlimber_{kind}"
+    test.__doc__ = (f"Limber vs non-Limber {probe}: the five checks "
+                    "of the factory docstring.\n        ")
+    setattr(TestNonLimber, test.__name__, test)
+    TestNonLimber.__name__ = name
+    TestNonLimber.__qualname__ = name
+    return TestNonLimber
+
+
+# ---- the sector-ladder cache checks -----------------------------------------
+
+# Sector membership by sampled-parameter name. re.compile builds a
+# regular-expression matcher: ^(a|b)$ matches exactly the names a or
+# b, "_A1_|_A2_" matches a name containing either text, and "_M[0-9]+$"
+# a name ending in _M plus digits. _ladder_sector_of returns the first
+# sector whose pattern matches, so the order matters and "other" (the
+# pattern "." matches any name) collects the rest. The bias and other
+# sectors move only in the scramble step.
+LADDER_SECTORS = (
+    ("cosmo",
+     re.compile(r"^(As_1e9|H0|ns|omegab|omegam|mnu|w|w0pwa)$")),
+    ("ia", re.compile(r"_A1_|_A2_|_BTA_")),
+    ("dz_source", re.compile(r"_DZ_S")),
+    ("dz_lens", re.compile(r"_DZ_L")),
+    ("m", re.compile(r"_M[0-9]+$")),
+    ("bias", re.compile(r"_B1_|_B2_|_BMAG_")),
+    ("other", re.compile(r".")),
+)
+
+# Ladder phases (sector order of the forward walk) and the per-step
+# offsets: parameter value = fiducial + step * delta, deterministic.
+# A key of LADDER_DELTAS is either an exact parameter name (a string)
+# or a compiled pattern matched against the names. The offsets are
+# small moves inside the priors that still change the data vector
+# visibly.
+LADDER_PHASES = ("cosmo", "ia", "dz_source", "dz_lens", "m")
+LADDER_DELTAS = {
+    "cosmo": {"omegam": 0.002, "H0": 0.2, "As_1e9": 0.02},
+    "ia": {re.compile(r"_A1_1$"): 0.05, re.compile(r"_A1_2$"): 0.05,
+           re.compile(r"_A2_1$"): 0.05, re.compile(r"_A2_2$"): 0.05,
+           re.compile(r"_BTA_1$"): 0.05},
+    "dz_source": {re.compile(r"_DZ_S"): 0.001},
+    "dz_lens": {re.compile(r"_DZ_L"): 0.001},
+    "m": {re.compile(r"_M[0-9]+$"): 0.005},
+    "bias": {re.compile(r"_B1_"): 0.05},
+}
+# LADDER_NSTEP = steps per sector on the ladder; LADDER_SCRAMBLE_STEP
+# = the step count of every sector at the scramble point, beyond the
+# ladder's end; LADDER_RESCALE_RTOL = relative tolerance of the
+# analytic shear-calibration rescale, a few roundings of a product of
+# double-precision factors.
+LADDER_NSTEP = 3
+LADDER_SCRAMBLE_STEP = 4  # every sector at step 4, bias included
+LADDER_RESCALE_RTOL = 1.0e-12
+
+
+def _ladder_sector_of(name):
+    """Return the sector of one sampled-parameter name.
+
+    Arguments:
+      name = a sampled-parameter name, e.g. a survey's "..._DZ_S1".
+
+    Returns:
+      the name of the first LADDER_SECTORS entry whose pattern
+      matches (pat.search looks for the pattern anywhere in the
+      name).
+    """
+    for sector, pat in LADDER_SECTORS:
+        if pat.search(name):
+            return sector
+    return "other"
+
+
+def _ladder_deltas_for(sector, names):
+    """Return {parameter: per-step delta} for one sector's sampled names.
+
+    Arguments:
+      sector = a LADDER_SECTORS name.
+      names  = the sampled-parameter names that belong to the sector.
+
+    Returns:
+      a dictionary with one entry per name that a LADDER_DELTAS key
+      of the sector matches; names no key matches are left out.
+    """
+    # .get(sector, {}) returns an empty table for a sector without
+    # offsets (bias moves only in the scramble, "other" never)
+    table = LADDER_DELTAS.get(sector, {})
+    out = {}
+    for n in names:
+        for key, d in table.items():
+            # the condition reads: when key is a string, compare it
+            # with n; otherwise key is a compiled pattern, so search
+            # n for it
+            if (key == n) if isinstance(key, str) else key.search(n):
+                out[n] = d
+                break
+    return out
+
+
+def cache_ladder_suite(u, name, example="example2"):
+    """Build the sector-wise cache-invalidation class (the ladder).
+
+    cosmolike keeps the result of every expensive stage in memory and
+    recomputes it only when an input it depends on changed. The class
+    walks a deterministic parameter ladder in one process (three
+    steps per sector: cosmology, IA, source photo-z, lens photo-z,
+    shear calibration; a sector the configuration samples no
+    parameters in drops out), evaluating after every step, and
+    asserts: every step changes the vector; each M-only step is the
+    analytic (1+m_i)(1+m_j) rescale; a no-op update is bitwise
+    neutral; returning to the ladder's final point after a scramble
+    reproduces vector and chi2 bit for bit; and a second model
+    walking the mirrored ladder lands on the same final vector. Both
+    IA models run (the TATT ladder exercises the FAST-PT rebuild
+    machinery NLA never touches), and every evaluation bypasses
+    cobaya's cache, so the checks test cosmolike's own invalidation.
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      name    = the class name to build (assigned by the caller to
+                the same module-level name, so test ids do not
+                change).
+      example = the key of u.EXAMPLES the ladder evaluates (the
+                flagship combination, so every sector enters its
+                data vector).
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+
+    class TestCacheLadder(unittest.TestCase):
+        """Sector-ladder cache-invalidation check on the frozen fiducial."""
+
+        @classmethod
+        def setUpClass(cls):
+            """Move to ROOTDIR and verify the frozen state, once per class."""
+            u.require_cocoa_environment()
+            u.verify_frozen()
+
+        def _point_at(self, fid, steps):
+            """Return the ladder point with each sector at its step count.
+
+            Arguments:
+              fid   = the fiducial {parameter name: value} point.
+              steps = {sector name: step count}; each parameter of
+                      the sector moves to fiducial + step * delta.
+
+            Returns:
+              a new {parameter name: value} dictionary (fid is not
+              changed).
+            """
+            point = dict(fid)
+            for sector, step in steps.items():
+                for n, d in self.sector_deltas[sector].items():
+                    point[n] = fid[n] + step * d
+            return point
+
+        def _mpairs(self, like, np_):
+            """Per data-vector entry, the source bins of its (1+m) factors.
+
+            Cosmic shear scales by both bins' factors (1+m_i)(1+m_j),
+            gamma_t (and the ks cross where present) by the source
+            bin's, clustering, gk and kk by nothing. Fourier data
+            vectors use ncl entries per block, real ones ntheta; the
+            xi_pm split doubles the shear block in real space.
+
+            Arguments:
+              like = the likelihood object (read for its bin counts
+                     and, when present, its ggl_exclude pairs).
+              np_  = the numpy module, passed in because numpy is
+                     imported inside the test methods.
+
+            Returns:
+              int array [n_data, 2]: row k = (i, j), the source bins
+              whose factors multiply entry k; -1 marks "no factor"
+              (for gamma_t the row is (-1, source bin); for
+              clustering both are -1).
+            """
+            ci = _interface(u)
+            real = hasattr(ci, "compute_data_vector_3x2pt_real_sizes")
+            sizes = [int(x) for x in
+                     (ci.compute_data_vector_3x2pt_real_sizes()
+                      if real else
+                      ci.compute_data_vector_3x2pt_fourier_sizes())]
+            nlen = int(like.ntheta) if real else int(like.ncl)
+            nsrc = int(like.source_ntomo)
+            # sspairs = every source pair (i, j) with i <= j, in
+            # data-vector order (the two for clauses nest like two C
+            # loops, i outer)
+            sspairs = [(i, j) for i in range(nsrc)
+                       for j in range(i, nsrc)]
+            # excluded = the set of (lens, source) pairs the
+            # likelihood drops from gamma_t; getattr returns None
+            # when the likelihood has no ggl_exclude attribute, and
+            # `or []` turns that into an empty list
+            excluded = {(int(a), int(b)) for a, b in
+                        (getattr(like, "ggl_exclude", None) or [])}
+            # gglpairs = every (lens, source) pair kept in gamma_t,
+            # lens bin outer, source bin inner
+            gglpairs = [(zl, zs)
+                        for zl in range(int(like.lens_ntomo))
+                        for zs in range(nsrc)
+                        if (zl, zs) not in excluded]
+            # start with -1 ("no factor") everywhere; the loops below
+            # fill the shear and gamma_t rows block by block
+            fac = np_.zeros((sum(sizes), 2), dtype=int) - 1
+            k = 0
+            # xi_plus + xi_minus in real space
+            ssrep = sspairs + sspairs if real else sspairs
+            for (i, j) in ssrep:
+                for t in range(nlen):
+                    fac[k] = (i, j)
+                    k += 1
+            for (zl, zs) in gglpairs:
+                for t in range(nlen):
+                    fac[k] = (-1, zs)
+                    k += 1
+            # skip clustering
+            k = sizes[0] + sizes[1] + sizes[2]
+            # 6x2pt: gk (no factor), ks (source), kk (none)
+            if len(sizes) > 3:
+                k += sizes[3]
+                for zs in range(nsrc):
+                    for t in range(nlen):
+                        fac[k] = (-1, zs)
+                        k += 1
+            return fac
+
+        def _run_ladder(self, tatt):
+            """Walk the forward and mirrored ladders; assert checks 1-5.
+
+            Each order builds its own model in this process (the two
+            models share the compiled library's C globals); check 5
+            compares their final vectors bit for bit.
+
+            Arguments:
+              tatt = True runs the TATT variant, False the NLA one.
+
+            Returns:
+              nothing; a failed check raises AssertionError.
+            """
+            import numpy as np
+            ci = _interface(u)
+
+            lk_name = u.EXAMPLES[example]["likelihood"]
+            results = {}
+            for order in ("forward", "mirrored"):
+                info = u.load_frozen_info(example, tatt=tatt)
+                model = u.make_model(info)
+                fid = dict(u.build_point(model, example, tatt=tatt))
+                # sector_deltas = {sector: {parameter: per-step
+                # delta}}; the inner comprehension lists the
+                # fiducial's names that belong to sector s
+                self.sector_deltas = {
+                    s: _ladder_deltas_for(
+                        s, [n for n in fid
+                            if _ladder_sector_of(n) == s])
+                    for s, _ in LADDER_SECTORS}
+                for s in ("cosmo", "dz_source", "m"):
+                    self.assertTrue(
+                        self.sector_deltas[s],
+                        f"no sampled parameters in sector {s}")
+                # a sector nothing samples drops out of the ladder:
+                # lenses that are the source sample carry no separate
+                # DZ_L shifts, and a configuration may fix every IA
+                # amplitude
+                active = tuple(s for s in LADDER_PHASES
+                               if self.sector_deltas[s])
+
+                phases = (active if order == "forward"
+                          else tuple(reversed(active)))
+                # every sector starts at step 0 (the fiducial point)
+                steps = {s: 0 for s in self.sector_deltas}
+                u.evaluate_chi2(model, self._point_at(fid, steps))
+                # compute_data_vector_masked returns the theory
+                # vector of the state the last evaluation left in
+                # cosmolike
+                prev = np.array(ci.compute_data_vector_masked())
+                mfac = self._mpairs(model.likelihood[lk_name], np)
+
+                for sector in phases:
+                    for r in range(1, LADDER_NSTEP + 1):
+                        m_prev = {
+                            n: fid[n] + steps["m"] * d
+                            for n, d in
+                            self.sector_deltas["m"].items()}
+                        steps[sector] = r
+                        point = self._point_at(fid, steps)
+                        u.evaluate_chi2(model, point)
+                        dv = np.array(ci.compute_data_vector_masked())
+                        self.assertFalse(
+                            np.array_equal(dv, prev),
+                            f"{order}: {sector} step {r} left the "
+                            "data vector unchanged (dead sector flag "
+                            "or stale cache)")
+                        if sector == "m":
+                            # check 2: the expected ratio dv/prev of
+                            # every entry is the product of
+                            # (1+m_new)/(1+m_old) over the source
+                            # bins mfac names for it
+                            m_now = {n: point[n]
+                                     for n in self.sector_deltas["m"]}
+                            # M1..M5 in bin order
+                            mp = sorted(m_prev)
+                            ratio = np.ones(dv.size)
+                            for k in range(dv.size):
+                                i, j = mfac[k]
+                                if j >= 0:
+                                    ratio[k] *= ((1 + m_now[mp[j]]) /
+                                                 (1 + m_prev[mp[j]]))
+                                if i >= 0:
+                                    ratio[k] *= ((1 + m_now[mp[i]]) /
+                                                 (1 + m_prev[mp[i]]))
+                            # nz = boolean mask of the entries where
+                            # prev is nonzero (masked entries are 0
+                            # and cannot carry a ratio); rel =
+                            # relative deviation from the analytic
+                            # rescale on those entries
+                            nz = prev != 0
+                            rel = np.abs(
+                                dv[nz]/(prev[nz]*ratio[nz]) - 1.0)
+                            self.assertLess(
+                                rel.max(), LADDER_RESCALE_RTOL,
+                                f"{order}: M step {r} is not the "
+                                "analytic (1+m_i)(1+m_j) rescale "
+                                f"(max {rel.max():.2e})")
+                        prev = dv
+
+                final_point = self._point_at(fid, steps)
+                final_chi2 = u.evaluate_chi2(model, final_point)
+                final_dv = np.array(ci.compute_data_vector_masked())
+
+                # no-op probe: identical point again, bitwise
+                u.evaluate_chi2(model, dict(final_point))
+                self.assertTrue(
+                    np.array_equal(
+                        np.array(ci.compute_data_vector_masked()),
+                        final_dv),
+                    f"{order}: a no-op re-evaluation changed the "
+                    "data vector")
+
+                # scramble: every sector at once, bias included
+                scr = {s: LADDER_SCRAMBLE_STEP
+                       for s in self.sector_deltas}
+                u.evaluate_chi2(model, self._point_at(fid, scr))
+
+                # return: the ladder's final point must reproduce
+                # bitwise
+                back_chi2 = u.evaluate_chi2(model, final_point)
+                back_dv = np.array(ci.compute_data_vector_masked())
+                self.assertTrue(
+                    np.array_equal(back_dv, final_dv),
+                    f"{order}: returning after the scramble did not "
+                    "reproduce the data vector bit for bit (stale "
+                    "sector cache)")
+                self.assertEqual(
+                    back_chi2, final_chi2,
+                    f"{order}: chi2 after the scramble return "
+                    "differs")
+                results[order] = final_dv
+                print(f"  {order} ladder "
+                      f"({'TATT' if tatt else 'NLA'}): "
+                      f"final chi2 = {final_chi2:.6f}", flush=True)
+
+            self.assertTrue(
+                np.array_equal(results["forward"],
+                               results["mirrored"]),
+                "the mirrored-order ladder landed on a different "
+                "data vector: the answer depends on the invalidation "
+                "history")
+
+        def test_cache_consistency_nla(self):
+            """The ladder checks 1-5 hold for the NLA configuration."""
+            self._run_ladder(tatt=False)
+
+        def test_cache_consistency_tatt(self):
+            """The ladder checks 1-5 hold for the TATT configuration."""
+            self._run_ladder(tatt=True)
+
+    TestCacheLadder.__name__ = name
+    TestCacheLadder.__qualname__ = name
+    return TestCacheLadder
