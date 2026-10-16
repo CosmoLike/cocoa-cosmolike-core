@@ -535,12 +535,23 @@ who knows one suite knows them all:
 | `test_scale_cut_diagnostics.py` | the notebook scale-cut diagnostics, where the project ships them |
 | `test_emul2.py` | the hybrid-emulator advisories, where the project ships trained emulators |
 
-Documented deviations: DES cluster's `EXAMPLE_EVALUATE` configurations
-lead with its cluster flagships, so its `test_example1` and
-`test_example2` cover the 4x2pt + N and 6x2pt + N probes and cosmic
-shear is `test_example3`; DES Y6 consolidates its example checks in
-one `test_examples.py`. A project README states such deviations next
-to its roster.
+`test_exampleN.py` always tests the project's `EXAMPLE_EVALUATEN`
+configuration, and what `EXAMPLE_EVALUATEN` is follows one of two
+conventions:
+
+- **Galaxy surveys**: `EXAMPLE1` is cosmic shear, `EXAMPLE2` the
+  flagship 3x2pt (or 6x2pt) combination, and `test_example2_2x2pt.py`
+  its 2x2pt reduction. Further examples extend the list (DES Y3 adds
+  its DES-Y1 configurations as `EXAMPLE3`/`EXAMPLE4`).
+- **Cluster surveys**: the examples lead with the cluster flagships -
+  `EXAMPLE1` is the 4x2pt + N combination, `EXAMPLE2` the 6x2pt + N
+  one, `EXAMPLE3` cosmic shear and `EXAMPLE4` the galaxy 3x2pt, with
+  `test_example4_2x2pt.py` its 2x2pt reduction. A future cluster
+  project follows this layout and inherits this explanation.
+
+One documented deviation remains: DES Y6 consolidates its example
+checks in one `test_examples.py`. A project README names which
+convention it follows next to its roster.
 
 ### Frozen references and the race check <a name="dv_frozen"></a>
 
