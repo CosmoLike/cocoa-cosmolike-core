@@ -712,6 +712,22 @@ high-accuracy build-plus-evaluation, minutes per model, so the check
 is off by default: with `COCOA_ACCURACY_NMODELS` unset (or 0) it
 prints how to enable itself and passes.
 
+### Halo-model checks (opt-in) <a name="dv_halo_slow"></a>
+
+Every halo-model or HOD check in the fleet, in whichever sector it
+lives (a project's halo data-vector suite, a covariance halo-moment
+comparison), is gated behind one shared environment variable and
+skips with its reason unless it is set:
+
+    COCOA_HALO_SLOW=1 python -m pytest <the halo test file>
+
+The gate exists because each such check costs dozens of full halo
+evaluations or mass integrations. The convention is fleet-wide: a new
+project adding halo tests gates them behind the same flag (the
+`pytest.mark.skipif` module mark for pytest-style files, or
+`@unittest.skipUnless` on the class for unittest-style files), so
+`COCOA_HALO_SLOW=1` always means "run the halo tier, everywhere".
+
 ### Baryonic feedback: accuracy and drift <a name="dv_baryons"></a>
 
 Two complementary families cover every feedback method the `bfmt`

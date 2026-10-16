@@ -99,7 +99,9 @@ The suite is a thin project layer over four shared core modules:
    project lacks (no baryon block, no covariance sector) instead of
    leaving vacuous tests; `covariance/abort_check.py` and the n(z)
    cache round-trip test port unchanged (both resolve the shared code
-   themselves).
+   themselves). Halo-model or HOD tests, wherever they live, are
+   gated behind `COCOA_HALO_SLOW=1` (the fleet's opt-in tier; see the
+   core README's "Halo-model checks (opt-in)").
 5. **Freeze.** With the human's survey data in place:
    `python ./projects/<new>/tests/generate_frozen_reference.py
    --overwrite`, then `--baryons` if the baryon tests were kept. The
