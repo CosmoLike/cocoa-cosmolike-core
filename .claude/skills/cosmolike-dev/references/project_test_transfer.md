@@ -25,26 +25,43 @@ silently checks the wrong survey, manufacturing false confidence.
 
 ## Architecture: what is shared, what is project-owned
 
-The suite is a thin project layer over the shared harness
-`cosmolike_core/cocoa_testing.py`:
+The suite is a thin project layer over four shared core modules:
 
-- **Shared harness** (do not copy, do not fork): environment guards
-  (`require_cocoa_environment`, thread assertions), the frozen-state
-  verifier, cobaya model construction, chi2 evaluation with worker
-  subprocesses, the N-random-models mechanism (a default-settings model
-  writes its own vector, which becomes a temporary dataset so the
-  default chi2 is zero by construction), baryon-method machinery,
-  CFASTPT-vs-FASTPT and Halofit-vs-EE2 sweeps, and report printing.
+- **Shared harness** `cosmolike_core/cocoa_testing.py` (do not copy,
+  do not fork): environment guards (`require_cocoa_environment`,
+  thread assertions), the frozen-state verifier, cobaya model
+  construction, chi2 evaluation with worker subprocesses, the
+  N-random-models mechanism, baryon-method machinery,
+  CFASTPT-vs-FASTPT, EE2 and Halofit-vs-EE2 sweeps, the scaffolding
+  helpers (`assert_aborts`, `own_process`), and report printing.
+- **Suite factories** `cosmolike_core/cocoa_testing_suites.py`: the
+  test CLASSES themselves. Each factory takes the project's shim
+  module `u` plus a small data roster and returns a ready
+  `unittest.TestCase` subclass (`example_suite`, `accuracy_suite`,
+  `fastpt_reference_suite`, `fastpt_sweep_suite`, `ee2_suite`,
+  `nonlinear_suite`, `baryon_accuracy_suite`, `baryon_drift_suite`,
+  `photoz_conventions_suite`, `nonlimber_suite`,
+  `cache_ladder_suite`). A project test file is a module docstring,
+  the standard import stanza, and one binding such as
+  `TestExample1CosmicShear = u.example_suite(u, name=..., ...)`.
+- **Freeze machinery** `cosmolike_core/cocoa_testing_freeze.py`:
+  `freeze_main` behind every `tests/generate_frozen_reference.py`,
+  which keeps only the project's vector roster, mask-variant table
+  and any extra step.
+- **Figure machinery** `cosmolike_core/cocoa_testing_figures.py` and
+  the n(z) cache checks `cosmolike_core/cocoa_nz_cache_testing.py`,
+  bound the same way.
 - **Project shim** `tests/cocoa_test_utils.py`: builds one
   `cocoa_testing.CocoaTestHarness` from project data (worker_file,
   interface_module, EXAMPLES, TATT point, accuracy knobs, fastpt
-  settings) and re-exports the harness methods as module names the
-  test files use. This file carries ALL survey judgment.
+  settings) and re-exports the core names (harness methods, printers,
+  factories, `freeze_main`) as the single import surface the test
+  files use. This file carries ALL survey judgment.
 - **Thin test modules** under `tests/data_vector/` and
-  `tests/covariance/`: mostly identical across projects apart from the
-  interface import and the shim contents. Copy them from the donor,
-  then adjust only what the per-file notes below name. Never embed
-  survey numbers in a test module; they belong in the shim.
+  `tests/covariance/`: docstring + binding, identical across projects
+  apart from the binding's data rows. Copy them from the donor, then
+  adjust only the data the binding passes. Never embed survey numbers
+  anywhere else; they belong in the shim tables or the binding rows.
 - `tests/conftest.py` binds the shim and registers the shared
   `--high` / `--mask` options; `tests/pytest.ini` keeps
   `testpaths = data_vector` (covariance and studies run by explicit
@@ -67,15 +84,22 @@ The suite is a thin project layer over the shared harness
    survey; accuracy knobs kept unless the survey needs others. Every
    entry is a decision to flag to the human, not a rename.
 3. **Support files.** Copy `conftest.py`, `pytest.ini` and
-   `generate_frozen_reference.py`; adjust only project names and the
-   EXAMPLES-dependent parts of the generator.
+   `generate_frozen_reference.py`; in the generator adjust only the
+   vector roster, the mask-variant table and any extra step (the
+   machinery is `u.freeze_main`).
 4. **Test modules.** Copy the donor's `data_vector/` and `covariance/`
-   modules; fix the interface import; drop modules whose subject the
-   new project lacks (no baryon block, no covariance sector, no KL
-   shape noise) instead of leaving vacuous tests; port
-   `covariance/abort_check.py` as is (the forked-exit pattern is
-   generic). The n(z) cache round-trip test resolves its interface
-   folder itself and ports unchanged.
+   modules; each is a docstring plus a factory binding, so the only
+   edits are the binding's data rows: the example roster and labels
+   (follow the core README's naming conventions), and the measured
+   values. **Measured values are survey measurements, never copied**:
+   the nonlimber bindings' `measured=` delta chi2 values and the
+   covariance `expected_sizes` must be re-measured or re-derived for
+   the new survey (run the test once, read the printed delta, review
+   it with the human, then pin it). Drop modules whose subject the new
+   project lacks (no baryon block, no covariance sector) instead of
+   leaving vacuous tests; `covariance/abort_check.py` and the n(z)
+   cache round-trip test port unchanged (both resolve the shared code
+   themselves).
 5. **Freeze.** With the human's survey data in place:
    `python ./projects/<new>/tests/generate_frozen_reference.py
    --overwrite`, then `--baryons` if the baryon tests were kept. The
