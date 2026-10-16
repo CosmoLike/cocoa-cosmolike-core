@@ -815,6 +815,70 @@ def _load_datavector(path):
 # ---- terminal reports -------------------------------------------------------
 # Each printer returns the difference it printed; the assertion on
 # that difference lives in the calling test method, not here.
+# The frozen FAST-PT references (the tests that evaluate TATT with the
+# python FAST-PT package against their own stored chi2) were computed
+# on one 1100-point grid shared by the convolutions and the output
+# table. In the fastpt block's boost convention (1.0 = the converged
+# two-grid configuration) that table is accuracyboost = 1/5120;
+# pinning it here keeps those tests on the configuration their
+# references were computed with.
+FASTPT_FROZEN_SETTINGS = {
+    "accuracyboost": 1.0 / 5120.0,
+    "internal_accuracyboost": 1.0,
+    "kmax_boltzmann": 7.5,
+    "extrap_kmax": 250.0,
+}
+
+
+# Base of the per-model random seeds of the N-random-models accuracy
+# check (CocoaTestHarness.random_model_accuracy): model m draws its
+# point from numpy.random.default_rng(RANDOM_MODEL_SEED + m). The value
+# 137 is arbitrary; what matters is that it is fixed, so two runs (on
+# any machine) evaluate the same points, and that each model has its
+# own seed, so model m's point does not depend on how many models a
+# run asks for.
+RANDOM_MODEL_SEED = 137
+
+# The EuclidEmulator2 commit that precedes the Cocoa modifications, in
+# the repository EE2_URL of set_installation_options.sh (the
+# commented-out EE2_GIT_COMMIT alternative there). The EE2 modification
+# test builds it side by side and scores the installed, modified EE2
+# against it.
+EE2_ORIGINAL_COMMIT = "ff59f6683069417f6b4d2fb5d59197044d424445"
+
+# The compatibility patch the original needs to run inside Cocoa at
+# all, injected into the original-EE2 worker before the model builds
+# (it replaces euclidemu2.get_boost2 in the child process only):
+#   - the original has no get_boost2 (the Cocoa addition that takes a
+#     pre-built PyEuclidEmulator), so the adapter maps it onto the
+#     original get_boost, which builds its own emulator internally;
+#   - the original computes at most 101 redshifts per call (its
+#     training-grid size) and silently overflows beyond that (the
+#     likelihood sends about 110), so the adapter batches the
+#     redshifts in chunks of 100 and stacks the per-chunk results
+#     (the original returns a per-redshift dict, the likelihood
+#     expects a 2D array). The numerics inside each chunk are the
+#     original's, untouched.
+EE2_ORIGINAL_SHIM = """
+import numpy as _np
+_orig_get_boost = euclidemu2.get_boost
+def _get_boost2(cosmo_par_in, redshifts, ee2_obj, custom_kvec=None):
+    redshifts = _np.atleast_1d(_np.asarray(redshifts, dtype=float))
+    rows = []
+    k = None
+    for start in range(0, len(redshifts), 100):
+        k, b = _orig_get_boost(cosmo_par_in,
+                               redshifts[start:start + 100],
+                               custom_kvec)
+        if isinstance(b, dict):
+            rows.extend(_np.asarray(b[i]) for i in sorted(b))
+        else:
+            rows.extend(_np.asarray(b))
+    return k, _np.array(rows)
+euclidemu2.get_boost2 = _get_boost2
+"""
+
+
 def report_chi2_test(number, label, chi2, ref, tol):
     """Print one reference-comparison test as a readable block.
 
@@ -1008,6 +1072,235 @@ TEST {number}: {label}""", flush=True)
   -> {'OK' if largest < tol else 'EXCEEDS LIMIT'}
 {'-' * 66}""", flush=True)
     return largest
+
+
+def build_original_ee2(prefix_dir):
+    """Build the pre-modification EE2 into prefix_dir, offline.
+
+    Clones the local euclidemu2 checkout (no internet: the pinned
+    clone's history carries the original commit), checks out
+    EE2_ORIGINAL_COMMIT, and pip-installs it with the offline flags
+    the compile scripts use plus --ignore-installed: without that
+    flag pip uninstalls the same-name distribution from .local
+    before installing into the prefix, breaking the environment.
+
+    Arguments:
+      prefix_dir = the directory the build is installed under (a
+                temporary directory owned by the caller).
+
+    Returns:
+      the site-packages path inside prefix_dir, for PYTHONPATH.
+
+    Raises:
+      RuntimeError when the original commit is not present in the
+      local clone (a shallow checkout); the caller turns this into
+      a test skip rather than a failure.
+    """
+    import subprocess
+    import sys
+
+    clone_src = os.path.join(os.environ["ROOTDIR"], "external_modules",
+                             "code", "euclidemu2")
+    probe = subprocess.run(
+        ["git", "-C", clone_src, "cat-file", "-e", EE2_ORIGINAL_COMMIT],
+        capture_output=True)
+    if probe.returncode != 0:
+        raise RuntimeError(
+            f"the local euclidemu2 clone does not carry commit "
+            f"{EE2_ORIGINAL_COMMIT} (shallow checkout?)")
+    workdir = os.path.join(prefix_dir, "src")
+    subprocess.run(["git", "clone", "-q", clone_src, workdir],
+                   check=True)
+    subprocess.run(["git", "-C", workdir, "checkout", "-q",
+                    EE2_ORIGINAL_COMMIT], check=True)
+    env = dict(os.environ)
+    # the compile scripts export the compiler pair; pass it through
+    # the same way when present
+    if "CXX_COMPILER" in env:
+        env["CXX"] = env["CXX_COMPILER"]
+    if "C_COMPILER" in env:
+        env["CC"] = env["C_COMPILER"]
+    subprocess.run(
+        [sys.executable, "-m", "pip", "install", workdir,
+         "--no-dependencies", "--no-index", "--no-build-isolation",
+         "--ignore-installed", f"--prefix={prefix_dir}", "--quiet"],
+        check=True, env=env)
+    return os.path.join(
+        prefix_dir, "lib",
+        f"python{sys.version_info.major}.{sys.version_info.minor}",
+        "site-packages")
+
+
+def report_fastpt_test(number, label, chi2, ref, cfastpt_ref, tol):
+    """Print one frozen-FASTPT reference test as a readable block.
+
+    Two numbers matter here: how far the FASTPT chi2 moved from its
+    own frozen reference (the pass/fail criterion, same rule as every
+    other reference test), and the physical difference between the
+    FASTPT and cfastpt implementations of the TATT terms at the same
+    point (informational; it was measured and saved at freeze time).
+
+    Arguments:
+      number      = the test number shown in the header.
+      label       = one line naming the example and IA model.
+      chi2        = the FASTPT chi2 computed in this run.
+      ref         = the frozen FASTPT reference chi2.
+      cfastpt_ref = the frozen cfastpt (IA_code: 0) reference chi2.
+      tol         = the pass limit on |chi2 - ref| (CHI2_TOLERANCE).
+
+    Returns:
+      |chi2 - ref|, the printed pass/fail difference.
+    """
+    delta = abs(chi2 - ref)
+    # :+.6f = fixed six decimals with the + forcing a sign, so the
+    # direction of the FASTPT-minus-CFASTPT difference always shows
+    print(f"""
+{'-' * 66}
+TEST {number}: {label}
+  chi2 (this run, FASTPT)  = {chi2:.6f}
+  frozen FASTPT reference  = {ref:.6f}
+  |delta chi2|             = {delta:.6f}   (limit: < {tol})
+  frozen CFASTPT reference = {cfastpt_ref:.6f}
+  FASTPT - CFASTPT         = {chi2 - cfastpt_ref:+.6f}   (informational)
+  -> {'OK' if delta < tol else 'EXCEEDS LIMIT'}
+{'-' * 66}""", flush=True)
+    return delta
+
+
+def report_random_model(index, n_models, point, chi2_high):
+    """Print one N-random-models block. Advisory only.
+
+    No subtraction happens here: the synthetic data vector was
+    generated by the default-settings model at this exact point, so
+    the default chi2 against it is zero by construction and the
+    high-accuracy chi2 already is
+    delta chi2 = chi2(high accuracy) - chi2(default). The three
+    printed parameters locate the point inside the prior at a glance;
+    the full point is reproducible from RANDOM_MODEL_SEED + index.
+
+    Arguments:
+      index     = the model counter, 0-based (printed 1-based).
+      n_models  = how many models the run evaluates in total.
+      point     = the drawn {parameter name: value} point.
+      chi2_high = chi2 with the pushed settings against the point's
+                  own synthetic vector (= the delta).
+
+    Returns:
+      chi2_high, the printed delta.
+    """
+    # inside the triple-quoted f-string, a backslash at the end of a
+    # source line eats the newline: As_1e9, omegam, and ns print on
+    # one line
+    print(f"""
+{'-' * 66}
+RANDOM MODEL {index + 1}/{n_models}
+  As_1e9 = {point['As_1e9']:.6f}   omegam = {point['omegam']:.6f}   \
+ns = {point['ns']:.6f}
+  delta chi2 = chi2(high accuracy) = {chi2_high:+.6f}
+{'-' * 66}""", flush=True)
+    return chi2_high
+
+
+def report_random_model_summary(deltas):
+    """Print the spread of the N-random-models deltas. Advisory only.
+
+    The median rather than the mean: one point near a prior edge can
+    carry a delta far above the rest, and the median keeps the
+    typical numerical error readable next to that outlier (which the
+    max still shows).
+
+    Arguments:
+      deltas = the per-model delta chi2 list from
+               random_model_accuracy, one float per model.
+
+    Returns:
+      (minimum, median, maximum) of the deltas as floats.
+    """
+    import numpy as np
+
+    lowest = float(np.min(deltas))
+    middle = float(np.median(deltas))
+    highest = float(np.max(deltas))
+    print(f"  RANDOM MODELS SUMMARY ({len(deltas)} models): delta chi2 "
+          f"min = {lowest:+.6f}  median = {middle:+.6f}  "
+          f"max = {highest:+.6f}", flush=True)
+    return lowest, middle, highest
+
+
+def report_emul2_advisory(label, chi2, frozen_ref, exact_ref, limit):
+    """Print one EMUL2 accuracy check: measurements and a recommendation.
+
+    There is no pass/fail here. An emulator is an approximation, so
+    the useful outputs are the numbers themselves: the change against
+    the frozen emulator reference (nonzero: the installed emulator no
+    longer reproduces the chi2 it gave at freeze time),
+    the difference against the exact-physics chi2 at the same
+    cosmology (how accurate the emulator is), and the recommendation
+    derived from that accuracy. Emulated configuration and exact
+    counterpart both evaluate the counterpart's synthetic NLA vector
+    (see load_frozen_info), and the exact reference is 0.000000 there
+    by construction, so |emulator - exact| is the emulator error at
+    the same data and nothing else.
+
+    Arguments:
+      label      = one line naming the emulated configuration.
+      chi2       = the emulator chi2 computed in this run.
+      frozen_ref = the frozen emulator reference chi2.
+      exact_ref  = the exact-physics reference chi2 (from the matching
+                   example's frozen reference).
+      limit      = the recommendation threshold on |chi2 - exact_ref|.
+
+    Returns:
+      |chi2 - exact_ref|, the accuracy difference the recommendation
+      is based on.
+    """
+    drift = chi2 - frozen_ref
+    delta_exact = abs(chi2 - exact_ref)
+    if delta_exact < limit:
+        verdict = "RECOMMENDED for actual data analysis"
+    else:
+        verdict = ("NOT recommended for actual data analysis "
+                   f"(|delta chi2| >= {limit})")
+    # one multi-line f-string; the drift prints at :+.6f (fixed six
+    # decimals, sign always shown)
+    print(f"""
+{'-' * 66}
+EMUL2 ADVISORY: {label}
+  chi2 (this run, emulator)   = {chi2:.6f}
+  frozen emulator reference   = {frozen_ref:.6f}  (drift {drift:+.6f})
+  exact-physics reference     = {exact_ref:.6f}
+  |emulator - exact| chi2     = {delta_exact:.6f}   (threshold: {limit})
+  -> {verdict}
+{'-' * 66}""", flush=True)
+    return delta_exact
+
+
+def report_emul2_race(label, fresh, tenth):
+    """Print one EMUL2 race check, advisory only.
+
+    Arguments:
+      label = one line naming the emulated configuration.
+      fresh = chi2 of the point evaluated first on the model.
+      tenth = chi2 of the same point as the 10th of a row.
+
+    Returns:
+      |tenth - fresh|, the printed difference. A value above
+      RACE_TOLERANCE is flagged as a possible race or state leak, but
+      nothing fails: the emulator checks only alert.
+    """
+    delta = abs(tenth - fresh)
+    # the a-if-else expression picks the note from the comparison
+    note = ("consistent" if delta < RACE_TOLERANCE
+            else "WARNING: possible race condition or state leak")
+    print(f"""
+{'-' * 66}
+EMUL2 ADVISORY: {label}
+  fresh-model chi2    = {fresh:.8f}
+  10th of 10 in a row = {tenth:.8f}
+  |delta chi2|        = {delta:.8f}   ({note})
+  OMP_NUM_THREADS     = {os.environ.get('OMP_NUM_THREADS')}
+{'-' * 66}""", flush=True)
+    return delta
 
 
 def report_nonlinear_comparison(label, dchi2s):
@@ -1329,7 +1622,8 @@ class CocoaTestHarness:
         return module
 
     def load_frozen_info(self, example, tatt, high_accuracy=False,
-                         overrides=None, baryon=None):
+                         overrides=None, baryon=None, fastpt=False,
+                         fastpt_extra_args=None):
         """Build the cobaya input dictionary for one frozen configuration.
 
         Starts from the frozen module's yaml string and applies the
@@ -1366,6 +1660,14 @@ class CocoaTestHarness:
                     likelihood's external_baryon_suppression switch
                     is turned on, and the method's parameter point
                     enters the params block as fixed values.
+          fastpt  = True computes the TATT terms with the python
+                    FAST-PT package (IA_code: 1) instead of the C
+                    cfastpt, adding the fastpt theory block the
+                    computation requires. IA_code only matters under
+                    TATT, so fastpt=True is combined with tatt=True.
+          fastpt_extra_args = the fastpt block's settings table; None
+                    selects FASTPT_FROZEN_SETTINGS, the configuration
+                    the frozen FAST-PT references were computed with.
 
         Returns:
           the input dictionary ready for cobaya's get_model.
@@ -1439,7 +1741,13 @@ class CocoaTestHarness:
             exact_module = self._frozen_module(cfg["exact_example"])
             exact_info = yaml_load(exact_module.yaml_string)
             exact_block = exact_info["likelihood"][exact_cfg["likelihood"]]
-            likelihood_block["ggl_exclude"] = exact_block["ggl_exclude"]
+            # a cosmic-shear counterpart has no galaxy-galaxy lensing
+            # part and therefore no ggl_exclude key; without the key
+            # both configurations already use the default layout, so
+            # there is nothing to copy
+            if "ggl_exclude" in exact_block:
+                likelihood_block["ggl_exclude"] = (
+                    exact_block["ggl_exclude"])
         if high_accuracy:
             # dict.update merges the pushed settings into the block
             # in place, overwriting any key both sides carry
@@ -1472,6 +1780,25 @@ class CocoaTestHarness:
                         "configuration")
                 if isinstance(block, dict) and "prior" not in block:
                     block["value"] = value
+        if fastpt:
+            likelihood_block["IA_code"] = 1
+            # the frozen configurations carry no fastpt block (the
+            # live examples ship it commented out), so it is added
+            # here with the same path the examples use. setdefault
+            # hands back the existing "theory" dictionary, or first
+            # inserts the empty {} and hands that back, so the
+            # assignment lands inside info either way
+            info.setdefault("theory", {})["fastpt"] = {
+                "path": "./external_modules/code/FAST-PT",
+            }
+            if fastpt_extra_args is None:
+                # the frozen references were computed on one shared
+                # grid; FASTPT_FROZEN_SETTINGS reproduces it (see its
+                # comment)
+                fastpt_extra_args = FASTPT_FROZEN_SETTINGS
+            # dict(...) copies, so a caller's settings table is never
+            # shared with (or mutated through) the built model
+            info["theory"]["fastpt"]["extra_args"] = dict(fastpt_extra_args)
         if baryon is not None:
             _, theory_options, baryon_point = _baryon_method(baryon)
             # the likelihood requests the suppression product only
@@ -1566,7 +1893,7 @@ class CocoaTestHarness:
 
     def _single_model_chi2_impl(self, example, tatt,
                                 high_accuracy=False, knob=None,
-                                baryon=None):
+                                baryon=None, fastpt=False):
         """Evaluate single_model_chi2's quantity in-process (worker side).
 
         Runs inside the worker subprocess only: building a model
@@ -1601,6 +1928,8 @@ class CocoaTestHarness:
         # `"TATT" if tatt else "NLA"` picks the first name when tatt
         # is True, the second otherwise
         ia_label = "TATT" if tatt else "NLA"
+        if fastpt:
+            ia_label += "+FASTPT"
         if high_accuracy:
             ia_label += ", high accuracy"
         overrides = None
@@ -1623,7 +1952,8 @@ class CocoaTestHarness:
         # CAMB and the cosmolike interface)
         info = self.load_frozen_info(example, tatt,
                                      high_accuracy=high_accuracy,
-                                     overrides=overrides, baryon=baryon)
+                                     overrides=overrides, baryon=baryon,
+                                     fastpt=fastpt)
         model = make_model(info)
         # build_point returns the frozen evaluation point after
         # checking that the point and the model name the same
@@ -1913,12 +2243,438 @@ class CocoaTestHarness:
         return float(evaluate_chi2(model, point))
 
     # ---- worker-subprocess isolation ----------------------------------------
+    # ---- the N-random-models check -------------------------------------------
+    def draw_uniform_point(self, info, example, rng):
+        """Draw one random sampled-parameter point across the priors.
+
+        Every freely varied parameter with a uniform box prior (a
+        `prior` block with `min` and `max`) is drawn uniformly across
+        its box, which is a draw from the prior. Two kinds of sampled
+        parameters are not drawn and keep their frozen point value
+        instead: those whose prior is a Gaussian rather than a box
+        (`dist: norm`, no min/max; typically the photo-z shifts and
+        the shear calibrations), and any parameter without a prior
+        block at all. Keeping their frozen values leaves the draw well
+        inside those Gaussian priors while the box-prior parameters
+        explore the full volume.
+
+        Arguments:
+          info    = the cobaya input dictionary of the frozen
+                    configuration (a load_frozen_info result); its
+                    params block holds every parameter's prior.
+          example = a key of the EXAMPLES table; names the frozen
+                    point that fills the parameters no box prior
+                    covers.
+          rng     = a numpy random Generator; the caller seeds it,
+                    which is what makes the draw reproducible.
+
+        Returns:
+          {parameter name: value} with the same names as the frozen
+          point, every box-prior parameter replaced by a uniform draw.
+        """
+        # load_frozen_point returns a copy of the frozen evaluation
+        # point; its keys are exactly the sampled parameters
+        point = self.load_frozen_point(example)
+        drawn = {}
+        # sorted() fixes the order the rng is consumed in: dict order
+        # would also be stable here (the generator writes the point
+        # sorted), but reproducibility must not hang on that detail
+        for name in sorted(point):
+            spec = info["params"][name]
+            prior = spec.get("prior")
+            # `"min" in prior` asks whether the dictionary carries
+            # that key; a prior dict holding min and max is a uniform
+            # box
+            if isinstance(prior, dict) and "min" in prior and "max" in prior:
+                # a uniform box prior: the draw is a prior sample
+                drawn[name] = float(rng.uniform(prior["min"], prior["max"]))
+            else:
+                # Gaussian prior or no prior: keep the frozen value
+                drawn[name] = point[name]
+        return drawn
+
+    def random_model_accuracy(self, example, n_models,
+                              seed=RANDOM_MODEL_SEED):
+        """Return delta chi2 at N random prior points, each against its own vector.
+
+        The accuracy checks measure the numerical error of the default
+        settings at one frozen fiducial point. This measures it at
+        n_models random points across the prior instead. Per model m,
+        in order:
+
+          1. draw a point with draw_uniform_point, seeded with
+             seed + m (see RANDOM_MODEL_SEED for why per model);
+          2. generate a synthetic data vector at that point: a
+             default-settings model with print_datavector enabled
+             writes the full-length theory vector during its
+             evaluation. The vector goes into a temporary directory,
+             never into frozen/ (the manifest pins every byte there,
+             so a write into it would fail every later test). Because
+             the default model itself produced the vector, the
+             default-settings chi2 against it is zero by construction;
+          3. write a ".dataset" file (the descriptor) for that vector
+             into the same temporary directory. A ".dataset" file is
+             the small text file a likelihood reads first: one
+             "key = filename" line per ingredient. The one written
+             here is the frozen ".dataset" text with a single change:
+             its data_file line names the new vector. The filenames in
+             it are joined onto the likelihood's `path` option, so the
+             temporary directory must look like a complete data
+             folder: every file of frozen/data is symlinked in;
+          4. evaluate a high-accuracy model at the same point against
+             the new descriptor. Since the vector is exact for the
+             default settings, that chi2 is
+             delta chi2 = chi2(high accuracy) - chi2(default);
+          5. remove the temporary directory, also when a step failed.
+
+        The default and high-accuracy models built here share one
+        example's data-vector dimensions, so building them one after
+        another inside one process is safe.
+
+        One report block per model streams as it finishes
+        (report_random_model), so a long run shows progress; the
+        caller receives the deltas for the finiteness assertion and
+        the summary.
+
+        Arguments:
+          example  = a key of the EXAMPLES table (exact-physics
+                     configurations only).
+          n_models = how many random points to evaluate. Each one
+                     costs a default build+evaluation plus a
+                     high-accuracy build+evaluation, minutes per
+                     model.
+          seed     = base of the per-model rng seeds (seed + m);
+                     RANDOM_MODEL_SEED unless a caller needs a second,
+                     different reproducible set.
+
+        Returns:
+          the list of per-model delta chi2 values (floats), in model
+          order.
+
+        Raises:
+          RuntimeError when print_datavector wrote no file, when the
+          generated vector's line count differs from the frozen data
+          vector's (a masking or probe mismatch: the covariance and
+          the masks would select the wrong entries), or when the
+          frozen descriptor holds more than one data_file line;
+          AssertionError when the drawn point and the model disagree
+          on which parameters are sampled (the likelihood or theory
+          code changed its parameters since the freeze), or when a
+          chi2 comes out non-finite (evaluate_chi2).
+        """
+        import numpy as np
+
+        cfg = self.examples[example]
+        frozen_data_dir = os.path.join(self.frozen_dir, "data")
+        deltas = []
+        for m in range(n_models):
+            rng = np.random.default_rng(seed + m)
+            # the default-settings configuration; its params block
+            # also supplies the prior boxes the draw reads
+            info = self.load_frozen_info(example, tatt=False)
+            likelihood_block = info["likelihood"][cfg["likelihood"]]
+            point = self.draw_uniform_point(info, example, rng)
+            # mkdtemp creates a fresh private directory; this model's
+            # vector, descriptor, and symlinks live and die inside it
+            workdir = tempfile.mkdtemp(prefix="cocoa_random_model_")
+            try:
+                # the likelihood joins path + filename for every file
+                # a descriptor names, so the temporary directory must
+                # look like a complete data folder: symlink each
+                # frozen data file in (a symlink reads as the
+                # original file)
+                for name in sorted(os.listdir(frozen_data_dir)):
+                    os.symlink(os.path.join(frozen_data_dir, name),
+                               os.path.join(workdir, name))
+                # names absent from frozen/data, so writing them can
+                # never follow a symlink back into the pinned folder
+                vector_name = f"random_model_{m}.modelvector"
+                descriptor_name = f"random_model_{m}.dataset"
+                vector_path = os.path.join(workdir, vector_name)
+                # step 2: the evaluation of the default model at the
+                # drawn point is what makes cosmolike write the theory
+                # vector; the chi2 of that evaluation (against the
+                # frozen data vector) plays no role
+                likelihood_block["print_datavector"] = True
+                likelihood_block["print_datavector_file"] = vector_path
+                print(f"  model {m + 1}/{n_models}: building the "
+                      "default-settings model ...", flush=True)
+                model = make_model(info)
+                # Before evaluating, confirm the drawn point and the
+                # model agree on which parameters are sampled. The
+                # point's names come from the frozen configuration;
+                # the model was just built from today's code. If the
+                # code gained or lost a sampled parameter since the
+                # freeze, evaluating would either fail with a cryptic
+                # cobaya error or silently fill the new parameter with
+                # a default value, so the mismatch is reported by name
+                # instead (build_point makes this same check for the
+                # frozen-point tests).
+                sampled = set(model.parameterization.sampled_params())
+                if sampled != set(point):
+                    raise AssertionError(
+                        "sampled-parameter set differs from the frozen "
+                        "point (the likelihood/theory code changed its "
+                        "parameters):\n"
+                        f"  new since freeze: {sorted(sampled - set(point))}\n"
+                        f"  gone since freeze: {sorted(set(point) - sampled)}"
+                    )
+                print(f"  model {m + 1}/{n_models}: evaluating the "
+                      "drawn point (writes the synthetic vector) ...",
+                      flush=True)
+                evaluate_chi2(model, point)
+                if not os.path.isfile(vector_path):
+                    raise RuntimeError(
+                        f"print_datavector wrote no file at "
+                        f"{vector_path}; the likelihood accepted "
+                        "print_datavector_file but produced nothing "
+                        "(did its path handling change?)")
+                # the generated vector must be full length: the frozen
+                # descriptor names the original vector, and that
+                # file's line count is the definition of full length
+                with open(vector_path) as f:
+                    # sum(1 for _ in f) walks the file line by line
+                    # and adds 1 per line: a line count that never
+                    # loads the whole file into memory (_ is the
+                    # throwaway name for the line itself)
+                    generated_lines = sum(1 for _ in f)
+                with open(os.path.join(frozen_data_dir,
+                                       likelihood_block["data_file"])) as f:
+                    # .read() with no size returns the whole file as
+                    # one string (the descriptors are small text
+                    # files)
+                    descriptor = f.read()
+                original_vector = None
+                # splitlines() cuts the text into a list of lines
+                # with the newline characters removed
+                for line in descriptor.splitlines():
+                    if line.strip().startswith("data_file"):
+                        # split("=", 1) cuts at the first "=" only, so
+                        # a value containing "=" survives whole; [1]
+                        # is the part after the cut, and strip() drops
+                        # the blanks around it
+                        original_vector = line.split("=", 1)[1].strip()
+                with open(os.path.join(frozen_data_dir,
+                                       original_vector)) as f:
+                    # the same load-nothing line count as above
+                    original_lines = sum(1 for _ in f)
+                if generated_lines != original_lines:
+                    raise RuntimeError(
+                        f"model {m}: generated vector has "
+                        f"{generated_lines} lines; the original "
+                        f"{original_vector} has {original_lines}")
+                # step 3: write the ".dataset" file for the synthetic
+                # vector: the frozen ".dataset" text, unchanged except
+                # for one line, so the likelihood reads the same
+                # covariance, n(z), and masks but fits the vector from
+                # step 2 instead of the shipped measurement
+                replaced = 0
+                out_lines = []
+                # keepends=True leaves the newline on the end of
+                # every line, so joining the pieces rebuilds the file
+                # byte for byte and only the retyped line differs
+                for line in descriptor.splitlines(keepends=True):
+                    if line.strip().startswith("data_file"):
+                        out_lines.append(f"data_file = {vector_name}\n")
+                        replaced += 1
+                    else:
+                        out_lines.append(line)
+                if replaced != 1:
+                    raise RuntimeError(
+                        f"{likelihood_block['data_file']}: expected "
+                        f"exactly one data_file line, found {replaced}")
+                with open(os.path.join(workdir, descriptor_name),
+                          "w") as f:
+                    # "".join(out_lines) glues the list into one
+                    # string with nothing between the pieces; each
+                    # piece still ends in its own newline
+                    f.write("".join(out_lines))
+                # step 4: the high-accuracy model reads the temporary
+                # directory as its data folder and the new descriptor
+                # as its dataset; at the same point its chi2 is the
+                # delta
+                info_high = self.load_frozen_info(example, tatt=False,
+                                                  high_accuracy=True)
+                block_high = info_high["likelihood"][cfg["likelihood"]]
+                block_high["path"] = workdir
+                block_high["data_file"] = descriptor_name
+                print(f"  model {m + 1}/{n_models}: building the "
+                      "high-accuracy model ...", flush=True)
+                model_high = make_model(info_high)
+                print(f"  model {m + 1}/{n_models}: evaluating the "
+                      "same point at high accuracy ...", flush=True)
+                chi2_high = evaluate_chi2(model_high, point)
+            finally:
+                # a finally block runs on every exit from the try:
+                # after success and while an exception is on its way
+                # out alike, so no failure mode leaves the directory
+                # behind to pile up across runs
+                shutil.rmtree(workdir, ignore_errors=True)
+            report_random_model(m, n_models, point, chi2_high)
+            deltas.append(chi2_high)
+        return deltas
+
+    # ---- the EE2 modification test --------------------------------------------
+    def _ee2_comparison_block(self, example, label, vectors_dir,
+                              reference_label, original_site=None):
+        """Run the ten-cosmology sweep on one EE2 build (the pin's worker).
+
+        The same construction as the Halofit-vs-EE2 blocks: the frozen
+        NLA configuration with non_linear_emul: 1, evaluated at every
+        NONLINEAR_COMPARISON_POINTS entry with the printed data vector
+        per cosmology; a block given a reference_label reports the
+        per-cosmology delta^T C^-1 delta against the reference block's
+        vectors (the reference is the installed, modified EE2, so its
+        own chi2 against itself is zero by construction). The worker
+        asserts which euclidemu2 binary it imported, so a path mistake
+        cannot silently compare a build against itself. Unlike the
+        other workers, the child program here is written out in full
+        (it does not call a block function of the shim).
+
+        Arguments:
+          example = a key of the EXAMPLES table (the cosmic-shear NLA
+                    entry).
+          label   = the file-name tag of this block's printed vectors
+                    ("cocoa", "original").
+          vectors_dir = the directory the per-cosmology vectors are
+                    printed into, shared by the two blocks.
+          reference_label = None to only print vectors, or the label
+                    of the block to measure against.
+          original_site = None for the installed build, or the
+                    site-packages path of the original build (the
+                    worker then expects euclidemu2 to resolve there;
+                    the caller prepends it to the child's PYTHONPATH
+                    and the shim is applied).
+
+        Returns:
+          {"dchi2_vs_reference": per-cosmology list or None}.
+        """
+        import subprocess
+        import sys
+
+        workdir = tempfile.mkdtemp(prefix="cocoa_ee2_check_")
+        out_path = os.path.join(workdir, "result.json")
+        # expect = a path fragment the child's euclidemu2 file must
+        # contain: the original build's site-packages, or .local
+        # (where Cocoa installs the modified EE2); shim = the
+        # EE2_ORIGINAL_SHIM text, pasted into the child program for
+        # the original build only
+        expect = original_site if original_site else ".local"
+        shim = EE2_ORIGINAL_SHIM if original_site else ""
+        child_code = (
+            "import os\n"
+            f"os.environ['OMP_NUM_THREADS'] = {REQUIRED_OMP_THREADS!r}\n"
+            "import json\n"
+            "import sys\n"
+            f"sys.path.insert(0, {self.tests_dir!r})\n"
+            "import euclidemu2\n"
+            f"assert {expect!r} in euclidemu2.__file__, euclidemu2.__file__\n"
+            "print('  euclidemu2 =', euclidemu2.__file__, flush=True)\n"
+            f"{shim}\n"
+            "import numpy as np\n"
+            "import cocoa_test_utils as u\n"
+            "u.require_cocoa_environment()\n"
+            f"info = u.load_frozen_info({example!r}, tatt=False)\n"
+            f"lb = info['likelihood'][u.EXAMPLES[{example!r}]['likelihood']]\n"
+            "lb['non_linear_emul'] = 1\n"
+            f"cur = os.path.join({vectors_dir!r}, {label!r}"
+            " + '_cur.modelvector')\n"
+            "lb['print_datavector'] = True\n"
+            "lb['print_datavector_file'] = cur\n"
+            "model = u.make_model(info)\n"
+            f"base = u.build_point(model, {example!r}, tatt=False)\n"
+            "for i, cosmo in enumerate(u.NONLINEAR_COMPARISON_POINTS, 1):\n"
+            # _evaluate_cached: only the printed data vector matters
+            # here, and the ten points share everything but the
+            # cosmology, so cobaya may reuse unchanged components
+            "    u._evaluate_cached(model, dict(base, **cosmo))\n"
+            "    assert os.path.isfile(cur), 'no vector printed'\n"
+            f"    os.replace(cur, os.path.join({vectors_dir!r},\n"
+            f"        {label!r} + '_pt%02d.modelvector' % i))\n"
+            f"    print('  ' + {label!r} + ' cosmology %2d/10' % i,\n"
+            "          flush=True)\n"
+            "result = {}\n"
+            f"ref = {reference_label!r}\n"
+            "if ref is not None:\n"
+            f"    import {self.interface_module} as ci\n"
+            "    icov = np.array(ci.get_inv_cov_masked())\n"
+            "    dchi2s = []\n"
+            "    for i in range(1, 11):\n"
+            f"        own = u._load_datavector(os.path.join({vectors_dir!r},\n"
+            f"            {label!r} + '_pt%02d.modelvector' % i))\n"
+            f"        rv = u._load_datavector(os.path.join({vectors_dir!r},\n"
+            "            ref + '_pt%02d.modelvector' % i))\n"
+            "        assert own.shape == rv.shape == (icov.shape[0],)\n"
+            "        d = own - rv\n"
+            "        dchi2s.append(float(d @ icov @ d))\n"
+            "    result['dchi2_vs_reference'] = dchi2s\n"
+            f"with open({out_path!r}, 'w') as f:\n"
+            "    json.dump(result, f)\n"
+        )
+        # the child's environment is a copy of this one; for the
+        # original build its site-packages goes first on PYTHONPATH,
+        # so the child's `import euclidemu2` finds the original before
+        # the installed one
+        env = dict(os.environ)
+        if original_site:
+            env["PYTHONPATH"] = (original_site + os.pathsep
+                                 + env.get("PYTHONPATH", ""))
+        try:
+            subprocess.run([sys.executable, "-c", child_code],
+                           check=True, env=env)
+            with open(out_path) as f:
+                return json.load(f)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    def ee2_original_vs_cocoa_dchi2s(self, example):
+        """Return the per-cosmology differences of the two EE2 builds.
+
+        Builds the pre-modification EE2 into a temporary prefix
+        (build_original_ee2), then runs the two blocks: the installed,
+        modified EE2 prints the reference vectors, and the original
+        (through the compatibility shim) is measured against them at
+        the ten shared cosmologies. Everything temporary dies with
+        this call; the installed environment is never touched
+        (--ignore-installed protects .local).
+
+        Arguments:
+          example = a key of the EXAMPLES table (the cosmic-shear NLA
+                    entry).
+
+        Returns:
+          the per-cosmology delta^T C^-1 delta list, index-aligned
+          with NONLINEAR_COMPARISON_POINTS.
+
+        Raises:
+          RuntimeError from build_original_ee2 when the original
+          commit is unavailable locally (the test turns this into a
+          skip).
+        """
+        prefix_dir = tempfile.mkdtemp(prefix="cocoa_ee2_original_")
+        vectors_dir = tempfile.mkdtemp(prefix="cocoa_ee2_vectors_")
+        try:
+            print("  building the pre-modification EE2 "
+                  f"({EE2_ORIGINAL_COMMIT[:7]}) ...", flush=True)
+            original_site = build_original_ee2(prefix_dir)
+            self._ee2_comparison_block(example, "cocoa", vectors_dir,
+                                       None)
+            original = self._ee2_comparison_block(
+                example, "original", vectors_dir, "cocoa",
+                original_site=original_site)
+        finally:
+            shutil.rmtree(vectors_dir, ignore_errors=True)
+            shutil.rmtree(prefix_dir, ignore_errors=True)
+        return original["dchi2_vs_reference"]
+
     def _worker(self, function, example, tatt, high_accuracy, knob,
                 baryon, result_path):
         """Worker-side entry: run one evaluation and save the numbers.
 
         Arguments:
-          function      = "single" (one chi2); "race" or "race_ee2"
+          function      = "single" or "single_fastpt" (one chi2;
+                          the second computes the TATT terms with
+                          python FAST-PT); "race" or "race_ee2"
                           (fresh, tenth; "race_ee2" takes the
                           nonlinear P(k) from EuclidEmulator2);
                           "bdelta" or "bdrift" (the baryon checks).
@@ -1950,13 +2706,15 @@ class CocoaTestHarness:
         # booleans
         tatt = tatt == "1"
         high_accuracy = high_accuracy == "1"
-        if function == "single":
+        if function in ("single", "single_fastpt"):
             # `knob or None` turns the empty string (no knob) into
             # None: `or` hands back its second operand when the first
-            # is empty
+            # is empty. The fastpt flag rides in the function name
+            # (the race_ee2 pattern) so the argv stays unchanged.
             value = self._single_model_chi2_impl(
                 example, tatt, high_accuracy=high_accuracy,
-                knob=knob or None, baryon=baryon or None)
+                knob=knob or None, baryon=baryon or None,
+                fastpt=(function == "single_fastpt"))
         elif function == "bdelta":
             value = self._baryon_accuracy_delta_impl(baryon,
                                                      knob=knob or None)
@@ -2053,7 +2811,7 @@ class CocoaTestHarness:
 
     # ---- test quantities ----------------------------------------------------
     def single_model_chi2(self, example, tatt, high_accuracy=False,
-                          knob=None, baryon=None):
+                          knob=None, baryon=None, fastpt=False):
         """Evaluate the chi2 of the frozen fiducial point in a fresh worker.
 
         This is the quantity the reference tests compare against the
@@ -2072,6 +2830,10 @@ class CocoaTestHarness:
                     knob's overrides alone (the one-at-a-time scan of
                     test_accuracy.py).
           baryon  = None, or a BARYON_METHODS label.
+          fastpt  = True computes the TATT terms with the python
+                    FAST-PT package at FASTPT_FROZEN_SETTINGS (the
+                    frozen FAST-PT reference checks; see
+                    load_frozen_info).
 
         Returns:
           the chi2 as a float, or None when a baryon method rejected
@@ -2087,10 +2849,12 @@ class CocoaTestHarness:
         if os.environ.get(_WORKER_FLAG) == "1":
             return self._single_model_chi2_impl(
                 example, tatt, high_accuracy=high_accuracy, knob=knob,
-                baryon=baryon)
-        value = self._run_isolated("single", example, tatt,
-                                   high_accuracy=high_accuracy,
-                                   knob=knob, baryon=baryon)
+                baryon=baryon, fastpt=fastpt)
+        # the fastpt flag travels in the worker function name (the
+        # race_ee2 pattern), so the worker argv stays unchanged
+        value = self._run_isolated(
+            "single_fastpt" if fastpt else "single", example, tatt,
+            high_accuracy=high_accuracy, knob=knob, baryon=baryon)
         # a None from the worker means a baryon method rejected the
         # frozen fiducial (see _single_model_chi2_impl); it travels
         # as json null
