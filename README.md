@@ -654,7 +654,8 @@ Cocoa pins a modified EuclidEmulator2 (OpenMP threading, a
 1,010-redshift capacity, the `get_boost2` API with a pre-built
 emulator, memory-leak fixes, and a bilinear interpolation with a
 border fix; see `external_modules/code/euclidemu2/README.md`). The
-physics test compiles the pre-modification build at test time into a
+physics test compiles the pre-modification build (commit `ff59f66`)
+at test time into a
 temporary prefix from the local clone (offline; `.local` untouched)
 and evaluates both builds at the ten shared cosmologies: the
 per-cosmology delta chi2 of the original against the modified build
