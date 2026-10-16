@@ -25,6 +25,191 @@ factories' docstrings describe what runs, not why.
 import unittest
 
 
+def _chi2_method(u, example, number, label, tatt):
+    """Build one chi2-vs-frozen-reference test method.
+
+    Arguments:
+      u       = the project's cocoa_test_utils module.
+      example = the key of u.EXAMPLES the method evaluates.
+      number  = the test number as a string, possibly x-prefixed; the
+                prefix stays in the method name and drops out of the
+                printed report.
+      label   = the opening of the printed report line, up to the IA
+                model, e.g. "example1 (cosmic shear".
+      tatt    = True for the TATT variant of the frozen point.
+
+    Returns:
+      the test method, named and documented; example_suite installs
+      it on the class it builds.
+    """
+    ia_key = "tatt" if tatt else "nla"
+    ia_label = "TATT" if tatt else "NLA"
+
+    def test(self):
+        chi2 = u.single_model_chi2(example, tatt=tatt)
+        # reference_chi2.json names each entry <example>_<IA model>
+        ref = self.reference[f"{example}_{ia_key}"]
+        # report_chi2_test prints chi2, the reference, their
+        # difference and the limit; it never asserts (the assertion
+        # follows)
+        u.report_chi2_test(
+            int(number.lstrip("x")),
+            f"{label}, {ia_label}) chi2 vs frozen reference",
+            chi2, ref, u.CHI2_TOLERANCE)
+        # assertLess(a, b) passes when a < b and fails with msg
+        # otherwise; in that message, :.6f prints fixed six decimals
+        self.assertLess(
+            abs(chi2 - ref), u.CHI2_TOLERANCE,
+            msg=f"chi2 = {chi2:.6f} vs frozen reference {ref:.6f} "
+                f"(|delta| >= {u.CHI2_TOLERANCE})")
+
+    # the method name carries the test number; pytest and unittest
+    # find the method under this name on the built class
+    test.__name__ = (f"test_{number}_chi2_matches_frozen_reference"
+                     + ("_tatt" if tatt else ""))
+    if tatt:
+        test.__doc__ = (
+            "The chi2 check repeated with the TATT IA model.\n\n"
+            "        TATT replaces the NLA point's zero second-order\n"
+            "        amplitudes with the nonzero values of TATT_POINT,\n"
+            "        so the frozen TATT reference genuinely exercises\n"
+            "        the tidal second-order terms.\n        ")
+    else:
+        test.__doc__ = (
+            "chi2 at the frozen NLA point stays within 0.2 of the "
+            "reference.\n\n"
+            "        u.single_model_chi2 starts one worker, which\n"
+            "        builds the cobaya model (CAMB plus the\n"
+            "        likelihood) from the frozen configuration, checks\n"
+            "        that the frozen point names exactly the\n"
+            "        parameters the model samples, and returns\n"
+            "        chi2 = -2 ln L at that point. The pass limit\n"
+            "        CHI2_TOLERANCE = 0.2 is the project's bound for\n"
+            "        every frozen chi2: compiler and library-version\n"
+            "        noise stays below it, and no physics change is\n"
+            "        detectable below a chi2 shift of 0.2, so a\n"
+            "        failure means the code or the frozen inputs\n"
+            "        changed the prediction.\n        ")
+    return test
+
+
+def _race_method(u, example, number, label, tatt):
+    """Build one ten-in-a-row race-check test method.
+
+    Arguments: as in _chi2_method.
+
+    Returns:
+      the test method, named and documented; example_suite installs
+      it on the class it builds.
+    """
+    ia_label = "TATT" if tatt else "NLA"
+
+    def test(self):
+        # with one thread no race can occur: a process that did not
+        # get the 4 threads set at the top of the test file stops here
+        u.assert_omp_threads()
+        # the function returns a (fresh, tenth) pair; the assignment
+        # unpacks it into the two names
+        fresh, tenth = u.ten_in_a_row_chi2(example, tatt=tatt)
+        u.report_race_test(
+            int(number.lstrip("x")),
+            f"{label}, {ia_label}) race check: "
+            "10 cosmologies in a row",
+            fresh, tenth, u.RACE_TOLERANCE)
+        self.assertLess(
+            abs(tenth - fresh), u.RACE_TOLERANCE,
+            msg=f"10th-in-a-row chi2 = {tenth:.8f} vs fresh "
+                f"{fresh:.8f}")
+
+    test.__name__ = (f"test_{number}_no_race_condition_ten_in_a_row"
+                     + ("_tatt" if tatt else ""))
+    if tatt:
+        test.__doc__ = ("The race check repeated with the TATT IA "
+                        "model.\n        ")
+    else:
+        test.__doc__ = (
+            "The fiducial as 10th of 10 cosmologies matches a fresh "
+            "run.\n\n"
+            "        u.ten_in_a_row_chi2 starts one worker that\n"
+            "        builds one model and evaluates on it, in order:\n"
+            "        the frozen fiducial point (the fresh value), the\n"
+            "        nine cosmologies of RACE_PERTURBATIONS, and the\n"
+            "        fiducial again, the 10th point of the row.\n"
+            "        Correct code gives the same chi2 both times. A\n"
+            "        table kept from an earlier cosmology (leaked\n"
+            "        state) or two OpenMP threads writing the same\n"
+            "        memory (a race) shift the second value.\n"
+            "        RACE_TOLERANCE = 1e-4: both values come from the\n"
+            "        same code on the same inputs, so only\n"
+            "        floating-point noise is allowed, while leaked\n"
+            "        state shifts the chi2 by much more.\n        ")
+    return test
+
+
+def example_suite(u, name, example, label, numbers, tatt_numbers=None):
+    """Build one frozen-example test class (chi2 + race, maybe TATT).
+
+    Arguments:
+      u            = the project's cocoa_test_utils module.
+      name         = the class name to build; the caller assigns the
+                     class to this same module-level name, which is
+                     what pytest collects, so the test ids do not
+                     change.
+      example      = the key of u.EXAMPLES the class evaluates.
+      label        = the opening of every printed report line, up to
+                     the IA model, e.g. "example1 (cosmic shear".
+      numbers      = the (chi2 test, race test) numbers as strings,
+                     e.g. ("1", "2") or ("x11", "x12"); an x prefix
+                     only keeps unittest's alphabetical ordering
+                     aligned with the numbering (test_11 would sort
+                     before test_2) and drops out of the printed
+                     reports.
+      tatt_numbers = the same pair for the TATT variants, or None for
+                     a configuration without them (the cluster
+                     combinations use no TATT variant).
+
+    Returns:
+      a unittest.TestCase subclass named `name`.
+    """
+    # each helper returns a ready method; the dict keys must equal
+    # the methods' own __name__ for unittest to find and run them
+    methods = [
+        _chi2_method(u, example, numbers[0], label, tatt=False),
+        _race_method(u, example, numbers[1], label, tatt=False),
+    ]
+    if tatt_numbers is not None:
+        methods.append(_chi2_method(u, example, tatt_numbers[0],
+                                    label, tatt=True))
+        methods.append(_race_method(u, example, tatt_numbers[1],
+                                    label, tatt=True))
+
+    @classmethod
+    def setUpClass(cls):
+        """Move to ROOTDIR, verify the frozen state, load the references."""
+        u.require_cocoa_environment()
+        u.verify_frozen()
+        cls.reference = u.load_reference()
+
+    # the class docstring names the test-number range; int(...) of
+    # the x-stripped strings recovers the printed numbers
+    spanned = [int(n.lstrip("x"))
+               for n in tuple(numbers) + tuple(tatt_numbers or ())]
+    doc = f"""Tests {min(spanned)}-{max(spanned)}, sharing one frozen-state verification.
+
+    setUpClass runs once before the tests: it moves to ROOTDIR,
+    verifies every frozen file against the SHA-256 manifest (an edited
+    frozen state must fail loudly before any physics runs), and loads
+    the frozen reference chi2 values.
+    """
+
+    # type(name, bases, namespace) builds the class exactly as a
+    # class statement would, with the name chosen at run time
+    namespace = {"__doc__": doc, "setUpClass": setUpClass}
+    for method in methods:
+        namespace[method.__name__] = method
+    return type(name, (unittest.TestCase,), namespace)
+
+
 def baryon_accuracy_suite(u):
     """Build the BF0-BF7 baryonic-feedback accuracy class for a project.
 
