@@ -32,10 +32,9 @@ supplies the calculations that those projects share.
 > quantities for exploration; copying and rearranging their arrays adds
 > overhead. Both routes call the same C kernels.
 >
-> In a matched **LSST Y1 covariance** test on an M2 Pro with eight threads,
-> the CLI averaged **50.23 s** (three runs); one wrapper run took **173.38 s**.
-> The CLI was **3.45× faster**, with bitwise-identical covariance components.
 > Use project CLI entry points as the production performance baseline.
+> The measured wrapper/CLI runtime ratio and its conditions are in
+> [Cocoa's main README](https://github.com/CosmoLike/cocoa#overview).
 
 The principal observables are galaxy clustering, galaxy–galaxy lensing
 and cosmic shear, collectively called **3x2pt**. Galaxy clustering
@@ -469,6 +468,35 @@ references. Their file guide is
 `projects/lsst_y1/tests/covariance/README.md`. No developer-local library
 or external study directory is required.
 
+### The project forecast check <a name="cov_forecast_check"></a>
+
+Every other project's covariance sector runs one shared check,
+[cocoa_covariance_testing.py](cocoa_covariance_testing.py)'s
+`check_project_forecast`, against its own galaxy/shear forecast adapter
+and compiled bindings, using the project's redshift files and catalog
+inputs with small numerical grids and a few measured rows:
+
+| Check | Purpose |
+| --- | --- |
+| Project layout | Verify the full angular and Fourier vector lengths from the measured row map. |
+| Accuracy refinement | Keep measurement bins fixed while increasing quadrature resolution. |
+| Real-space components | Check finite, symmetric G, SSC, cNG and total matrices for a measured subset. |
+| Fourier components | Check the same properties for bandpowers. |
+| Thread repeatability | Compare every component bitwise with one and eight OpenMP threads. |
+| Positive total | Check variance positivity for every direction of the tested subset. |
+| Output archive | Read arrays and resolved survey metadata without pickle. |
+
+The independent algebra and projection references live once, in LSST
+Y1's covariance component suite; the per-project check covers that
+project's binding and inputs and does not duplicate those references.
+Use each project's covariance notebook for full matrices and numerical
+refinement: subset positivity alone does not establish full-matrix
+positivity or parameter-error convergence, and no stored covariance or
+reference value is replaced by the check. With the default
+data-vector-only build the sector reports skips; a skip in a
+deliberately disabled build is expected and is not a successful
+covariance check.
+
 A data-vector-only build reports skips for the optional covariance tests.
 Each project separates `tests/data_vector` from `tests/covariance`.
 [cocoa_testing.py](cocoa_testing.py) supplies the data-vector test machinery;
@@ -476,6 +504,281 @@ project `tests/cocoa_test_utils.py` files supply their configurations.
 [cocoa_covariance_testing.py](cocoa_covariance_testing.py) checks each
 project's galaxy/shear forecast adapter with small measured subsets.
 The independent component references remain in LSST Y1's covariance tests.
+
+## The shared data-vector checks <a name="dv_checks"></a>
+
+Every project runs the same families of data-vector checks from the
+shared machinery; a project README documents only its configurations,
+test numbers, measured values and deviations, and links here for the
+mechanism. Surveys without a family's subject (no baryon block, no
+TATT examples) simply do not instantiate it.
+
+### The test-file naming convention <a name="dv_naming"></a>
+
+A test file's name means the same thing in every project, so a reader
+who knows one suite knows them all:
+
+| file | meaning everywhere |
+|---|---|
+| `test_exampleN.py` | the project's `EXAMPLE_EVALUATEN` configuration: the frozen-reference drift check and the race check, in NLA and in TATT (four tests). In the galaxy surveys `EXAMPLE1` is cosmic shear and `EXAMPLE2` is 3x2pt. |
+| `test_exampleN_2x2pt.py` | the `EXAMPLEN` 3x2pt configuration reduced to galaxy clustering plus galaxy-galaxy lensing: the same four checks |
+| `test_fastpt.py` | the frozen FAST-PT references and the [CFASTPT vs FAST-PT sweep](#dv_fastpt) |
+| `test_nonlinear.py` | the [Halofit vs EuclidEmulator2 checks](#dv_halofit_ee2) |
+| `test_ee2.py` | the [EE2 race check, plus the modification pin where the project carries it](#dv_ee2) |
+| `test_accuracy.py` | the advisory [accuracy scans](#dv_accuracy) and, where shipped, the opt-in [N-random-models check](#dv_nmodels) |
+| `test_accuracy_baryons.py` | the [baryonic-feedback accuracy checks](#dv_baryons) BF0-BF7 |
+| `test_baryons.py` | the [baryonic-feedback drift tests](#dv_baryons) BD1-BD7 |
+| `test_photoz_conventions.py` | the [photo-z convention checks](#dv_photoz) |
+| `test_nonlimber_ggl.py`, `test_nonlimber_gg.py` | the [non-Limber checks](#dv_nonlimber) |
+| `test_cache_consistency.py` | the [sector-ladder cache check](#dv_cache_ladder) |
+| `test_nz_cache_roundtrip.py` | the shared [n(z) selection cache round trips](cocoa_nz_cache_testing.py) |
+| `test_scale_cut_diagnostics.py` | the notebook scale-cut diagnostics, where the project ships them |
+| `test_emul2.py` | the hybrid-emulator advisories, where the project ships trained emulators |
+
+Documented deviations: DES cluster's `EXAMPLE_EVALUATE` configurations
+lead with its cluster flagships, so its `test_example1` and
+`test_example2` cover the 4x2pt + N and 6x2pt + N probes and cosmic
+shear is `test_example3`; DES Y6 consolidates its example checks in
+one `test_examples.py`. A project README states such deviations next
+to its roster.
+
+### Frozen references and the race check <a name="dv_frozen"></a>
+
+The standard configurations get four tests each: a chi2 drift check
+and a race-condition check, in both intrinsic-alignment models.
+
+| check | pass limit | a failure means |
+|-------|------------|-----------------|
+| drift | the recomputed chi2 must stay within 0.2 of the value stored in `frozen/reference_chi2.json` | code or data changed the numbers |
+| race condition | the fiducial evaluated on its own versus evaluated again after nine other cosmologies; the two must agree within 1e-4 | leftover state or an OpenMP race |
+
+Everything the tests compare against lives under the project's
+`frozen/`: one snapshot of configurations, data and reference values,
+captured together when the references were generated and unchanged
+since. The tests read nothing from the live project folders - the
+frozen configuration modules write out every option and every
+parameter, including the ones that normally come from the default
+yaml files, so editing those files cannot change what the tests
+evaluate. A SHA-256 manifest (`tests/manifest_sha256.json`) pins
+every byte of the snapshot; each test verifies it first and refuses
+to run when a file under `frozen/` was edited, added or removed, naming the file.
+Maintainers refresh a snapshot only for a deliberate change, with
+`tests/generate_frozen_reference.py --overwrite` (it deletes and
+rebuilds `frozen/` from the current project and re-pins the
+manifest), reviewing the printed chi2 values before committing them;
+the `_meta` block of `frozen/reference_chi2.json` records when the
+current references were generated. Each project README lists what its
+snapshot holds.
+
+The TATT drift tests compare against synthetic data vectors generated
+at freeze time rather than the shipped survey vector: against the
+shipped vector the TATT chi2 sits away from its minimum, where it
+responds linearly to tiny numerical changes; at its own minimum the
+response is quadratic and the drift bounds stay meaningful. Each
+frozen TATT configuration therefore evaluates against its own
+generated vector, and the reference chi2 is zero by construction.
+
+### The zero-baseline mechanism <a name="dv_zero_baseline"></a>
+
+Several families need a comparison that no stored vector can supply.
+They all use the same construction: the default-settings model writes
+its own theory vector during evaluation, that vector becomes the data
+of a temporary dataset (so the default chi2 against it is zero by
+construction, and nothing new is stored in `frozen/`), and the
+alternative evaluation - pushed accuracy, another implementation,
+another random point - scores against it. The single reported number,
+delta chi2 = chi2(alternative) - 0, is then a pure response to what
+changed, with the full masked inverse covariance as the metric.
+
+### The CFASTPT vs FAST-PT sweep <a name="dv_fastpt"></a>
+
+Cosmolike computes the TATT perturbation-theory integrals with two
+implementations: cfastpt, the C code built into the interface
+(`IA_code: 0`, the reference), and the python FAST-PT package through
+the fastpt theory block (`IA_code: 1`). The sweep evaluates both at 30
+fixed points across the intrinsic-alignment prior (20 drawn across the
+prior plus a one-parameter-at-a-time family), cosmology at the
+fiducial, on each likelihood the project ships. At every point the
+cfastpt data vector is the fiducial, so the reported delta chi2 is
+zero for identical vectors and quadratic in their difference; the pass
+limit is 0.2. A second FAST-PT evaluation at doubled boosts repeats
+the measurement as an advisory, so the residual grid response of the
+defaults shows next to the pass quantity.
+
+The fastpt block computes on two grids: `accuracyboost` multiplies the
+density of the output table cosmolike reads with linear interpolation,
+and `internal_accuracyboost` the density of the internal grid the
+FFTLog convolutions run on, with a cubic spline in log k upsampling
+the terms from one grid onto the other. Both boosts are rebased so 1.0
+is the converged configuration; each project records its own
+convergence evidence.
+
+Two shared pytest options steer the sweep (registered by each
+project's conftest): `--high=1` applies the pushed camb/cosmolike
+settings of the accuracy checks to every sweep block, and `--mask`
+reruns the sweep under another scale-cut mask - each choice is a
+frozen TATT dataset variant differing only in its `mask_file` line,
+with `--mask=ones` keeping every data point (the strictest
+comparison) and the 0.2 pass rule unchanged. Under a non-frozen mask
+the sweep regenerates its baseline: the cfastpt fiducial vector under
+that mask becomes the data vector, keeping the zero baseline.
+
+### Halofit vs EuclidEmulator2 <a name="dv_halofit_ee2"></a>
+
+The likelihood can source the nonlinear matter power from CAMB's
+Takahashi halofit (`non_linear_emul: 2`) or from EuclidEmulator2
+(`non_linear_emul: 1`). The checks evaluate the project's data vectors
+with both sources at ten fixed cosmologies across the omegam/ns/As
+space (every other parameter at the frozen fiducial), reporting per
+cosmology the delta chi2 of the Halofit vector against the EE2 vector;
+the EE2 vector is that cosmology's fiducial, so the baseline is zero
+and no stored data vector enters the metric. The checks are advisory -
+no pass limit: the numbers say how much of the statistical error
+budget the Halofit-versus-emulator difference consumes under the
+chosen scale cuts. The `--mask` option applies.
+
+### The EE2 modification tests <a name="dv_ee2"></a>
+
+Cocoa pins a modified EuclidEmulator2 (OpenMP threading, a
+1,010-redshift capacity, the `get_boost2` API with a pre-built
+emulator, memory-leak fixes, and a bilinear interpolation with a
+border fix; see `external_modules/code/euclidemu2/README.md`). The
+physics test compiles the pre-modification build at test time into a
+temporary prefix from the local clone (offline; `.local` untouched)
+and evaluates both builds at the ten shared cosmologies: the
+per-cosmology delta chi2 of the original against the modified build
+must stay below 0.2. The original lacks `get_boost2` and silently
+overflows beyond 101 redshifts, so its worker carries a compatibility
+adapter that leaves its numerics untouched. A second test is the race
+check with EE2 on, since EE2's compute is OpenMP-threaded.
+
+### Accuracy checks <a name="dv_accuracy"></a>
+
+An advisory family, no pass/fail: each check reports the delta chi2
+between a high-accuracy and a default evaluation - the numerical error
+of the default settings. A first scan changes one accuracy setting at
+a time, so a large delta can be attributed to the setting causing it;
+the remaining checks push every setting at once on each configuration
+the project ships. The settings and what they control:
+
+| setting | what it controls |
+|---------|------------------|
+| `accuracyboost` (cosmolike) | sizes of cosmolike's internal lookup tables, including the dyadic z grid of the power-spectrum tables: every coarser grid's nodes are a subset of every finer grid's, so a higher boost tightens the same interpolation instead of moving the nodes |
+| `integration_accuracy` (cosmolike) | the quadrature level: each integral family selects a fixed Gauss-Legendre rule from its ladder. Since the native-GSL extension the ladders reach 8,192 nodes at level 7, and any higher level (projects push 10) selects the 8,192-node rule |
+| `internal_accuracyboost` (cosmolike) | density of the C-FAST-PT convolution grid relative to the output table the likelihood interpolates; the default 1 keeps the two grids equal (the exact single-grid path) |
+| `lmax` (cosmolike) | highest multipole of the internal harmonic-space tables transformed into the real-space correlation functions; arcminute scales need very high multipoles |
+| `kmax_boltzmann` (cosmolike) | the k cutoff of the power spectrum the likelihood requests from CAMB |
+| `AccuracyBoost` (CAMB) | CAMB's overall accuracy multiplier: denser sampling in every internal CAMB grid, the most expensive setting |
+| `k_per_logint` (CAMB) | k samples CAMB computes per logarithmic interval of the transfer functions |
+| `kmax` (CAMB) | highest k of CAMB's matter power spectrum; one physical cutoff with `kmax_boltzmann`, seen from the CAMB side |
+
+When several settings move the chi2, settle them in cost order: raise
+cosmolike `accuracyboost` first (cheap), then CAMB `k_per_logint`, and
+CAMB `AccuracyBoost` last (expensive at run time, and able to
+masquerade for the cheap settings). `kmax_boltzmann` and CAMB `kmax`
+are one physical cutoff seen from two sides; move them together.
+High-accuracy evaluations take minutes.
+
+Advisory results recorded before the native quadrature extension
+(2026-10-15) pushed `integration_accuracy` into ladders whose largest
+rule was 1,024 nodes; the same pushed level now selects 8,192-node
+rules, so a re-measured delta can differ from a dated record even with
+nothing else changed. Each project's dated measurements state what was
+measured then; re-measure before quoting them as current.
+
+### The N-random-models check (opt-in) <a name="dv_nmodels"></a>
+
+This check repeats the accuracy measurement at N reproducible random
+points drawn across the prior: per point, draw, generate a synthetic
+data vector at that point with the default settings (the zero-baseline
+mechanism), and evaluate the high-accuracy chi2 against it. The draws
+are seeded, so every run draws exactly the same points and the numbers
+compare across reruns and machines. The report streams one block per
+model and ends with the min/median/max delta chi2; advisory, the
+deltas only have to be finite. Each model costs a default and a
+high-accuracy build-plus-evaluation, minutes per model, so the check
+is off by default: with `COCOA_ACCURACY_NMODELS` unset (or 0) it
+prints how to enable itself and passes.
+
+### Baryonic feedback: accuracy and drift <a name="dv_baryons"></a>
+
+Two complementary families cover every feedback method the `bfmt`
+theory block implements (SP(k) through three baryon-fraction
+relations, BCEmu, Flamingo, BACCOemu, and BCemu2025), at a fixed,
+measurable parameter point per method (the points live in the shared
+`BARYON_METHODS` table; for example, the BACCOemu point keeps the
+baryon density inside that emulator's training box, and the
+double-power-law point keeps the baryon fraction inside SP(k)'s
+calibrated band over the full redshift grid).
+
+The accuracy checks regenerate their vector on the fly per run (the
+zero-baseline mechanism) and report the default-versus-pushed delta
+chi2 with feedback on - a pure numerics response that can never see
+drift; a first check also runs the one-setting-at-a-time scan with
+one feedback method on, so a large delta names the setting causing
+it. The drift tests hold a vector frozen at freeze time
+(`generate_frozen_reference.py --baryons`) still, so they measure
+drift and nothing else: a chi2 above the tolerance means cosmolike or
+the `bfmt` block changed its prediction since the freeze.
+
+### Photo-z convention checks <a name="dv_photoz"></a>
+
+The likelihood exposes runtime knobs for how the n(z) table files
+become the smooth distributions the Limber integrals consume, declared
+in the likelihood yamls and defaulting to the historical behavior:
+`photoz_interpolation_type` (0 = cubic spline, 1 = linear, 2+ =
+Steffen monotone, which cannot overshoot below zero around a sharp
+feature) and `photoz_zmid_convention` (0 = the z column holds Z_LOW
+left bin edges, so the tabulated value belongs at the cell center
+z + dz/2; 1 = the column holds Z_MID sample points; the two readings
+differ by a rigid dz/2 shift of every distribution). The test
+evaluates the frozen fiducial under the default, each alternative,
+and the default again in one process, measuring every alternative
+against the default with delta chi2 = delta^T C^-1 delta under the
+masked inverse covariance. The assertions are a dead-flag floor on
+each alternative (a stale n(z) cache would give exactly zero), the
+frozen-reference check on the default, and a bit-identical round trip
+back to the default. The n(z) reconstruction switch has its own
+[shared study](cosmolike_notebook_utils/README.md#nz_study) and a
+routine cache round-trip test
+([cocoa_nz_cache_testing.py](cocoa_nz_cache_testing.py)).
+
+### Non-Limber checks <a name="dv_nonlimber"></a>
+
+The likelihood yaml keys `adopt_limber_gs` and `adopt_limber_gg`
+choose how the galaxy-galaxy lensing and galaxy clustering spectra are
+computed: `0` takes the multipoles below 150 from the exact
+projection, computed with the split of Fang, Krause, Eifler &
+MacCrann (arXiv:1911.11947) - an FFTLog integral of the linear power
+spectrum plus, in Limber, what linear theory misses - and `1` uses
+the Limber approximation at every multipole. Each test evaluates the
+frozen 3x2pt fiducial with the default, the other setting, and the
+default again in one process and reports
+delta chi2 = delta^T C^-1 delta of the non-Limber minus the Limber
+vector, with per-bin (clustering) or per-pair (lensing)
+contributions. The assertions are a dead-flag floor, that only the
+expected sector's entries change, a bit-identical round trip back to
+the default, agreement with the project's recorded measurement to 5%,
+and the frozen-reference check on the default evaluation. The lens
+distributions are narrow, so Limber fails at low multipoles for the
+clustering auto spectra; each project records its measured deltas.
+
+### The sector-ladder cache check <a name="dv_cache_ladder"></a>
+
+cosmolike caches every expensive stage behind its own key, and a
+partial-invalidation bug - one sector's update path leaving a stale
+static another sector consumes - produces wrong data vectors only in
+MIXED update sequences, which the per-point checks never exercise.
+The test walks a deterministic ladder in one process (cosmology-only
+steps, then IA-only, source-photo-z, lens-photo-z and
+shear-calibration steps), evaluating after every step, then scrambles
+every sector at once and returns to the ladder's final point: the
+pipeline must reproduce the recorded data vector and chi2 bit for
+bit, and a second instance walking the mirrored sector order must
+land on the same vector. The shear-calibration steps must equal the
+analytic (1+m_i)(1+m_j) block rescale to 1e-12, a no-op update must
+change nothing, and both intrinsic-alignment models run (the TATT
+ladder exercises the FAST-PT rebuild machinery).
 
 # Appendix <a name="appendix"></a>
 
@@ -748,10 +1051,9 @@ removes the per-shell division of the whole grid by $`f_K`$, which
 existed only to feed the reader.
 
 Measured on 2026-10-08 (Apple M2 Pro, 8 OpenMP threads): the
-per-sample `log10` was 46% of the read; the per-shell internal read
-went from 52–73 ms to 21–25 ms; the LSST Y1 real-space construction
-went from 53.4 s to 32.3 s, and the DES cluster joint construction
-from 100.9 s to 70.1 s.
+per-sample `log10` was 46% of the read. The before/after construction-time
+ratios were **1.65** for LSST Y1 real space and **1.44** for the DES cluster
+joint covariance. These ratios describe the measured configurations.
 
 The shifted sum is not bitwise the logarithm of the quotient:
 $`\log_{10}(m) - \log_{10}(f_K)`$ and $`\log_{10}(m/f_K)`$ differ in
