@@ -3,7 +3,8 @@
 
 clusterparams cluster =
 {
-  .zdist_table = NULL
+  .zdist_table = NULL,
+  .area_table = NULL
 };
 
 // ============================================================================
@@ -25,6 +26,7 @@ void reset_cluster_struct(void)
   cluster.random_mor = 0;
   cluster.random_selection = 0;
   cluster.random_pairs = 0;
+  cluster.random_area = 0;
 
   cluster.mor_model = CLUSTER_MOR_LOGNORMAL;
   cluster.kernel_mode = CLUSTER_KERNEL_VOLUME;
@@ -51,6 +53,12 @@ void reset_cluster_struct(void)
   }
   cluster.zdist_zall[RANGE_MIN] = 0.0;
   cluster.zdist_zall[RANGE_MAX] = 0.0;
+
+  cluster.area_nz = 0;
+  if (cluster.area_table != NULL) {
+    free(cluster.area_table);
+    cluster.area_table = NULL;
+  }
 
   cluster.cs_npowerspectra = 0;
   cluster.cg_npowerspectra = 0;

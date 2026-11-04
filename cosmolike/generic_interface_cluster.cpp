@@ -640,6 +640,116 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
 
 
 // ---------------------------------------------------------------------------
+// Install the survey area of the cluster sample as a function of redshift,
+// or remove it.
+//
+// input_table: column 0 = z, column 1 = area in deg^2, one row per z. A
+// table with zero rows removes the current one, and the counts return to
+// the constant survey.area (init_survey_parameters) at every z: the
+// forecast setting. With a table, N_cluster_tomo integrates area(z), read
+// by linear interpolation, and stops if a counts node falls outside the
+// table (no extrapolation).
+//
+// Cache invalidation: draws cluster.random_area when the table changed
+// (fdiff) or was removed; N_cluster_tomo refills its counts.
+//
+// Validation: two columns, at least two rows, strictly increasing z >= 0,
+// finite areas in [0, 41253] deg^2 (the full sky) with a positive maximum.
+// ---------------------------------------------------------------------------
+void set_cluster_area(matrix input_table)
+{
+  static constexpr std::string_view fname = "set_cluster_area"sv;
+  debug("{}: {}", fname, errbegins);
+
+  const int nz = static_cast<int>(input_table.n_rows);
+
+  // --- 1. AN EMPTY TABLE REMOVES THE CURRENT ONE ---
+
+  if (0 == nz) {
+    if (cluster.area_nz > 0) {
+      free(cluster.area_table);
+      cluster.area_table = NULL;
+      cluster.area_nz = 0;
+      cluster.random_area = RandomNumber::get_instance().get();
+    }
+    debug("{}: constant survey area", fname);
+    debug("{}: {}", fname, errends);
+    return;
+  }
+
+  // --- 2. VALIDATION ---
+
+  static constexpr double full_sky_deg2 = 41253.0;
+  if (2 != static_cast<int>(input_table.n_cols)) [[unlikely]] {
+    critical("{}: expected 2 columns (z, area in deg^2), got {}",
+      fname, input_table.n_cols);
+    exit(1);
+  }
+  if (nz < 2) [[unlikely]] {
+    critical(errorns2, fname, "number of z rows", nz);
+    exit(1);
+  }
+  double area_max = 0.0;
+  for (int i=0; i<nz; i++) {
+    const double z = input_table(i,0);
+    const double area = input_table(i,1);
+    if (!std::isfinite(z) || !std::isfinite(area)) [[unlikely]] {
+      critical("{}: non-finite entry at row {}", fname, i);
+      exit(1);
+    }
+    if (z < 0.0) [[unlikely]] {
+      critical("{}: negative redshift at row {}", fname, i);
+      exit(1);
+    }
+    if (i > 0 && !(z > input_table(i-1,0))) [[unlikely]] {
+      critical("{}: z column not strictly increasing at row {}", fname, i);
+      exit(1);
+    }
+    if (area < 0.0 || area > full_sky_deg2) [[unlikely]] {
+      critical("{}: area {} deg^2 at row {} outside [0, {}]",
+        fname, area, i, full_sky_deg2);
+      exit(1);
+    }
+    area_max = fmax(area_max, area);
+  }
+  if (!(area_max > 0.0)) [[unlikely]] {
+    critical("{}: the area table has no positive entry", fname);
+    exit(1);
+  }
+
+  // --- 3. DID ANYTHING CHANGE? ---
+
+  bool changed = (cluster.area_nz != nz) || (NULL == cluster.area_table);
+  for (int i=0; i<nz && !changed; i++) {
+    if (fdiff(cluster.area_table[0][i], input_table(i,0)) ||
+        fdiff(cluster.area_table[1][i], input_table(i,1))) {
+      changed = true;
+    }
+  }
+  if (!changed) {
+    debug("{}: {}", fname, errends);
+    return;
+  }
+
+  // --- 4. COPY THE TABLE ---
+
+  if (cluster.area_table != NULL) {
+    free(cluster.area_table);
+  }
+  cluster.area_table = (double**) malloc2d(2, nz);
+  cluster.area_nz = nz;
+  for (int i=0; i<nz; i++) {
+    cluster.area_table[0][i] = input_table(i,0);
+    cluster.area_table[1][i] = input_table(i,1);
+  }
+  cluster.random_area = RandomNumber::get_instance().get();
+  debug("{}: {} rows, z in [{}, {}]", fname, nz,
+    cluster.area_table[0][0], cluster.area_table[0][nz-1]);
+  debug("{}: {}", fname, errends);
+}
+
+
+// ---------------------------------------------------------------------------
 // Tomographic pairs of the cluster blocks (the rules live in the pair maps
 // of redshift_spline_cluster.c, which own the counts
 // cluster.cs/cg/cc_npowerspectra):

@@ -277,6 +277,10 @@ void set_cluster_zdist(
     arma::Col<double> zbin_max
   );
 
+// survey area of the cluster sample: column 0 = z, column 1 = deg^2; a
+// table with zero rows restores the constant survey.area (forecasts)
+void set_cluster_area(arma::Mat<double> input_table);
+
 // cg_lens_bin(ni) = lens bin paired with cluster bin ni in w_cg (-1: none);
 // builds the pair maps single-threaded (they own the pair counts
 // cluster.cs/cg/cc_npowerspectra)

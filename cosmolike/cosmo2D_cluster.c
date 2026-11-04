@@ -2720,14 +2720,55 @@ double w_cg_tomo(
 //        n_nl(z) = int dlnM (dn/dlnM) P(nl|M, z)       (ncl_richness)
 //   3. Probability that such a cluster lands in redshift bin ni:
 //        <phi_ni|z>                                     (phi_cluster)
-//   4. N_{ni, nl} = Omega_s int dz [dV/dz dOmega] <phi_ni|z> n_nl(z)
-//      over the support of <phi_ni|z>, with Omega_s = survey.area (deg^2)
-//      times (pi/180)^2 sr per deg^2. The conversion is a local constant:
+//   4. N_{ni, nl} = int dz Omega_s(z) [dV/dz dOmega] <phi_ni|z> n_nl(z)
+//      over the support of <phi_ni|z>. Omega_s(z) is the survey solid
+//      angle at redshift z, in (pi/180)^2 sr per deg^2:
+//      - no area table (cluster.area_nz = 0): Omega_s = survey.area, a
+//        constant, applied once after the z integral;
+//      - with a table (set_cluster_area): Omega_s(z) = area(z) at every
+//        node, because a volume-limited sample loses the shallow parts of
+//        the footprint at high z (Cardinal: 69% of the area left at
+//        z = 0.65). In the Cardinal setup the constant area overestimates
+//        the counts of the 0.55-0.65 bin by 15%.
+//      The deg^2 conversion is a local constant:
 //      survey.area_conversion_factor is set only by reset_survey_struct,
 //      which the interface never calls, so it is 0 at run time.
 //   5. Gauss-Legendre in z on the support: the same tabulated-size rule
 //      (hdi ladder) as the Limber support panel; a top-hat kernel is
 //      smooth inside its support, an erf kernel has its edges resolved.
+
+// ---------------------------------------------------------------------------
+// Survey area at redshift z in deg^2: linear interpolation of
+// cluster.area_table. Stops outside the table: the table must cover the
+// counts integration range of every cluster bin. Binary search over the
+// strictly increasing z row (a few hundred calls per counts fill).
+// ---------------------------------------------------------------------------
+static double cluster_area_deg2(
+    const double z  // redshift
+  )
+{
+  const int n = cluster.area_nz;
+  const double* zt = cluster.area_table[0];
+  const double* at = cluster.area_table[1];
+  if (z < zt[0] || z > zt[n-1]) {
+    log_fatal("z = %e outside the cluster area table [%e, %e]",
+      z, zt[0], zt[n-1]);
+    exit(1);
+  }
+  int lo = 0;
+  int hi = n - 1;
+  while (hi - lo > 1) {
+    const int mid = (lo + hi)/2;
+    if (zt[mid] <= z) {
+      lo = mid;
+    }
+    else {
+      hi = mid;
+    }
+  }
+  const double t = (z - zt[lo])/(zt[hi] - zt[lo]);
+  return at[lo] + t*(at[hi] - at[lo]);
+}
 
 // ---------------------------------------------------------------------------
 // Fill counts[ni][nl] for every cluster bin and richness bin (eq 16),
@@ -2777,13 +2818,24 @@ static void cluster_counts_fill(
       const double dVdz = fK*fK/hoverh0;
       const double phi  = phi_cluster(z, ni);
 
-      for (int nl = 0; nl < nbin_richness; nl++) {
-        counts[ni][nl] += wq*dVdz*phi*ncl_richness(a, nl);
+      if (0 == cluster.area_nz) {
+        for (int nl = 0; nl < nbin_richness; nl++) {
+          counts[ni][nl] += wq*dVdz*phi*ncl_richness(a, nl);
+        }
+      }
+      else {
+        // the survey solid angle at this node, in sr
+        const double omega_z = cluster_area_deg2(z)*deg2_to_sr;
+        for (int nl = 0; nl < nbin_richness; nl++) {
+          counts[ni][nl] += wq*omega_z*dVdz*phi*ncl_richness(a, nl);
+        }
       }
     }
 
-    for (int nl = 0; nl < nbin_richness; nl++) {
-      counts[ni][nl] *= omega_s;
+    if (0 == cluster.area_nz) {
+      for (int nl = 0; nl < nbin_richness; nl++) {
+        counts[ni][nl] *= omega_s;
+      }
     }
   }
 }
@@ -2794,7 +2846,8 @@ static void cluster_counts_fill(
 // (eq 16), read from a table of every (ni, nl).
 //
 // Cache invalidation: Ntable.random, cosmology.random, cluster.random_model,
-// cluster.random_zdist, cluster.random_mor and the survey area.
+// cluster.random_zdist, cluster.random_mor, the survey area and the area
+// table (cluster.random_area).
 // ---------------------------------------------------------------------------
 double N_cluster_tomo(
     const int nl,  // richness bin
@@ -2827,6 +2880,7 @@ double N_cluster_tomo(
   keys[nkeys++] = cluster.random_zdist;
   keys[nkeys++] = cluster.random_mor;
   keys[nkeys++] = double_bits_key(survey.area);
+  keys[nkeys++] = cluster.random_area;
 
   int refill = 0;
 

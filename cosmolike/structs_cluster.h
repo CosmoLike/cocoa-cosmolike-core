@@ -78,6 +78,7 @@ typedef struct
   uint64_t random_mor;       // mass-observable relation parameters
   uint64_t random_selection; // selection-bias parameters
   uint64_t random_pairs;     // cs / cg / cc pair lists
+  uint64_t random_area;      // survey area table area(z)
 
   // ---------------------------------------------------------------------------
   // MODEL CHOICES
@@ -127,6 +128,23 @@ typedef struct
   // nominal z_lambda edges of each bin: the selection-bias zbar and the
   // physical scale cuts read these; a kernel table never overwrites them
   double zbin[2][MAX_SIZE_ARRAYS];       // [RANGE_MIN|RANGE_MAX][bin]
+
+  // ---------------------------------------------------------------------------
+  // SURVEY AREA AS A FUNCTION OF REDSHIFT (OPTIONAL)
+  // ---------------------------------------------------------------------------
+  // A volume-limited cluster sample loses the parts of the footprint that
+  // are too shallow to detect clusters at redshift z (the DES redMaPPer
+  // zmask), so its effective area falls at high z: in the Cardinal
+  // simulation from 4143 deg^2 below z = 0.42 to 69% of that at z = 0.65
+  // and 8% at z = 0.75. With area_nz > 0 the counts (eq 16) integrate
+  // area(z) instead of the constant survey.area; area_nz = 0 keeps
+  // survey.area at every z (the forecast setting). The table is read by
+  // linear interpolation and must cover the integration range of every
+  // cluster bin. Only the counts read it: the two-point kernels are
+  // volume-weighted (CLUSTER_KERNEL_*), as in the DES analyses.
+  int area_nz;                           // 0: constant survey.area
+  double** area_table;                   // [2][area_nz]: row 0 = z (strictly
+                                         // increasing), row 1 = deg^2
 
   // ---------------------------------------------------------------------------
   // TOMOGRAPHIC PAIRS
