@@ -8121,37 +8121,9 @@ static long next_fft_size(long n) {
   return n;
 }
 
-// ---------------------------------------------------------------------------
-// Configuration for one radial component in the FFTLog non-Limber calculation.
-//
-// Each radial component (galaxy density, RSD velocity, magnification) has
-// its own config controlling the FFTLog bias parameter, windowing, and
-// whether the transform computes C_l or its derivatives.
-//
-// Typical values used in C_cl_tomo and C_gs_tomo:
-//   Galaxy density: nu=1.0,  c_window_width=0.25, derivative=0, N_pad=200
-//   RSD velocity:   nu=1.01, c_window_width=0.25, derivative=2, N_pad=500
-//   Magnification:  nu=1.0,  c_window_width=0.25, derivative=0, N_pad=500
-// ---------------------------------------------------------------------------
-typedef struct config 
-{
-  double nu;              // bias parameter: input f(x) is divided by x^nu before FFT
-                          // (must be > 0; nu=1 is the standard Hankel transform;
-                          // slight offsets like 1.01 improve convergence for RSD)
-  double c_window_width;  // fractional width of the Fourier-space tapering window
-                          // (0 < c_window_width < 1; typically 0.25; controls how
-                          // aggressively high-frequency ringing is suppressed)
-  int derivative;         // order of the spherical Bessel derivative in the kernel:
-                          //   0: j_l(kr)   - standard projection (density, magnification)
-                          //   1: j_l'(kr)  - first derivative
-                          //   2: j_l''(kr) - second derivative (RSD, which involves
-                          //                  the second derivative of the velocity field)
-  long N_pad;             // number of zero-padding elements added on each side of the
-                          // input array before FFT (larger N_pad reduces edge effects
-                          // but increases FFT cost; 200 for density, 500 for RSD/mag)
-  long N_extrap_low;      // number of points for low-x power-law extrapolation (unused)
-  long N_extrap_high;     // number of points for high-x power-law extrapolation (unused)
-} config;
+// The FFTLog configuration of one radial component (cosmo2D.h,
+// cfftlog_config); config is this file's short name for it.
+typedef cfftlog_config config;
 
 // ---------------------------------------------------------------------------
 // Non-Limber projection via FFTLog: Phase 1 (ell-independent forward

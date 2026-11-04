@@ -383,6 +383,89 @@ void C_gs_tomo_ells(
     double** out         // output [NSIZE][nell]
   );
 
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Non-Limber FFTLog machinery (C only), shared by the galaxy spectra of
+// cosmo2D.c (C_cl_tomo, C_gs_tomo) and the cluster spectra of
+// cosmo2D_cluster.c (w_cc, w_cg). The two phases, their memory layout and
+// cache rules are documented at the definitions in cosmo2D.c. A C caller
+// includes <complex.h> before this header, as cosmo2D.c does, so
+// fftw_complex is the same type in every translation unit.
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+#ifndef __cplusplus
+#include <fftw3.h>
+
+// ---------------------------------------------------------------------------
+// Configuration for one radial component in the FFTLog non-Limber calculation.
+//
+// Each radial component (galaxy density, RSD velocity, magnification) has
+// its own config controlling the FFTLog bias parameter, windowing, and
+// whether the transform computes C_l or its derivatives.
+//
+// Typical values used in C_cl_tomo and C_gs_tomo:
+//   Galaxy density: nu=1.0,  c_window_width=0.25, derivative=0, N_pad=200
+//   RSD velocity:   nu=1.01, c_window_width=0.25, derivative=2, N_pad=500
+//   Magnification:  nu=1.0,  c_window_width=0.25, derivative=0, N_pad=500
+// ---------------------------------------------------------------------------
+typedef struct cfftlog_config
+{
+  double nu;              // bias parameter: input f(x) is divided by x^nu before FFT
+                          // (must be > 0; nu=1 is the standard Hankel transform;
+                          // slight offsets like 1.01 improve convergence for RSD)
+  double c_window_width;  // fractional width of the Fourier-space tapering window
+                          // (0 < c_window_width < 1; typically 0.25; controls how
+                          // aggressively high-frequency ringing is suppressed)
+  int derivative;         // order of the spherical Bessel derivative in the kernel:
+                          //   0: j_l(kr)   - standard projection (density, magnification)
+                          //   1: j_l'(kr)  - first derivative
+                          //   2: j_l''(kr) - second derivative (RSD, which involves
+                          //                  the second derivative of the velocity field)
+  long N_pad;             // number of zero-padding elements added on each side of the
+                          // input array before FFT (larger N_pad reduces edge effects
+                          // but increases FFT cost; 200 for density, 500 for RSD/mag)
+  long N_extrap_low;      // number of points for low-x power-law extrapolation (unused)
+  long N_extrap_high;     // number of points for high-x power-law extrapolation (unused)
+} cfftlog_config;
+
+// Phase 1: ell-independent forward FFT of the radial functions
+void cfftlog_ells_p1(
+    double* const x,                        // chi grid, length Nx (log-spaced)
+    double* const* const* const fx,         // input fx[SIZE1][SIZE2][Nx]
+    int const Nx,                           // number of chi grid points
+    cfftlog_config* const cfg,              // per component [SIZE2]
+    fftw_complex* const* const toutfwd,     // out [SIZE1*SIZE2][Nmax/2+1]
+    double* const* const eta_m,             // out [SIZE2][Nmax/2+1]
+    int N[][3],                             // N_pad, Nx, FFT size per component
+    int const Nmax,                         // max FFT size
+    const int* const* const active,         // [SIZE1][SIZE2] or NULL (all)
+    int const SIZE1,                        // radial rows
+    int const SIZE2                         // radial components per row
+  );
+
+// Phase 2: ell-dependent inverse transforms of the multipoles [ks, ke)
+void cfftlog_ells_p2(
+    double* const x,                        // chi grid from phase 1
+    int const Nx,                           // number of chi grid points
+    cfftlog_config* const cfg,              // per component [SIZE2]
+    int const LMAX,                         // multipole bound of y and Fy
+    double* const* const* const y,          // out y[SIZE1][LMAX][Nx]
+    double* const* const* const* const Fy,  // out Fy[SIZE1][SIZE2][LMAX][Nx]
+    fftw_complex* const* const toutfwd,     // phase-1 coefficients
+    double* const* const eta_m,             // phase-1 frequencies
+    int N[][3],                             // as in phase 1
+    int const Nmax,                         // as in phase 1
+    int const ks,                           // first multipole (inclusive)
+    int const ke,                           // last multipole (exclusive)
+    const int* const converged,             // [SIZE1]; 1 = skip the row
+    const int* const* const active,         // [SIZE1][SIZE2] or NULL (all)
+    int const SIZE1,                        // radial rows
+    int const SIZE2                         // radial components per row
+  );
+#endif // __cplusplus
+
 #ifdef __cplusplus
 }
 #endif
