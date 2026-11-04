@@ -1,4 +1,5 @@
 #include <cmath>
+#include <memory>
 #include <stdexcept>
 #include <cstdlib>
 #include <spdlog/spdlog.h>
@@ -15,6 +16,8 @@ using std::exit;
 #include "spectra_cluster_cov.h"
 #include "moments_cluster_cov.h"
 #include "halo_cluster_cov.h"
+#include "nonlimber_cluster_cov.h"
+#include "spectra_cov.h"
 #include "cosmolike/halo.h"
 #include "cosmolike/basics.h"
 #include "cosmolike/structs.h"
@@ -319,6 +322,134 @@ py::dict covariance_cluster_spectra_cpp(
   py::dict result;
   result["cluster_base"] = carma::cube_to_arr(cross);
   result["cluster_cluster"] = carma::cube_to_arr(auto_spectra);
+  return result;
+}
+
+
+// ---------------------------------------------------------------------------
+// Non-Limber correction of the joint cluster forecast spectra.
+//
+// The Limber spectra of the joint forecast (all_pairs_spectra) sample the
+// matter power at one wavenumber per shell, k = (ell+1/2)/f_K. Below
+// nonlimber_lmax this misses the exact projection of thin redshift bins
+// and, for density fields, the redshift-space (Kaiser) term. Following
+// Fang et al. (arXiv:1911.11947), the hybrid spectrum is
+//
+//   C = C_Limber[P_NL] + C_exact[P_lin] - C_Limber[P_lin],
+//
+// with both linear terms on the separable field D(a) delta(k,1). This
+// wrapper returns the last two terms, the correction, for every pair of
+// lenses, selected clusters and sources (cluster_nonlimber_cov); the
+// caller adds it to its Limber spectra of the same fields. Source-source
+// rows are zero. With include_rsd every lens and cluster transfer gains
+// -integral dchi W f D j_l''(k chi).
+//
+// The radial snapshot is built here, without IA, from the same a_edges,
+// nquad and nwindow as the caller's Limber spectra, so the matched term
+// uses their windows and nodes. Input checks stop the process (critical +
+// exit) before any allocation. Returns ell [nell] = 2..nonlimber_lmax and
+// correction [nell,nfield,nfield], both owned NumPy arrays.
+// ---------------------------------------------------------------------------
+py::dict covariance_cluster_nonlimber_cpp(
+    const arma::Col<double>& a_edges, // [npanel+1] scale-factor panel edges
+    const int nquad,                  // Gauss-Legendre nodes per panel
+    const int nwindow,                // uniform-a efficiency samples
+    const bool include_rsd,           // Kaiser term on density fields
+    const int nonlimber_lmax,         // last corrected integer multipole
+    const int nonlimber_nchi,         // log-distance samples, 2^n+1
+    const double nonlimber_chi_min    // positive near distance in c/H0
+  )
+{
+  // The checks of covariance_limber_spectra_cpp for the shared inputs.
+  if (a_edges.n_elem < 2
+      || nwindow < 2) {
+    critical("{}: need at least two a_edges and nwindow >= 2",
+      "covariance_cluster_nonlimber_cpp");
+    exit(1);
+  }
+  for (arma::uword edge=0; edge<a_edges.n_elem; edge++) {
+    if (!std::isfinite(a_edges(edge))
+        || a_edges(edge) <= 0.0
+        || a_edges(edge) >= 1.0
+        || (edge > 0
+            && a_edges(edge) <= a_edges(edge-1))) {
+      critical("{}: a_edges must increase strictly inside (0,1)",
+        "covariance_cluster_nonlimber_cpp");
+      exit(1);
+    }
+  }
+  if (nquad != 64
+      && nquad != 96
+      && nquad != 128
+      && nquad != 256
+      && nquad != 512
+      && nquad != 1024
+      && nquad != 2048
+      && nquad != 4096
+      && nquad != 8192) {
+    critical("{}: unsupported quadrature rule",
+      "covariance_cluster_nonlimber_cpp");
+    exit(1);
+  }
+  if (nonlimber_lmax < 2
+      || nonlimber_nchi < 65
+      || ((nonlimber_nchi-1) & (nonlimber_nchi-2)) != 0
+      || !std::isfinite(nonlimber_chi_min)
+      || nonlimber_chi_min <= 0.0) {
+    critical("{}: non-Limber requires lmax >= 2, nchi=2^n+1 >= 65, "
+      "chi_min > 0", "covariance_cluster_nonlimber_cpp");
+    exit(1);
+  }
+  if (cosmology.chi == nullptr
+      || cosmology.G == nullptr
+      || cosmology.lnPL == nullptr
+      || redshift.clustering_nbin < 1
+      || redshift.shear_nbin < 1
+      || cluster.zdist_nbin < 1
+      || cluster.richness_nbin < 1) {
+    critical("{}: initialize lens/source/cluster samples and "
+      "set_cosmology first", "covariance_cluster_nonlimber_cpp");
+    exit(1);
+  }
+
+  // unique_ptr owns the temporary snapshot; free_radial_cov releases it
+  // when this function returns.
+  std::unique_ptr<radial_cov, decltype(&free_radial_cov)> radial(
+      radial_inputs_cov(a_edges.n_elem-1, a_edges.memptr(), nquad,
+                        nwindow, 0), &free_radial_cov);
+
+  // Joint fields: lenses, clusters (redshift bin major), sources.
+  const int ncount = cluster.zdist_nbin*cluster.richness_nbin;
+  const int nfield = radial->nlens+ncount+radial->nsource;
+  const int npair = nfield*(nfield+1)/2;
+  const int nell = nonlimber_lmax-1;
+  double** triangular = (double**) malloc2d(npair, nell);
+  cluster_nonlimber_cov(radial.get(), a_edges(0), nwindow,
+      include_rsd ? 1 : 0, nonlimber_lmax, nonlimber_nchi,
+      nonlimber_chi_min, triangular);
+
+  // Expand the i-major triangle; both mirror entries get the same value.
+  arma::Col<double> ell(nell);
+  arma::Cube<double> correction(nell, nfield, nfield);
+  for (int index=0; index<nell; index++) {
+    ell(index) = index+2.0;
+  }
+  int pair = 0;
+  for (int first=0; first<nfield; first++) {
+    for (int second=first; second<nfield; second++) {
+      for (int index=0; index<nell; index++) {
+        correction(index, first, second) = triangular[pair][index];
+        correction(index, second, first) = triangular[pair][index];
+      }
+      pair++;
+    }
+  }
+  free(triangular);
+
+  py::dict result;
+  // CARMA returns a column as [n,1]; reshape(-1) gives the 1D vector.
+  result["ell"] = carma::col_to_arr(ell).attr("reshape")(-1);
+  result["correction"] = carma::cube_to_arr(correction);
   return result;
 }
 

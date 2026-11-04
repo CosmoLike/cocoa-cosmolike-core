@@ -55,6 +55,53 @@ pybind11::dict covariance_cluster_spectra_cpp(
     const int nlens                     // leading galaxy fields in base
   );
 
+// Non-Limber correction of the joint cluster forecast fields
+// (cluster_nonlimber_cov): radial_inputs_cov without IA on a_edges, then
+// exact minus matched separable linear spectra of every pair of lenses,
+// clusters (redshift bin major) and sources at l = 2..nonlimber_lmax,
+// with the Kaiser term on every density field when include_rsd is true;
+// zero for source-source pairs. Dict: ell arma::Col [nell] and correction
+// arma::Cube [nell,nfield,nfield], dimensionless, exactly symmetric. The
+// production binding (cluster_interface_cov.cpp) calls this function too.
+pybind11::dict covariance_cluster_nonlimber_cpp(
+    const arma::Col<double>& a_edges, // [npanel+1], increasing inside (0,1)
+    const int nquad,                  // Gauss-Legendre nodes per panel
+    const int nwindow,                // uniform-a efficiency samples
+    const bool include_rsd,           // Kaiser term on lenses and clusters
+    const int nonlimber_lmax,         // last corrected multipole, >= 2
+    const int nonlimber_nchi,         // log-distance samples, 2^n+1 >= 65
+    const double nonlimber_chi_min    // positive near distance in c/H0
+  );
+
+// The Python docstring of covariance_cluster_nonlimber, shared by the
+// notebook and the production bindings (one function serves both).
+#define CLUSTER_NONLIMBER_DOC R"doc(Non-Limber correction of every joint cluster-forecast spectrum.
+
+Arguments:
+    a_edges: float64 [npanel+1], the scale-factor panels of the Limber
+        spectra it corrects, increasing inside (0,1); a_edges[0] is also
+        the far end of the FFTLog distance grid.
+    nquad, nwindow: Gauss-Legendre nodes per panel and uniform-a
+        efficiency samples, as for those Limber spectra.
+    include_rsd: add the linear redshift-space (Kaiser) term to every
+        lens and cluster field.
+    nonlimber_lmax: last corrected multipole (>= 2).
+    nonlimber_nchi, nonlimber_chi_min: FFTLog samples (2^n+1 >= 65,
+        default 4097) and near distance in c/H0 (default 1e-6), the
+        defaults of covariance_limber_spectra.
+Returns:
+    ell [nell] = 2..nonlimber_lmax and correction [nell,nfield,nfield],
+    exact minus matched-Limber separable linear spectra of every pair of
+    lenses, clusters (redshift bin major, richness minor) and sources,
+    zero for source-source pairs; add it to the nonlinear Limber spectra
+    of the same fields (Fang et al. arXiv:1911.11947). Dimensionless,
+    exactly symmetric, in the core harmonic convention.
+Requires:
+    initialized lens, source and cluster samples, cluster magnification
+    0, a flat cosmology with massless neutrinos. Invalid input stops the
+    process. No global state changes.
+)doc"
+
 // Selected halo-mass moments (moments_cluster_cov), S_i entering once.
 // Dict: density and biased_density, arma::Mat [state,selection] in L^-3;
 // J01 and J11, arma::Cube [state,selection,k], dimensionless; J02,

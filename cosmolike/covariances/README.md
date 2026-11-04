@@ -57,7 +57,9 @@ of an uncertainty before adding the terms.
 Python `covariance/survey.py` assembles full real/Fourier G+SSC+cNG forecasts
 for massless neutrinos, linear galaxy bias, zero magnification/RSD and a
 spherical-cap footprint. Gaussian spectra can include non-Limber gg/gs and
-NLA/TATT. SSC/cNG retain their zero-IA Limber model. Survey cutoff,
+NLA/TATT; the cluster forecast (`forecast_cluster.py`) also corrects the
+cluster pairs and can add the linear redshift-space (Kaiser) term. SSC/cNG
+retain their zero-IA Limber model. Survey cutoff,
 interpolation and Fisher convergence require separate assessment.
 Covariance integration choices stay separate from the data-vector calculation.
 
@@ -69,8 +71,9 @@ Function comments explain equations, units and array contents.
 | Implementation and interface | Physical role |
 | --- | --- |
 | [ia_cov.c](ia_cov.c), [header](ia_cov.h) | All-pairs TATT E corrections and B-mode spectra using the core FAST-PT tables. |
-| [nonlimber_cov.c](nonlimber_cov.c), [header](nonlimber_cov.h) | All-pairs separable-linear spectra and their matched Limber subtraction for Gaussian gg/gs corrections. |
-| [fftlog_cov.c](fftlog_cov.c), [header](fftlog_cov.h) | Reusable spherical-Bessel transforms for density and lensing radial functions. |
+| [nonlimber_cov.c](nonlimber_cov.c), [header](nonlimber_cov.h) | All-pairs separable-linear spectra and their matched Limber subtraction for Gaussian gg/gs corrections; optional Kaiser term for snapshots with more density fields. |
+| [nonlimber_cluster_cov.c](nonlimber_cluster_cov.c), [header](nonlimber_cluster_cov.h) | The same correction for the joint cluster forecast: selected clusters inserted as density fields, every pair with a galaxy or cluster leg. |
+| [fftlog_cov.c](fftlog_cov.c), [header](fftlog_cov.h) | Reusable spherical-Bessel transforms for density, lensing and redshift-space radial functions. |
 | [spectra_cov.c](spectra_cov.c), [header](spectra_cov.h) | Radial geometry, galaxy and lensing windows, and all lens/source Limber cross spectra. |
 | [gaussian_cov.c](gaussian_cov.c), [header](gaussian_cov.h) | Gaussian pairings, projection of their covariance, and analytic pair noise. |
 | [assembly_cov.c](assembly_cov.c), [header](assembly_cov.h) | Shared Gaussian matrix assembly and connected radial projections, including block scheduling. |
@@ -141,7 +144,7 @@ The covariance separates into layers. Each layer owns a few files:
 | Layer | Files | What the layer supplies |
 | --- | --- | --- |
 | Radial geometry and Limber spectra | [spectra_cov.c](spectra_cov.c) | Distances, windows, lensing efficiencies and every Limber field cross spectrum. |
-| Non-Limber correction | [fftlog_cov.c](fftlog_cov.c), [nonlimber_cov.c](nonlimber_cov.c) | Spherical-Bessel transforms and the exact-minus-Limber linear correction for gg/gs. |
+| Non-Limber correction | [fftlog_cov.c](fftlog_cov.c), [nonlimber_cov.c](nonlimber_cov.c), [nonlimber_cluster_cov.c](nonlimber_cluster_cov.c) | Spherical-Bessel transforms and the exact-minus-Limber linear correction for gg/gs, and for the cluster pairs of the joint forecast. |
 | Intrinsic alignment in G | [ia_cov.c](ia_cov.c) | NLA windows live in spectra_cov.c; the one-loop TATT E and B spectra live here. |
 | Gaussian part | [gaussian_cov.c](gaussian_cov.c), [mask_cov.c](mask_cov.c) | Wick pairings with noise, pair-count pure noise and the footprint pair area. |
 | Halo model | [halo_cov.c](halo_cov.c) | The mass integrals I11, I02, I12, I13, I04 over abundance, bias and profiles. |
@@ -269,6 +272,18 @@ are retained. This entry requires flat geometry, massless neutrinos and
 zero RSD. The log-distance resolution, near boundary and multipole cutoff
 need survey-specific refinement tests; the example cutoff above is not a
 convergence certificate. SSC and cNG retain their separate approximations.
+
+The joint cluster forecast calls `covariance_cluster_nonlimber`
+(`nonlimber_cluster_cov.c`) instead. It inserts the selected cluster
+catalogs after the lenses as density fields with window $`q_c b_c`$ (the
+windows of `survey_cluster.selected_windows`) and returns the correction
+for every pair with a galaxy or cluster leg; shear–shear rows are zero.
+With `include_rsd` each galaxy and cluster transfer gains the linear
+redshift-space term $`-\int W f D j_\ell''(k\chi) d\chi`$, whose
+FFTLog kernel is the lensing kernel times $`(s-1)(s-2)`$ (two integrations
+by parts of the Mellin integral). The matched Limber term has no RSD, so
+the hybrid contains the exact Kaiser contribution below the cutoff and
+none above it, as the likelihood's non-Limber clustering spectra do.
 
 The project defaults use a correction cutoff of 1,000, or 4,000 for the
 narrow Roman KL lens bins. Roman uses 8,193 distance samples; the other
@@ -1076,8 +1091,7 @@ The shared survey assembly retains all cross-bin SSC/cNG blocks and uses
 common observed-field conventions for every probe. Its mask model is a
 spherical cap.
 
-Selected-cluster non-Limber cross spectra and a calibrated
-massive-neutrino model remain open. The halo response choices and finite
+A calibrated massive-neutrino model remains open. The halo response choices and finite
 integration grids do not constitute a validated survey accuracy setting.
 
 A usable covariance must give nonnegative variance to every linear

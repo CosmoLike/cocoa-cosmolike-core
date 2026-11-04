@@ -2622,13 +2622,14 @@ void set_distances(vector io_z, vector io_chi)
 // Install the growth table G(z) from Cobaya (D = G * a).
 //
 // When the size or any entry changed (fdiff scan): writes cosmology.G
-// (row 0 = z, row 1 = G) and cosmology.G_nz, precomputes the direct-index
-// segment metadata (consumed by
+// (row 0 = z, row 1 = G, row 2 = the growth rate f at each node, from a
+// five-point stencil of G; see the fill below) and cosmology.G_nz,
+// precomputes the direct-index segment metadata (consumed by
 // f_growth/growfac and friends), NaN-scans during the parallel fill, and
 // bumps cosmology.random. Unchanged input leaves the cache key alone.
 //
-// Validation: equal input sizes, else critical() + exit(1); NaN entries
-// abort inside the fill.
+// Validation: equal input sizes and at least five nodes (the stencil's
+// width), else critical() + exit(1); NaN entries abort inside the fill.
 //
 // Parameters:
 //   io_z - redshift grid
@@ -2640,9 +2641,20 @@ void set_distances(vector io_z, vector io_chi)
 void set_growth(vector io_z, vector io_G)
 {
   static constexpr std::string_view fname = "set_growth"sv;
+  // number of nodes in the window of the five-point stencil that gives
+  // the growth rate f (row 2 of cosmology.G, filled below)
+  static constexpr int stencil_width = 5;
   debug("{}: {}", fname, errbegins);
   if (io_z.n_elem != io_G.n_elem) [[unlikely]] {
     critical(errorsz1d, fname, erriiwz, io_z.n_elem, io_G.n_elem); exit(1);
+  }
+  // the stencil needs stencil_width (= 5) nodes even at the two ends of
+  // the table
+  if (io_z.n_elem < static_cast<arma::uword>(stencil_width)) [[unlikely]] {
+    critical("{}: the growth table has {} nodes; the five-point stencil "
+             "of the growth rate f needs at least {}", fname, io_z.n_elem,
+             stencil_width);
+    exit(1);
   }
 
   int cache_update = 0;
@@ -2673,8 +2685,8 @@ void set_growth(vector io_z, vector io_G)
         "G z");
 
     if (cosmology.G != NULL) { free(cosmology.G); }
-    cosmology.G = (double**) malloc2d(2, cosmology.G_nz);
-    
+    cosmology.G = (double**) malloc2d(3, cosmology.G_nz);
+
     #pragma omp parallel for schedule(static)
     for (int i=0; i<cosmology.G_nz; i++) {
       if (std::isnan(io_z(i)) || std::isnan(io_G(i))) [[unlikely]] {
@@ -2682,6 +2694,96 @@ void set_growth(vector io_z, vector io_G)
       }
       cosmology.G[0][i] = io_z(i);
       cosmology.G[1][i] = io_G(i);
+    }
+
+    // -----------------------------------------------------------------
+    // Row 2: the growth rate f = dlnD/dlna at every node. With D = G*a
+    // and a = 1/(1+z),
+    //
+    //   f = 1 - (1+z) (dG/dz) / G,
+    //
+    // and dG/dz comes from a five-point finite-difference stencil on the
+    // nodes of the table. The readers (f_growth, norm_growfac_all)
+    // interpolate this row linearly, exactly as they interpolate G.
+    //
+    // Why a stencil and not the slope of the interpolation bracket,
+    // (G[j+1] - G[j])/dz: that slope is the derivative at the bracket's
+    // midpoint, so elsewhere in the bracket it is wrong by G''*dz/2, an
+    // error that shrinks only like the node spacing, not its square.
+    // Measured against CAMB (growth at k = 0.05/Mpc), the slope misses f
+    // by 1.6e-3 on the likelihoods' dense 1D grid (dz = 0.003) and by
+    // 1.2e-2 on the coarse 2D grid (dz = 0.029). The five-point stencil
+    // is exact for polynomials up to degree four, so at the nodes its
+    // error shrinks like dz^4; what remains is the linear read of f
+    // between nodes, f''*dz^2/8: 1.6e-5 on the dense grid below z = 3,
+    // 100 times smaller. Above z = 3 the error, about 1e-3, comes from
+    // the G values themselves (the likelihoods sample them from cobaya's
+    // spline through CAMB's 35 transfer redshifts on [3, 50)), not from
+    // the stencil.
+    //
+    // The stencil: node i uses the five nodes around it. Near the two
+    // ends of the table the window slides inward (it starts at node 0
+    // for i = 0, 1 and ends at the last node for the last two), so the
+    // formula becomes one-sided there, as at z = 0. The weights are the
+    // derivative at z_i of the Lagrange polynomial through the five
+    // nodes. On equally spaced nodes this is the textbook stencil
+    // (G[i-2] - 8 G[i-1] + 8 G[i+1] - G[i+2]) / (12 dz); unlike the
+    // textbook formula it stays fourth order when the window straddles
+    // the junction of two uniform blocks with different spacing (z = 3
+    // in the likelihoods' grids, where dz jumps from 0.003 to 0.094).
+    //
+    // Filled here, in the setter, and never lazily inside the readers:
+    // the readers run inside OpenMP loops, where a fill triggered on
+    // first use would race between threads.
+    // -----------------------------------------------------------------
+    // stencil_width (= 5, declared at the top of this function) is the
+    // number of nodes in the stencil window.
+    // The z and G rows filled just above (the previous loop's implicit
+    // barrier guarantees every thread sees them complete)
+    const double* zgrid = cosmology.G[0];
+    const double* ggrid = cosmology.G[1];
+    #pragma omp parallel for schedule(static)
+    for (int i=0; i<cosmology.G_nz; i++) {
+      // first node of the window: two nodes below i when possible,
+      // slid inward at the two ends of the table
+      int first = i - 2;
+      if (first < 0) {
+        first = 0;
+      }
+      if (first > cosmology.G_nz - stencil_width) {
+        first = cosmology.G_nz - stencil_width;
+      }
+      const double zi = zgrid[i];
+
+      // dG/dz at z_i = sum over the window of weight(node) * G(node),
+      // where weight(node) is the derivative at z_i of the Lagrange
+      // basis polynomial that equals 1 at that node and 0 at the other
+      // four. Differentiating that product of four linear factors
+      // (z - z_other)/(z_node - z_other) gives a sum of four terms,
+      // each with one factor differentiated (1/(z_node - z_skip)) and
+      // the other three evaluated at z_i.
+      double dGdz = 0.0;
+      for (int node=first; node<first+stencil_width; node++) {
+        double weight = 0.0;
+        for (int skip=first; skip<first+stencil_width; skip++) {
+          if (skip == node) {
+            continue;
+          }
+          double term = 1.0/(zgrid[node] - zgrid[skip]);
+          for (int other=first; other<first+stencil_width; other++) {
+            if (other == node) {
+              continue;
+            }
+            if (other == skip) {
+              continue;
+            }
+            term *= (zi - zgrid[other])/(zgrid[node] - zgrid[other]);
+          }
+          weight += term;
+        }
+        dGdz += weight*ggrid[node];
+      }
+      cosmology.G[2][i] = 1.0 - (1.0 + zi)*dGdz/ggrid[i];
     }
     cosmology.random = RandomNumber::get_instance().get();
   }

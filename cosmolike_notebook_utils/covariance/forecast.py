@@ -27,43 +27,56 @@ def gaussian_model(gaussian, nsource):
     """Resolve Gaussian-only spectra choices before changing core state.
 
     Arguments:
-        gaussian = optional mapping with nonlimber (bool, default True), ia
-            (none/NLA/TATT, default none), A1, A2 and B_TA (default 0).
-            Amplitudes are constants per source bin: a scalar applies to
-            all bins; an array needs one value per bin. The core supplies
-            the standard growth dependence. No redshift power law is
-            inferred from a two-element list. SSC/cNG retain zero IA and
-            Limber.
+        gaussian = optional mapping with nonlimber (bool, default True),
+            rsd (bool, default False), ia (none/NLA/TATT, default none),
+            A1, A2 and B_TA (default 0). rsd adds the linear redshift-space
+            (Kaiser) term to the exact projection of the density fields,
+            so it needs nonlimber; only the joint cluster forecast
+            (forecast_cluster) implements it. Amplitudes are constants per
+            source bin: a scalar applies to all bins; an array needs one
+            value per bin. The core supplies the standard growth
+            dependence. No redshift power law is inferred from a
+            two-element list. SSC/cNG retain zero IA and Limber.
         nsource = number of source bins.
     Returns:
-        A new mapping with nonlimber, ia and explicit per-bin amplitude
-        lists A1, A2 and B_TA. The supplied mapping is not modified.
+        A new mapping with nonlimber, rsd, ia and explicit per-bin
+        amplitude lists A1, A2 and B_TA. The supplied mapping is not
+        modified.
     Raises:
-        ValueError for an unknown key, a non-boolean nonlimber, another IA
-        model, nonfinite amplitudes or a wrong amplitude count, nonzero
-        amplitudes with ia=none, or nonzero A2/B_TA with NLA.
+        ValueError for an unknown key, a non-boolean nonlimber or rsd, rsd
+        without nonlimber, another IA model, nonfinite amplitudes or a
+        wrong amplitude count, nonzero amplitudes with ia=none, or nonzero
+        A2/B_TA with NLA.
     """
-    # --- 1. THE SUPPLIED MAPPING: ONLY THE FIVE KNOWN KEYS ---
+    # --- 1. THE SUPPLIED MAPPING: ONLY THE SIX KNOWN KEYS ---
 
     # dict(gaussian) copies the caller's mapping, so nothing below writes
     # into it; gaussian=None selects every default. set(choices)-allowed is
-    # the set of supplied keys outside the five allowed ones, so a misspelled
+    # the set of supplied keys outside the six allowed ones, so a misspelled
     # key such as nonLimber or a1 raises instead of being ignored.
     choices = {} if gaussian is None else dict(gaussian)
-    allowed = {"nonlimber", "ia", "A1", "A2", "B_TA"}
+    allowed = {"nonlimber", "rsd", "ia", "A1", "A2", "B_TA"}
     unknown = set(choices)-allowed
     if unknown:
         raise ValueError(f"unknown Gaussian model choices: {sorted(unknown)}")
 
-    # --- 2. THE TWO SWITCHES: NON-LIMBER SPECTRA AND THE IA MODEL ---
+    # --- 2. THE THREE SWITCHES: NON-LIMBER, RSD AND THE IA MODEL ---
 
     # choices.get(key, default) returns the default when the key is absent:
-    # non-Limber spectra on, no IA. isinstance(nonlimber, bool) accepts only
-    # True and False, so an integer such as nonlimber: 1 in a YAML file raises.
+    # non-Limber spectra on, no RSD, no IA. isinstance(nonlimber, bool)
+    # accepts only True and False, so an integer such as nonlimber: 1 in a
+    # YAML file raises. The Kaiser term lives in the exact projection, so
+    # rsd without nonlimber would be silently dropped: it raises instead.
     nonlimber = choices.get("nonlimber", True)
+    rsd = choices.get("rsd", False)
     model = choices.get("ia", "none")
     if not isinstance(nonlimber, bool):
         raise ValueError("gaussian.nonlimber must be true or false")
+    if not isinstance(rsd, bool):
+        raise ValueError("gaussian.rsd must be true or false")
+    if rsd and not nonlimber:
+        raise ValueError("gaussian.rsd needs gaussian.nonlimber: the Kaiser "
+                         "term enters through the exact projection")
     if model not in ("none", "NLA", "TATT"):
         raise ValueError("gaussian.ia must be none, NLA or TATT")
 
@@ -71,7 +84,7 @@ def gaussian_model(gaussian, nsource):
 
     # The loop adds A1, A2 and B_TA as plain lists of nsource floats, zeros
     # included, so set_gaussian_model always passes three explicit lists.
-    result = {"nonlimber": nonlimber, "ia": model}
+    result = {"nonlimber": nonlimber, "rsd": rsd, "ia": model}
     for name in ("A1", "A2", "B_TA"):
         # A scalar arrives as a 0-d array (ndim 0), and np.full copies it into
         # every source bin. An array must already hold one value per bin; a

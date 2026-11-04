@@ -58,6 +58,17 @@ extern "C" {
                                    // 0.923, 0.909 at z = 0.2, 0.3, 0.4,
                                    // 0.5, 0.6 (counts 3-9% below mode 0)
 
+// meaning of the z column of the selection-kernel table (set_cluster_zdist),
+// the encoding of the galaxy photoz_zmid_convention:
+#define CLUSTER_ZDIST_ZLOW 0       // left cell edges: the value of row i
+                                   // belongs at the cell centre, halfway to
+                                   // row i + 1 (the last cell repeats the
+                                   // previous width); the files of the DES
+                                   // analyses and of lighthouse
+#define CLUSTER_ZDIST_ZMID 1       // the z values are the sample points
+                                   // themselves (the des_cluster synthetic
+                                   // tables; the default)
+
 // Slots of cluster.probe[]: 1 = the probe is part of the data vector
 #define CLUSTER_PROBE_N 0    // cluster counts
 #define CLUSTER_PROBE_CS 1   // cluster lensing (gamma_t or Sigma)
@@ -78,6 +89,7 @@ typedef struct
   uint64_t random_mor;       // mass-observable relation parameters
   uint64_t random_selection; // selection-bias parameters
   uint64_t random_pairs;     // cs / cg / cc pair lists
+  uint64_t random_area;      // survey area table area(z)
 
   // ---------------------------------------------------------------------------
   // MODEL CHOICES
@@ -114,9 +126,12 @@ typedef struct
   // photometric redshift z_lambda inside bin i (Y1 eq 6). Passed as a table
   // from Python (top-hat, erf of a Gaussian photo-z, or from randoms), laid
   // out like redshift.clustering_zdist_table: rows 0 .. zdist_nbin - 1 hold
-  // the bins, row zdist_nbin holds z. The z values are sample points (no
-  // half-cell offset, unlike the galaxy n(z) files) and <phi_i|z> is their
-  // piecewise-linear interpolant.
+  // the bins, row zdist_nbin holds z. The stored z are the points where
+  // each value belongs: the input z column itself (CLUSTER_ZDIST_ZMID) or
+  // the centres of the cells whose left edges it lists (CLUSTER_ZDIST_ZLOW,
+  // half a cell higher). <phi_i|z> is the piecewise-linear interpolant of
+  // the stored points. The two readings differ by half a cell: for the
+  // Cardinal table (dz = 0.01) about 1-2% of the lowest bin's counts.
   int zdist_nbin;
   int zdist_nz;                          // number of z rows of the input
   double** zdist_table;                  // [zdist_nbin + 1][zdist_nz]
@@ -127,6 +142,23 @@ typedef struct
   // nominal z_lambda edges of each bin: the selection-bias zbar and the
   // physical scale cuts read these; a kernel table never overwrites them
   double zbin[2][MAX_SIZE_ARRAYS];       // [RANGE_MIN|RANGE_MAX][bin]
+
+  // ---------------------------------------------------------------------------
+  // SURVEY AREA AS A FUNCTION OF REDSHIFT (OPTIONAL)
+  // ---------------------------------------------------------------------------
+  // A volume-limited cluster sample loses the parts of the footprint that
+  // are too shallow to detect clusters at redshift z (the DES redMaPPer
+  // zmask), so its effective area falls at high z: in the Cardinal
+  // simulation from 4143 deg^2 below z = 0.42 to 69% of that at z = 0.65
+  // and 8% at z = 0.75. With area_nz > 0 the counts (eq 16) integrate
+  // area(z) instead of the constant survey.area; area_nz = 0 keeps
+  // survey.area at every z (the forecast setting). The table is read by
+  // linear interpolation and must cover the integration range of every
+  // cluster bin. Only the counts read it: the two-point kernels are
+  // volume-weighted (CLUSTER_KERNEL_*), as in the DES analyses.
+  int area_nz;                           // 0: constant survey.area
+  double** area_table;                   // [2][area_nz]: row 0 = z (strictly
+                                         // increasing), row 1 = deg^2
 
   // ---------------------------------------------------------------------------
   // TOMOGRAPHIC PAIRS

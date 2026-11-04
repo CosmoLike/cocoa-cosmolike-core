@@ -10,6 +10,7 @@ using std::exit;
 
 #include <pybind11/numpy.h>
 #include "production_interface_cov.hpp"
+#include "cluster_wrapper_cov.hpp"
 #include "cosmolike/halo_cluster.h"
 #include "cosmolike/redshift_spline_cluster.h"
 #include "counts_cluster_cov.h"
@@ -854,6 +855,33 @@ Model:
       py::arg("window").noconvert(), py::arg("bias").noconvert(),
       py::arg("power").noconvert(), py::arg("profile").noconvert(),
       py::arg("richness").noconvert(), py::arg("nlens"));
+
+  // The non-Limber correction has no large input: its only array, a_edges,
+  // is a short vector copied into the Armadillo argument of the notebook
+  // wrapper, which builds the radial snapshot and calls the C routine.
+  module.def("covariance_cluster_nonlimber", [](
+          const cluster_cov_array& a_edges,
+          const int nquad,
+          const int nwindow,
+          const bool include_rsd,
+          const int nonlimber_lmax,
+          const int nonlimber_nchi,
+          const double nonlimber_chi_min) {
+        if (a_edges.ndim() != 1) {
+          critical("{}: a_edges must be a vector",
+            "covariance_cluster_nonlimber");
+          exit(1);
+        }
+        const arma::Col<double> edges(a_edges.data(),
+            static_cast<arma::uword>(a_edges.size()));
+        return covariance_cluster_nonlimber_cpp(edges, nquad, nwindow,
+            include_rsd, nonlimber_lmax, nonlimber_nchi, nonlimber_chi_min);
+      },
+      CLUSTER_NONLIMBER_DOC,
+      py::arg("a_edges").noconvert(), py::arg("nquad"), py::arg("nwindow"),
+      py::arg("include_rsd"), py::arg("nonlimber_lmax"),
+      py::arg("nonlimber_nchi") = 4097,
+      py::arg("nonlimber_chi_min") = 1.0e-6);
 
   module.def("covariance_counts_shell", &covariance_counts_shell,
       R"doc(Convert selected abundances into count densities and responses.

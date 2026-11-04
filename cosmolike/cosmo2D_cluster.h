@@ -66,9 +66,10 @@ double C_cg_tomo_limber(const double l, const int nl, const int ni,
 // Real-space statistics at theta bin nt (cached per block).
 // w_gammat_cluster_tomo is the cluster tangential shear gamma_t before the
 // Y transform, the selection bias and the shear calibration (the interface
-// applies all three on the data vector, eqs 15 and 23). limber = 0, the
-// non-Limber option (FKEM split, the C_cl_tomo design), is not
-// implemented: w_cc_tomo and w_cg_tomo abort on it.
+// applies all three on the data vector, eqs 15 and 23). limber = 0 gives
+// w_cc_tomo and w_cg_tomo the non-Limber spectra with redshift-space
+// distortions below LMAX_NOLIMBER (FKEM split, the C_cl_tomo design);
+// limber = 1 is Limber at every multipole.
 // ---------------------------------------------------------------------------
 double w_gammat_cluster_tomo(const int nt, const int nl, const int ni,
   const int ns);

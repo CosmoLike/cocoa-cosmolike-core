@@ -566,7 +566,13 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     lensing_spectra = snapshot["spectra"]
 
     # Settings without a gaussian entry use zero-IA Limber Gaussian spectra.
+    # The galaxy transfers here have no redshift-space term; only the joint
+    # cluster forecast (forecast_cluster) adds it, so rsd stops here rather
+    # than being dropped.
     model = settings.get("gaussian", {"nonlimber": False, "ia": "none"})
+    if model.get("rsd", False):
+        raise ValueError("gaussian.rsd is implemented by the joint cluster "
+                         "forecast only; set it to false for this survey")
     if model["ia"] != "none":
         snapshot = limber_spectra(
             interface=interface, ell=ell, a_edges=settings["a_edges"],
