@@ -181,6 +181,26 @@ Model:
       py::arg("power"), py::arg("profile"),
       py::arg("richness"), py::arg("nlens"));
 
+  module.def("covariance_cluster_nonlimber", [](
+          const py::object& a_edges,
+          const int nquad,
+          const int nwindow,
+          const bool include_rsd,
+          const int nonlimber_lmax,
+          const int nonlimber_nchi,
+          const double nonlimber_chi_min) {
+        const arma::Col<double> edges_input =
+            notebook_input_cov<arma::Col<double>>(a_edges, 1);
+        return covariance_cluster_nonlimber_cpp(
+            edges_input, nquad, nwindow, include_rsd, nonlimber_lmax,
+            nonlimber_nchi, nonlimber_chi_min);
+      },
+      CLUSTER_NONLIMBER_DOC,
+      py::arg("a_edges"), py::arg("nquad"), py::arg("nwindow"),
+      py::arg("include_rsd"), py::arg("nonlimber_lmax"),
+      py::arg("nonlimber_nchi") = 4097,
+      py::arg("nonlimber_chi_min") = 1.0e-6);
+
   module.def("covariance_counts_shell", [](
           const py::object& distance,
           const py::object& density,

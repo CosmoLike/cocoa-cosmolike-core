@@ -9,6 +9,12 @@ selected-cluster one-halo cNG and non-SSC count-spectrum terms are
 omitted. These limits are returned with the result and must accompany
 any exported forecast.
 
+The Gaussian spectra are Limber, or, with the gaussian model's nonlimber
+(and rsd) switch, the hybrid of Fang et al. (arXiv:1911.11947) below
+nonlimber_lmax for every pair with a galaxy or cluster leg: nonlinear
+Limber plus exact minus Limber separable linear spectra, with the Kaiser
+redshift-space term of each density field. SSC and cNG stay Limber.
+
 SSC additionally includes the abundance response of the selected halo's
 own lensing profile, at fixed selection and profile. Catalog normalization
 is subtracted once using the full projected signal. The same long-mode
@@ -145,8 +151,14 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             [ncluster_z], cluster_lnm_bounds [2] in ln(M/[Msun/h]), and
             cluster_ytransform bool. The latter applies the mean model's
             exact Y operator to every cluster-lensing row and both
-            covariance axes. Numerical controls come from the common
-            covariance accuracy boost.
+            covariance axes. The optional gaussian mapping
+            (forecast.gaussian_model) selects the Gaussian spectra:
+            nonlimber adds, below nonlimber_lmax, the exact-minus-Limber
+            separable linear correction to every pair with a galaxy or
+            cluster leg (covariance_cluster_nonlimber), and rsd its Kaiser
+            term; ia must be none. Without the mapping the spectra are
+            Limber. SSC and cNG always use the Limber model. Numerical
+            controls come from the common covariance accuracy boost.
         progress = optional callable receiving stage and elapsed seconds.
         backend = None uses notebook wrappers; interface.covariance selects
             the direct production bindings to the same C calculations.
@@ -166,8 +178,9 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     Raises:
         ValueError for nonzero mnu, invalid cluster_lnm_bounds, a
         non-boolean cluster_ytransform, a Y operator that does not match
-        the angular bins, or nonzero galaxy magnification windows. The
-        helpers raise for an invalid layout, geometry or empty selected bin.
+        the angular bins, nonzero galaxy magnification windows, or a
+        Gaussian model with intrinsic alignment. The helpers raise for an
+        invalid layout, geometry or empty selected bin.
 
     The call resets the interface's core table resolution and quadrature
     level through init_accuracy_boost(core_accuracyboost,
@@ -187,6 +200,15 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     resolved['edges_rad'] = np.asarray(settings['theta_edges_arcmin'])*np.pi/10800.0
     resolved['space'] = 'real'
 
+    # The Gaussian spectra model: Limber, or the non-Limber hybrid below
+    # nonlimber_lmax, with or without the Kaiser term (forecast.gaussian_model).
+    # Settings without a gaussian entry use Limber spectra without IA.
+    model = settings.get('gaussian', {'nonlimber': False, 'ia': 'none'})
+    if model['ia'] != 'none':
+        raise ValueError("cluster forecast Gaussian spectra support ia=none only")
+    nonlimber = bool(model['nonlimber'])
+    rsd = bool(model.get('rsd', False))
+
     # The approximation's limits travel with the result, so every saved
     # forecast states which terms it omits (see the module docstring).
     resolved['cluster_cng_model'] = 'linear tracer biases times matter trispectrum'
@@ -194,9 +216,13 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     resolved['omitted_terms'] = [
         'selected-cluster one-halo cNG corrections',
         'non-SSC count-spectrum cross covariance',
-        'all-pairs non-Limber corrections',
-        'tidal, nonlinear-bias and environmental-selection responses',
     ]
+    if not nonlimber:
+        resolved['omitted_terms'].append('all-pairs non-Limber corrections')
+    if not rsd:
+        resolved['omitted_terms'].append('redshift-space distortions')
+    resolved['omitted_terms'].append(
+        'tidal, nonlinear-bias and environmental-selection responses')
 
     # The halo-model tables are built for massless neutrinos, where the
     # CDM-plus-baryon density rho_cb equals the total matter density rho_m.
@@ -308,6 +334,28 @@ def compute_forecast(interface, settings, progress=None, backend=None):
                              ordinary_noise[nlens:]))
     checkpoint('all_pairs_limber_spectra', started)
 
+    # Non-Limber: below nonlimber_lmax every pair with a galaxy or cluster
+    # leg receives exact minus Limber separable linear spectra (FFTLog),
+    # with the Kaiser term of each density field when rsd is set: the
+    # hybrid of Fang et al. (arXiv:1911.11947) that the likelihood uses for
+    # w_gg, w_cc and w_cg. C builds the same windows on the same radial
+    # rule as the Limber snapshot above. ell runs over 2..ell_max, so the
+    # correction's cutoff-1 rows (ell = 2..cutoff) are its first rows.
+    # Shear-shear stays Limber.
+    correction = None
+    if nonlimber:
+        tick = time.perf_counter()
+        cutoff = min(int(settings['nonlimber_lmax']), int(settings['ell_max']))
+        low = interface.covariance_cluster_nonlimber(
+            a_edges=np.ascontiguousarray(settings['a_edges'], dtype=float),
+            nquad=settings['radial_nquad'], nwindow=settings['nwindow'],
+            include_rsd=rsd, nonlimber_lmax=cutoff,
+            nonlimber_nchi=settings['nonlimber_nchi'],
+        )
+        correction = observed_spectra(spectra=low['correction'], ell=low['ell'],
+                                      nlens=nlens+ncount)
+        checkpoint('all_pairs_nonlimber_correction', tick)
+
     # --- 2. Bin-averaged full-sky angular transforms and Gaussian covariance ---
     # Pure white noise is integrated analytically through mask pair areas.
     # Signal terms retain every integer multipole from 2 through ell_max;
@@ -336,28 +384,49 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         scalar_kernel=np.ascontiguousarray(mask_operator[3]),
     )
 
+    def project_means(observed):
+        """Project every row's observed spectrum with its probe's bin kernel.
+
+        Arguments:
+            observed = [nell,nfield,nfield] spectra in the observed convention.
+        Returns:
+            [nrow,nbin] means, rows in layout order (0 xi+, 1 xi-, 2 gamma_t,
+            3 w kernels).
+        """
+        values = np.empty((len(rows), nbin))
+        for probe in range(4):
+            selected = np.flatnonzero(rows[:, 0] == probe)
+            fields = rows[selected, 1:]
+            # fields is [nselected,2], the (A,B) IDs of each selected row.
+            # Indexing observed[:, A, B] with the two ID arrays picks one
+            # spectrum per row, [nell,nselected]; .T makes it
+            # [nselected,nell], one row per mean.
+            data = np.ascontiguousarray(observed[:, fields[:, 0], fields[:, 1]].T)
+            values[selected] = interface.covariance_project(
+                left=data, right=kernels[probe], weight=np.ones(len(ell)),
+            )
+        return values
+
+    # The SSC observed-number subtraction below uses the Limber means, as
+    # survey.realspace_covariance does: the Gaussian model must not change
+    # SSC. The Gaussian blocks and the returned means use the hybrid
+    # spectra when the non-Limber correction is on (added in place to the
+    # first rows, ell = 2..cutoff).
+    ssc_means = project_means(signal)
+    means = ssc_means
+    if correction is not None:
+        signal[:len(correction)] += correction
+        means = project_means(signal)
+
     # Gaussian blocks of all two-point rows in one C call; the pair areas
     # supply the pure-noise term on each bin, as in gaussian.realspace_block.
     gaussian = interface.covariance_gaussian_real(
         spectra=signal, noise=noise, rows=rows, operators=kernels,
         ell_min=2, area_sr=resolved['area_sr'], pair_area_sr2=pair_area,
     )
-    # Each row's mean is its observed spectrum projected with the bin
-    # kernel of its probe (0 xi+, 1 xi-, 2 gamma_t, 3 w).
-    means = np.empty((len(rows), nbin))
-    for probe in range(4):
-        selected = np.flatnonzero(rows[:, 0] == probe)
-        fields = rows[selected, 1:]
-        # fields is [nselected,2], the (A,B) IDs of each selected row. Indexing
-        # signal[:, A, B] with the two ID arrays picks one spectrum per row,
-        # [nell,nselected]; .T makes it [nselected,nell], one row per mean.
-        data = np.ascontiguousarray(signal[:, fields[:, 0], fields[:, 1]].T)
-        means[selected] = interface.covariance_project(
-            left=data, right=kernels[probe], weight=np.ones(len(ell)),
-        )
     # Release the large all-pairs spectra and the mask operator before the
     # halo-table stage; no later stage reads them.
-    del spectra, signal, snapshot, mask_operator
+    del spectra, signal, snapshot, mask_operator, correction
     checkpoint('gaussian_and_mean', tick)
 
     # --- 3. Shared matter cNG and SSC, plus the selected own-profile response ---
@@ -427,11 +496,12 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             local_window = catalogs['window'][category]*base[1, source]/distance**2
             shell[row] += local_window*own[category % catalogs['nrichness']]
 
-    # The observed-number subtraction (U_A+U_B)*C_AB described above. The
-    # window sum is [nrow,nstate] and means [nrow,nbin]; the None axes
-    # broadcast their product to [nrow,nbin,nstate], the shape of shell.
+    # The observed-number subtraction (U_A+U_B)*C_AB described above, with
+    # the Limber means. The window sum is [nrow,nstate] and ssc_means
+    # [nrow,nbin]; the None axes broadcast their product to
+    # [nrow,nbin,nstate], the shape of shell.
     shell -= ((mean_window[rows[:, 1]]+mean_window[rows[:, 2]])[:, None, :]
-              *means[:, :, None])
+              *ssc_means[:, :, None])
     # One row per two-point entry, bins fastest within each measured row:
     # the order of two_point_positions.
     shell = np.ascontiguousarray(shell.reshape(len(rows)*nbin, nstate))

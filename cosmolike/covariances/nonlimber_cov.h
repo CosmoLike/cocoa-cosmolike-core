@@ -31,6 +31,28 @@ void nonlimber_spectra_cov(
     double* const* matched           // same shape, matched Limber spectrum
   );
 
+// nonlimber_spectra_cov on snapshots the caller builds: radial (the Limber
+// quadrature) and logarithmic (the same fields at chi_min*exp(i*dlnchi),
+// i = 0..nchi-1, up to chi(amin)), which may hold more lens-type fields
+// than the core catalogs (nonlimber_cluster_cov.c inserts the clusters).
+// rsd = NULL leaves out redshift-space distortions; otherwise rsd[f][i]
+// is the unbiased density per unit distance of lens-type field f < nlens
+// at logarithmic node i, and each lens-type transfer gains the Kaiser
+// term -integral dchi rsd_f f(a) D(a) j_l''(k chi); matched stays without
+// RSD. The caller validates the model as nonlimber_spectra_cov does and
+// keeps ownership of both snapshots.
+void nonlimber_pairs_cov(
+    const struct radial_cov* radial,      // Limber quadrature snapshot
+    const struct radial_cov* logarithmic, // same fields on ln(chi) nodes
+    const double* const* rsd,             // [nlens][nchi] or NULL
+    const double amin,                    // far boundary in scale factor
+    const int lmax,                       // integer multipoles 2..lmax
+    const int nchi,                       // log-distance samples, 2^n+1 >= 65
+    const double chi_min,                 // positive near distance in c/H0
+    double* const* exact,                 // [triangular pair][lmax-1]
+    double* const* matched                // same shape, matched Limber spectrum
+  );
+
 // Add exact-minus-matched only to galaxy-containing rows at integer ell.
 // Multipoles outside [2,lmax] and all source-source rows remain unchanged.
 // The result is the hybrid spectrum
