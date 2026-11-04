@@ -27,7 +27,8 @@
 //
 //   CAMB (via the C-interface setters)
 //     set_distances                 -> cosmology.chi  (z, chi(z) in Mpc/h)
-//     set_growth                    -> cosmology.G    (z, G(z); D = G*a)
+//     set_growth                    -> cosmology.G    (z, G(z), f(z);
+//                                      D = G*a, f = dlnD/dlna)
 //     set_linear_power_spectrum     -> cosmology.lnPL (ln P on log10k x z)
 //     set_linear_power_spectrum_cb  -> cosmology.lnPL_cb (ln P_cb, cold
 //                                      dark matter + baryons, on the
@@ -500,17 +501,15 @@ double norm_growfac(const double a, const bool normalize_z0)
 }
 
 // ---------------------------------------------------------------------------
-// Logarithmic growth rate f(z) = dlnD/dlna for D = G*a, from the same
-// cosmology.G table as norm_growfac (note the argument is z, not a).
-// With the bracket slope dG/dz = (G_{j+1} - G_j)/(z_{j+1} - z_j):
+// Logarithmic growth rate f(z) = dlnD/dlna for D = G*a (note the argument
+// is z, not a), by linear interpolation of row 2 of the cosmology.G table:
 //
-//   dlnG/dlnz = (dG/dz)*z/G(z)
-//   dlnG/dlna = -dlnG/dlnz*(1+z)/z    (from ln a = -ln(1+z))
-//   f         = 1 + dlnG/dlna
+//   f(z) = f_j + dy*(f_{j+1} - f_j),  dy = (z - z_j)/(z_{j+1} - z_j)
 //
-// The normalization G(0) cancels in the logarithmic derivative, so no
-// z = 0 lookup is needed. The bracket is found by direct indexing on
-// the piecewise-uniform z grid, as in norm_growfac.
+// set_growth fills that row at every node, f = 1 - (1+z)(dG/dz)/G, with
+// dG/dz from a five-point stencil of G (the derivation and the measured
+// errors are in set_growth's comment). The bracket is found by direct
+// indexing on the piecewise-uniform z grid, as in norm_growfac.
 //
 // Cache invalidation:
 // no static state; the table is maintained by
@@ -533,26 +532,18 @@ double f_growth(const double z)
 
   const double zj  = cosmology.G[0][j];
   const double zj1 = cosmology.G[0][j+1];
-  const double Gj  = cosmology.G[1][j];
-  const double Gj1 = cosmology.G[1][j+1];
+  const double fj  = cosmology.G[2][j];
+  const double fj1 = cosmology.G[2][j+1];
 
-  const double dy       = (z - zj) / (zj1 - zj);
-  const double G        = Gj + dy * (Gj1 - Gj);
-  const double dlnGdlnz = ((Gj1 - Gj) / (zj1 - zj)) * z / G;
-  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
-  const double dlnGdlnz_slope = ((Gj1 - Gj)/
-    (zj1 - zj))*(1+z)/G;
-  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
-                                    : -dlnGdlnz_slope;
-
-  return 1 + dlnGdlna; // Growth D = G * a
+  const double dy = (z - zj) / (zj1 - zj);
+  return fj + dy * (fj1 - fj);
 }
 
 // ---------------------------------------------------------------------------
 // Growth factor D(a) and growth rate f(a) fused in one bracket lookup:
 // the formulas of norm_growfac and f_growth (see those headers) evaluated
-// from a single interpolation of the cosmology.G table at z = 1/a - 1,
-// plus the j = 0 lookup of the G(0) normalization.
+// in a single bracket of the cosmology.G table at z = 1/a - 1 (row 1 for
+// G, row 2 for f), plus the j = 0 lookup of the G(0) normalization.
 //
 // Cache invalidation:
 // no static state; the table is maintained by
@@ -597,19 +588,14 @@ struct growths norm_growfac_all(const double a, const bool normalize_z0)
   const double zj1 = cosmology.G[0][j+1];
   const double Gj  = cosmology.G[1][j  ];
   const double Gj1 = cosmology.G[1][j+1];
+  const double fj  = cosmology.G[2][j  ];
+  const double fj1 = cosmology.G[2][j+1];
 
   const double dy = (z - zj) / (zj1 - zj);
   const double G  = Gj + dy * (Gj1 - Gj);
 
-  const double dlnGdlnz = ((Gj1 - Gj) / (zj1 - zj)) * z / G;
-  // z-cancelled form, finite at z = 0 (dlnGdlnz carries a factor z)
-  const double dlnGdlnz_slope = ((Gj1 - Gj)/
-    (zj1 - zj))*(1+z)/G;
-  const double dlnGdlna = (z > 0.0) ? -dlnGdlnz*(1+z)/z
-                                    : -dlnGdlnz_slope;
-
   struct growths Gf;
-  Gf.f = 1 + dlnGdlna;
+  Gf.f = fj + dy * (fj1 - fj);
   Gf.D = normalize_z0 ? (G*a)/growfact1 : (G*a);
   return Gf;
 }

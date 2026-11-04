@@ -277,6 +277,8 @@ typedef struct
   // ---------------------------------------------------
   // z = G[0,j<G_nz]
   // G = G[1,j<G_nz], with D = G*a (set_growth)
+  // f = G[2,j<G_nz], the growth rate dlnD/dlna at the node (set_growth
+  //     computes it with a five-point stencil of G)
   int G_nz;
   double** G;
   // Direct-index lookup metadata for the z axis (G[0]).
