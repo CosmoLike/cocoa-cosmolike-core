@@ -270,11 +270,14 @@ void init_cluster_richness_bins(
   );
 
 // selection kernels: table column 0 = z, column i+1 = <phi_i|z>; nominal
-// z_lambda edges of each bin in zbin_min / zbin_max
+// z_lambda edges of each bin in zbin_min / zbin_max; zmid_convention says
+// what the z column means (CLUSTER_ZDIST_ZMID: sample points, the default;
+// CLUSTER_ZDIST_ZLOW: left cell edges)
 void set_cluster_zdist(
     arma::Mat<double> input_table,
     arma::Col<double> zbin_min,
-    arma::Col<double> zbin_max
+    arma::Col<double> zbin_max,
+    const int zmid_convention = CLUSTER_ZDIST_ZMID
   );
 
 // survey area of the cluster sample: column 0 = z, column 1 = deg^2; a

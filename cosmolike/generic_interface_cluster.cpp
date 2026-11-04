@@ -455,8 +455,20 @@ void init_cluster_richness_bins(vector lambda_min, vector lambda_max)
 //
 // Layout (the set_lens_sample design): cluster.zdist_table is
 // (nbin + 1) x nz with <phi_i|z> in row i and the z grid in row nbin.
-// Unlike a galaxy n(z) histogram, the z column holds sample points of a
-// function (no left-edge convention): the table covers [z_0, z_last].
+//
+// The z column (zmid_convention, the encoding of the galaxy
+// photoz_zmid_convention):
+//   CLUSTER_ZDIST_ZMID (1, the default): the value of row i belongs at z_i,
+//     a sample point of the function; the stored z are the input z.
+//   CLUSTER_ZDIST_ZLOW (0): z_i is the left edge of the cell
+//     [z_i, z_(i+1)), and the value belongs at its centre: the stored z
+//     are (z_i + z_(i+1))/2, and for the last row z_last + (z_last -
+//     z_(last-1))/2 (the last cell repeats the previous width, as the
+//     galaxy readers do). The DES and lighthouse tables use it: a
+//     Cardinal table's P = 0.5 crossings sit 0.005 below every nominal
+//     edge, half of its 0.01 cell.
+// The stored z are computed before the change check, so an unchanged
+// table under an unchanged convention never refills.
 //
 // Support of bin i: the zero nodes that bracket the nonzero entries of
 // <phi_i|z> (the first nonzero node and the last one, each widened by one
@@ -482,9 +494,14 @@ void init_cluster_richness_bins(vector lambda_min, vector lambda_max)
 //
 // Validation: 0 < nbin <= MAX_SIZE_ARRAYS, at least two z rows, strictly
 // increasing z >= 0, finite non-negative kernels with a positive maximum,
-// finite edges with zbin_min < zbin_max.
+// finite edges with zbin_min < zbin_max, zmid_convention 0 or 1.
 // ---------------------------------------------------------------------------
-void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
+void set_cluster_zdist(
+    matrix input_table,
+    vector zbin_min,
+    vector zbin_max,
+    const int zmid_convention
+  )
 {
   static constexpr std::string_view fname = "set_cluster_zdist"sv;
   debug("{}: {}", fname, errbegins);
@@ -539,8 +556,27 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
       exit(1);
     }
   }
+  if (zmid_convention != CLUSTER_ZDIST_ZLOW &&
+      zmid_convention != CLUSTER_ZDIST_ZMID) [[unlikely]] {
+    critical(errorns2, fname, "zmid_convention", zmid_convention);
+    exit(1);
+  }
 
-  // --- 2. DID ANYTHING CHANGE? ---
+  // --- 2. THE STORED z: SAMPLE POINTS OR CELL CENTRES ---
+
+  vector z_in(nz);
+  for (int i=0; i<nz; i++) {
+    z_in(i) = input_table(i,0);
+  }
+  if (CLUSTER_ZDIST_ZLOW == zmid_convention) {
+    for (int i=0; i<nz-1; i++) {
+      z_in(i) = 0.5*(input_table(i,0) + input_table(i+1,0));
+    }
+    z_in(nz-1) = input_table(nz-1,0) +
+                 0.5*(input_table(nz-1,0) - input_table(nz-2,0));
+  }
+
+  // --- 3. DID ANYTHING CHANGE? ---
 
   bool changed = (cluster.zdist_nbin != nbin) ||
                  (cluster.zdist_nz != nz) ||
@@ -548,7 +584,7 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
   if (!changed) {
     const double* z_v = cluster.zdist_table[nbin];
     for (int i=0; i<nz && !changed; i++) {
-      if (fdiff(z_v[i], input_table(i,0))) {
+      if (fdiff(z_v[i], z_in(i))) {
         changed = true;
       }
       for (int k=0; k<nbin && !changed; k++) {
@@ -569,7 +605,7 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
     return;
   }
 
-  // --- 3. A NEW NUMBER OF BINS INVALIDATES THE w_cg PAIRING ---
+  // --- 4. A NEW NUMBER OF BINS INVALIDATES THE w_cg PAIRING ---
 
   if (cluster.zdist_nbin != nbin) {
     for (int k=0; k<MAX_SIZE_ARRAYS; k++) {
@@ -578,7 +614,7 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
     cluster.random_pairs = RandomNumber::get_instance().get();
   }
 
-  // --- 4. COPY THE TABLE (z IN THE LAST ROW) ---
+  // --- 5. COPY THE TABLE (THE STORED z IN THE LAST ROW) ---
 
   if (cluster.zdist_table != NULL) {
     free(cluster.zdist_table);
@@ -590,7 +626,7 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
   double** tab = cluster.zdist_table;  // alias
   double* z_v = cluster.zdist_table[nbin];  // alias
   for (int i=0; i<nz; i++) {
-    z_v[i] = input_table(i,0);
+    z_v[i] = z_in(i);
     for (int k=0; k<nbin; k++) {
       tab[k][i] = input_table(i,k+1);
     }
@@ -598,7 +634,7 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
   cluster.zdist_zall[RANGE_MIN] = fmax(z_v[0], cluster_zdist_zmin_floor);
   cluster.zdist_zall[RANGE_MAX] = z_v[nz-1];
 
-  // --- 5. SUPPORT OF EACH KERNEL ---
+  // --- 6. SUPPORT OF EACH KERNEL ---
 
   for (int k=0; k<nbin; k++) {
     double phi_max = tab[k][0];
@@ -620,7 +656,6 @@ void set_cluster_zdist(matrix input_table, vector zbin_min, vector zbin_max)
       }
     }
     // widen by one grid point: the linear interpolant ramps to zero there
-    // (the column holds sample points, passed through unchanged)
     const int first_widened = (first > 0) ? first - 1 : 0;
     const int last_widened  = (last < nz - 1) ? last + 1 : nz - 1;
 

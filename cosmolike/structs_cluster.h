@@ -58,6 +58,17 @@ extern "C" {
                                    // 0.923, 0.909 at z = 0.2, 0.3, 0.4,
                                    // 0.5, 0.6 (counts 3-9% below mode 0)
 
+// meaning of the z column of the selection-kernel table (set_cluster_zdist),
+// the encoding of the galaxy photoz_zmid_convention:
+#define CLUSTER_ZDIST_ZLOW 0       // left cell edges: the value of row i
+                                   // belongs at the cell centre, halfway to
+                                   // row i + 1 (the last cell repeats the
+                                   // previous width); the files of the DES
+                                   // analyses and of lighthouse
+#define CLUSTER_ZDIST_ZMID 1       // the z values are the sample points
+                                   // themselves (the des_cluster synthetic
+                                   // tables; the default)
+
 // Slots of cluster.probe[]: 1 = the probe is part of the data vector
 #define CLUSTER_PROBE_N 0    // cluster counts
 #define CLUSTER_PROBE_CS 1   // cluster lensing (gamma_t or Sigma)
@@ -115,9 +126,12 @@ typedef struct
   // photometric redshift z_lambda inside bin i (Y1 eq 6). Passed as a table
   // from Python (top-hat, erf of a Gaussian photo-z, or from randoms), laid
   // out like redshift.clustering_zdist_table: rows 0 .. zdist_nbin - 1 hold
-  // the bins, row zdist_nbin holds z. The z values are sample points (no
-  // half-cell offset, unlike the galaxy n(z) files) and <phi_i|z> is their
-  // piecewise-linear interpolant.
+  // the bins, row zdist_nbin holds z. The stored z are the points where
+  // each value belongs: the input z column itself (CLUSTER_ZDIST_ZMID) or
+  // the centres of the cells whose left edges it lists (CLUSTER_ZDIST_ZLOW,
+  // half a cell higher). <phi_i|z> is the piecewise-linear interpolant of
+  // the stored points. The two readings differ by half a cell: for the
+  // Cardinal table (dz = 0.01) about 1-2% of the lowest bin's counts.
   int zdist_nbin;
   int zdist_nz;                          // number of z rows of the input
   double** zdist_table;                  // [zdist_nbin + 1][zdist_nz]
