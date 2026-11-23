@@ -4,7 +4,8 @@ The Gaussian (G), super-sample (SSC) and connected non-Gaussian (cNG)
 terms follow the decomposition in Krause & Eifler (2017), Appendix A,
 arXiv:1601.05779. SSC uses the isotropic halo response of Takada & Hu
 (2013), corrected Eq. 44 and Appendix A, arXiv:1302.6994; it is not a
-calibrated nonlinear tidal response. The mask is a spherical cap; long
+calibrated nonlinear tidal response. The mask is a spherical cap or the
+survey's own mask spectrum (settings mask_cl); long
 and short modes in SSC/cNG use Limber. The Gaussian galaxy-galaxy and
 galaxy-shear spectra can include non-Limber radial mode coupling.
 
@@ -21,7 +22,7 @@ import time
 import numpy as np
 
 from .gaussian import observed_spectra, limber_spectra
-from .geometry import angular_rule, cap_mask
+from .geometry import angular_rule, footprint_mask
 from .accuracy import non_gaussian_multipoles
 
 
@@ -623,8 +624,10 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
     # pair-count term is analytic. A Fourier band instead includes exactly
     # the modes between its endpoints; its noise uses that finite sum.
     tick = time.perf_counter()
-    mask = cap_mask(area_sr=settings["area_sr"],
-                    ell_max=settings["mask_ell_max"])
+    # The survey's own mask spectrum when mask_cl is given, else a cap.
+    mask = footprint_mask(area_sr=settings["area_sr"],
+                          ell_max=settings["mask_ell_max"],
+                          mask_cl=settings.get("mask_cl"))
     # Fourier space keeps this empty array: it has no pair-area term.
     pair_area = np.empty(0)
     if space == "real":
