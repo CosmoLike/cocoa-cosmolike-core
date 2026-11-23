@@ -139,6 +139,85 @@ def _own_profile_response(interface, settings, geometry, catalogs, coarse_ell,
     return projected.reshape(len(transform), nrichness, nstate).transpose(1, 0, 2)
 
 
+def _count_area(table, geometry, density, area_sr):
+    """Survey solid angle of the cluster counts at each radial state.
+
+    A volume-limited cluster sample loses the parts of the footprint too
+    shallow to detect clusters at z, so the counts see an area Omega(z)
+    smaller than the two-point footprint. The likelihood takes this
+    Omega(z) from set_cluster_area (cosmo2D_cluster.c, cluster_counts_fill);
+    this is the same linear interpolation of the same (z, deg^2) table.
+
+    Arguments:
+        table = [n,2] float, z strictly increasing and the area in deg^2,
+            nonnegative and at most the full sky.
+        geometry = [4,nstate] a,chi,f_K,dchi of the forecast states.
+        density = [ncount,nstate] selected abundance of every count bin.
+        area_sr = two-point footprint area in steradians.
+    Returns:
+        [nstate] Omega(z) in steradians. States where no count bin has
+        clusters keep area_sr: their count shells vanish anyway.
+    Raises:
+        ValueError for a malformed table, or one that does not cover the
+        redshift of every state where some count bin has clusters (the
+        likelihood stops there as well).
+    """
+    deg2_to_sr = (np.pi/180.0)**2
+    table = np.asarray(table, dtype=float)
+    if (table.ndim != 2 or table.shape[0] < 2 or table.shape[1] != 2
+            or not np.all(np.isfinite(table))
+            or np.any(np.diff(table[:, 0]) <= 0.0)
+            or np.any(table[:, 1] < 0.0)
+            or np.any(table[:, 1]*deg2_to_sr > 4.0*np.pi)):
+        raise ValueError("cluster_area_table must be [n,2] with n >= 2, z strictly "
+                         "increasing and 0 <= area <= full sky in deg^2")
+    z = 1.0/geometry[0]-1.0
+    active = np.any(density > 0.0, axis=0)
+    if np.any(active & ((z < table[0, 0]) | (z > table[-1, 0]))):
+        raise ValueError("cluster_area_table must cover the redshift of every "
+                         "state where a count bin has clusters")
+    area = np.full(z.shape, float(area_sr))
+    area[active] = np.interp(z[active], table[:, 0], table[:, 1])*deg2_to_sr
+    return area
+
+
+def _count_variance(interface, area, area_sr, variance, distance, long_power,
+                    mask_ell_max):
+    """Long-mode variance seen by the counts of each shell, sigma_b^2(chi).
+
+    The count-count SSC of a shell correlates two counts over the same
+    footprint Omega(z), so its sigma_b^2 is that of a cap of area Omega(z),
+    not of the two-point footprint. Shells that keep area_sr reuse the
+    two-point variance; equal areas share one C call.
+
+    Arguments:
+        interface = compiled project with covariance_ssc_mask_variance.
+        area = [nstate] count footprint (_count_area), in sr.
+        area_sr = two-point footprint area in steradians.
+        variance = [nstate] sigma_b^2 of the two-point footprint, in c/H0.
+        distance = [nstate] f_K in c/H0.
+        long_power = [nstate,mask_ell_max+1] linear power of the long modes.
+        mask_ell_max = last multipole of the footprint spectrum.
+    Returns:
+        [nstate] sigma_b^2 of the count footprint, in c/H0; zero where the
+        count footprint is empty.
+    """
+    result = np.array(variance, dtype=float)
+    for value in np.unique(area):
+        if value == area_sr:
+            continue
+        nodes = np.flatnonzero(area == value)
+        if value == 0.0:
+            result[nodes] = 0.0
+            continue
+        result[nodes] = interface.covariance_ssc_mask_variance(
+            mask_cl=cap_mask(area_sr=value, ell_max=mask_ell_max), area_sr=value,
+            distance=np.ascontiguousarray(distance[nodes]),
+            power=np.ascontiguousarray(long_power[nodes]),
+        )
+    return result
+
+
 def compute_forecast(interface, settings, progress=None, backend=None):
     """Return the joint angular forecast with separate G, SSC and cNG.
 
@@ -159,6 +238,15 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             term; ia must be none. Without the mapping the spectra are
             Limber. SSC and cNG always use the Limber model. Numerical
             controls come from the common covariance accuracy boost.
+            The optional cluster_area_table [n,2] (z, deg^2) is the survey
+            area of the cluster counts as a function of redshift, the
+            table the likelihood passes to set_cluster_area. With it the
+            mean counts, their Poisson noise and their SSC response use
+            Omega(z) on every shell, and count-count SSC uses the
+            long-mode variance of a cap of area Omega(z). Count-two-point
+            SSC keeps the variance of the two-point footprint, and the
+            two-point blocks (cluster ones included) keep area_deg2.
+            Without the table the counts use area_deg2 at every z.
         progress = optional callable receiving stage and elapsed seconds.
         backend = None uses notebook wrappers; interface.covariance selects
             the direct production bindings to the same C calculations.
@@ -217,6 +305,12 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         'selected-cluster one-halo cNG corrections',
         'non-SSC count-spectrum cross covariance',
     ]
+    if settings.get('cluster_area_table') is None:
+        resolved['count_area_model'] = 'constant area_deg2'
+    else:
+        resolved['count_area_model'] = (
+            'cluster_area_table Omega(z) for counts and count-count SSC; '
+            'count-two-point SSC with the two-point footprint variance')
     if not nonlimber:
         resolved['omitted_terms'].append('all-pairs non-Limber corrections')
     if not rsd:
@@ -513,9 +607,20 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         mask_cl=mask, area_sr=resolved['area_sr'],
         distance=np.ascontiguousarray(distance), power=matter['long_power'],
     )
+    # Count footprint Omega(z) on every shell: the two-point area unless
+    # cluster_area_table is set. count_statistics multiplies by one area,
+    # so the density and its response carry Omega(z)/area_sr instead:
+    # area_sr*f_K^2*(Omega/area_sr)*n = Omega*f_K^2*n on each shell.
+    count_area = np.full(nstate, resolved['area_sr'])
+    if settings.get('cluster_area_table') is not None:
+        count_area = _count_area(
+            table=settings['cluster_area_table'], geometry=geometry,
+            density=catalogs['density'], area_sr=resolved['area_sr'],
+        )
+    scale = count_area/resolved['area_sr']
     counts = count_statistics(
         interface=interface, distance=distance, dchi=dchi,
-        density=catalogs['density'], derivative=catalogs['derivative'],
+        density=catalogs['density']*scale, derivative=catalogs['derivative']*scale,
         area_sr=resolved['area_sr'], background_variance=variance,
     )
 
@@ -536,6 +641,23 @@ def compute_forecast(interface, settings, progress=None, backend=None):
     # the transpose of the strict upper triangle (k=1) fills the lower one,
     # so the matrix is exactly symmetric.
     ssc = np.triu(ssc)+np.triu(ssc, k=1).T
+
+    # With an area table, two counts of one shell share the footprint
+    # Omega(z), so their SSC uses the long-mode variance of that footprint.
+    # The count-two-point blocks above keep the two-point variance.
+    if np.any(count_area != resolved['area_sr']):
+        count_variance = _count_variance(
+            interface=interface, area=count_area, area_sr=resolved['area_sr'],
+            variance=variance, distance=distance,
+            long_power=matter['long_power'],
+            mask_ell_max=settings['mask_ell_max'],
+        )
+        count_ssc = interface.covariance_project(
+            left=counts['shell_response'], right=counts['shell_response'],
+            weight=np.ascontiguousarray(dchi*count_variance),
+        )
+        count_ssc = np.triu(count_ssc)+np.triu(count_ssc, k=1).T
+        ssc[np.ix_(count_positions, count_positions)] = count_ssc
 
     # In the biased-tracer cNG approximation the matter trispectrum has
     # one linear bias per density leg. Keep every crossed radial window.
