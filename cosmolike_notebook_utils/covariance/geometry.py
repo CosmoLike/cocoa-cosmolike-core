@@ -201,6 +201,50 @@ def footprint_mask(area_sr, ell_max, mask_cl=None):
     return result
 
 
+def correlation_pair_area(area_sr, edges_rad, correlation):
+    """Return ordered-pair areas from a measured mask correlation per bin.
+
+    The noise term of a real-space Gaussian covariance divides by the
+    number of pairs in each angular bin (Troxel et al. 2018,
+    arXiv:1804.10663, Eq. 6):
+
+      A_pair = area_sr * 2 pi (cos theta_low - cos theta_high) * w_W,
+
+    where w_W is the bin-averaged angular correlation of the survey mask,
+    the fraction of the edge-free pairs that the footprint keeps. A mask
+    power spectrum gives w_W through covariance_mask_pair_area; this
+    function instead takes w_W measured in configuration space (for
+    example from source pair counts against an unmasked expectation, as in
+    the DES Y6 w_mask of CosmoCov), which also captures masking smaller
+    than the pixels of a mask map.
+
+    Arguments:
+        area_sr: footprint area in steradians.
+        edges_rad: [nbin+1] increasing angular bin edges in radians.
+        correlation: [nbin] w_W per bin, finite and positive.
+
+    Returns:
+        float64 [nbin] pair areas in sr^2, the input of the Gaussian noise
+        term (covariance_gaussian_real's pair_area_sr2).
+
+    Raises:
+        ValueError for a correlation that does not match the bins or is
+        not finite and positive, or for edges that do not increase.
+    """
+    edges = np.asarray(edges_rad, dtype=float)
+    correlation = np.asarray(correlation, dtype=float)
+    if edges.ndim != 1 or len(edges) < 2 or np.any(np.diff(edges) <= 0.0):
+        raise ValueError("edges_rad must be increasing angular bin edges")
+    if (correlation.shape != (len(edges)-1,)
+            or not np.all(np.isfinite(correlation)) or np.any(correlation <= 0.0)):
+        raise ValueError("mask_pair_correlation needs one finite positive w_W per angular bin")
+    # cos(a)-cos(b) = 2 sin((a+b)/2) sin((b-a)/2), without the cancellation
+    # of the direct difference in arcminute bins.
+    low, high = edges[:-1], edges[1:]
+    ring = 2.0*np.pi*2.0*np.sin(0.5*(low+high))*np.sin(0.5*(high-low))
+    return area_sr*ring*correlation
+
+
 def angular_rule(nquad, npanel, interface):
     """Build a planar dtheta/pi rule resolving nearly opposite wavevectors.
 

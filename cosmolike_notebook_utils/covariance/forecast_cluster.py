@@ -36,7 +36,8 @@ from .accuracy import non_gaussian_multipoles
 from .counts_cluster import count_statistics
 from .forecast import _json_array
 from .gaussian import observed_spectra, limber_spectra
-from .geometry import footprint_area, footprint_mask, noise_powers
+from .geometry import (correlation_pair_area, footprint_area, footprint_mask,
+                       noise_powers)
 from .survey import compress_operators, project_connected, _matter_covariance_tables
 from .survey_cluster import observable_layout, selected_windows, all_pairs_spectra
 from .transform_cluster import localize_covariance
@@ -162,7 +163,10 @@ def compute_forecast(interface, settings, progress=None, backend=None):
             The optional mask_cl (geometry.load_mask_cl) is the raw power
             spectrum of the survey mask, used by SSC and the noise pair
             areas instead of a spherical cap; its area sqrt(4 pi C_0)
-            must match area_deg2 to 0.1% and replaces it.
+            must match area_deg2 to 0.1% and replaces it. The optional
+            mask_pair_correlation [nbin] is a measured mask correlation
+            w_W per angular bin; it replaces the noise pair areas
+            (geometry.correlation_pair_area), while SSC keeps the mask.
         progress = optional callable receiving stage and elapsed seconds.
         backend = None uses notebook wrappers; interface.covariance selects
             the direct production bindings to the same C calculations.
@@ -392,6 +396,13 @@ def compute_forecast(interface, settings, progress=None, backend=None):
         mask_cl=mask, area_sr=resolved['area_sr'], edges_rad=resolved['edges_rad'],
         scalar_kernel=np.ascontiguousarray(mask_operator[3]),
     )
+    # A measured mask correlation per bin (mask_pair_correlation) replaces
+    # the pair areas of the mask spectrum; SSC keeps the mask.
+    if settings.get('mask_pair_correlation') is not None:
+        pair_area = correlation_pair_area(
+            area_sr=resolved['area_sr'], edges_rad=resolved['edges_rad'],
+            correlation=settings['mask_pair_correlation'],
+        )
 
     def project_means(observed):
         """Project every row's observed spectrum with its probe's bin kernel.

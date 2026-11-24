@@ -303,7 +303,10 @@ def compute_forecast(interface, settings, space="real", rows=None,
             optional mask_cl (geometry.load_mask_cl) is the raw power
             spectrum of the survey mask, used by SSC and the noise pair
             areas instead of a spherical cap; its area sqrt(4 pi C_0)
-            must match area_deg2 to 0.1% and replaces it.
+            must match area_deg2 to 0.1% and replaces it. The optional
+            mask_pair_correlation [nbin] is a measured mask correlation
+            w_W per angular bin; it replaces the noise pair areas
+            (geometry.correlation_pair_area), while SSC keeps the mask.
         space = "real" for angular bins, "fourier" for E-mode bandpowers.
         backend = None uses notebook wrappers; interface.covariance uses
             the direct production bindings to the same C calculations.

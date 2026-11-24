@@ -22,7 +22,7 @@ import time
 import numpy as np
 
 from .gaussian import observed_spectra, limber_spectra
-from .geometry import angular_rule, footprint_mask
+from .geometry import angular_rule, correlation_pair_area, footprint_mask
 from .accuracy import non_gaussian_multipoles
 
 
@@ -649,6 +649,13 @@ def _survey_covariance(interface, settings, rows, noise, progress, space):
             area_sr=settings["area_sr"],
             scalar_kernel=np.ascontiguousarray(mask_operator[3]),
         )
+        # A measured mask correlation per bin (mask_pair_correlation)
+        # replaces the pair areas of the mask spectrum; SSC keeps the mask.
+        if settings.get("mask_pair_correlation") is not None:
+            pair_area = correlation_pair_area(
+                area_sr=settings["area_sr"], edges_rad=settings["edges_rad"],
+                correlation=settings["mask_pair_correlation"],
+            )
 
         # Dropping columns ell=0 and 1 aligns the kernels with ell = 2..ell_max.
         kernels = np.ascontiguousarray(operators[:, :, 2:])
