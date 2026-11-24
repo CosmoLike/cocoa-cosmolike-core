@@ -108,6 +108,143 @@ def cap_mask(area_sr, ell_max):
     return np.pi*integral**2
 
 
+def load_mask_cl(filename):
+    """Read a raw mask power spectrum in the CosmoCov c_footprint_file format.
+
+    Arguments:
+        filename: text file with two columns, the multipole L = 0, 1, 2, ...
+            (contiguous, starting at zero) and the raw mask power
+            C_L = sum_M |W_LM|^2/(2L+1), as healpy.anafast returns for the
+            mask map. Not divided by C_0, the area or f_sky.
+
+    Returns:
+        float64 [nrow] C_L, index L.
+
+    Raises:
+        ValueError when the file does not have two columns or its
+        multipoles are not 0, 1, 2, ...
+    """
+    table = np.loadtxt(filename, ndmin=2)
+    if table.shape[1] != 2:
+        raise ValueError(f"{filename}: expected two columns, L and C_L")
+    if not np.array_equal(table[:, 0], np.arange(len(table))):
+        raise ValueError(f"{filename}: multipoles must be 0, 1, 2, ... in order")
+    return np.ascontiguousarray(table[:, 1])
+
+
+def mask_area(mask_cl):
+    """Return the footprint area in steradians of a raw binary-mask spectrum.
+
+    A binary mask W has W_00 = area/sqrt(4 pi), so C_0 = area^2/(4 pi) and
+    area = sqrt(4 pi C_0). A weighted (non-binary) mask has no such area.
+    """
+    return float(np.sqrt(4.0*np.pi*mask_cl[0]))
+
+
+def footprint_area(area_deg2, mask_cl=None):
+    """Return the footprint area in steradians used by every covariance term.
+
+    Arguments:
+        area_deg2: survey area in deg^2.
+        mask_cl: optional raw mask spectrum (load_mask_cl).
+
+    Returns:
+        area_deg2 in sr without a mask spectrum; with one, the mask's own
+        area sqrt(4 pi C_0), so f_sky, SSC and the pair areas share one
+        footprint exactly.
+
+    Raises:
+        ValueError when the mask area differs from area_deg2 by more than
+        0.1%: the stated area and the mask must describe one footprint.
+    """
+    area_sr = area_deg2*(np.pi/180.0)**2
+    if mask_cl is None:
+        return area_sr
+    masked = mask_area(np.asarray(mask_cl, dtype=float))
+    if not np.isfinite(masked) or abs(masked/area_sr-1.0) > 1.e-3:
+        raise ValueError(f"area_deg2 = {area_deg2} but the mask spectrum gives "
+                         f"{masked/(np.pi/180.0)**2} deg^2")
+    return masked
+
+
+def footprint_mask(area_sr, ell_max, mask_cl=None):
+    """Return the raw footprint spectrum used by SSC and the noise pair areas.
+
+    Arguments:
+        area_sr: footprint area in steradians.
+        ell_max: last mask multipole kept.
+        mask_cl: optional raw spectrum of the survey mask (load_mask_cl).
+            None gives the spherical cap of area area_sr (cap_mask).
+
+    Returns:
+        float64 [ell_max+1] C_L in sr^2. A supplied spectrum shorter than
+        ell_max+1 is padded with zeros: the mask is taken as band limited.
+
+    Raises:
+        ValueError when mask_cl has negative or nonfinite entries, extends
+        beyond ell_max (raise mask_ell_max instead of truncating it), or
+        its area sqrt(4 pi C_0) is not area_sr.
+    """
+    if mask_cl is None:
+        return cap_mask(area_sr=area_sr, ell_max=ell_max)
+    mask_cl = np.asarray(mask_cl, dtype=float)
+    if (mask_cl.ndim != 1 or len(mask_cl) == 0
+            or not np.all(np.isfinite(mask_cl)) or np.any(mask_cl < 0.0)):
+        raise ValueError("mask_cl must be a nonempty, finite, nonnegative 1D spectrum")
+    if len(mask_cl) > ell_max+1:
+        raise ValueError(f"mask_cl reaches L = {len(mask_cl)-1} > mask_ell_max = "
+                         f"{ell_max}; raise mask_ell_max")
+    if abs(mask_area(mask_cl)/area_sr-1.0) > 1.e-8:
+        raise ValueError("mask_cl area sqrt(4 pi C_0) differs from area_sr")
+    result = np.zeros(ell_max+1)
+    result[:len(mask_cl)] = mask_cl
+    return result
+
+
+def correlation_pair_area(area_sr, edges_rad, correlation):
+    """Return ordered-pair areas from a measured mask correlation per bin.
+
+    The noise term of a real-space Gaussian covariance divides by the
+    number of pairs in each angular bin (Troxel et al. 2018,
+    arXiv:1804.10663, Eq. 6):
+
+      A_pair = area_sr * 2 pi (cos theta_low - cos theta_high) * w_W,
+
+    where w_W is the bin-averaged angular correlation of the survey mask,
+    the fraction of the edge-free pairs that the footprint keeps. A mask
+    power spectrum gives w_W through covariance_mask_pair_area; this
+    function instead takes w_W measured in configuration space (for
+    example from source pair counts against an unmasked expectation, as in
+    the DES Y6 w_mask of CosmoCov), which also captures masking smaller
+    than the pixels of a mask map.
+
+    Arguments:
+        area_sr: footprint area in steradians.
+        edges_rad: [nbin+1] increasing angular bin edges in radians.
+        correlation: [nbin] w_W per bin, finite and positive.
+
+    Returns:
+        float64 [nbin] pair areas in sr^2, the input of the Gaussian noise
+        term (covariance_gaussian_real's pair_area_sr2).
+
+    Raises:
+        ValueError for a correlation that does not match the bins or is
+        not finite and positive, or for edges that do not increase.
+    """
+    edges = np.asarray(edges_rad, dtype=float)
+    correlation = np.asarray(correlation, dtype=float)
+    if edges.ndim != 1 or len(edges) < 2 or np.any(np.diff(edges) <= 0.0):
+        raise ValueError("edges_rad must be increasing angular bin edges")
+    if (correlation.shape != (len(edges)-1,)
+            or not np.all(np.isfinite(correlation)) or np.any(correlation <= 0.0)):
+        raise ValueError("mask_pair_correlation needs one finite positive w_W per angular bin")
+    # cos(a)-cos(b) = 2 sin((a+b)/2) sin((b-a)/2), without the cancellation
+    # of the direct difference in arcminute bins.
+    low, high = edges[:-1], edges[1:]
+    ring = 2.0*np.pi*2.0*np.sin(0.5*(low+high))*np.sin(0.5*(high-low))
+    return area_sr*ring*correlation
+
+
 def angular_rule(nquad, npanel, interface):
     """Build a planar dtheta/pi rule resolving nearly opposite wavevectors.
 

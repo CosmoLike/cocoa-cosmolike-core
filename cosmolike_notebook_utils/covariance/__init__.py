@@ -23,7 +23,8 @@ matrix), forecast (project set-up and archives) and command_line (YAML
 command). The other *_cluster modules are imported explicitly where needed.
 """
 
-from .geometry import angular_rule, cap_mask, noise_powers
+from .geometry import (angular_rule, cap_mask, correlation_pair_area, footprint_area,
+                       footprint_mask, load_mask_cl, mask_area, noise_powers)
 from .diagnostics import covariance_modes, compare_covariances
 
 from .gaussian import gaussian_block, observed_spectra, realspace_block, shear_gaussian

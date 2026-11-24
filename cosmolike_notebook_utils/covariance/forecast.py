@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 from ..camb_cosmology import get_camb_cosmology
-from .geometry import noise_powers
+from .geometry import footprint_area, noise_powers
 from .power import refine_power_tables
 from .survey import observable_rows, realspace_covariance, fourier_covariance
 
@@ -299,7 +299,14 @@ def compute_forecast(interface, settings, space="real", rows=None,
         interface = already initialized project interface.
         settings = resolved project mapping with covariance_accuracy values,
             cosmology, densities, area_deg2, theta_edges_arcmin, a_edges,
-            lnm_edges, excluded_gammat, band_first and band_last.
+            lnm_edges, excluded_gammat, band_first and band_last. The
+            optional mask_cl (geometry.load_mask_cl) is the raw power
+            spectrum of the survey mask, used by SSC and the noise pair
+            areas instead of a spherical cap; its area sqrt(4 pi C_0)
+            must match area_deg2 to 0.1% and replaces it. The optional
+            mask_pair_correlation [nbin] is a measured mask correlation
+            w_W per angular bin; it replaces the noise pair areas
+            (geometry.correlation_pair_area), while SSC keeps the mask.
         space = "real" for angular bins, "fourier" for E-mode bandpowers.
         backend = None uses notebook wrappers; interface.covariance uses
             the direct production bindings to the same C calculations.
@@ -378,7 +385,9 @@ def compute_forecast(interface, settings, space="real", rows=None,
     resolved = dict(settings)
     resolved["space"] = space
     resolved["mnu"] = settings["cosmology"]["mnu"]
-    resolved["area_sr"] = settings["area_deg2"]*(np.pi/180.0)**2
+    # With a mask spectrum (settings mask_cl) the area is the mask's own.
+    resolved["area_sr"] = footprint_area(area_deg2=settings["area_deg2"],
+                                         mask_cl=settings.get("mask_cl"))
     resolved["edges_rad"] = settings["theta_edges_arcmin"]*np.pi/(180.0*60.0)
 
     # --- 4. G, SSC AND cNG IN THE REQUESTED SPACE ---
